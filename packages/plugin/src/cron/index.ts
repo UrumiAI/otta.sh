@@ -239,7 +239,7 @@ export async function bootstrapSweepTask(ctx: PluginContext): Promise<void> {
 		const outcome = await raceScheduleBudget(attempt);
 		if (outcome === SCHEDULE_TIMED_OUT) {
 			console.error(
-				`[otta] cron sweep task registration exceeded ${String(ACTIVATE_SCHEDULE_BUDGET_MS)} ms (continuing; a late failure will release the latch)`,
+				`[otta] cron sweep task registration exceeded ${String(ACTIVATE_SCHEDULE_BUDGET_MS)} ms (continuing; will retry if it fails)`,
 			);
 			// Also keeps the late rejection observed (no unhandled rejection).
 			attempt.catch((err: unknown) => {
