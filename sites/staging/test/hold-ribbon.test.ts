@@ -315,3 +315,61 @@ describe("HoldClock — the client script", () => {
 		expect(script).toMatch(/quietAnnounce:\s*quiet \? \(note\?\.textContent \?\? ""\) : undefined/);
 	});
 });
+
+describe("HoldRibbon — countdown off (the store hides the timer, #547)", () => {
+	const off = (expiresAt: string | null, extra: Record<string, unknown> = {}): Promise<string> =>
+		render({ expiresAt, countdown: false, ...extra });
+
+	test("while the hold is live it shows nothing: no track, clock, label or hold copy", async () => {
+		const html = await off(inSeconds(540));
+		for (const hook of ["data-hold-clock", "data-hold-fill", "data-hold-label", 'class="track']) {
+			expect(html).not.toContain(hook);
+		}
+		for (const label of Object.values(HOLD_LABELS)) expect(html).not.toContain(label);
+		expect(html).not.toContain('role="timer"');
+		// The note is in the markup for the script to reveal, hidden until it applies.
+		expect(html).toMatch(/data-hold-note[^>]*hidden/);
+	});
+
+	test("it still carries the hooks the client script needs to learn the hold lapsed", async () => {
+		const html = await off(inSeconds(300), { windowSeconds: 1200 });
+		expect(html).toContain("data-hold");
+		expect(html).toMatch(/data-expires="[^"]+"/);
+		expect(html).toContain('data-window="1200"');
+		expect(html).toContain('data-countdown="off"');
+		expect(html).toContain("data-hold-announce");
+	});
+
+	test("a hold that has already lapsed shows the next step, and still no clock", async () => {
+		const html = await off(inSeconds(-30));
+		expect(html).toContain(HOLD_RELEASED_NEXT_STEP);
+		expect(html).not.toMatch(/data-hold-note[^>]*hidden/);
+		expect(html).not.toContain("data-hold-clock");
+		expect(html).not.toContain(HOLD_LABELS.released);
+	});
+
+	test("no reservation, or an unparseable expiry, still renders nothing", async () => {
+		expect(markupOnly(await off(null))).toBe("");
+		expect(markupOnly(await off("soon"))).toBe("");
+	});
+
+	test("the countdown stays the default", async () => {
+		expect(await render({ expiresAt: inSeconds(300) })).toContain("data-hold-clock");
+	});
+});
+
+describe("HoldRibbon — countdown off takes no room in the line (#547)", () => {
+	const css = readFileSync(
+		path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/themes/tempered/commerce.css"),
+		"utf8",
+	).replace(/\/\*[\s\S]*?\*\//g, "");
+
+	test("a live quiet ribbon is out of flow, not display: none (that drops the live region)", () => {
+		const [, rule = ""] =
+			/\.hold\[data-countdown="off"\]:not\(\[data-state="released"\]\)\s*\{([^}]*)\}/.exec(css) ??
+			[];
+		expect(rule, "no quiet-ribbon rule in the commerce sheet").not.toBe("");
+		expect(rule).toMatch(/position:\s*absolute/);
+		expect(rule).not.toMatch(/display:\s*none/);
+	});
+});
