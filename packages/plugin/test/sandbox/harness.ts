@@ -39,6 +39,7 @@ import { build } from "tsdown";
 import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../../src/commerce/commerce-storage.js";
 import {
 	type InProcessEgressUrls,
+	OTTA_PLUGIN_VERSION,
 	resolveAllowedHosts,
 	STRIPE_API_HOST,
 } from "../../src/manifest.js";
@@ -286,7 +287,7 @@ function manifestSource(options: SandboxOptions): string {
 	// mirror, so this is now just the egress surface production actually has.
 	return [
 		'export const OTTA_PLUGIN_ID = "otta";',
-		'export const OTTA_PLUGIN_VERSION = "0.2.0";',
+		`export const OTTA_PLUGIN_VERSION = ${JSON.stringify(OTTA_PLUGIN_VERSION)};`,
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request", "email:send"];',
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
 		"",
