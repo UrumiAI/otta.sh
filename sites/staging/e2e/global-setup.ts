@@ -210,10 +210,11 @@ async function priceCatalog(): Promise<void> {
 /**
  * Is ANYTHING listening at `E2E_BASE_URL`? Only a refused connection counts as
  * "no": a cold dev server accepts the connection and then takes far longer than
- * `siteIsUp()`'s 3 s probe to answer its first request, which is exactly the
- * case the warm-up exists for. (Measured: on a fresh `.wrangler` state the first
- * `/` took longer than that, `siteIsUp()` said "no site", setup returned, and
- * every spec then failed under OTTA_E2E_REQUIRE_SITE=1.)
+ * `siteIsUp()`'s probe (then 3 s; since #568, 5 s with one retry on timeout) to
+ * answer its first request, which is exactly the case the warm-up exists for.
+ * (Measured: on a fresh `.wrangler` state the first `/` took longer than the 3 s
+ * probe, `siteIsUp()` said "no site", setup returned, and every spec then failed
+ * under OTTA_E2E_REQUIRE_SITE=1.)
  */
 async function somethingListens(): Promise<boolean> {
 	try {

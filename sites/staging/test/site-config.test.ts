@@ -796,6 +796,12 @@ describe("astro.config", () => {
 			const define = config.vite?.define as Record<string, string>;
 			expect(Object.keys(define)).not.toContain("__OTTA_COMMERCE_SERVICE_URL__");
 			expect(Object.keys(define)).not.toContain("__OTTA_COMMERCE_MODE__");
+
+			// Issue #568: the two deps the admin discovers late are pre-bundled, so
+			// Vite does not re-optimize and reload the admin mid-e2e-test.
+			expect(config.vite?.optimizeDeps?.include).toEqual(
+				expect.arrayContaining(["emdash/internal/routes/PluginRegistry", "emdash/plugin-utils"]),
+			);
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
