@@ -2718,7 +2718,10 @@ function lastCreatedAt(items: readonly { data: { createdAt?: string } }[]): stri
  * did not apply is fine when the incumbent names the SAME order, and a conflict when
  * it names another. The heal REPORTS a conflict instead of throwing it, so this leg
  * records the anomaly, flags the order for reconciliation and carries on — the policy
- * stays here, the collection's write stays with the adapter that owns it.
+ * stays here, the collection's write stays with the adapter that owns it. All of an
+ * order's pointers are written before any of its conflicts is flagged, and a stop
+ * between the two (the query ceiling, a failed flag) leaves the cursor in place, so
+ * the next tick finds the pointers present, re-reports the conflicts and flags them.
  *
  * THE CURSOR ADVANCES rather than the window being pinned to `now - 48h`. A fixed
  * lower bound scanned `createdAt ASC` under a page budget can never reach the
