@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import {
 	createSettingsFormHandler,
@@ -190,6 +191,14 @@ describe("Store settings tabs over the real screens", () => {
 describe("Store settings tabs and the Stripe country check", () => {
 	const SK = ["sk_test_", "51StoreSettingsFixture000"].join("");
 
+	/** An `unavailable` answer an hour old: past its 5 minute back-off, so a full
+	 *  read would ask Stripe again. */
+	const staleUnavailable = () => ({
+		status: "unavailable",
+		keyDigest: createHash("sha256").update(SK).digest("hex"),
+		checkedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+	});
+
 	async function openPage() {
 		const h = await makeInProcessCommerce();
 		// A key with no cached country answer: the stale case that makes a full
@@ -249,6 +258,32 @@ describe("Store settings tabs and the Stripe country check", () => {
 			expect(formFor(panel(shipped.blocks, "General"), "save-display")).toBeDefined();
 
 			expect(h.egressAttempts()).toBe(1);
+		} finally {
+			await h.close();
+		}
+	});
+
+	test("an unknown answer past its back-off is not re-asked on a Tax action; General shows it as it stands", async () => {
+		const { h, call } = await openPage();
+		try {
+			await h.ctx.kv.set(STRIPE_ACCOUNT_COUNTRY_KEY, staleUnavailable());
+			const loaded = await call({ type: "page_load" });
+			// The page open is the one place that asks again.
+			expect(h.egressAttempts()).toBe(1);
+			await h.ctx.kv.set(STRIPE_ACCOUNT_COUNTRY_KEY, staleUnavailable());
+
+			const taxButton = buttons(panel(loaded.blocks, "Tax")).find(
+				(b) => b.action_id === "tax:show-new-class",
+			);
+			const after = await call({
+				type: "block_action",
+				action_id: "tax:show-new-class",
+				value: taxButton!.value,
+			});
+			expect(h.egressAttempts()).toBe(1);
+			expect(JSON.stringify(panel(after.blocks, "General"))).toContain(
+				"Stripe account country: not checked yet — Stripe couldn't be reached.",
+			);
 		} finally {
 			await h.close();
 		}
