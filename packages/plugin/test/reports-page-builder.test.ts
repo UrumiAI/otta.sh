@@ -268,6 +268,22 @@ describe("reports builder: the units top ten is chosen by units", () => {
 	});
 });
 
+describe("reports builder: the Orders card carries no trend arrow", () => {
+	// The count is every status, cancelled and refunded included, so a rise is not
+	// good news and a green arrow would say it is.
+	test("the signed change is stated, the arrow is not", () => {
+		const blocks = render({
+			revenue: USD_CURRENT,
+			statuses: [{ status: "paid", orderCount: 3 }],
+			previousRevenue: [bucket("2026-07-08", 1000, 1)],
+			previousStatuses: [{ status: "paid", orderCount: 1 }],
+		});
+		const orders = tile(blocks, "Orders");
+		expect(orders).toMatchObject({ value: "3", description: "+200% vs previous 3 days" });
+		expect(orders).not.toHaveProperty("trend");
+	});
+});
+
 describe("reports builder: average order value with a bucket lacking revenueOrderCount", () => {
 	test("falls back to the paid-order count rather than a partial sum", () => {
 		const blocks = render({
