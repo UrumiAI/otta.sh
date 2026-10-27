@@ -1278,8 +1278,13 @@ test("a REMOUNTED card after a lost Add shows no Retry, and its next Add carries
 	expect(server.onHand()).toBe(34); // a new move, not a replay of the lost one
 	expect(second.textContent).toContain("Added 5 — now 34 in stock");
 	// A guard against a future Web Storage cache: the card persists nothing today,
-	// so these loops find no entries unless someone adds one.
-	for (const store of [window.sessionStorage, window.localStorage]) {
+	// so these loops find no entries unless someone adds one. On Node 25+ the
+	// runtime's own (unconfigured) Web Storage globals can shadow happy-dom's and
+	// read as undefined, so a store that isn't there is skipped, not a crash.
+	const stores = [window.sessionStorage, window.localStorage].filter(
+		(store): store is Storage => store !== undefined && store !== null,
+	);
+	for (const store of stores) {
 		for (let i = 0; i < store.length; i++) {
 			const key = store.key(i) ?? "";
 			expect(key).not.toContain(String(lost));
