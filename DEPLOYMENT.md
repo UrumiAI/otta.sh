@@ -924,8 +924,9 @@ provider), and D1's "too many API requests by single Worker invocation" (the hos
 that event used more of the 50 than the 20 the sweep leaves it).
 
 Nothing needs to register that task by hand. The site lists the plugin in its `plugins`
-array, so the host fires `plugin:activate` for it at most once (EmDash 1.2+, at the first
-boot with no plugin state row, never retried); the plugin does not rely on that. It wraps its four
+array, so the host fires `plugin:activate` for it on its own at most once (EmDash 1.2+, at
+the first boot with no plugin state row, never retried; an admin re-enable fires it again);
+the plugin does not rely on that. It wraps its four
 content-sync hooks and the two public catalog routes (product list and product page) in
 `withSweepBootstrap` (`packages/plugin/src/cron/index.ts`), which ensures the task exists
 once per isolate on the first such request (the tick does the same, for a cron-only isolate)
@@ -987,18 +988,21 @@ D1 backup first. The first boot on 1.3.1 also runs each config plugin's `plugin:
 stay off until an admin re-enables it under **Plugins**. One behaviour change on the Worker: since 1.3.1, a site in the default `auto`
 migration mode whose migrations a request could not finish answers **503** until they are
 applied, instead of serving pages without content. If a deploy answers 503, read the Worker log
-and apply the pending migration from the CLI, after step 4's build (which writes
-`.emdash/migrations.json`) and with a `CLOUDFLARE_API_TOKEN` that can write the D1:
+and apply the pending migration from the CLI, after §2.1 step 4's build (which writes
+`.emdash/migrations.json`). The CLI does not find the database on its own: point it at
+`wrangler.local.jsonc` (or name the D1 with `--d1 <name|uuid>`), and set
+`CLOUDFLARE_API_TOKEN` (D1 edit on the account) plus `CLOUDFLARE_ACCOUNT_ID` unless that file
+sets `account_id`:
 
 ```bash
 cd sites/staging
-pnpm exec emdash migrate --status    # what is pending, and any held lock's id
-pnpm exec emdash migrate             # apply; --take-over-lock <id> if a lock is stuck
+pnpm exec emdash migrate --status --wrangler-config wrangler.local.jsonc   # pending, lock id
+pnpm exec emdash migrate --wrangler-config wrangler.local.jsonc            # --take-over-lock <id> if stuck
 ```
 
 A non-interactive run (CI) also needs `--expected-target-fingerprint` with the fingerprint
 `--status` prints. A site still on **0.38** that jumps straight to 1.3.1 should run this
-**before** deploying: 1.3.1's Worker no longer starts a content-sized migration
+**before** deploying, and deploy right after it completes: 1.3.1's Worker no longer starts a content-sized migration
 (`079_datetime_normalization`, which rewrites every entry and revision) on a request, so it
 would answer 503 until it is applied. See EmDash's
 [core-migrations guide](https://docs.emdashcms.com/deployment/core-migrations/).
