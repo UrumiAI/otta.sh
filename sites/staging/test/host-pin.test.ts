@@ -50,7 +50,7 @@ describe("the EmDash host pin", () => {
 
 	// A tripwire, not a preference: a host release that adds migrations fails here,
 	// so each new tail is reviewed (and DEPLOYMENT.md's backup note revisited)
-	// before it ships. 1.0.1 added 078-089; 1.3.1 added 090-091.
+	// before it ships. 1.0.1 added 078-089; 1.1 added 090-091 (unchanged through 1.3.1).
 	it("ends at the reviewed migration tip", () => {
 		expect(MIGRATION_NAMES.at(-1)).toBe("091_redirect_artifacts");
 	});
