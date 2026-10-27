@@ -115,7 +115,7 @@ const plugin: SandboxedPlugin = {
 		// task REGISTERED on this deployment. Otta is hand-registered in the site's
 		// `plugins` array, so EmDash before 1.2 never fires `plugin:activate` for it (that
 		// runs only from an admin enable toggle; 1.2+ also fires it once at first
-		// boot, and cannot be relied on to retry) — but these four content hooks and the
+		// boot, and cannot be relied on to retry) — but these five content hooks and the
 		// storefront routes below do fire, with a live `ctx.cron` on each. The wrapper
 		// ensures the task exists, once per isolate, and adds at most a bounded
 		// wait (the schedule budget) and never fails the handler it wraps. See `cron/index.ts`.
