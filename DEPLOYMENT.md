@@ -1047,6 +1047,16 @@ the scheduled reconcile reaches a day only once it has closed. So after a rollba
 release, or a rollout that overlapped versions, treat today's report figures as provisional
 until then. Orders, stock and payments are unaffected — only the reporting rollup is.
 
+The same rule covers the Stripe return scrub (PR #550). The 303 records the return in a cookie
+and the next request reads it, so in a gradual rollout the two can be served by different
+versions, and the order page can briefly show "awaiting payment" with **Complete payment** for an
+order that was paid. That is display only and does not double-charge. The order is still
+`pending` in that window, and **Complete payment** resumes that order's own PaymentIntent
+(`lib/checkout-resume.ts`), not a new one. Stripe refuses to confirm a PaymentIntent that has
+already succeeded or is processing, and the pay page treats that refusal as "landed" (`refusalOf`
+in `pages/checkout/pay.astro`) and sends the buyer back to the order page. A reload after the
+cut-over shows the right state.
+
 **Upgrading the EmDash host (0.38 → 1.0.1).** The host runs its own schema migrations on the
 **first request** after the deploy, with no separate step: EmDash 1.0.1 adds
 `078_menu_item_translation_groups` through `089_auto_seed_completion` on top of 0.38's
