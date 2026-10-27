@@ -136,4 +136,15 @@ describe("wrangler.jsonc", () => {
 			expect(key).not.toMatch(/SECRET|KEY|TOKEN|PASSWORD/i);
 		}
 	});
+
+	test("Workers Logs keep console logs but not per-request invocation logs (#551)", () => {
+		// An invocation log records the request URL with its query, and the order
+		// return URL carries Stripe's payment_intent_client_secret; it would then be
+		// stored for 3-7 days. Console logs stay on.
+		const observability = config["observability"] as {
+			logs?: { enabled?: boolean; invocation_logs?: boolean };
+		};
+		expect(observability.logs?.enabled).toBe(true);
+		expect(observability.logs?.invocation_logs).toBe(false);
+	});
 });

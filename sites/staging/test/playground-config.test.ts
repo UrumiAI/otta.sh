@@ -74,6 +74,14 @@ describe("playground build files", () => {
 		expect(routes).toEqual([{ pattern: "try.otta.sh", custom_domain: true }]);
 	});
 
+	test("Workers Logs keep console logs but not invocation logs, which record the URL query (#551)", () => {
+		const observability = config["observability"] as {
+			logs?: { enabled?: boolean; invocation_logs?: boolean };
+		};
+		expect(observability.logs?.enabled).toBe(true);
+		expect(observability.logs?.invocation_logs).toBe(false);
+	});
+
 	test("the playground config turns the flag on; the storefront config leaves it off", () => {
 		const playground = readFileSync(path.join(root, "astro.config.playground.ts"), "utf8");
 		const storefront = readFileSync(path.join(root, "astro.config.ts"), "utf8");
