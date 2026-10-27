@@ -54,6 +54,7 @@ import {
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import { PRICES_AS_ENTERED, priceDisplayOrEntered } from "../catalog/shop-display.js";
+import { readStorefrontSettings } from "./storefront-settings.js";
 import type {
 	CartFailureReason,
 	CartLineWire,
@@ -391,16 +392,11 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 			if (!isCartIdToken(cartId)) return { ok: false, error: "INVALID_CART_ID" } as const;
 
 			const client = await makeCommerceClient(ctx);
-			const [result, showHoldTimer] = await Promise.all([
+			const [result, settings] = await Promise.all([
 				client.getCart(cartId),
-				// Display only — a failed read hides the countdown rather than failing the cart.
-				client.getShowHoldTimer().catch((err: unknown) => {
-					console.error(
-						`[otta] ${STOREFRONT_CART_READ_ROUTE} showHoldTimer read failed; hiding the timer:`,
-						err,
-					);
-					return false;
-				}),
+				// Display only — a failed read hides the timer and the stale-currency
+				// notice rather than failing the cart.
+				readStorefrontSettings(STOREFRONT_CART_READ_ROUTE, client),
 			]);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			const cart = result.cart;
@@ -412,9 +408,7 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				),
 			];
 
-			// Started BESIDE the pricing join, not after it: /cart pays this read on
-			// every render, and it never fails the read (see `staleCurrencyOf`).
-			const staleCurrency = staleCurrencyOf(client, cart);
+			const staleCurrency = staleCurrencyOf(settings.savedStoreCurrency, cart);
 			let pricing: CartPricingWire;
 			try {
 				// No batch call at all when there is nothing to look up (an empty
@@ -443,29 +437,20 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				ok: true as const,
 				cart,
 				pricing,
-				staleCurrency: await staleCurrency,
-				showHoldTimer,
+				staleCurrency,
+				showHoldTimer: settings.showHoldTimer,
 			};
 		});
 }
 
 /**
- * {@link CartStaleCurrencyWire} for `cart`, by the domain's own rule. Only an
- * ACTIVE cart pays the settings read, and a failed one is logged and answered
- * `null`: the notice is a way out, never a reason the cart cannot be shown.
+ * {@link CartStaleCurrencyWire} for `cart`, by the domain's own rule, against the
+ * store currency the operator saved (`null`: none — nothing can be stale). Only an
+ * ACTIVE cart can be: the notice is a way out, never a reason the cart cannot be
+ * shown.
  */
-async function staleCurrencyOf(
-	client: Awaited<ReturnType<typeof makeCommerceClient>>,
-	cart: CartWire,
-): Promise<CartStaleCurrencyWire | null> {
+function staleCurrencyOf(saved: string | null, cart: CartWire): CartStaleCurrencyWire | null {
 	if (cart.state !== "active") return null;
-	let saved: string | null;
-	try {
-		saved = await client.getSavedStoreCurrency();
-	} catch (err) {
-		console.error(`[otta] ${STOREFRONT_CART_READ_ROUTE} store currency read failed:`, err);
-		return null;
-	}
 	if (saved === null || !isSupportedCurrency(saved) || !isSupportedCurrency(cart.currency)) {
 		return null;
 	}

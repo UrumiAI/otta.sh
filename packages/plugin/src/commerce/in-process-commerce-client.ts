@@ -164,6 +164,7 @@ import type {
 	ResumeProof,
 	ShippingOptionsRequestWire,
 	ShippingOptionWire,
+	StorefrontSettings,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
 	UpsertProductVariantInput,
@@ -635,17 +636,22 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * fresh store behaves exactly as before.
 	 */
 	async #liveCartDeps(): Promise<CartDeps> {
-		return { ...this.#cartDeps, ttlMs: (await this.getCartHoldTtlMinutes()) * 60_000 };
+		return this.#cartDepsFor(await this.#holdTtlMinutes());
 	}
 
-	/** The effective cart-hold window, in whole minutes — what a shopper-facing
-	 *  "we'll hold this for N minutes" must say. */
-	async getCartHoldTtlMinutes(): Promise<number> {
+	#cartDepsFor(holdTtlMinutes: number): CartDeps {
+		return { ...this.#cartDeps, ttlMs: holdTtlMinutes * 60_000 };
+	}
+
+	/** The effective cart-hold window, in whole minutes. Storefront pages get it
+	 *  from {@link getStorefrontSettings}. */
+	async #holdTtlMinutes(): Promise<number> {
 		return (await this.#stores.settingsStore.get()).holdTtlMinutes;
 	}
 
-	async getShowHoldTimer(): Promise<boolean> {
-		return effectiveShowHoldTimer(await this.#stores.settingsStore.get());
+	/** One settings read for everything a storefront page shows from it. */
+	async getStorefrontSettings(): Promise<StorefrontSettings> {
+		return storefrontSettingsOf(await this.#stores.settingsStore.get());
 	}
 
 	/**
@@ -718,15 +724,29 @@ export class InProcessCommerceClient implements CommerceClient {
 		return replaceStaleCurrencyCart(this.#cartDeps, staleCartId, toCurrency(saved));
 	}
 
-	async getSavedStoreCurrency(): Promise<string | null> {
-		return (await this.#stores.settingsStore.get()).currency ?? null;
-	}
-
 	/** Runs the lazy hold expiry the use-case owns, then reads. An unknown cart is
 	 *  the typed token, never a rejection. */
 	async getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>> {
 		requireIdToken("cartId", cartId);
-		const cart = await getCart(await this.#liveCartDeps(), cartId);
+		return this.#readCart(await this.#liveCartDeps(), cartId);
+	}
+
+	/** {@link getCart} plus the storefront settings, from the ONE settings read
+	 *  `getCart` already makes for the hold window — for a page that needs both
+	 *  and would otherwise pay a second read. */
+	async getCartWithSettings(
+		cartId: string,
+	): Promise<{ cart: CartResult<{ cart: CartWire }>; settings: StorefrontSettings }> {
+		requireIdToken("cartId", cartId);
+		const stored = await this.#stores.settingsStore.get();
+		return {
+			cart: await this.#readCart(this.#cartDepsFor(stored.holdTtlMinutes), cartId),
+			settings: storefrontSettingsOf(stored),
+		};
+	}
+
+	async #readCart(deps: CartDeps, cartId: string): Promise<CartResult<{ cart: CartWire }>> {
+		const cart = await getCart(deps, cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		// A line with no productId reads back with the one its sku names (issue
 		// #111), so the cart page and the checkout summary price it like any other.
@@ -1618,6 +1638,16 @@ export class InProcessCommerceClient implements CommerceClient {
 // amount plus an ISO-4217 string in every one of them. ABSENT IS ABSENT: an
 // unpriced row is `null`, never `0` and never a zero-amount object — rendering a
 // missing price as zero would turn "nobody has priced this" into "this is free".
+
+function storefrontSettingsOf(
+	settings: Awaited<ReturnType<InProcessCommerceStores["settingsStore"]["get"]>>,
+): StorefrontSettings {
+	return {
+		savedStoreCurrency: settings.currency ?? null,
+		holdTtlMinutes: settings.holdTtlMinutes,
+		showHoldTimer: effectiveShowHoldTimer(settings),
+	};
+}
 
 function toMoney(value: CommerceMoney): Money {
 	return money(cents(value.amount), toCurrency(value.currency));

@@ -5,6 +5,7 @@
  * what a shopper actually reads, and it must never echo a machine token
  * verbatim — including for a token this file doesn't yet know about.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 
@@ -149,7 +150,9 @@ describe("cartErrorMessage", () => {
 	});
 
 	test("the coupon and shipping copy is distinct per reason — a buyer can tell them apart", () => {
-		const coupon = SELECTION_TOKENS.filter((t) => t.startsWith("COUPON_")).map(cartErrorMessage);
+		const coupon = SELECTION_TOKENS.filter((t) => t.startsWith("COUPON_")).map((token) =>
+			cartErrorMessage(token),
+		);
 		expect(new Set(coupon).size).toBe(coupon.length);
 	});
 
@@ -181,7 +184,54 @@ describe("cartErrorMessage", () => {
 	});
 
 	test("the shipping copy is distinct per reason too", () => {
-		const shipping = SELECTION_TOKENS.filter((t) => !t.startsWith("COUPON_")).map(cartErrorMessage);
+		const shipping = SELECTION_TOKENS.filter((t) => !t.startsWith("COUPON_")).map((token) =>
+			cartErrorMessage(token),
+		);
 		expect(new Set(shipping).size).toBe(shipping.length);
+	});
+});
+
+describe("the hold refusals, worded for a store that hides the hold timer (#547)", () => {
+	test("timer on (and the default) is the wording it always was", () => {
+		expect(cartErrorMessage("HOLD_EXPIRED")).toBe(
+			"Your hold on that item expired — please try again.",
+		);
+		expect(cartErrorMessage("HOLD_EXPIRED", { holdTimer: true })).toBe(
+			cartErrorMessage("HOLD_EXPIRED"),
+		);
+		expect(cartErrorMessage("RESERVATION_LOST")).toBe(
+			"Your hold on one or more items expired before payment, so this checkout was closed — start a new cart to order again.",
+		);
+	});
+
+	test("timer off never says hold, and keeps each message's guidance", () => {
+		const expired = cartErrorMessage("HOLD_EXPIRED", { holdTimer: false });
+		expect(expired).toBe("That item is no longer reserved for you — please try again.");
+		const lost = cartErrorMessage("RESERVATION_LOST", { holdTimer: false });
+		expect(lost).toBe(
+			"One or more items are no longer reserved for you, so this checkout was closed — start a new cart to order again.",
+		);
+		for (const message of [expired, lost]) expect(message).not.toMatch(/hold/i);
+	});
+
+	test("timer off changes nothing else", () => {
+		expect(cartErrorMessage("OUT_OF_STOCK", { holdTimer: false })).toBe(
+			cartErrorMessage("OUT_OF_STOCK"),
+		);
+		expect(cartErrorMessage("NOPE", { holdTimer: false })).toBe(cartErrorMessage("NOPE"));
+	});
+});
+
+describe("the pages that show a hold refusal pass the store's timer setting (#547)", () => {
+	test.each([
+		[
+			"pages/checkout/index.astro",
+			"cartErrorMessage(shownErrorToken, { holdTimer: summary.showHoldTimer })",
+		],
+		["pages/cart/index.astro", "cartErrorMessage(error, { holdTimer: showHoldTimer })"],
+		["pages/products/[slug].astro", "cartErrorMessage(error, { holdTimer: showHoldTimer })"],
+	])("%s words it from the settings its own read returned", (page, call) => {
+		const source = readFileSync(new URL(`../src/${page}`, import.meta.url), "utf8");
+		expect(source).toContain(call);
 	});
 });

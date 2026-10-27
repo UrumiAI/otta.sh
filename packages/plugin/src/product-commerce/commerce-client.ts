@@ -255,6 +255,14 @@ export type VariantUpdateResult =
 	| { ok: false; reason: "SKU_HELD_STOCK"; sku: string | null; liveHolds: number | null };
 // ── end variants wire types ──────────────────────────────────────────────
 
+/** The settings facts a storefront page renders from — see
+ *  {@link CommerceClient.getStorefrontSettings}. */
+export interface StorefrontSettings {
+	savedStoreCurrency: string | null;
+	holdTtlMinutes: number;
+	showHoldTimer: boolean;
+}
+
 export interface CommerceClient {
 	upsertProductCommerce(
 		productId: string,
@@ -380,19 +388,20 @@ export interface CommerceClient {
 	 * the cart is in the store currency, or the store never saved one.
 	 */
 	replaceStaleCurrencyCart(staleCartId: string): Promise<ReplaceStaleCurrencyCartResult>;
-	/** The store currency the operator SAVED, or `null` when none ever was (the
-	 *  storefront then names none, so no cart can be stale against it). One
-	 *  settings read; for the cart page's stale-currency notice. */
-	getSavedStoreCurrency(): Promise<string | null>;
-	/** The effective cart-hold window in whole minutes — the admin's saved
-	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
-	 *  read measures against (issue #127). For shopper-facing copy. */
-	getCartHoldTtlMinutes(): Promise<number>;
-	/** Whether the storefront shows the cart hold to shoppers — the admin's
-	 *  `showHoldTimer`, off until saved on. Display only: the hold itself runs
-	 *  either way. */
-	getShowHoldTimer(): Promise<boolean>;
+	/** What the storefront pages show from the operator's settings, in ONE settings
+	 *  read: the saved store currency (`null` when none ever was — the storefront
+	 *  then names none, so no cart can be stale against it), the effective
+	 *  cart-hold window in whole minutes (`holdTtlMinutes`, which every add/adjust
+	 *  stamps and every read measures against, issue #127) and whether shoppers
+	 *  see the hold timer (`showHoldTimer`, off until saved on — display only, the
+	 *  hold itself runs either way). */
+	getStorefrontSettings(): Promise<StorefrontSettings>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
+	/** {@link getCart} plus the storefront settings, from the one settings read
+	 *  `getCart` already makes for the hold window — for a page that needs both. */
+	getCartWithSettings(
+		cartId: string,
+	): Promise<{ cart: CartResult<{ cart: CartWire }>; settings: StorefrontSettings }>;
 	/**
 	 * The storefront header's two facts, as cheaply as they can be known: the
 	 * cart's state and unit count (ONE cart-document read — no hold expiry, no

@@ -56,11 +56,15 @@
 			const seconds = el.querySelector<HTMLElement>("[data-hold-seconds]");
 			// Opt-in: only a root that SHIPS `data-minutes` has it kept current,
 			// so no other theme's markup gains an attribute it never asked for.
+			const quiet = el.dataset.countdown === "off";
 			const tracksMinutes = el.dataset.minutes !== undefined;
 			return {
 				expiry: Date.parse(el.dataset.expires ?? ""),
 				window: Number(el.dataset.window) || HOLD_WINDOW_SECONDS,
 				shownState: el.dataset.state ?? "",
+				// A ribbon with its countdown off is quiet: the helper announces its
+				// note on release and nothing before (hold-ribbon.ts decides).
+				quietAnnounce: quiet ? (note?.textContent ?? "") : undefined,
 				render(frame: HoldFrame): void {
 					el.dataset.state = frame.state;
 					if (label) label.textContent = frame.label;

@@ -208,7 +208,7 @@ const model: ProductModel =
 						? cartErrorMessage(BUSY)
 						: "Prices and stock are unavailable right now."
 					: null,
-				errorMessage: error !== null ? cartErrorMessage(error) : null,
+				errorMessage: error !== null ? cartErrorMessage(error, { holdTimer: showHoldTimer }) : null,
 				errorAction: error !== null ? cartErrorAction(error) : null,
 				purchase,
 				/* Decided once, here, as the contract states it — neither

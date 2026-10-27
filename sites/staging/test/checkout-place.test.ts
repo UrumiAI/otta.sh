@@ -1444,6 +1444,7 @@ describe("GET /checkout entry guard (§1.7)", () => {
 		expect(
 			checkoutEntryRedirect("cart-1", {
 				ok: true,
+				showHoldTimer: false,
 				cartId: "cart-1",
 				currency: "USD",
 				lines: [],

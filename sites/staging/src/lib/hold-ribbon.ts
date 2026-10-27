@@ -56,6 +56,22 @@ export interface HoldFrame {
 }
 
 /**
+ * What the polite region should be set to. A QUIET ribbon (the store hides the
+ * countdown, so the shopper was never shown a hold) says nothing while the hold
+ * is live, and on release reads out its note — `quietAnnounce` — rather than a
+ * state label.
+ */
+function announceFor(
+	state: HoldState,
+	shownState: string,
+	quietAnnounce: string | undefined,
+): string | null {
+	if (state === shownState) return null;
+	if (quietAnnounce === undefined) return HOLD_LABELS[state];
+	return state === "released" ? quietAnnounce : null;
+}
+
+/**
  * One ribbon, one instant.
  *
  * `now` is a parameter and not a `Date.now()` call for the reason at the top of
@@ -71,6 +87,7 @@ export function holdFrame(
 	windowSeconds: number,
 	shownState: string,
 	now: number,
+	quietAnnounce?: string,
 ): HoldFrame | null {
 	if (Number.isNaN(expiry)) return null;
 	const left = Math.max(0, Math.floor((expiry - now) / 1000));
@@ -84,7 +101,7 @@ export function holdFrame(
 		// Clamped: a hold longer than the window the page assumed must not draw
 		// a fill wider than its track.
 		fill: `${Math.min(100, (left / windowSeconds) * 100).toFixed(1)}%`,
-		announce: state === shownState ? null : HOLD_LABELS[state],
+		announce: announceFor(state, shownState, quietAnnounce),
 		live: left > 0,
 	};
 }
@@ -100,6 +117,9 @@ export interface HoldRibbonPort {
 	/** The state currently ON SCREEN. The tick reads it to tell a transition
 	 *  from an ordinary second, and writes it back when it announces. */
 	shownState: string;
+	/** Set ⇒ a QUIET ribbon (no countdown shown): the text its release announces,
+	 *  and nothing is announced before then. */
+	readonly quietAnnounce?: string;
 	/** Put a frame on screen. */
 	render(frame: HoldFrame): void;
 }
@@ -113,7 +133,13 @@ export interface HoldRibbonPort {
 export function tickHoldRibbons(ribbons: readonly HoldRibbonPort[], now: number): boolean {
 	let live = false;
 	for (const ribbon of ribbons) {
-		const frame = holdFrame(ribbon.expiry, ribbon.window, ribbon.shownState, now);
+		const frame = holdFrame(
+			ribbon.expiry,
+			ribbon.window,
+			ribbon.shownState,
+			now,
+			ribbon.quietAnnounce,
+		);
 		if (frame === null) continue;
 		if (frame.live) live = true;
 		ribbon.render(frame);
