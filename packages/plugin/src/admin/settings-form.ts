@@ -60,6 +60,7 @@ import type {
 	FormBlock,
 	PluginContext,
 	RouteHandler,
+	SandboxedRouteContext,
 	SettingsFieldSpec,
 } from "../types.js";
 import type { ProductCommerceStore } from "@urumi.ai/otta-domain";
@@ -622,7 +623,10 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		peekCountry?: boolean,
 	): Promise<BlockResponse> =>
 		renderSettingsPage(ctx, client, notice, paymentRefusal, settings, currencySwitch, peekCountry);
-	const handle: RouteHandler<SettingsFormInput> = async (routeCtx, ctx) => {
+	const handle = async (
+		routeCtx: SandboxedRouteContext<SettingsFormInput>,
+		ctx: PluginContext,
+	): Promise<BlockResponse> => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
 		// THE COMPOSITION ROOT, not a constructor (work order 02, INC-B10c-ii):
@@ -1183,7 +1187,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		);
 	};
 	return async (routeCtx, ctx) => {
-		const response = (await handle(routeCtx, ctx)) as BlockResponse;
+		const response = await handle(routeCtx, ctx);
 		if (routeCtx.input.embedded !== true) return response;
 		// The page that hosts this screen as a tab has its own heading.
 		const [first, ...rest] = response.blocks;
