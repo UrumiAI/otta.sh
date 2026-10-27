@@ -975,6 +975,17 @@ restored with `wrangler d1 time-travel restore <database> --bookmark=<bookmark>`
 for any later host release that adds migrations (`sites/staging/test/host-pin.test.ts` pins the
 reviewed tip, so a new one fails CI first).
 
+**Upgrading the EmDash host (1.0.1 → 1.3.1).** Two more host migrations, both for EmDash's own
+redirects table and neither reversible: `090_redirect_enable_loop_guard` (a trigger that refuses
+to re-enable a redirect into a loop) and `091_redirect_artifacts` (new `_emdash_redirect_state`,
+`_emdash_redirect_artifacts` and `_emdash_redirect_generation_artifacts` tables, plus revision
+triggers on `_emdash_redirects`). No Otta table or plugin-storage row is touched. Take the same
+D1 backup first. One behaviour change on the Worker: since 1.3.1, a site in the default `auto`
+migration mode whose migrations a request could not finish answers **503** until they are
+applied, instead of serving pages without content. If a deploy answers 503, read the Worker log
+and apply the pending migration with `pnpm emdash migrate` (a held lock: `--take-over-lock <id>`,
+see EmDash's core-migrations guide).
+
 ## 6. Troubleshooting
 
 | Symptom | Cause → fix |

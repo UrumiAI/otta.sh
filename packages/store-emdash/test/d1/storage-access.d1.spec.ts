@@ -84,6 +84,11 @@ describe("the migrated D1 schema", () => {
 			// the same way; listed so a host release that adds or drops a revision
 			// trigger still fails here and is looked at.
 			"emdash_redirect_revision_update",
+			// EmDash 1.3.1's `091_redirect_artifacts` counts redirect writes into
+			// `_emdash_redirect_state`; host-owned, no plugin-storage table involved.
+			"emdash_redirect_state_revision_delete",
+			"emdash_redirect_state_revision_insert",
+			"emdash_redirect_state_revision_update",
 		]);
 	});
 

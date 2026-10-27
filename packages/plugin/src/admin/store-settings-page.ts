@@ -13,9 +13,10 @@ import { noticeBanner } from "./scaffold/banner.js";
  * used to carry three.
  *
  * Nothing about the three screens changes: each panel is the UNCHANGED output of
- * that screen's own handler. EmDash 1.0.1 gives a plugin no way to place a page
- * anywhere but the Plugins group (no `group`, no Settings-hub slot), so merging
- * pages is the only lever on the sidebar that needs no host change.
+ * that screen's own handler. EmDash 1.0.1 gave a plugin no way to place a page
+ * anywhere but the Plugins group (no `group`, no Settings-hub slot); 1.3 adds an
+ * optional page `group` (a sidebar folder) but still no Settings-hub slot, so
+ * merging pages stays the simplest lever on the sidebar.
  *
  * WHY EVERY RESPONSE REBUILDS EVERY PANEL. EmDash's page renderer replaces the
  * whole block tree with each response (`setBlocks(data.blocks)`), and a `tab`

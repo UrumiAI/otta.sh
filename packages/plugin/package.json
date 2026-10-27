@@ -66,6 +66,7 @@
 		"@urumi.ai/otta-store-emdash": "workspace:*"
 	},
 	"devDependencies": {
+		"emdash": "1.3.1",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
