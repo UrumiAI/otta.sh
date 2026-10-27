@@ -14,6 +14,8 @@ import {
 	type StoreSettingsPanel,
 } from "../src/admin/store-settings-page.js";
 import { createTaxPageHandler, TAX_ACTION_IDS, TAX_PAGE } from "../src/admin/tax-page.js";
+import { STRIPE_SECRET_KEY_KEY } from "../src/payment-secrets.js";
+import { STRIPE_ACCOUNT_COUNTRY_KEY } from "../src/payments/stripe-account-country.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../src/payments/stripe-publishable-key.js";
 import type { PluginContext, SandboxedRouteContext } from "../src/types.js";
 import { buttons, field, formFor, panel, type LooseBlock } from "./helpers/blocks.js";
@@ -176,6 +178,87 @@ describe("Store settings tabs over the real screens", () => {
 			expect(form, "no payment-settings form in the General tab").toBeDefined();
 			expect(field(form, "stripePublishableKey")).toBeUndefined();
 			expect(field(form, "loginLinkUrl")).toBeDefined();
+		} finally {
+			await h.close();
+		}
+	});
+});
+
+// #520: an action in Tax or Shipping re-renders General around it, and General's
+// page load may ask Stripe for the account country (2.5 s) when the cached check
+// is stale. The acting tab must never wait on that.
+describe("Store settings tabs and the Stripe country check", () => {
+	const SK = ["sk_test_", "51StoreSettingsFixture000"].join("");
+
+	async function openPage() {
+		const h = await makeInProcessCommerce();
+		// A key with no cached country answer: the stale case that makes a full
+		// General load call Stripe. `egressAttempts()` counts any ctx.http use.
+		await h.ctx.kv.set(STRIPE_SECRET_KEY_KEY, SK);
+		const handler = createStoreSettingsPageHandler([
+			{
+				label: "General",
+				page: SETTINGS_PAGE.path,
+				actionIds: SETTINGS_ACTION_IDS,
+				handler: createSettingsFormHandler(),
+			},
+			{
+				label: "Tax",
+				page: TAX_PAGE.path,
+				actionIds: TAX_ACTION_IDS,
+				handler: createTaxPageHandler(),
+			},
+			{
+				label: "Shipping",
+				page: SHIPPING_PAGE.path,
+				actionIds: SHIPPING_ACTION_IDS,
+				handler: createShippingPageHandler(),
+			},
+		]);
+		const call = async (input: Record<string, unknown>) =>
+			(await handler(routeCtx(input) as never, h.ctx)) as { blocks: LooseBlock[] };
+		return { h, call };
+	}
+
+	test("a Tax action and a Shipping action make no Stripe call, and General still renders", async () => {
+		const { h, call } = await openPage();
+		try {
+			const loaded = await call({ type: "page_load" });
+			// The page open is the one place that may ask Stripe.
+			expect(h.egressAttempts()).toBe(1);
+			// The failed ask is cached with a back-off; drop it so the check is stale again.
+			await h.ctx.kv.delete(STRIPE_ACCOUNT_COUNTRY_KEY);
+
+			const taxButton = buttons(panel(loaded.blocks, "Tax")).find(
+				(b) => b.action_id === "tax:show-new-class",
+			);
+			const taxed = await call({
+				type: "block_action",
+				action_id: "tax:show-new-class",
+				value: taxButton!.value,
+			});
+			expect(formFor(panel(taxed.blocks, "General"), "save-display")).toBeDefined();
+			expect(h.egressAttempts()).toBe(1);
+
+			await h.ctx.kv.delete(STRIPE_ACCOUNT_COUNTRY_KEY);
+			const shipped = await call({ type: "block_action", action_id: "shipping:open-create-zone" });
+			expect(formFor(panel(shipped.blocks, "General"), "save-display")).toBeDefined();
+
+			expect(h.egressAttempts()).toBe(1);
+		} finally {
+			await h.close();
+		}
+	});
+
+	test("a General action still does the full read", async () => {
+		const { h, call } = await openPage();
+		try {
+			await call({
+				type: "form_submit",
+				action_id: "save-display",
+				values: { storeDisplayName: "Lune & Ochre" },
+			});
+			expect(h.egressAttempts()).toBe(1);
 		} finally {
 			await h.close();
 		}
