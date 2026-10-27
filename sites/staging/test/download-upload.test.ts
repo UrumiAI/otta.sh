@@ -457,9 +457,9 @@ describe("which product", () => {
 			expect(response.headers.get("Retry-After")).toBeNull();
 			expect(r2.puts).toEqual([]);
 			const logged = spy.mock.calls.map((call) => call.join(" ")).join("\n");
-			expect(logged).toContain("[site-staging] download upload:");
+			expect(logged).toContain("[site-staging] download record unreadable:");
 			expect(logged).toContain(PRODUCT);
-			expect(logged).toContain("filename, key");
+			expect(logged).toContain(`["filename","key"]`);
 			expect(logged).not.toContain("secret-name.pdf");
 		} finally {
 			spy.mockRestore();

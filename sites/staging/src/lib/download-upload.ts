@@ -247,15 +247,18 @@ export async function lookupProduct(
 	// number) is a failed read, never "no file".
 	if (asset !== null && typeof asset !== "object") return { kind: "failed" };
 	// And a descriptor must carry a string key: one whose key is `null`, absent
-	// or anything else (a version-skewed answer) is a failed read, never "no file".
+	// or anything else (a version-skewed answer) is an unreadable record, never
+	// "no file".
 	let assetKey: string | null = null;
 	if (asset !== null) {
 		const descriptor = asset as Record<string, unknown>;
 		const key = descriptor["key"];
 		if (typeof key !== "string") {
-			// Shape only, never values: the descriptor holds a filename.
+			// Shape only, never values: the descriptor holds a filename. Neutral
+			// prefix (the orphan sweep reads products here too), and JSON-quoted so
+			// a malformed record cannot add lines to the log.
 			console.error(
-				`[site-staging] download upload: product ${row["productId"]} has a stored download record without a string key (key is ${key === null ? "null" : typeof key}; fields: ${Object.keys(descriptor).toSorted().join(", ") || "none"})`,
+				`[site-staging] download record unreadable: product ${JSON.stringify(row["productId"])} has no string key (key is ${key === null ? "null" : typeof key}; fields: ${JSON.stringify(Object.keys(descriptor).toSorted().slice(0, 10))})`,
 			);
 			return { kind: "unreadable" };
 		}
