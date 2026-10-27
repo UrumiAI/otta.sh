@@ -117,8 +117,8 @@ const plugin: SandboxedPlugin = {
 		// runs only from an admin enable toggle; 1.2+ also fires it once at first
 		// boot, and cannot be relied on to retry) — but these four content hooks and the
 		// storefront routes below do fire, with a live `ctx.cron` on each. The wrapper
-		// ensures the task exists, once per isolate, and can neither slow nor fail the
-		// handler it wraps. See `cron/index.ts`.
+		// ensures the task exists, once per isolate, and adds at most a bounded
+		// wait (the schedule budget) and never fails the handler it wraps. See `cron/index.ts`.
 		"content:afterSave": { handler: withSweepBootstrap(createAfterSaveHandler()) },
 		"content:afterDelete": { handler: withSweepBootstrap(createAfterDeleteHandler()) },
 		"content:afterPublish": { handler: withSweepBootstrap(createAfterPublishHandler()) },
