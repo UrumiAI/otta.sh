@@ -66,13 +66,15 @@
  *
  * THE PAY PAGE'S PERMISSIONS-POLICY (issue #108). EmDash stamps
  * `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()` on
- * any response that has none, and `payment=()` keeps Apple Pay and Google Pay
- * out of the Payment Element: its frames cannot reach the Payment Request API.
+ * any response that has none, and `payment=()` keeps Google Pay (and the other
+ * Payment Request wallets in Chromium browsers) out of the Payment Element: its
+ * frames cannot reach the Payment Request API. Safari ignores the header; Apple
+ * Pay there needs the domain registered with Stripe (DEPLOYMENT.md §3).
  * `/checkout/pay` — the one page that loads Stripe.js (ADR-0012) — answers with
  * the same policy but `payment` allowed for this origin and Stripe.js's frames.
- * EmDash's middleware finalizes AFTER `next()` returns (ORDER above), so the
- * header set here is already present when it checks, and it keeps it. Every
- * other route keeps EmDash's baseline.
+ * The header is SET here, so it wins whichever middleware runs first, and
+ * EmDash's finalize only fills one in when none is present. Every other route
+ * keeps EmDash's baseline.
  */
 import type { APIContext, MiddlewareNext } from "astro";
 import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@urumi.ai/otta-plugin";

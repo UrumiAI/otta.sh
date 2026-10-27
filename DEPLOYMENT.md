@@ -432,6 +432,15 @@ order of appearance in a deployment's life:
   page also needs the **publishable key**, entered in the same Settings group (issue #498;
   no rebuild) — see [`sites/staging/README.md`](./sites/staging/README.md).
 
+  **Wallets (Apple Pay, Google Pay, Link).** The pay page already allows them (its
+  `Permissions-Policy` opens `payment` to Stripe.js, issue #108), but Stripe offers a wallet
+  only on a domain it knows: add every domain that serves `/checkout/pay` (the apex and each
+  subdomain, e.g. `www.`) under Stripe Dashboard → Settings → Payment method domains, in live
+  mode (live registrations carry over to sandboxes). Stripe does Apple's merchant validation
+  itself, so no Apple Merchant ID and no `/.well-known/apple-developer-merchantid-domain-association`
+  file is needed. A wallet button also needs HTTPS and a browser or device with that wallet
+  set up; without a registered domain, buyers simply see the card form.
+
   **Upgrading a site built with `STRIPE_PUBLIC_KEY`:** remove that line from the environment
   and `sites/staging/.env` (a build or `astro dev` that still sets it refuses to start, saying
   so), restart, then paste the same `pk_…` key into Otta Settings → Payments & email →
