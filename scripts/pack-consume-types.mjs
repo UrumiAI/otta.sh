@@ -16,6 +16,11 @@
  * import resolves to one copy. Only a consumer of the TARBALLS sees what npm
  * serves.
  *
+ * ALSO GUARDS SOURCE MAPS. Every `//# sourceMappingURL=<x>` in a packed file must
+ * name a file that is in the same tarball (a dangling one makes Vite log "Failed
+ * to load source map" for every `ssr.noExternal` consumer), and no declaration
+ * map (`*.d.mts.map`, which points at the unshipped `src/`) may ship.
+ *
  * WHY IT IS CHEAP. No registry access: the consumer depends on the five tarballs
  * only (their dependencies are each other), peers are not auto-installed (the
  * declarations under test name no `emdash` import), and `tsc` is the
@@ -25,13 +30,28 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGES = ["admin-presentation", "domain", "payments-stripe", "plugin", "store-emdash"];
+const PACKAGES = [
+	"admin-presentation",
+	"admin-react",
+	"domain",
+	"payments-stripe",
+	"plugin",
+	"store-emdash",
+];
 const keep = process.argv.includes("--keep");
 
 /** The issue's reproduction, plus the call a site actually writes. */
@@ -72,6 +92,43 @@ function pnpm(args, cwd) {
 	return run("pnpm", args, cwd);
 }
 
+/** Every regular file under `dir`, as `/`-separated paths relative to it. */
+function listFiles(dir, rel = "") {
+	return readdirSync(path.join(dir, rel)).flatMap((name) => {
+		const next = rel ? `${rel}/${name}` : name;
+		return statSync(path.join(dir, next)).isDirectory() ? listFiles(dir, next) : [next];
+	});
+}
+
+/**
+ * Unpack one tarball and return the problems with its source-map references
+ * (empty when it is clean). `npm pack` puts everything under `package/`.
+ */
+function sourceMapProblems(tarball, scratch) {
+	mkdirSync(scratch, { recursive: true });
+	run("tar", ["-xzf", tarball, "-C", scratch], scratch);
+	const root = path.join(scratch, "package");
+	const files = listFiles(root);
+	const present = new Set(files);
+	const problems = [];
+	for (const file of files) {
+		if (file.endsWith(".d.mts.map")) {
+			problems.push(`${file}: declaration maps must not ship (they point at the unshipped src/)`);
+		}
+		if (!/\.(m?js|cjs|d\.[mc]?ts|css)$/.test(file)) continue;
+		const text = readFileSync(path.join(root, file), "utf8");
+		for (const match of text.matchAll(/^\s*\/\/[#@]\s*sourceMappingURL=(\S+)\s*$/gm)) {
+			const target = match[1];
+			if (target.startsWith("data:")) continue;
+			const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file), target));
+			if (!present.has(resolved)) {
+				problems.push(`${file}: sourceMappingURL=${target} -> ${resolved} is not in the tarball`);
+			}
+		}
+	}
+	return problems;
+}
+
 const work = mkdtempSync(path.join(tmpdir(), "otta-pack-consume-"));
 let failed = false;
 try {
@@ -80,6 +137,17 @@ try {
 		pnpm(["pack", "--pack-destination", tarballs], path.join(ROOT, "packages", pkg));
 	}
 	const files = readdirSync(tarballs).filter((f) => f.endsWith(".tgz"));
+	const mapProblems = files.flatMap((f) =>
+		sourceMapProblems(path.join(tarballs, f), path.join(work, "unpacked", f)).map(
+			(p) => `${f}: ${p}`,
+		),
+	);
+	if (mapProblems.length > 0) {
+		console.error("pack-consume-types: FAILED — source maps in the packed packages:");
+		for (const p of mapProblems) console.error(`  ${p}`);
+		throw Object.assign(new Error("source map check failed"), { reported: true });
+	}
+	console.log(`pack-consume-types: source maps OK in ${files.length} tarballs`);
 	const byName = Object.fromEntries(
 		files.map((f) => {
 			// urumi.ai-otta-domain-0.1.0.tgz -> @urumi.ai/otta-domain
@@ -146,6 +214,9 @@ try {
 		console.error("pack-consume-types: FAILED — tsc on the packed packages:");
 		console.error(String(error.stdout ?? "") + String(error.stderr ?? ""));
 	}
+} catch (error) {
+	failed = true;
+	if (!error.reported) console.error(error);
 } finally {
 	if (keep) console.log(`kept ${work}`);
 	else rmSync(work, { recursive: true, force: true });
