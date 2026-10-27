@@ -223,7 +223,7 @@ Reference implementation is in the mockup's `coilPath()`. It must:
 
 ## 6. The hold ribbon — the signature element
 
-Every held cart line carries one **when the store shows the hold timer** (Store settings → General → Checkout & holds; off by default). Off, there is no countdown (no track, clock or hold copy) — but a hold that lapses still reveals its next-step note ("…add it again.", without the word *hold*), and `HoldClock` loads on `/cart` whenever a line holds stock so it can; stock is held either way. A 2px track in `--u-edge`; a fill that drains left→right against
+Every held cart line carries one; its **countdown** shows only when the store shows the hold timer (Store settings → General → Checkout & holds; off by default). Off, there is no countdown (no track, clock or hold copy) — but a hold that lapses still reveals its next-step note ("…add it again.", without the word *hold*), and `HoldClock` loads on `/cart` whenever a line holds stock so it can; stock is held either way. A 2px track in `--u-edge`; a fill that drains left→right against
 the line's `expiresAt` (already on the cart wire); the remaining time in mono beside it.
 
 The window is the store's hold TTL — **900 seconds, fifteen minutes**: the domain's
