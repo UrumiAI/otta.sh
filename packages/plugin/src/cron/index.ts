@@ -226,8 +226,10 @@ async function raceScheduleBudget<T>(attempt: Promise<T>): Promise<T | typeof SC
  * Caveat, stated plainly: an attempt that never settles leaves the latch set for
  * the isolate's lifetime (as before this budget existed), and the cron tick does
  * not rescue that isolate, because the tick runs this same latched bootstrap. A
- * fresh isolate re-affirms. In sandboxed mode the abandoned bridge call is cut off
- * when its request ends and rejects, which clears the latch.
+ * fresh isolate re-affirms. In sandboxed mode the abandoned bridge call may be cut
+ * off when its request ends. If it rejects, the latch clears; if its continuations
+ * are dropped, the latch stays set as in trusted mode, and a fresh isolate
+ * re-affirms.
  */
 export async function bootstrapSweepTask(ctx: PluginContext): Promise<void> {
 	if (bootstrapped) return;
