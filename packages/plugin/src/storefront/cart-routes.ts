@@ -65,6 +65,7 @@ import type {
 import type { RouteHandler } from "../types.js";
 import { buildCartPricing, DEGRADED_CART_PRICING, type CartPricingWire } from "./cart-pricing.js";
 import { commerceLoaderFor, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
+import { isRenderedAddToCartKey } from "./rendered-add-key.js";
 import { sanitizeLocale } from "./route-input.js";
 
 // ── Public route names ──────────────────────────────────────────────────
@@ -152,7 +153,8 @@ export interface CartCreateRouteInput {
 	 * lands in one cart. The same key answers the same cart and the same cookie.
 	 * The key is a bearer secret: send only a key one visitor alone holds, never one
 	 * shown to many (a key rendered into a page a shared cache may serve to every
-	 * visitor). Absent, every create mints a new cart, as before. Exclusive with
+	 * visitor). A key the plugin rendered (`pdp:`, `isRenderedAddToCartKey`) is
+	 * taken as no key: the create is unkeyed. Absent, every create mints a new cart, as before. Exclusive with
 	 * both replacements, whose key the plugin derives; a malformed key is refused
 	 * `INVALID_INPUT`, never dropped.
 	 */
@@ -369,8 +371,14 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 			if (key !== undefined && !isIdempotencyKey(key)) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
+			// A key this plugin RENDERED into a product page (the `pdp:` mark) may have
+			// been served to every visitor from a shared cache, and a create key answers
+			// its cart to whoever sends it — so it keys nothing. Unkeyed rather than
+			// refused: a theme that forwards the slot's key still gets a cart, exactly
+			// as before keys existed.
+			const createKey = key !== undefined && !isRenderedAddToCartKey(key) ? key : undefined;
 			const client = await makeCommerceClient(ctx);
-			const { cartId } = await client.createCart(raw as string | undefined, key);
+			const { cartId } = await client.createCart(raw as string | undefined, createKey);
 			return { ok: true as const, cartId, cookie: cartCookieDescriptor(cartId) };
 		});
 }

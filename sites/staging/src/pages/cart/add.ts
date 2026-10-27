@@ -18,6 +18,11 @@
  * `renderedKey` and the create is keyed only when the two differ: the page's script
  * minted this one for this submission. Equal, or no `renderedKey` at all, the
  * create is unkeyed, as before.
+ *
+ * The plugin applies the same rule itself (a rendered key carries the `pdp:` mark
+ * and never keys a create), so this check is the second of two. It is not
+ * redundant: a page rendered — and cached — before the mark existed carries an
+ * UNMARKED rendered key, which only the missing `renderedKey` field gives away.
  */
 import {
 	CART_LINE_MAX_QTY,

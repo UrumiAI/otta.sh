@@ -17,6 +17,7 @@ import type { JoinedProduct } from "../catalog/join-product.js";
 import type { ShopPriceDisplayWire } from "../product-commerce/commerce-client.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { STOREFRONT_CART_LINE_ADD_ROUTE } from "./cart-routes.js";
+import { renderedAddToCartKey } from "./rendered-add-key.js";
 import type { ButtonElement, Element, NumberInputElement } from "../types.js";
 
 export type AvailabilityToken = "in_stock" | "out_of_stock";
@@ -27,7 +28,8 @@ export type AvailabilityToken = "in_stock" | "out_of_stock";
  * this view model's own `purchasable` flag; this function does not
  * re-derive it, per this task's mandate).
  *
- * `idempotencyKey` (plan §8 Risk 8): a FRESH UUID generated here, at view-
+ * `idempotencyKey` (plan §8 Risk 8): a FRESH UUID generated here (marked
+ * `pdp:`, issue #39 — `rendered-add-key.ts`), at view-
  * model build time — i.e. once per PDP render, not once per process/module
  * load. Verified generation point: `buildProductViewModel` runs inside the
  * PDP route handler's `renderGuard` closure (`pdp-route.ts`), which executes
@@ -60,7 +62,7 @@ export interface AddToCartSlot {
 }
 
 function buildAddToCartSlot(sku: string, productId: string): AddToCartSlot {
-	const idempotencyKey = crypto.randomUUID();
+	const idempotencyKey = renderedAddToCartKey();
 	const qtyInput: NumberInputElement = {
 		type: "number_input",
 		action_id: "otta_add_to_cart_qty",

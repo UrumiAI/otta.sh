@@ -14,8 +14,13 @@ import {
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	createCartCreateRouteHandler,
+	createCartLineAddRouteHandler,
 	type CartCreateRouteResult,
 } from "../src/storefront/cart-routes.js";
+import {
+	isRenderedAddToCartKey,
+	renderedAddToCartKey,
+} from "../src/storefront/rendered-add-key.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -116,6 +121,18 @@ describe("storefront/cart/create — replacing a spent cart", () => {
 		expect(named.cartId).not.toBe(replaced.cartId);
 	});
 
+	test("nor a stale-currency replacement: `recurrency:<id>:<cur>` is not that cart's replacement", async () => {
+		await harness.stores.settingsStore.update(
+			{ currency: "EUR" },
+			toIdempotencyKey("ns-recurrency-eur"),
+		);
+		const { cartId: stale } = await harness.client.createCart("USD");
+		const replaced = await create({ replacesStaleCurrencyCartId: stale });
+		const named = await create({ idempotencyKey: `recurrency:${stale}:EUR` });
+		if (!replaced.ok || !named.ok) throw new Error("create refused");
+		expect(named.cartId).not.toBe(replaced.cartId);
+	});
+
 	test.each([[{ idempotencyKey: "press-with-replace" }], [{ idempotencyKey: 42 }]])(
 		"a replacesCartId with an idempotencyKey (%p) is refused INVALID_INPUT: a replacement's key is the plugin's",
 		async (extra) => {
@@ -184,6 +201,39 @@ describe("storefront/cart/create — under the caller's idempotency key", () => 
 			expect(await create({ idempotencyKey })).toEqual({ ok: false, error: "INVALID_INPUT" });
 		},
 	);
+
+	// A cached product page can hand every visitor the SAME rendered key; keyed on
+	// it, a second visitor would be handed the first visitor's cart. So a rendered
+	// key (the `pdp:` marker) is honoured as no key at all: the create still works,
+	// unkeyed, exactly as it did before keys existed — never refused, so a theme
+	// that forwards the slot's key keeps working.
+	test("a rendered PDP key never keys a create: two creates under it mint two carts", async () => {
+		const rendered = renderedAddToCartKey();
+		expect(isRenderedAddToCartKey(rendered)).toBe(true);
+		const visitorA = await create({ idempotencyKey: rendered });
+		const visitorB = await create({ idempotencyKey: rendered });
+		if (!visitorA.ok || !visitorB.ok) throw new Error("create refused");
+		expect(visitorB.cartId).not.toBe(visitorA.cartId);
+		expect(visitorB.cookie.value).not.toBe(visitorA.cookie.value);
+	});
+
+	test("the add-line route's key guard still accepts a rendered (marked) key", async () => {
+		const { cartId } = await harness.client.createCart("USD");
+		const added = await createCartLineAddRouteHandler()(
+			{
+				input: {
+					cartId,
+					sku: "SKU-NO-SUCH-PRODUCT",
+					qty: 1,
+					idempotencyKey: renderedAddToCartKey(),
+				} as never,
+				request: { method: "POST", url: "/route", headers: {} },
+			},
+			harness.ctx,
+		);
+		// Past the input guard (which would answer INVALID_INPUT) to the sku check.
+		expect(added).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+	});
 
 	test("a key with a currency keys a cart in that currency; the replay keeps it", async () => {
 		const first = await create({ idempotencyKey: "press-route-eur", currency: "EUR" });

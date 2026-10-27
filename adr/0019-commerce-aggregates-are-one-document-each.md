@@ -8,6 +8,9 @@
   **Amended again 2026-10-02** — see
   [Amendment 2026-10-02 — the sweepers run every minute, inside a time budget](#amendment-2026-10-02--the-sweepers-run-every-minute-inside-a-time-budget).
   When and how long the sweepers run; what they must complete is unchanged.
+  **Amended 2026-10-27** — see
+  [Amendment 2026-10-27 — a plain cart create may carry the caller's key](#amendment-2026-10-27--a-plain-cart-create-may-carry-the-callers-key).
+  `cart_create_keys` gains caller-keyed `create:<requestKey>` locators beside the server-derived ones.
 - Date: 2026-09-13
 - Refines: [ADR-0002](./0002-adapter-based-split.md) — this record names the document model that
   satisfies the storage seam ADR-0002 designed, on a store with **no transactions**. The ports do not
@@ -467,7 +470,7 @@ code, not that it changed. A row with no **†** is still design. See the
 | `inventory_movements` | `stock:<key>` / `adjust:<key>` | `sku`, `createdAt` | — |
 | `carts` | cartId | `state`, `holdExpiresAt` | — |
 | **†** `cart_mutation_index` | cart mutation idempotency key | — | — |
-| `cart_create_keys` *(added 2026-10-02, see the [amendment](#amendment-2026-10-02--cart_create_keys))* | server-derived create key, `rotate:<spentCartId>` | — | — |
+| `cart_create_keys` *(added 2026-10-02, see the [amendment](#amendment-2026-10-02--cart_create_keys); widened 2026-10-27, see the [amendment](#amendment-2026-10-27--a-plain-cart-create-may-carry-the-callers-key))* | create key, by disjoint prefix: server-derived `rotate:<spentCartId>` / `recurrency:<cartId>:<currency>`; **†** *(2026-10-27)* the caller's `create:<requestKey>` — a bearer secret | — | — |
 | **†** `orders` | orderId | `state`, `createdAt`, `customerKey`, `buyerRefLower`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` | — |
 | `order_keys` | order idempotency key | — | — |
 | `refund_keys` | refund idempotency key | — | — |
@@ -1283,6 +1286,10 @@ the spent cart itself.
 - **Never pruned.** It grows by one document per replaced cart, bounded by orders. Pruning a
   locator while the spent cart's cookie survives in some browser would let a later replacement mint
   a second cart, so retention waits for a policy on spent carts themselves.
+  **† 2026-10-27:** "only `replaceSpentCart` makes a key" and "callers never name a key" no longer
+  hold for the whole collection — a plain create may now carry the caller's key, and the never-pruned
+  rule is restated per prefix. See
+  [Amendment 2026-10-27](#amendment-2026-10-27--a-plain-cart-create-may-carry-the-callers-key).
 - The decision is unchanged; this adds one row to §4 and one name to its "claim collections" list.
 
 ## Amendment 2026-10-02 — a cart add decided out of stock retires its claim
@@ -1658,3 +1665,35 @@ its key and from-address and makes a request. The Paid email batch moves from 22
 **Measured (`cron-sweep-backlog.test.ts`, Free).** At no tick boundary does an expired order have
 a payable intent. All 50 orders expired by minute 73, and everything was done by minute 120. Every
 leg did some of its work within 7 ticks, and no leg waited more than 6 in a row.
+
+## Amendment 2026-10-27 — a plain cart create may carry the caller's key
+
+Issue #39. A shopper's first add mints the cart, and a double-submitted first add sends two
+creates that both arrive without the cookie the other is about to set. Unkeyed, each minted a
+cart: the line landed in one, and the shopper could keep the cookie of the empty one.
+
+- **A new prefix in `cart_create_keys`: `create:<requestKey>`** (§4's table). The domain's
+  `createCart(deps, currency, requestKey?)` keys a plain create on the caller's request key — the
+  storefront's per-submission add-to-cart key (ADR-0039) — through the same keyed
+  `CartStore.create`, so racers converge exactly as the replacements do. The use-cases own every
+  prefix and the prefixes are disjoint: `rotate:` and `recurrency:` are derived server-side after
+  the cart being replaced is checked, and only `create:`'s suffix is caller-supplied. No caller
+  key can name a derived one.
+- **A request key is a bearer secret.** Whoever presents it is answered the cart it minted, as a
+  cart id answers its cart. A caller may send only a key that one visitor alone holds.
+- **The rendered-key rule.** The key the product view model RENDERS belongs to the page, and a
+  shared cache may serve one rendered page to every visitor. So it is marked (`pdp:<uuid>`,
+  `RENDERED_ADD_TO_CART_KEY_PREFIX`) and `storefront/cart/create` treats a marked key as **no
+  key** — the create is unkeyed, never refused, so a theme that forwards the slot's key keeps
+  working. Only the browser-minted, unmarked per-submission key keys a create. The reference site
+  also posts the rendered key back as `renderedKey` and keys the create only when the two differ,
+  which additionally covers pages rendered (and cached) before the mark existed.
+- **Retention, per prefix.** `rotate:` (and `recurrency:`) locators stay **never pruned**, for the
+  reason the 2026-10-02 amendment gives. A `create:` locator lives exactly as long as its cart:
+  it MAY be pruned together with that cart when abandoned empty anonymous carts are pruned (the
+  open item of #39). It must not outlive a pruned cart's deletion indefinitely — a replay after
+  the cart is gone re-creates the same cart id, empty (`#createKeyed` create-if-absents the cart),
+  which is harmless but means the prune should delete both. No TTL otherwise: the key is per press,
+  and a late replay is the same press.
+- The decision is unchanged; this adds one row to §4.
+

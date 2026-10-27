@@ -12,6 +12,7 @@ import {
 	idempotencyKey,
 	orderId,
 	replaceSpentCart,
+	replaceStaleCurrencyCart,
 	type CreateOrderInput,
 } from "@urumi.ai/otta-domain";
 import { CountingIdGen, InMemoryOrderStore } from "@urumi.ai/otta-domain/testing";
@@ -192,6 +193,14 @@ describe("createCart under a request key", () => {
 		const replaced = await replaceSpentCart(deps(), cartId);
 		if (!replaced.ok) throw new Error(replaced.reason);
 		const named = await createCart(h.deps, USD, idempotencyKey(`rotate:${cartId}`));
+		expect(named).not.toBe(replaced.cartId);
+	});
+
+	test("nor `recurrency:<id>:<cur>`: a request key is not a stale-currency cart's replacement", async () => {
+		const stale = await h.cartStore.create(USD);
+		const replaced = await replaceStaleCurrencyCart(h.deps, stale, currency("EUR"));
+		if (!replaced.ok) throw new Error(replaced.reason);
+		const named = await createCart(h.deps, USD, idempotencyKey(`recurrency:${stale}:EUR`));
 		expect(named).not.toBe(replaced.cartId);
 	});
 });
