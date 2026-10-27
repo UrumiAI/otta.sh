@@ -263,4 +263,22 @@ describe("Store settings tabs and the Stripe country check", () => {
 			await h.close();
 		}
 	});
+
+	test("the General panel leaves out its own heading; a standalone page keeps it", async () => {
+		const { h, call } = await openPage();
+		try {
+			const loaded = await call({ type: "page_load" });
+			expect(panel(loaded.blocks, "General")[0]).not.toMatchObject({
+				type: "header",
+				text: "Settings",
+			});
+			const standalone = (await createSettingsFormHandler()(
+				routeCtx({ type: "page_load", page: SETTINGS_PAGE.path }) as never,
+				h.ctx,
+			)) as { blocks: LooseBlock[] };
+			expect(standalone.blocks[0]).toMatchObject({ type: "header", text: "Settings" });
+		} finally {
+			await h.close();
+		}
+	});
 });
