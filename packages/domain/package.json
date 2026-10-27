@@ -1,6 +1,6 @@
 {
 	"name": "@urumi.ai/otta-domain",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "Otta commerce domain — pure ports, use-cases, and branded types. No IO.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
@@ -15,6 +15,7 @@
 	"files": [
 		"dist",
 		"!dist/tsc",
+		"!dist/**/*.d.mts.map",
 		"THIRD_PARTY_NOTICES"
 	],
 	"type": "module",

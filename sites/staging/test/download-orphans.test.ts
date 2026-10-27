@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mintDownloadAssetKey, PRODUCT_NOT_FOUND_TITLE } from "@urumi.ai/otta-plugin";
 import { getPlatformProxy } from "wrangler";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { attachDownloadRefusal } from "../src/lib/download-attach-guard.js";
 import { lookupProduct } from "../src/lib/download-upload.js";
 import {
@@ -271,6 +271,27 @@ describe("the product read the sweep makes", () => {
 				),
 				JSON.stringify(downloadAsset),
 			).toEqual({ kind: "failed" });
+		}
+	});
+
+	test("a keyless descriptor logs and still stops the sweep (fail closed)", async () => {
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const odd = dispatchAnswering({
+				ok: true,
+				product: {
+					productId: "P1",
+					productKind: "digital",
+					deletedAt: null,
+					downloadAsset: { filename: "a.pdf" },
+				},
+			});
+			const lookup = await lookupProduct(odd.dispatch, "P1", undefined, new URL("https://x/"));
+			expect(lookup).toEqual({ kind: "unreadable" });
+			expect(currentDownloadOf(lookup)).toEqual({ kind: "failed" });
+			expect(spy).toHaveBeenCalledTimes(1);
+		} finally {
+			spy.mockRestore();
 		}
 	});
 
