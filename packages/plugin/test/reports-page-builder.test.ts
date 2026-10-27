@@ -239,6 +239,35 @@ describe("reports builder: a multi-currency period's top products are ranked by 
 	});
 });
 
+describe("reports builder: the units top ten is chosen by units", () => {
+	// 14 products. The store ranks by revenue summed ACROSS currencies, so "Bolt",
+	// cheap and by far the best seller, sits outside its first ten. The page is
+	// handed the whole list and takes the ten itself.
+	const catalogue: TopProductWire[] = [
+		...Array.from({ length: 13 }, (_, i) => ({
+			productId: `p${i}`,
+			titleSnapshot: `Premium ${i}`,
+			qtySold: 1,
+			revenueCents: 90_000 - i * 100,
+		})),
+		{ productId: "bolt", titleSnapshot: "Bolt", qtySold: 500, revenueCents: 500 },
+	];
+	const multi = [bucket("2026-07-10", 3000, 1), bucket("2026-07-10", 1000, 1, "EUR")];
+	const titles = (blocks: readonly LooseBlock[]): string[] =>
+		(chartOptions(blocks, "reports:top-chart")["yAxis"] as { data: string[] }).data;
+
+	test("several currencies → a cheap high-volume product past the revenue top ten leads", () => {
+		const shown = titles(render({ revenue: multi, top: catalogue }));
+		expect(shown).toHaveLength(10);
+		expect(shown[0]).toBe("Bolt");
+	});
+
+	test("one currency → the first ten by revenue, in the store's order", () => {
+		const shown = titles(render({ revenue: USD_CURRENT, top: catalogue.slice(0, 13) }));
+		expect(shown).toEqual(catalogue.slice(0, 10).map((p) => p.titleSnapshot));
+	});
+});
+
 describe("reports builder: average order value with a bucket lacking revenueOrderCount", () => {
 	test("falls back to the paid-order count rather than a partial sum", () => {
 		const blocks = render({
