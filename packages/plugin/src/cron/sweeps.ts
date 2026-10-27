@@ -176,13 +176,10 @@ import {
 	EmdashReportingStore,
 	isScanPageLimitError,
 	ORDER_SKU_INDEX_COLLECTION,
-	orderSkuIndexId,
-	orderSkuKeys,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	type CouponRedemptionDoc,
 	type OrderDoc,
-	type OrderSkuIndexDoc,
 	type ProductCommerceDoc,
 	type StorageAccess as AdapterStorageAccess,
 	UNMETERED_COLLECTION,
@@ -2716,15 +2713,15 @@ function lastCreatedAt(items: readonly { data: { createdAt?: string } }[]): stri
  * that is a different concern with a different failure mode, and this leg's whole
  * claim is that it only ever adds what an order already says.
  *
- * THE AGREEMENT CHECK IS THE ADAPTER'S, reproduced. `EmdashOrderStore` pairs its
- * own create-if-absent with `#assertPointerAgrees`: a create that did not apply is
- * fine when the incumbent names the SAME order and is a `DerivedPointerConflictError`
- * when it names another. Both of those are private, and the adapter exposes no
- * public heal — so this leg reproduces the write AND the check rather than the
- * write alone, which is what the first cut did. That duplication is a real seam and
- * is recorded as a follow-up: the right home is a public method on the adapter that
- * owns the collection, which is a `@urumi.ai/otta-store-emdash` change and outside this
- * increment.
+ * THE WRITE AND THE AGREEMENT CHECK ARE THE ADAPTER'S. `EmdashOrderStore.healOrderSkuIndex`
+ * runs the same create-if-absent and read-back its own write path does: a create that
+ * did not apply is fine when the incumbent names the SAME order, and a conflict when
+ * it names another. The heal REPORTS a conflict instead of throwing it, so this leg
+ * records the anomaly, flags the order for reconciliation and carries on — the policy
+ * stays here, the collection's write stays with the adapter that owns it. All of an
+ * order's pointers are written before any of its conflicts is flagged, and a stop
+ * between the two (the query ceiling, a failed flag) leaves the cursor in place, so
+ * the next tick finds the pointers present, re-reports the conflicts and flags them.
  *
  * THE CURSOR ADVANCES rather than the window being pinned to `now - 48h`. A fixed
  * lower bound scanned `createdAt ASC` under a page budget can never reach the
@@ -2740,7 +2737,6 @@ async function healOrderSkuIndex(
 	budget: LegBudget,
 ): Promise<{ count: number; incomplete?: true; anomalies?: readonly string[] }> {
 	const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
-	const pointers = collectionOf<OrderSkuIndexDoc>(storage, ORDER_SKU_INDEX_COLLECTION);
 	const floor = new Date(
 		now.getTime() - (options.skuIndexLookbackMs ?? DEFAULT_SKU_INDEX_LOOKBACK_MS),
 	).toISOString();
@@ -2756,27 +2752,15 @@ async function healOrderSkuIndex(
 	);
 	const walked = await walkWindow(window, budget, "order-sku-index", async (item) => {
 		const doc = item.data;
-		for (const foldedSku of orderSkuKeys(doc)) {
-			const id = orderSkuIndexId(foldedSku, doc.orderId);
-			const applied = await pointers.compareAndSet(id, null, {
-				sku: foldedSku,
-				orderId: doc.orderId,
-				// The order's own creation instant, frozen: what makes the arm a keyset arm.
-				createdAt: doc.createdAt,
-			});
-			if (applied.applied) {
-				written++;
-				continue;
-			}
-			// Did not apply: either the pointer is already this order's (the healthy
-			// case, and the reason a heal is cheap) or it belongs to another order,
-			// which is the conflict the adapter raises rather than overwrites.
-			const incumbent = await pointers.get(id);
-			if (incumbent === null || incumbent.orderId === doc.orderId) continue;
-			anomalies.push(`${ORDER_SKU_INDEX_COLLECTION}/${id}: held by ${incumbent.orderId}`);
+		const healed = await stores.orderStore.healOrderSkuIndex(doc);
+		written += healed.written;
+		// A pointer held by ANOTHER order is the conflict the adapter refuses to
+		// overwrite: recorded on the order, not just in the summary.
+		for (const { pointerId, foundOrderId } of healed.conflicts) {
+			anomalies.push(`${ORDER_SKU_INDEX_COLLECTION}/${pointerId}: held by ${foundOrderId}`);
 			await stores.orderStore.flagReconciliation(
 				toOrderId(doc.orderId),
-				`sku pointer ${id} is held by order ${incumbent.orderId}`,
+				`sku pointer ${pointerId} is held by order ${foundOrderId}`,
 			);
 		}
 	});

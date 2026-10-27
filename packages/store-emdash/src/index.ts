@@ -80,6 +80,7 @@ export {
 	EmdashOrderStore,
 	type EmdashOrderStoreOptions,
 	type HoldCompletionResult,
+	type OrderSkuIndexHealResult,
 } from "./emdash-order-store.js";
 export {
 	EmdashInventoryStore,
@@ -275,6 +276,7 @@ export {
 	type ConditionalDeleteResult,
 	type ConditionalWriteResult,
 	type HostCronAccess,
+	type HostCronEvent,
 	type NumericDelta,
 	type OrderBy,
 	type QueryOptions,
