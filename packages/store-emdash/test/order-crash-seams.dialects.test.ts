@@ -284,6 +284,12 @@ describeEachDialect("order crash seams", (ctx) => {
 		const orderId = claim.orderId;
 		expect((await orders.get(orderId))?.state).toBe("pending"); // …over a real order
 
+		// A peek is a pure read: it reports the real order as minted and heals nothing.
+		const peek = await clean.store.peekByIdempotencyKey(KEY);
+		expect(peek?.state).toBe("minted");
+		expect(peek?.order.id).toBe(orderId);
+		expect((await keys.get(KEY))?.state).toBe("claimed");
+
 		// The heal path is an ordinary read.
 		const healed = await clean.store.getByIdempotencyKey(KEY);
 		expect(healed?.id).toBe(orderId);

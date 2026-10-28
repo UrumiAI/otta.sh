@@ -55,10 +55,11 @@ export interface OrderStore {
 	 * order and reports its arrival. A sweep must never conjure an order for a
 	 * checkout that crashed mid-create, so it reads through this instead.
 	 *
-	 * `minted`: the key's order is durable. `claimed`: the key was claimed but its
-	 * order was never created; `order` is the PREPARED order the claim carries — it
-	 * does not exist, and any same-key replay (or `getByIdempotencyKey`) would create
-	 * exactly it. A store with no claim step only ever answers `minted` or null.
+	 * `minted`: the key's order is durable — including a claim whose order document
+	 * was written before a crash cut off the key's promotion. `claimed`: the key was
+	 * claimed but no order document exists; `order` is the PREPARED order the claim
+	 * carries, and any same-key replay (or `getByIdempotencyKey`) would create exactly
+	 * it. A store with no claim step only ever answers `minted` or null.
 	 */
 	peekByIdempotencyKey(key: IdempotencyKey): Promise<OrderKeyPeek | null>;
 	/**

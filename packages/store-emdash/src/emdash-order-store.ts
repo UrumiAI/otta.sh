@@ -469,6 +469,10 @@ export class EmdashOrderStore implements OrderStore {
 		const claim = await this.#keys.get(key);
 		if (claim === null) return null;
 		if (claim.state === "claimed") {
+			// A create that crashed after its order write but before promoting the key
+			// left a real order behind the claim: report it as minted, without healing.
+			const written = await this.#orders.get(claim.orderId);
+			if (written !== null) return { state: "minted", order: toOrder(normalizeOrderDoc(written)) };
 			return { state: "claimed", order: toOrder(normalizeOrderDoc(claim.doc)) };
 		}
 		const doc = await this.#orders.get(claim.orderId);
