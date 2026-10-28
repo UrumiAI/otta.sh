@@ -143,11 +143,12 @@ keys are stored as plain text and the plugin cannot tell ([ADR-0037](./adr/0037-
 its own README under [`packages/`](./packages/). The workspace, not npm, is how you develop Otta
 itself.
 
-`emdash@1.3.1` pins `zod` at exactly `4.5.4`, which has a known advisory
-([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)). The Otta packages
-don't pull in `zod` themselves, but until EmDash pins `zod` at `4.6.6` or later, a site on pnpm can
-override it the way this repo does (in `pnpm-workspace.yaml`; pnpm 11 ignores `pnpm.overrides`
-in `package.json`):
+Every EmDash release from `1.0.1` through `1.3.1` (`emdash` and `@emdash-cms/auth`) pins `zod` at
+exactly `4.5.4`, which has a known advisory
+([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)), so this applies on
+0.1.0 as well as 0.2.0. The Otta packages don't pull in `zod` themselves, but until EmDash pins
+`zod` at `4.6.6` or later, a site on pnpm can override it the way this repo does (in
+`pnpm-workspace.yaml`; pnpm 11 ignores `pnpm.overrides` in `package.json`):
 
 ```yaml
 overrides:
