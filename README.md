@@ -131,17 +131,6 @@ EmDash `^1.0.1`. `main` now needs EmDash `^1.3.1`; that floor ships with the nex
 pnpm add @urumi.ai/otta-plugin @urumi.ai/otta-admin-react
 ```
 
-`emdash@1.3.1` pins `zod` at exactly `4.5.4`, which has a known advisory
-([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)). The Otta packages
-don't pull in `zod` themselves, but until EmDash pins `zod` at `4.6.6` or later, a site on pnpm can
-override it the way this repo does (in `pnpm-workspace.yaml`; pnpm 11 ignores `pnpm.overrides`
-in `package.json`):
-
-```yaml
-overrides:
-  "zod@>=4.0.0 <4.6.6": 4.6.6
-```
-
 `@urumi.ai/otta-plugin` brings `@urumi.ai/otta-domain`, `@urumi.ai/otta-store-emdash`, `@urumi.ai/otta-payments-stripe`
 and `@urumi.ai/otta-admin-presentation` with it. The packages export no ready-made plugin descriptor: each
 site writes its own. The reference site's are the worked example:
@@ -153,6 +142,17 @@ keys are stored as plain text and the plugin cannot tell ([ADR-0037](./adr/0037-
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §3). Each package has
 its own README under [`packages/`](./packages/). The workspace, not npm, is how you develop Otta
 itself.
+
+`emdash@1.3.1` pins `zod` at exactly `4.5.4`, which has a known advisory
+([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)). The Otta packages
+don't pull in `zod` themselves, but until EmDash pins `zod` at `4.6.6` or later, a site on pnpm can
+override it the way this repo does (in `pnpm-workspace.yaml`; pnpm 11 ignores `pnpm.overrides`
+in `package.json`):
+
+```yaml
+overrides:
+  "zod@>=4.0.0 <4.6.6": 4.6.6
+```
 
 ## Architecture (summary)
 
