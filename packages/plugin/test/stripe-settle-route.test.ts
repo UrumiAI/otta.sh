@@ -29,7 +29,12 @@ import {
 } from "@urumi.ai/otta-domain";
 import { FakeEmailSender } from "@urumi.ai/otta-domain/testing";
 import { signStripeWebhook } from "@urumi.ai/otta-payments-stripe";
-import { EmdashOrderStore, StorageContentionError } from "@urumi.ai/otta-store-emdash";
+import {
+	EmdashOrderStore,
+	ORDERS_COLLECTION,
+	PAYMENT_ANOMALIES_COLLECTION,
+	StorageContentionError,
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	STRIPE_SECRET_KEY_KEY,
@@ -199,7 +204,7 @@ describe("the route's identity", () => {
 		expect(STRIPE_WEBHOOK_SETTLE_ROUTE).toBe("webhooks/stripe/settle");
 	});
 
-	test("the status table is the service's own (webhooks.ts), except UNKNOWN_EVENT is acknowledged", () => {
+	test("the status table is the service's own (webhooks.ts), except verified events Otta does not own are acknowledged", () => {
 		// A drift here silently changes STRIPE'S RETRY BEHAVIOUR, which is the one
 		// thing the fold-in must not change while swapping the transport.
 		expect(settleResultToResponse({ ok: true, order: null, noop: false })).toEqual({
@@ -223,8 +228,13 @@ describe("the route's identity", () => {
 			status: 200,
 			reason: "UNKNOWN_EVENT",
 		});
-		expect(settleResultToResponse({ ok: false, reason: "ORDER_NOT_FOUND" })).toMatchObject({
-			status: 404,
+		// 200, not 404 (#595): a verified event naming an order this store never
+		// made is another tenant's on a shared Stripe account. An Otta order is
+		// always inserted before its intent exists, so Otta's own event cannot land here.
+		expect(settleResultToResponse({ ok: false, reason: "ORDER_NOT_FOUND" })).toEqual({
+			ok: false,
+			status: 200,
+			reason: "ORDER_NOT_FOUND",
 		});
 		// 200, not an error: a mismatch is a recorded anomaly no retry can fix.
 		expect(settleResultToResponse({ ok: false, reason: "AMOUNT_MISMATCH" })).toMatchObject({
@@ -585,10 +595,74 @@ describe("(vii) the new secret is fail-closed and leaks nothing", () => {
 		expect(calls).toHaveLength(0);
 	});
 
-	test("an unknown order is 404 — the delivery verified, there was nothing to settle", async () => {
+	test("an unknown order is 200 — the delivery verified, there was nothing to settle (#595)", async () => {
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		const res = await invoke(await signedDelivery("ord-absent"));
-		expect(res).toEqual({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+		expect(res).toEqual({ ok: false, status: 200, reason: "ORDER_NOT_FOUND" });
+	});
+});
+
+/** A correctly signed `payment_intent.succeeded` carrying `metadata` verbatim —
+ *  the shape another tenant of a shared Stripe account sends (#595). */
+function foreignIntentEvent(
+	id: string,
+	metadata: Record<string, unknown>,
+): { id: string; type: string; data: { object: Record<string, unknown> } } {
+	return {
+		id,
+		type: "payment_intent.succeeded",
+		data: {
+			object: {
+				id: `pi_${id}`,
+				object: "payment_intent",
+				amount: AMOUNT,
+				currency: "usd",
+				metadata,
+			},
+		},
+	};
+}
+
+async function collectionCount(name: string): Promise<number> {
+	const collection = harness.ctx.storage?.[name];
+	if (collection === undefined) throw new Error(`no ${name} collection`);
+	return collection.count();
+}
+
+describe("(viii-b) a VERIFIED payment_intent event that is not Otta's is acknowledged (#595)", () => {
+	// A Stripe account shared with anything else — Payment Links, invoices,
+	// WooCommerce's Stripe plugin, a second store — sends correctly signed
+	// `payment_intent.*` events this store never created. A 4xx/5xx makes Stripe
+	// retry for days and then disable the endpoint, Otta's own settlements included.
+	test.each([
+		["no metadata.order_id", {}, "UNKNOWN_EVENT"],
+		["an empty metadata.order_id (used to throw → 500)", { order_id: "" }, "UNKNOWN_EVENT"],
+		["an order_id this store never made", { order_id: "wc_123" }, "ORDER_NOT_FOUND"],
+	] as const)("%s ⇒ 200, nothing created, no anomaly", async (_label, metadata, reason) => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-bystander");
+		const before = await harness.stores.orderStore.getById(toOrderId("ord-bystander"));
+
+		const res = await invoke(
+			signedStripeEvent(foreignIntentEvent("evt_foreign", metadata), WEBHOOK_SECRET, "wh-foreign"),
+		);
+
+		expect(res).toEqual({ ok: false, status: 200, reason });
+		expect(await collectionCount(ORDERS_COLLECTION)).toBe(1);
+		expect(await harness.stores.orderStore.getById(toOrderId("ord-bystander"))).toEqual(before);
+		expect(await collectionCount(PAYMENT_ANOMALIES_COLLECTION)).toBe(0);
+	});
+
+	test("a signed body that is not a Stripe event shape is still 400 MALFORMED", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		const res = await invoke(
+			signedStripeEvent(
+				{ id: "evt_bad", type: "payment_intent.succeeded", data: { object: { metadata: {} } } },
+				WEBHOOK_SECRET,
+				"wh-bad",
+			),
+		);
+		expect(res).toEqual({ ok: false, status: 400, reason: "MALFORMED" });
 	});
 });
 
