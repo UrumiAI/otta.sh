@@ -15,7 +15,9 @@
  *    would 404 a just-placed order or bounce a just-signed-in buyer. "auto"
  *    needs a shopper-side bookmark first. EmDash-authenticated GETs resume from
  *    their `__em_d1_bookmark` cookie (read-your-own-writes); that cookie is never
- *    set on an anonymous response. The old pairing invariant with wrangler's
+ *    set on an anonymous response. Before turning read replication on, run the
+ *    staging check in DEPLOYMENT.md §2.4 (`pnpm test:d1` cannot show replica lag).
+ *    The old pairing invariant with wrangler's
  *    `global_fetch_strictly_public` is moot now the flag is gone, but the rule
  *    stands: the flag hangs every SESSION query (emdash #1273); EmDash 1.0.1's
  *    guard gives up after ~5 s, turns sessions off for that isolate, and may
