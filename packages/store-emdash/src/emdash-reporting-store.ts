@@ -301,7 +301,7 @@ export class EmdashReportingStore implements ReportingStore {
 	readonly #maxReconcilePages: number;
 	readonly #onAnomaly: (anomaly: ReportingAnomaly) => void;
 	/** The window reads in flight, by window — see {@link EmdashReportingStore.#windowDays}. */
-	readonly #windowReads = new Map<string, Promise<readonly ReportingDailyDoc[]>>();
+	readonly #windowReads = new Map<string, Promise<ReadonlyArray<Readonly<ReportingDailyDoc>>>>();
 
 	constructor(options: EmdashReportingStoreOptions) {
 		this.#daily = collectionOf<ReportingDailyStoredDoc>(
@@ -1150,10 +1150,14 @@ export class EmdashReportingStore implements ReportingStore {
 	 * the rollup again: one read per window instead of two, which halves the page's
 	 * rollup queries (a year over two currencies: 16 pages instead of 32). Only a read IN
 	 * FLIGHT is shared: the entry is dropped when it settles, so a later call always reads
-	 * afresh and nothing here can serve a stale window. The documents are shared too,
-	 * hence `readonly`.
+	 * afresh and nothing here can serve a stale window. The documents are shared too, so
+	 * they are typed read-only, and a caller must not mutate them: `Readonly` is shallow,
+	 * and a document's `stateCounts` is shared with every joiner as well.
 	 */
-	#windowDays(range: DateRange, operation: string): Promise<readonly ReportingDailyDoc[]> {
+	#windowDays(
+		range: DateRange,
+		operation: string,
+	): Promise<ReadonlyArray<Readonly<ReportingDailyDoc>>> {
 		const key = `${range.from}${KEY_SEP}${range.to}`;
 		const inFlight = this.#windowReads.get(key);
 		if (inFlight !== undefined) {
