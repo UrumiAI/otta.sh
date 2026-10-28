@@ -32,6 +32,7 @@ import {
 	playgroundRouteCaller,
 	playgroundWaitPath,
 	prepareDemoCommerce,
+	withPlaygroundCreatedAt,
 	type PrepareResult,
 } from "./playground-commerce.js";
 
@@ -53,6 +54,9 @@ export function isPlaygroundBuild(): boolean {
 /** Null means the request carries on into the storefront middleware. */
 export async function playgroundGate(context: APIContext): Promise<Response | null> {
 	if (!isPlaygroundBuild()) return null;
+	// Every request, not just documents: the admin's console calls are
+	// fetches, and they dispatch with this same user.
+	context.locals.user = withPlaygroundCreatedAt(context.locals.user) as typeof context.locals.user;
 	const { request, url } = context;
 	if (
 		!isPlaygroundDocument(

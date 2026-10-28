@@ -273,6 +273,32 @@ export function playgroundRouteCaller(user: unknown): {
 	};
 }
 
+/**
+ * The session user with the `createdAt` EmDash's plugin dispatch reads.
+ *
+ * {@link playgroundRouteCaller} covers the gate's own dispatch. The admin's
+ * console calls (Orders, Reports, Coupons, Store settings) reach
+ * `/_emdash/api/plugins/otta/admin` with `locals.user` as-is, and without a
+ * timestamp that route answers 500. `locals.user` is EmDash's module-level
+ * `PLAYGROUND_USER`, shared by every visitor in the isolate, so it is copied,
+ * never written to. A user that already has a usable timestamp, or is not an
+ * object, comes back unchanged.
+ *
+ * The stamp is {@link PLAYGROUND_USER_CREATED_AT}: a `Date`, as EmDash's `User`
+ * type declares, and the same on every request. Drop this once EmDash's own
+ * playground user carries a `createdAt`.
+ */
+export function withPlaygroundCreatedAt(user: unknown): unknown {
+	if (typeof user !== "object" || user === null) return user;
+	const current = (user as { createdAt?: unknown }).createdAt;
+	if (hasUsableCreatedAt(current)) return user;
+	return { ...user, createdAt: new Date(PLAYGROUND_USER_CREATED_AT) };
+}
+
+/** The playground admin has no real join date; one fixed instant stands in, so
+ *  nothing that reads it sees it move between requests. */
+export const PLAYGROUND_USER_CREATED_AT = "1970-01-01T00:00:00.000Z";
+
 /** One nonce per sample product, stable across reloads, so the restock is
  *  once-only inside the visitor's database. */
 function restockNonce(row: DemoRow): string {
@@ -281,10 +307,14 @@ function restockNonce(row: DemoRow): string {
 	return `playground-restock-${row.slug}`;
 }
 
+function hasUsableCreatedAt(value: unknown): value is string | Date {
+	if (typeof value === "string") return value.length > 0;
+	return value instanceof Date && !Number.isNaN(value.getTime());
+}
+
 function callerCreatedAt(value: unknown): string {
-	if (typeof value === "string" && value.length > 0) return value;
-	if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
-	return new Date().toISOString();
+	if (!hasUsableCreatedAt(value)) return PLAYGROUND_USER_CREATED_AT;
+	return typeof value === "string" ? value : value.toISOString();
 }
 
 function errorText(error: unknown): string {
