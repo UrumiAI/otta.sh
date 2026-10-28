@@ -280,6 +280,14 @@ cannot be retried in place:
 > storefront while signed in does get one, which is harmless. Read replication itself is switched on separately, on the D1 database
 > (dashboard or REST API); until it is, every query goes to the primary anyway.
 >
+> **Before you switch read replication on, check it on a replicated staging D1 (issue #490).**
+> Run the storage paths against it and watch for a stale row where the code expects the
+> latest: a compare-and-set refusal, a claim's lease, and read-after-write through the
+> bookmark cookie. Concrete flows: place an order, then load `/checkout/pay`; sign in, then
+> load `/account/orders`; make an admin write, then reload the page. `pnpm test:d1`
+> (`session-storage.d1.spec.ts`) proves these paths run over a D1 session handle, but not
+> replica lag: miniflare has no replicas, so it cannot return a stale read.
+>
 > **The old pairing invariant is moot, but its rule stands:** the flag blocks the request the
 > D1 Sessions API makes to route queries (emdash issue #1273). With EmDash 1.0.1 the symptom
 > is a **~5 s stall on the first session query of every new isolate**; EmDash's hang guard
