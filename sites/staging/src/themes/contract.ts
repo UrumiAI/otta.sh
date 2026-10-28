@@ -258,7 +258,8 @@ export interface LedgerLine {
  *    a root that ships `data-minutes` has it kept current — opt-in, so a
  *    stylesheet can switch copy at a minute boundary (e.g. under five minutes,
  *    "Check out soon"). Ship the server's first frame in each.
- *  - optional `data-product` on the root: the line's product name. The live
+ *  - optional `data-product` on the root: the line's `name` (title, else SKU —
+ *    pass `CartLineModel.name`, which is never null). The live
  *    region's announcements lead with it ("Kenya AA: Hold released"), so
  *    several lines lapsing together can be told apart. Never drawn.
  *  - `data-countdown="off"` on the root marks a QUIET ribbon — the store hides the
