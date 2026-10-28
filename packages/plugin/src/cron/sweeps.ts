@@ -279,7 +279,11 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *  3. `late-refunds` — a customer's money, best-effort behind Stripe's own retries
  *     (and leading one tick per interval on Free, see `runCommerceSweeps`);
  *  4. housekeeping: `prune-challenges` and the five scans. `coupon-orphans` stays
- *     after `expire-orders`, though it no longer depends on it finishing;
+ *     after `expire-orders`, though it no longer depends on it finishing, and runs
+ *     ahead of `reporting-heal`: its unit is fixed (10 calls since #598) while the
+ *     heal sizes itself to the calls left, so the other way round a Free tick the
+ *     heal had busy deferred the coupon leg every time — and a held coupon use is
+ *     something a shopper can hit, a stale rollup is not;
  *     `product-orphans` is last of all, the leg nothing else waits on.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
@@ -294,8 +298,8 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"prune-challenges",
 	"sku-transfers",
 	"order-sku-index",
-	"reporting-heal",
 	"coupon-orphans",
+	"reporting-heal",
 	"product-orphans",
 ];
 
