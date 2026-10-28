@@ -35,6 +35,7 @@ import {
 	CHECKOUT_ERROR_ID,
 	checkoutNoticeId,
 	COUPON_ERROR_ID,
+	DELIVERY_BLOCK_ID,
 	DELIVERY_ERROR_ID,
 	errorTitle,
 	PRODUCT_ERROR_ID,
@@ -404,6 +405,67 @@ describe("the checkout says each refusal ONCE, and place names that notice (chec
 		expect(open).toContain('tabindex="-1"');
 		expect(open).toContain('role="alert"');
 		expect(openTagWithId(html, CHECKOUT_ERROR_ID)).toBe("");
+	});
+});
+
+describe("REGION_LIST_UPDATED from Update delivery lands on the delivery block, whichever notice says it", () => {
+	test("the fragment's element renders with and without the summary refusing the destination", async () => {
+		const url = new URL("/checkout/place", SITE);
+		const context = {
+			request: new Request(url, {
+				method: "POST",
+				headers: { origin: SITE, "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({
+					email: "buyer@example.com",
+					idempotencyKey: "checkout:cart-1",
+					addressMode: "zoned",
+					country: "CA",
+					fromCountry: "CA",
+					intent: "update-delivery",
+					// A state left over from Canada's list, posted with the US chosen.
+					deliveryCountry: "US",
+					deliveryRegion: "ON",
+					deliveryRegionCountry: "CA",
+				}).toString(),
+			}),
+			url,
+			cookies: {
+				get: (name: string) => (name === "otta_cart" ? { value: "cart-1" } : undefined),
+				set: () => {},
+				delete: () => {},
+			},
+			locals: { emdash: { handlePublicPluginApiRoute: async () => ({ success: false }) } },
+			redirect: (target: string, status = 302) =>
+				new Response(null, { status, headers: { location: target } }),
+		} as unknown as APIContext;
+
+		const landed = new URL((await PLACE_POST(context)).headers.get("location")!, SITE);
+		expect(landed.searchParams.get("error")).toBe("REGION_LIST_UPDATED");
+		expect(landed.searchParams.get("country")).toBe("US");
+		const fragment = landed.hash.slice(1);
+		expect(fragment).toBe(DELIVERY_BLOCK_ID);
+
+		const token = "REGION_LIST_UPDATED";
+		const container = await AstroContainer.create();
+		// A store zoned by US state refuses the blank region too (delivery block
+		// only); one that is not says the list update at the top. Both render it.
+		for (const destinationReason of ["SHIPPING_REGION_CODE_REQUIRED", undefined]) {
+			const shownAtTop =
+				checkoutNoticeId(token, { placeCouponRefused: false, destinationReason }) ===
+				CHECKOUT_ERROR_ID;
+			const model: CheckoutModel = {
+				...checkoutModel(shownAtTop ? cartErrorMessage(token) : null),
+				showDelivery: true,
+				countryValue: "US",
+				destinationError:
+					destinationReason === undefined ? null : cartErrorMessage(destinationReason),
+			};
+			const html = await container.renderToString(CheckoutView, { props: { model } });
+			expect(openTagWithId(html, fragment), String(destinationReason)).not.toBe("");
+			expect(openTagWithId(html, CHECKOUT_ERROR_ID) === "", String(destinationReason)).toBe(
+				!shownAtTop,
+			);
+		}
 	});
 });
 

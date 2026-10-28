@@ -24,6 +24,9 @@ export const COUPON_ERROR_ID = "coupon-error";
 /** The checkout's destination refusal, in the delivery block. A refusal the
  *  summary repeats for the destination is said here instead. */
 export const DELIVERY_ERROR_ID = "delivery-error";
+/** The checkout's delivery block itself — rendered whenever the review shows
+ *  delivery, so around {@link DELIVERY_ERROR_ID} whenever that renders. */
+export const DELIVERY_BLOCK_ID = "delivery";
 /** The cart page's refusal notice (`CartModel.errorMessage`). */
 export const CART_ERROR_ID = "cart-error";
 /** The product page's refusal notice (`ProductContentModel.errorMessage`). */
@@ -74,15 +77,22 @@ const REPEATED_DESTINATION_REFUSALS: ReadonlySet<string> = new Set([
  * `place.ts`'s side of {@link checkoutNoticeId}: the notice the review will
  * render a refusal in, from what place itself knows — whether the refused
  * coupon rode the draft back (`kept.coupon`: a coupon refusal whose code the
- * draft carries, so the page puts it back into the field), and whether the redirect kept a country for the
- * summary to refuse again. place cannot run the summary, so the destination
- * half is the expected answer; a fragment whose target is not on the page
- * simply does nothing.
+ * draft carries, so the page puts it back into the field), and whether the
+ * redirect kept a country for the summary to refuse again. place cannot run
+ * the summary, so the destination half is the expected answer; a fragment
+ * whose target is not on the page simply does nothing.
+ *
+ * REGION_LIST_UPDATED with a country kept is NOT predicted: the page says it
+ * at the top, or — when the summary also refuses that destination (a store
+ * zoned by state) — only in the delivery block. So it lands on the delivery
+ * block itself ({@link DELIVERY_BLOCK_ID}), which holds the refreshed list and
+ * renders in both cases on a page that shows delivery.
  */
 export function placeRefusalNoticeId(
 	token: string,
 	kept: { coupon: boolean; country: boolean },
 ): string {
+	if (token === "REGION_LIST_UPDATED" && kept.country) return DELIVERY_BLOCK_ID;
 	return checkoutNoticeId(token, {
 		placeCouponRefused: kept.coupon,
 		destinationReason: kept.country && REPEATED_DESTINATION_REFUSALS.has(token) ? token : undefined,

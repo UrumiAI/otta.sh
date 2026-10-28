@@ -847,7 +847,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 			PLACED,
 		);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?country=IN&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#checkout-error",
+			"/checkout?country=IN&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#delivery",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -900,7 +900,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 		// "CA" (California) is not one of Canada's: dropped, and the Canadian list
 		// comes back marked — the country kept.
 		expect(response.headers.get("location")).toBe(
-			"/checkout?country=CA&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#checkout-error",
+			"/checkout?country=CA&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#delivery",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -924,7 +924,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 			PLACED,
 		);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?country=ES&method=m1&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#checkout-error",
+			"/checkout?country=ES&method=m1&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#delivery",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -1152,7 +1152,9 @@ describe("/checkout: the store's country is preselected only for a buyer who cho
 	test("a REGION_LIST_UPDATED beside a destination refusal (country refused, region required) says only that refusal", () => {
 		// The page decides through `checkoutNoticeId` (#603: place.ts names its
 		// fragment by the same rule) — fed the destination refusal it renders.
-		expect(page).toMatch(/destinationReason: destinationError\?\.reason/);
+		expect(page).toMatch(
+			/checkoutNoticeId\(shownErrorToken, \{\s*placeCouponRefused: placeCouponError !== null,\s*destinationReason: destinationError\?\.reason,\s*\}\)/,
+		);
 		expect(
 			checkoutNoticeId("REGION_LIST_UPDATED", {
 				placeCouponRefused: false,

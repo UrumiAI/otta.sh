@@ -425,7 +425,8 @@
 /* #603: a refused place lands on a notice by fragment; not flush to the edge. */
 [data-theme-id] .checkout-notice-slot,
 [data-theme-id] #coupon-error,
-[data-theme-id] #delivery-error {
+[data-theme-id] #delivery-error,
+[data-theme-id] #delivery {
 	scroll-margin-top: 1rem;
 }
 [data-theme-id] .checkout-restart {
