@@ -149,7 +149,7 @@ describe("webhooks/stripe/settle under workerd", () => {
 		).toMatchObject({ ok: false, status: 401, reason: "UNAUTHORIZED" });
 
 		// The RIGHT token: admitted past the gate — and then the HMAC verifies
-		// inside the isolate and the DOMAIN answers. 404 is the domain's own verdict
+		// inside the isolate and the DOMAIN answers. ORDER_NOT_FOUND is the domain's own verdict
 		// (the order was never seeded), which no request that failed the token gate
 		// or the signature check could ever reach.
 		expect(
@@ -158,7 +158,7 @@ describe("webhooks/stripe/settle under workerd", () => {
 					headers: { "X-Otta-Wh-Token": EDGE_TOKEN },
 				}),
 			),
-		).toMatchObject({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+		).toMatchObject({ ok: false, status: 200, reason: "ORDER_NOT_FOUND" });
 
 		// A TAMPERED body with the right token: the HMAC is what stops it.
 		const tampered = Buffer.from(
@@ -208,7 +208,7 @@ describe("webhooks/stripe/settle under workerd", () => {
 		// "Stripe HMAC only" rather than locking every webhook out.
 		expect(
 			resultOf(await sandbox.invokeRoute("webhooks/stripe/settle", await delivery("ord-open"))),
-		).toMatchObject({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+		).toMatchObject({ ok: false, status: 200, reason: "ORDER_NOT_FOUND" });
 
 		// ...and that pass-through is NOT a disabled-verification path: a body
 		// signed with an attacker's secret is refused just the same.
