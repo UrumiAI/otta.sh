@@ -283,13 +283,21 @@ export function playgroundRouteCaller(user: unknown): {
  * `PLAYGROUND_USER`, shared by every visitor in the isolate, so it is copied,
  * never written to. A user that already has a usable timestamp, or is not an
  * object, comes back unchanged.
+ *
+ * The stamp is {@link PLAYGROUND_USER_CREATED_AT}: a `Date`, as EmDash's `User`
+ * type declares, and the same on every request. Drop this once EmDash's own
+ * playground user carries a `createdAt`.
  */
 export function withPlaygroundCreatedAt(user: unknown): unknown {
 	if (typeof user !== "object" || user === null) return user;
 	const current = (user as { createdAt?: unknown }).createdAt;
 	if (hasUsableCreatedAt(current)) return user;
-	return { ...user, createdAt: callerCreatedAt(current) };
+	return { ...user, createdAt: new Date(PLAYGROUND_USER_CREATED_AT) };
 }
+
+/** The playground admin has no real join date; one fixed instant stands in, so
+ *  nothing that reads it sees it move between requests. */
+export const PLAYGROUND_USER_CREATED_AT = "1970-01-01T00:00:00.000Z";
 
 /** One nonce per sample product, stable across reloads, so the restock is
  *  once-only inside the visitor's database. */
@@ -305,7 +313,7 @@ function hasUsableCreatedAt(value: unknown): value is string | Date {
 }
 
 function callerCreatedAt(value: unknown): string {
-	if (!hasUsableCreatedAt(value)) return new Date().toISOString();
+	if (!hasUsableCreatedAt(value)) return PLAYGROUND_USER_CREATED_AT;
 	return typeof value === "string" ? value : value.toISOString();
 }
 

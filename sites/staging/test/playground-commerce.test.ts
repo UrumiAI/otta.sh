@@ -16,6 +16,7 @@ import {
 import { productImage } from "../src/lib/products.js";
 import {
 	PLAYGROUND_MAX_ATTEMPTS,
+	PLAYGROUND_USER_CREATED_AT,
 	isPlaygroundAdminHome,
 	isPlaygroundBoot,
 	isPlaygroundDocument,
@@ -309,7 +310,7 @@ describe("playgroundRouteCaller", () => {
 			role: 50,
 		});
 		expect(caller?.id).toBe("playground-admin");
-		expect(caller?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+		expect(caller?.createdAt).toBe(PLAYGROUND_USER_CREATED_AT);
 	});
 
 	test("keeps a timestamp the session already has", () => {
@@ -337,7 +338,11 @@ describe("withPlaygroundCreatedAt", () => {
 		const user = withPlaygroundCreatedAt(shared) as Record<string, unknown>;
 		expect(user).not.toBe(shared);
 		expect(user).toMatchObject(shared);
-		expect(user["createdAt"]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+		// A Date, as EmDash's `User` declares, and the same instant every request.
+		expect(user["createdAt"]).toEqual(new Date(PLAYGROUND_USER_CREATED_AT));
+		expect((withPlaygroundCreatedAt(shared) as Record<string, unknown>)["createdAt"]).toEqual(
+			user["createdAt"],
+		);
 		expect(shared).not.toHaveProperty("createdAt");
 	});
 
@@ -348,7 +353,9 @@ describe("withPlaygroundCreatedAt", () => {
 		expect(withPlaygroundCreatedAt(dated)).toBe(dated);
 
 		const invalid = withPlaygroundCreatedAt({ createdAt: new Date("not a date") });
-		expect(typeof (invalid as { createdAt: unknown }).createdAt).toBe("string");
+		expect((invalid as { createdAt: unknown }).createdAt).toEqual(
+			new Date(PLAYGROUND_USER_CREATED_AT),
+		);
 	});
 
 	test("passes a missing user through", () => {

@@ -36,7 +36,7 @@ describe("playgroundGate on the admin console's fetch", () => {
 		const context = consoleFetch(shared);
 		expect(await playgroundGate(context)).toBeNull();
 		const user = context.locals.user as unknown as Record<string, unknown>;
-		expect(user["createdAt"]).toEqual(expect.any(String));
+		expect(user["createdAt"]).toEqual(expect.any(Date));
 		expect(user["id"]).toBe("playground-admin");
 		expect(shared).not.toHaveProperty("createdAt");
 	});
