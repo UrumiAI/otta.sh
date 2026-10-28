@@ -16,6 +16,7 @@ import {
 import { productImage } from "../src/lib/products.js";
 import {
 	PLAYGROUND_MAX_ATTEMPTS,
+	PLAYGROUND_USER_CREATED_AT,
 	isPlaygroundAdminHome,
 	isPlaygroundBoot,
 	isPlaygroundDocument,
@@ -25,6 +26,7 @@ import {
 	playgroundRouteCaller,
 	playgroundWaitPath,
 	prepareDemoCommerce,
+	withPlaygroundCreatedAt,
 	type PlaygroundPorts,
 } from "../src/lib/playground-commerce.js";
 import { DEMO_PRICING, type ExistingCommerce } from "../scripts/seed-demo-commerce.js";
@@ -308,7 +310,7 @@ describe("playgroundRouteCaller", () => {
 			role: 50,
 		});
 		expect(caller?.id).toBe("playground-admin");
-		expect(caller?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+		expect(caller?.createdAt).toBe(PLAYGROUND_USER_CREATED_AT);
 	});
 
 	test("keeps a timestamp the session already has", () => {
@@ -322,6 +324,43 @@ describe("playgroundRouteCaller", () => {
 			})?.createdAt,
 		).toBe("2026-10-24T21:35:43.995Z");
 		expect(playgroundRouteCaller({ id: "playground-admin", role: 50 })).toBeNull();
+	});
+});
+
+describe("withPlaygroundCreatedAt", () => {
+	test("returns a copy with the createdAt the admin console route needs", () => {
+		const shared = Object.freeze({
+			id: "playground-admin",
+			email: "playground@emdashcms.com",
+			name: "Playground User",
+			role: 50,
+		});
+		const user = withPlaygroundCreatedAt(shared) as Record<string, unknown>;
+		expect(user).not.toBe(shared);
+		expect(user).toMatchObject(shared);
+		// A Date, as EmDash's `User` declares, and the same instant every request.
+		expect(user["createdAt"]).toEqual(new Date(PLAYGROUND_USER_CREATED_AT));
+		expect((withPlaygroundCreatedAt(shared) as Record<string, unknown>)["createdAt"]).toEqual(
+			user["createdAt"],
+		);
+		expect(shared).not.toHaveProperty("createdAt");
+	});
+
+	test("returns a user with a usable timestamp as it is, and replaces an invalid one", () => {
+		const stamped = { createdAt: "2026-10-24T21:35:43.995Z" };
+		expect(withPlaygroundCreatedAt(stamped)).toBe(stamped);
+		const dated = { createdAt: new Date("2026-10-24T21:35:43.995Z") };
+		expect(withPlaygroundCreatedAt(dated)).toBe(dated);
+
+		const invalid = withPlaygroundCreatedAt({ createdAt: new Date("not a date") });
+		expect((invalid as { createdAt: unknown }).createdAt).toEqual(
+			new Date(PLAYGROUND_USER_CREATED_AT),
+		);
+	});
+
+	test("passes a missing user through", () => {
+		expect(withPlaygroundCreatedAt(undefined)).toBeUndefined();
+		expect(withPlaygroundCreatedAt(null)).toBeNull();
 	});
 });
 
