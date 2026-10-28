@@ -483,7 +483,7 @@ describe("applying a coupon keeps every typed value", () => {
 		);
 		const response = await PLACE_POST(h.context);
 		expect(response.headers.get("location")).toBe(
-			"/checkout?coupon=SAVE10&error=COUPON_ALREADY_APPLIED",
+			"/checkout?coupon=SAVE10&error=COUPON_ALREADY_APPLIED#checkout-error",
 		);
 		expect(h.calls).toHaveLength(0);
 		expect(h.draft()!.values.email).toBe("ada@example.com");
@@ -649,7 +649,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 	test("a code valid in BOTH countries but picked from the OLD list (GA: Georgia, then India's Goa) is asked again", async () => {
 		const h = harness({ ...FULL, country: "IN", region: "GA", regionCountry: "US" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_LIST_UPDATED",
+			"/checkout?error=REGION_LIST_UPDATED#checkout-error",
 		);
 		expect(h.calls).toHaveLength(0);
 		expect(h.draft()!.errors).toEqual({ region: "stale" });
@@ -664,7 +664,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 	test("a stale pick (KA for India, then US): re-asked with the explanation", async () => {
 		const h = harness({ ...FULL, country: "US", region: "KA", regionCountry: "IN" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_LIST_UPDATED",
+			"/checkout?error=REGION_LIST_UPDATED#checkout-error",
 		);
 		expect(h.calls).toHaveLength(0);
 		expect(h.draft()!.errors).toEqual({ region: "stale" });
@@ -680,7 +680,9 @@ describe("the state/province pick list: a changed country is a round trip, never
 		// The country stays in the URL — only the region is blamed — so the review
 		// re-asks the plugin for US, which refuses it for its state again: the
 		// delivery block shows the US list, marked.
-		expect(location).toBe("/checkout?country=US&error=SHIPPING_REGION_CODE_REQUIRED");
+		expect(location).toBe(
+			"/checkout?country=US&error=SHIPPING_REGION_CODE_REQUIRED#checkout-error",
+		);
 		expect(h.draft()!.errors).toEqual({ region: "invalid" });
 	});
 
@@ -742,7 +744,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 	test("the explicit Update with a stale pick brings the new list back marked 'pick again' — never silent", async () => {
 		const h = harness({ ...OWN, country: "IN", intent: "update-address" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_LIST_UPDATED",
+			"/checkout?error=REGION_LIST_UPDATED#checkout-error",
 		);
 		expect(h.calls).toHaveLength(0);
 		expect(h.draft()!.errors).toEqual({ region: "stale" });
@@ -781,7 +783,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 			PLACED,
 		);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=ADDRESS_TOO_LONG_TO_KEEP",
+			"/checkout?error=ADDRESS_TOO_LONG_TO_KEEP#checkout-error",
 		);
 		expect(h.calls).toHaveLength(0);
 		// No draft is left to render stale values (or an old error's marks).
@@ -823,7 +825,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 			PLACED,
 		);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?country=DE&fromCountry=US&error=ADDRESS_TOO_LONG_TO_KEEP",
+			"/checkout?country=DE&fromCountry=US&error=ADDRESS_TOO_LONG_TO_KEEP#checkout-error",
 		);
 	});
 
@@ -844,7 +846,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 			PLACED,
 		);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?country=IN&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED",
+			"/checkout?country=IN&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#checkout-error",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -897,7 +899,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 		// "CA" (California) is not one of Canada's: dropped, and the Canadian list
 		// comes back marked — the country kept.
 		expect(response.headers.get("location")).toBe(
-			"/checkout?country=CA&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED",
+			"/checkout?country=CA&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#checkout-error",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -921,7 +923,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 			PLACED,
 		);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?country=ES&method=m1&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED",
+			"/checkout?country=ES&method=m1&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED#checkout-error",
 		);
 		expect(h.calls).toHaveLength(0);
 	});

@@ -57,22 +57,29 @@ function makeContext(
 
 const OVER = String(CART_LINE_MAX_QTY + 1);
 
-describe.each<[string, APIRoute, Record<string, string>, string]>([
+describe.each<[string, APIRoute, Record<string, string>, string, string]>([
 	[
 		"/cart/add",
 		CART_ADD_POST,
 		{ sku: "OTTA-TEE", idempotencyKey: "k-1", returnTo: "/products/otta-tee" },
 		"/products/otta-tee",
+		"product-error",
 	],
-	["/cart/update", CART_UPDATE_POST, { lineId: "line-1", idempotencyKey: "k-1" }, "/cart"],
-])("POST %s", (_pathname, post, base, backTo) => {
+	[
+		"/cart/update",
+		CART_UPDATE_POST,
+		{ lineId: "line-1", idempotencyKey: "k-1" },
+		"/cart",
+		"cart-error",
+	],
+])("POST %s", (_pathname, post, base, backTo, noticeId) => {
 	test(`qty ${OVER} is refused as QTY_TOO_LARGE back to ${backTo}, with no dispatch`, async () => {
 		const { context, dispatched } = makeContext(_pathname, { ...base, qty: OVER });
 
 		const response = await post(context);
 
 		expect(response.status).toBe(303);
-		expect(response.headers.get("location")).toBe(`${backTo}?error=QTY_TOO_LARGE`);
+		expect(response.headers.get("location")).toBe(`${backTo}?error=QTY_TOO_LARGE#${noticeId}`);
 		expect(dispatched).toEqual([]);
 	});
 
@@ -116,7 +123,7 @@ describe("the copy", () => {
 
 		const response = await CART_UPDATE_POST(context);
 
-		expect(response.headers.get("location")).toBe("/cart?error=QTY_TOO_LARGE");
+		expect(response.headers.get("location")).toBe("/cart?error=QTY_TOO_LARGE#cart-error");
 	});
 
 	test("OUT_OF_STOCK is about the QUANTITY, so it stays true beside an 'In stock' badge", () => {

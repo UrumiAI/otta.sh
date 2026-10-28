@@ -68,6 +68,7 @@ import {
 	TAX_LOCATION_FIELD,
 } from "../../lib/checkout-location.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
+import { CHECKOUT_ERROR_ID } from "../../lib/error-notice.js";
 import { readStripePublishableKey } from "../../lib/stripe-config.js";
 import {
 	busyResponse,
@@ -288,7 +289,9 @@ async function place(context: APIContext): Promise<Response> {
 		// stay behind to render stale values under this refusal.
 		if (checkoutDraftFits(draft)) writeCheckoutDraft(context.cookies, draft);
 		else clearCheckoutDraft(context.cookies);
-		return context.redirect(path, 303);
+		// #603: a refusal lands ON its notice (`path` is `checkoutPath`'s, so it
+		// carries no fragment of its own); an Apply/Update without one does not.
+		return context.redirect(error !== undefined ? `${path}#${CHECKOUT_ERROR_ID}` : path, 303);
 	};
 	/** A redirect whose whole point is to come back WITH what was typed —
 	 *  Update, Apply, Remove. When the typed values cannot be kept it says so

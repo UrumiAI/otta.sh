@@ -20,6 +20,7 @@
 import HoldRibbon from "../../components/HoldRibbon.astro";
 import MediaPanel from "../../components/MediaPanel.astro";
 import Notice from "../../components/Notice.astro";
+import { CART_ERROR_ID } from "../../lib/error-notice.js";
 import PriceTag from "../../components/PriceTag.astro";
 import QtyField from "../../components/QtyField.astro";
 import Sum from "../../components/Sum.astro";
@@ -68,8 +69,10 @@ const {
     WRAPPED rather than handed a class: a page's scoped selector cannot reach
     a component's root, so spacing around one lives on an element this view
     owns (see src/lib/rest-props.ts). */}
+{/* #603: the refusal is the element its redirect names as the fragment —
+    an alert, focusable so focus starts here after the reload. */}
 {errorMessage !== null && (
-	<div class="cart-notice-slot">
+	<div class="cart-notice-slot" id={CART_ERROR_ID} role="alert" tabindex="-1">
 		<Notice>{errorMessage}</Notice>
 	</div>
 )}

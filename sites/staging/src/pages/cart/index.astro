@@ -58,6 +58,7 @@ import {
 	PRICED_AT_CHECKOUT_CELL,
 } from "../../lib/cart-view.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { errorTitle } from "../../lib/error-notice.js";
 import { staleCurrencyNotice } from "../../lib/stale-currency.js";
 import {
 	productImage,
@@ -491,7 +492,7 @@ const hasLiveHolds =
 <Storefront
 	view="cart"
 	model={model}
-	title="Cart"
+	title={errorTitle("Cart", model.errorMessage !== null)}
 	cartCount={cart === null || terminal ? null : totalQty(cart)}
 	currency={cart?.currency ?? null}
 >
