@@ -62,6 +62,10 @@ interface Props extends HTMLAttributes<"div"> {
 	 *  it lapses. The root keeps the `data-hold*` hooks, so the same `HoldClock`
 	 *  script reveals the note at the moment the hold ends (#547). */
 	countdown?: boolean;
+	/** The line's product name. Shipped as `data-product` and never drawn: the
+	 *  script leads the live region's announcement with it, so several lines
+	 *  lapsing together say which one (#570). */
+	product?: string | null;
 }
 
 const {
@@ -69,6 +73,7 @@ const {
 	windowSeconds = HOLD_WINDOW_SECONDS,
 	nextStep = HOLD_RELEASED_NEXT_STEP,
 	countdown = true,
+	product = null,
 	class: className,
 	...rest
 } = Astro.props;
@@ -86,6 +91,7 @@ const expiry = absoluteExpiry(expiresAt);
 			data-expires={expiresAt}
 			data-window={windowSeconds}
 			data-countdown={countdown ? undefined : "off"}
+			data-product={product ?? undefined}
 			{...restProps(rest)}
 		>
 			{countdown && (

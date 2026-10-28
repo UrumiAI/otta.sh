@@ -65,6 +65,8 @@
 				// A ribbon with its countdown off is quiet: the helper announces its
 				// note on release and nothing before (hold-ribbon.ts decides).
 				quietAnnounce: quiet ? (note?.textContent ?? "") : undefined,
+				// The line's product, so the announcement says which line lapsed.
+				product: el.dataset.product || undefined,
 				render(frame: HoldFrame): void {
 					el.dataset.state = frame.state;
 					if (label) label.textContent = frame.label;
