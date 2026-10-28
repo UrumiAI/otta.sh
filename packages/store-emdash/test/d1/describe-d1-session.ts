@@ -62,7 +62,11 @@ export interface D1SessionStorage {
 	request(shape?: RequestShape): D1SessionRequest;
 }
 
-/** The config the staging site declares. */
+/**
+ * The config the staging site declares. Keep in sync with
+ * `sites/staging/src/emdash-options.ts`: a change there (`coalesce`, `"auto"`)
+ * would otherwise leave this tier testing a different setup than the site runs.
+ */
 const CONFIG = { binding: "DB", session: "primary-first" } as const;
 
 function openRequest(layout: StorageLayout, shape: RequestShape): D1SessionRequest {
