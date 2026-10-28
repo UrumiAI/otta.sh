@@ -234,6 +234,22 @@ describe("a lapsed line names its product, so several lapsing together stay dist
 		}
 	});
 
+	test('an empty announcement text stays no announcement, never a bare "Product: "', () => {
+		const r = ribbon(120, "held", "", "Ethiopia Guji");
+		run([r]);
+		expect(announcements(r)).toEqual([]);
+	});
+
+	test("a product name with quotes, angle brackets and ampersands is announced verbatim", () => {
+		const name = `Mug "Big" <b> & co`;
+		const r = ribbon(120, "held", NOTE, name);
+		run([r]);
+		const [said] = announcements(r);
+		expect(said).toBe(`${name}: ${NOTE}`);
+		// The script writes it with `announce.textContent` (pinned in hold-ribbon.test.ts),
+		// so it is text, never parsed as markup.
+	});
+
 	test("a line with no product keeps the bare text", () => {
 		const r = ribbon(120, "held", NOTE);
 		run([r]);
