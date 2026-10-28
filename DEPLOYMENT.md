@@ -281,12 +281,26 @@ cannot be retried in place:
 > (dashboard or REST API); until it is, every query goes to the primary anyway.
 >
 > **Before you switch read replication on, check it on a replicated staging D1 (issue #490).**
-> Run the storage paths against it and watch for a stale row where the code expects the
-> latest: a compare-and-set refusal, a claim's lease, and read-after-write through the
-> bookmark cookie. Concrete flows: place an order, then load `/checkout/pay`; sign in, then
-> load `/account/orders`; make an admin write, then reload the page. `pnpm test:d1`
-> (`session-storage.d1.spec.ts`) proves these paths run over a D1 session handle, but not
-> replica lag: miniflare has no replicas, so it cannot return a stale read.
+> `pnpm test:d1` (`session-storage.d1.spec.ts`) proves the storage paths run over a D1
+> session handle, but not replica lag: miniflare has no replicas, so it cannot return a
+> stale read. Staging has to show that, and each step below has to be able to fail:
+>
+> 1. Enable read replication on the staging D1 only. Run the staging Worker from a region
+>    away from the primary, and confirm in `wrangler tail` that storefront GETs report
+>    `served_by_primary: false`. If every query still says `true`, no replica is serving and
+>    the steps below prove nothing.
+> 2. Shopper requests start on the primary (`primary-first`; shoppers carry no bookmark).
+>    Repeat each flow 20 times; any one failure fails the check:
+>    - place an order, then load `/checkout/pay`: it must find the order (a 404 fails);
+>    - sign in, then load `/account/orders`: it must stay signed in (a bounce to `/login`
+>      fails).
+> 3. Signed-in EmDash requests resume from the `__em_d1_bookmark` cookie. Repeat 20 times:
+>    - change a product's price in the admin, then reload: the new price must show;
+>    - let a Stripe test webhook mark an order paid, then load the admin order list: the
+>      order must show as paid on the first load.
+>
+> To roll back, disable read replication on the D1 (dashboard or REST API). Every query
+> then goes to the primary again; there is nothing to migrate.
 >
 > **The old pairing invariant is moot, but its rule stands:** the flag blocks the request the
 > D1 Sessions API makes to route queries (emdash issue #1273). With EmDash 1.0.1 the symptom

@@ -79,9 +79,13 @@ describe("compare-and-set over one session", () => {
 		// A holds the revision; B, on its own session, moves the row on. Correctness
 		// must not depend on how fresh A's read was.
 		const held = await a.getVersioned("a");
+		// A really holds v1's revision, so the refusal below is a stale revision, not
+		// a create-if-absent on a row that exists.
+		expect(held?.revision).toBe(created.revision);
+		if (held === undefined || held === null) throw new Error("A must read the row it created");
 		expect((await b.compareAndSet("a", created.revision, { text: "by-b" })).applied).toBe(true);
 
-		const refused = await a.compareAndSet("a", held?.revision ?? null, { text: "by-a" });
+		const refused = await a.compareAndSet("a", held.revision, { text: "by-a" });
 		expect(refused.applied).toBe(false);
 		expect(await b.get("a")).toEqual({ text: "by-b" });
 	});
@@ -198,6 +202,21 @@ describe("read-after-write over sessions", () => {
 
 			// A write starts on the primary; the reader resumes from the writer's bookmark.
 			expect(spy.mock.calls.map(([constraint]) => constraint)).toEqual(["first-primary", bookmark]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("starts a signed-out read on the primary and mints no bookmark: the shopper's path", async () => {
+		// Shoppers are not signed in to EmDash, so their reads take the configured
+		// constraint, not a cookie. Pins that `primary-first` reaches the binding.
+		await sessions.request({ isWrite: true }).collection<Note>("notes").put("a", { text: "v1" });
+		const spy = vi.spyOn(env.DB as { withSession(constraint: string): unknown }, "withSession");
+		try {
+			const shopper = sessions.request({ isWrite: false, isAuthenticated: false });
+			expect(await shopper.collection<Note>("notes").get("a")).toEqual({ text: "v1" });
+			expect(spy.mock.calls.map(([constraint]) => constraint)).toEqual(["first-primary"]);
+			expect(shopper.commit()).toBeUndefined();
 		} finally {
 			spy.mockRestore();
 		}
