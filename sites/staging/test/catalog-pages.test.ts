@@ -363,8 +363,22 @@ describe("the catalog grid", () => {
 		// throw, so an outage arrives looking exactly like an empty collection.
 		// A page that only counts entries renders "No products yet." — a claim
 		// about the shop, made from a fact about the network.
-		expect(PLP).toMatch(/error:\s*catalogError\s*,?\s*\n?\s*\}\s*=\s*await getEmDashCollection/);
-		expect(PLP).toContain("const catalogUnavailable = catalogError !== undefined");
+		expect(PLP).toMatch(/if \(collection\.error !== undefined\) \{\s*catalogUnavailable = true;/);
+	});
+
+	test("the shop page's content read cannot throw past it either (issue #597)", () => {
+		// The same claim the home page makes, for the same read: a missing
+		// binding (or emdash's post-query hydration) THROWS rather than filling
+		// `error`, and an unguarded `await` is Astro's raw 500 where the page's
+		// own "catalog unavailable" branch belongs. Both arms land in that branch.
+		const frontmatter = PLP.slice(0, PLP.indexOf("\n---", 3));
+		expect(frontmatter, "getEmDashCollection is read outside a try/catch").toMatch(
+			/try\s*\{[\s\S]*getEmDashCollection[\s\S]*?\}\s*catch\s*\(\w+\)\s*\{\s*catalogUnavailable = true;/,
+		);
+		// The outage answers like the PDP's: 503 + a short Retry-After, not a 200.
+		expect(frontmatter).toMatch(
+			/if \(catalogUnavailable\) \{[\s\S]*?Astro\.response\.status = 503;[\s\S]*?Astro\.response\.headers\.set\("Retry-After", "60"\);/,
+		);
 	});
 
 	test("the outage branch is checked BEFORE the empty state, and wins", () => {
