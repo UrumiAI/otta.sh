@@ -698,6 +698,24 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.state).toBe("paid");
 		});
 
+		test("resolve clears an unverified-refund flag written before #607, in its stored wording", async () => {
+			// Deployed stores hold flags whose prefix carried the resume arm's whole
+			// sentence; the shorter prefix must still match them exactly.
+			const h = await makeHarness();
+			const { id, key } = await unverifiedRefund(h, "ord-unv-legacy-flag", 400);
+			await h.orderStore.flagReconciliation(
+				id,
+				`refund 400 USD (key ${key}): the provider already shows it refunded but the ledger never finalized it — check the provider, then resolve the unverified refund in Money → Refunds. The provider shows 4.00 USD of 10.00 USD refunded.`,
+			);
+			await resolveUnverifiedRefund(
+				{ orderStore: h.orderStore },
+				{ orderId: id, refundKey: key, outcome: "voided", resolvedBy: "ops" },
+			);
+			const after = await h.orderStore.getById(id);
+			expect(after?.reconciliationFlag).toBeNull();
+			expect(after?.reconciliationResolution?.resolvedBy).toBe("ops");
+		});
+
 		// Final round: resolving clears the flag that sent the operator here (the
 		// resume arm's "never finalized" flag for THIS refund) — compare-and-clear on
 		// that exact flag; any other flag stays.
@@ -1107,7 +1125,7 @@ export function refundOrderContract(
 					amount: cents(100),
 					idempotencyKey: idempotencyKey("r1-exit-other"),
 				}),
-			).toMatchObject({ ok: false });
+			).toEqual({ ok: false, reason: "REFUND_EXCEEDS_TOTAL" });
 
 			const resolved = await resolveUnverifiedRefund(
 				{ orderStore: h.orderStore },
@@ -1128,10 +1146,12 @@ export function refundOrderContract(
 			]);
 		});
 
-		test("a manual record that dedupes onto a held reservation the replay read missed gets the same treatment (#607)", async () => {
+		test("a manual record that dedupes onto a held reservation the replay read missed leaves it reserved and says try again; the retry then hands it to a person (#607)", async () => {
 			// The window the replay read cannot see: the caller's ledger was read
 			// before the same-key gateway attempt reserved the row, so the manual
-			// record's dedupe is the first sight of it.
+			// record's dedupe is the first sight of it. That row is most likely a
+			// request still in flight, so it is not held for a person yet — a void
+			// before the provider shows that request's refund would lose it.
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-manual-on-reserved", totalCents: 900 });
 			const stale = await h.orderStore.readOrderLedger(id);
@@ -1150,6 +1170,14 @@ export function refundOrderContract(
 			const manual = new FakePaymentGateway({ id: "stripe", refundable: false });
 			expect(await refundOrder({ orderStore: h.orderStore }, manual, cmd, stale)).toEqual({
 				ok: false,
+				reason: "GATEWAY_RETRYABLE",
+			});
+			expect((await h.orderStore.listRefunds(id)).map((r) => r.status)).toEqual(["reserved"]);
+			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
+
+			// The retry reads the row, and the manual guard hands it to a person.
+			expect(await refundOrder({ orderStore: h.orderStore }, manual, cmd)).toEqual({
+				ok: false,
 				reason: "GATEWAY_UNVERIFIED",
 			});
 			expect((await h.orderStore.listRefunds(id)).map((r) => r.status)).toEqual(["unverified"]);
@@ -1159,6 +1187,42 @@ export function refundOrderContract(
 				),
 			).toBe(true);
 		});
+
+		for (const settled of ["recorded", "voided"] as const) {
+			test(`the manual guard flags nothing when the held reservation it read was ${settled} meanwhile, and answers with the settled row (#607)`, async () => {
+				// The guard's `reserved → unverified` flip misses: the row was settled
+				// between the replay read (here a ledger read while it was held) and the
+				// flip, by the gateway request that owned it.
+				const h = await makeHarness();
+				const { id, cmd } = await heldReservation(h, `ord-guard-miss-${settled}`, `r1-${settled}`);
+				const held = await h.orderStore.readOrderLedger(id);
+				if (held === null) throw new Error("seeded order has no ledger");
+				if (settled === "recorded") {
+					await h.orderStore.finalizeRefund({
+						idempotencyKey: cmd.idempotencyKey,
+						refundRef: "re_owner",
+					});
+				} else {
+					await h.orderStore.voidRefund(cmd.idempotencyKey);
+				}
+
+				const manual = new FakePaymentGateway({ id: "stripe", refundable: false });
+				const res = await refundOrder({ orderStore: h.orderStore }, manual, cmd, held);
+				if (settled === "recorded") {
+					expect(res).toMatchObject({
+						ok: true,
+						recorded: false,
+						duplicate: true,
+						fullyRefunded: true,
+					});
+					if (res.ok) expect(res.refund.refundRef).toBe("re_owner");
+				} else {
+					expect(res).toEqual({ ok: false, reason: "GATEWAY_TERMINAL" });
+				}
+				expect((await h.orderStore.listRefunds(id)).map((r) => r.status)).toEqual([settled]);
+				expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
+			});
+		}
 
 		for (const [status, reason] of [
 			["unverified", "GATEWAY_UNVERIFIED"],

@@ -434,7 +434,7 @@ async function refundOnLedger(
 			purpose: cmd.purpose ?? "refund",
 			...(cmd.restock !== undefined ? { restock: cmd.restock } : {}),
 		});
-		return settleRecordOutcome(deps, res, cmd);
+		return settleRecordOutcome(res, cmd);
 	}
 
 	// -- gateway path: reserve → issue → finalize/void/unverify -----------------
@@ -565,7 +565,7 @@ async function refundOnLedger(
 							: ` The provider shows ${flagAmount(gwRes.provider.refunded, target.currency)} of ${flagAmount(gwRes.provider.captured, target.currency)} refunded.`;
 					await deps.orderStore.flagReconciliation(
 						cmd.orderId,
-						`${unverifiedRefundFlagPrefix(target.amount, target.currency, cmd.idempotencyKey)}: the provider already shows it refunded but the ledger never finalized it — check the provider, then resolve the unverified refund in Money → Refunds.${figures}`,
+						`${unverifiedRefundFlagPrefix(target.amount, target.currency, cmd.idempotencyKey)} the provider already shows it refunded but the ledger never finalized it — check the provider, then resolve the unverified refund in Money → Refunds.${figures}`,
 					);
 				}
 				return { ok: false, reason: "GATEWAY_UNVERIFIED" };
@@ -626,7 +626,7 @@ async function refundOnLedger(
  *  Flags written before #607 carried the resume arm's wording inside the prefix;
  *  they still start with this one. */
 export function unverifiedRefundFlagPrefix(amount: number, currency: string, key: string): string {
-	return `refund ${String(amount)} ${currency} (key ${key})`;
+	return `refund ${String(amount)} ${currency} (key ${key}):`;
 }
 
 /**
@@ -634,9 +634,10 @@ export function unverifiedRefundFlagPrefix(amount: number, currency: string, key
  * (#607): `reserved → unverified` (the capacity stays held — the safe direction,
  * as the provider may have issued it) and the order flagged with the refund's own
  * {@link unverifiedRefundFlagPrefix}, so resolving it in Money → Refunds clears
- * exactly this flag. The flip is guarded to `reserved`: when a concurrent owner
- * settled the row first, nothing is flagged, and the answer still says to check
- * rather than claiming a refund this call never saw.
+ * exactly this flag. The flip is guarded to `reserved`: when the row was settled
+ * since it was read (a concurrent owner finalized or voided it), nothing is
+ * flagged and the answer is the settled row's own — what the replay check would
+ * have said had it read the row a moment later.
  */
 async function holdForCheck(
 	deps: RefundOrderDeps,
@@ -646,18 +647,33 @@ async function holdForCheck(
 	if (await deps.orderStore.markRefundUnverified(cmd.idempotencyKey)) {
 		await deps.orderStore.flagReconciliation(
 			cmd.orderId,
-			`${unverifiedRefundFlagPrefix(held.amount, held.currency, cmd.idempotencyKey)}: an earlier attempt through the payment provider never finished, and the provider can no longer be reached to finish it (refunds are recorded manually now) — check the provider, then resolve the unverified refund in Money → Refunds.`,
+			`${unverifiedRefundFlagPrefix(held.amount, held.currency, cmd.idempotencyKey)} an earlier attempt through the payment provider never finished, and the provider can no longer be reached to finish it (refunds are recorded manually now) — check the provider, then resolve the unverified refund in Money → Refunds.`,
 		);
+		return { ok: false, reason: "GATEWAY_UNVERIFIED" };
 	}
+	const settled = await deps.orderStore.getRefundByIdempotencyKey(cmd.idempotencyKey);
+	if (settled?.status === "voided") return { ok: false, reason: "GATEWAY_TERMINAL" };
+	if (settled?.status === "recorded") {
+		const order = await deps.orderStore.getById(cmd.orderId);
+		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		return {
+			ok: true,
+			recorded: false,
+			duplicate: true,
+			fullyRefunded: order.state === "refunded",
+			refund: settled,
+			order,
+		};
+	}
+	// `unverified` (another caller held it first), or a row that vanished: check.
 	return { ok: false, reason: "GATEWAY_UNVERIFIED" };
 }
 
 /** Map a one-shot `recordRefund` result (the manual path) to the outcome. */
-async function settleRecordOutcome(
-	deps: RefundOrderDeps,
+function settleRecordOutcome(
 	res: Awaited<ReturnType<OrderStore["recordRefund"]>>,
 	cmd: RefundOrderCommand,
-): Promise<RefundOrderOutcome> {
+): RefundOrderOutcome {
 	if (res.outcome === "order_not_found") return { ok: false, reason: "ORDER_NOT_FOUND" };
 	if (res.outcome === "exceeds_ceiling") {
 		return { ok: false, reason: exceedsReason(res.capturedTotal, res.frozenTotal) };
@@ -672,11 +688,15 @@ async function settleRecordOutcome(
 	}
 	// Only a FINALIZED row is a duplicate success (#607). Any other status is a
 	// gateway attempt the replay read did not see (a stale `known` ledger, or a
-	// concurrent same-key reserve), and it moved no money we know of: a held
-	// reservation gets the manual guard's own treatment, a settled one the replay
-	// check's answer.
+	// concurrent same-key reserve). A `reserved` row here is most likely a
+	// same-key gateway request IN FLIGHT right now, so it is NOT held for a
+	// person: flagging it would invite a void before the provider shows that
+	// request's refund, which would then finalize against a voided row (money
+	// moved, ceiling freed). It is left `reserved` and answered "try again"; the
+	// retry's replay read sees it, and the manual guard above hands it to a person
+	// if it is still held. A settled row gets the replay check's answer.
 	if (res.outcome === "duplicate" && res.refund.status === "reserved") {
-		return holdForCheck(deps, cmd, res.refund);
+		return { ok: false, reason: "GATEWAY_RETRYABLE" };
 	}
 	if (res.outcome === "duplicate" && res.refund.status === "unverified") {
 		return { ok: false, reason: "GATEWAY_UNVERIFIED" };
