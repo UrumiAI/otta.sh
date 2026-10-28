@@ -248,15 +248,18 @@ describe("POST /cart/add — productId pre-check (item 3)", () => {
 			handler,
 		);
 
-		const response = await POST(context);
+		try {
+			const response = await POST(context);
 
-		expect(response.status).toBe(303);
-		expect(response.headers.get("location")).toBe(
-			"/products/bamboo-water-bottle?error=SERVICE_UNAVAILABLE",
-		);
-		expect(calls).toHaveLength(0);
-		expect(errorSpy).toHaveBeenCalled();
-		errorSpy.mockRestore();
+			expect(response.status).toBe(303);
+			expect(response.headers.get("location")).toBe(
+				"/products/bamboo-water-bottle?error=SERVICE_UNAVAILABLE",
+			);
+			expect(calls).toHaveLength(0);
+			expect(errorSpy).toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
 	});
 
 	test("a VALID productId+sku pair reaches the add-line route and succeeds", async () => {
