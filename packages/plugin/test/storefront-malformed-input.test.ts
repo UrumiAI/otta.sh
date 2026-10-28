@@ -148,6 +148,46 @@ describe("storefront/cart/lines — a quantity over the 10,000 cap is QTY_TOO_LA
 			}),
 		).toEqual({ ok: false, error: "QTY_TOO_LARGE" });
 	});
+
+	// Issue #608: the cap is per LINE. Each add below is within it on its own,
+	// but the second would merge the line to 10,001 — refused by the domain with
+	// the same token, never RENDER_FAILED, and the line keeps its 10,000.
+	test("add: a re-add that would take the line past 10,000 is QTY_TOO_LARGE", async () => {
+		const PRODUCT_ID = "01JB7Z9QK3W8N5V2X4R6T0Y1MQ";
+		const SKU = "OTTA-BULK";
+		const commerce = harness.stores.productCommerce;
+		await commerce.upsert(
+			{
+				productId: toProductId(PRODUCT_ID),
+				sku: toSku(SKU),
+				price: { amount: cents(100), currency: currency("USD") },
+				title: "Bulk",
+			},
+			idempotencyKey("seed-bulk"),
+		);
+		await harness.stores.inventory.seedOnHand(toSku(SKU), 20_000);
+		await commerce.activate(
+			toProductId(PRODUCT_ID),
+			idempotencyKey("pub-bulk"),
+			"2026-01-01T00:00:00.000Z",
+		);
+		const { cartId } = await harness.client.createCart();
+		const add = (qty: number, key: string) =>
+			invoke(createCartLineAddRouteHandler(), {
+				cartId,
+				sku: SKU,
+				productId: PRODUCT_ID,
+				qty,
+				idempotencyKey: key,
+			});
+
+		expect(await add(10_000, "k-add-1")).toMatchObject({ ok: true, line: { qty: 10_000 } });
+		expect(await add(1, "k-add-2")).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+		expect(await invoke(createCartReadRouteHandler(), { cartId })).toMatchObject({
+			ok: true,
+			cart: { lines: [{ qty: 10_000 }] },
+		});
+	});
 });
 
 /**

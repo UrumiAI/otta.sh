@@ -185,6 +185,7 @@ import {
 	requireCurrencyCode,
 	requireBillingLocation,
 	requireDestination,
+	CART_LINE_MAX_QTY,
 	LOGIN_TOKEN_MAX,
 	BUYER_REF_MAX,
 	requireIdToken,
@@ -321,6 +322,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
 			clock: this.#stores.clock,
+			// Bounds the LINE, which a re-add merges into — `requireQty` only sees
+			// each request's own qty (issue #608).
+			maxLineQty: CART_LINE_MAX_QTY,
 		};
 		this.#createOrderDeps = {
 			orderStore: this.#stores.orderStore,
