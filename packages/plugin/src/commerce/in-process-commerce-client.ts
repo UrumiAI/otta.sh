@@ -250,6 +250,24 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 	taxCalculator?: TaxCalculator;
 }
 
+/** Who and why "Start a new cart" records on the order it cancels — and so how a
+ *  later abandon recognises a cancellation as its OWN (issue #596). */
+const ABANDON_CANCELLED_BY = "shopper";
+const ABANDON_DETAIL = "Started a new cart";
+
+/** Whether `order` was cancelled by "Start a new cart" rather than by anyone
+ *  else — an operator's cancel keeps its coupon use, the abandon's gives it back. */
+function isAbandonCancellation(order: Order): boolean {
+	const c = order.cancellation;
+	return (
+		order.state === "cancelled" &&
+		c !== null &&
+		c.reason === "customer_request" &&
+		c.cancelledBy === ABANDON_CANCELLED_BY &&
+		c.detail === ABANDON_DETAIL
+	);
+}
+
 /** The provider bound for the in-request intent withdrawal: fixed, never
  *  clipped — a cancel gets all of it or is not started (the sweep's rule). */
 export const ABANDON_CANCEL_CALL_MS = 1_500;
@@ -1534,6 +1552,14 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * order is read through the cart row's own `orderId`, never from the caller.
 	 * Only a `pending` order is cancelled; a race lost to a settle (the order was
 	 * paid meanwhile) or to the expiry is a no-op, not an error.
+	 *
+	 * The cancelled order's coupon use goes back with it (issue #596): the shopper
+	 * is starting over, and nothing else would ever free it — the expiry sweep
+	 * lists only pending orders, the orphan sweep only redemptions whose order is
+	 * gone, and an admin cancel deliberately keeps the use. `releaseByOrder` is
+	 * order-scoped and idempotent, so it runs on EVERY call that finds the order
+	 * cancelled by an abandon, a replay included: that is what heals a call that
+	 * died between its cancel and its release (the site retries a failed abandon).
 	 */
 	async abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult> {
 		requireIdToken("cartId", cartId);
@@ -1545,6 +1571,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		const orderId = toOrderId(cart.orderId);
 		const order = await this.#stores.orderStore.getById(orderId);
 		if (order === null || order.state !== "pending") {
+			if (order !== null && isAbandonCancellation(order)) {
+				await this.#stores.couponStore.releaseByOrder(orderId);
+			}
 			return { ok: true, cancelled: false, orderId: cart.orderId };
 		}
 		const res = await cancelOrder(
@@ -1552,11 +1581,16 @@ export class InProcessCommerceClient implements CommerceClient {
 			{
 				orderId,
 				reason: "customer_request",
-				detail: "Started a new cart",
-				cancelledBy: "shopper",
+				detail: ABANDON_DETAIL,
+				cancelledBy: ABANDON_CANCELLED_BY,
 				idempotencyKey: toIdempotencyKey(`shopper:new-cart:${cart.orderId}`),
 			},
 		);
+		// A concurrent cancel that won the race is released only if it was an
+		// abandon too — the recorded cancellation says whose it was.
+		if (res.ok && isAbandonCancellation(res.order)) {
+			await this.#stores.couponStore.releaseByOrder(orderId);
+		}
 		const cancelled = res.ok && res.cancelled;
 		if (cancelled) await this.#withdrawIntentsNow(orderId, startedAt);
 		return { ok: true, cancelled, orderId: cart.orderId };
