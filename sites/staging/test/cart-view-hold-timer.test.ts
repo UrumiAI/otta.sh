@@ -103,6 +103,30 @@ describe("the cart's hold countdown follows the hold-timer setting", () => {
 		expect(html).toContain("Held for you");
 	});
 
+	test.each([true, false])(
+		"the ribbon carries the line's name as data-product, timer %s (#570)",
+		async (timer) => {
+			const html = await render(cart(timer));
+			expect(html).toMatch(/\sdata-product="Otta Tee"/);
+			// Carried for the announcement only; the visible copy is unchanged.
+			expect(html.replace(/\sdata-product="Otta Tee"/, "")).not.toContain("data-product");
+		},
+	);
+
+	test.each([true, false])(
+		"a titleless line is announced by its SKU, timer %s (#570)",
+		async (timer) => {
+			const model = cart(timer);
+			const [first] = model.lineViews;
+			if (first === undefined) throw new Error("fixture");
+			const html = await render({
+				...model,
+				lineViews: [{ ...first, title: null, name: first.line.sku }],
+			});
+			expect(html).toMatch(/\sdata-product="OTTA-TEE"/);
+		},
+	);
+
 	test("an empty cart promises a hold only when the timer is shown", async () => {
 		const off = await render({ ...cart(false), empty: true, summary: null, lineViews: [] });
 		expect(off).toContain("Nothing here yet.");
