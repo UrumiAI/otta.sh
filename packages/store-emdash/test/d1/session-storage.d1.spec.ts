@@ -149,3 +149,31 @@ describe("claims and leases over sessions", () => {
 		expect((await claimant.emailClaims.get(ORPHAN))?.customerId).toBe(registered.id);
 	});
 });
+
+describe("read-after-write over sessions", () => {
+	it("sees its own write on the same session, with no commit in between", async () => {
+		const notes = sessions.request({ isWrite: true }).collection<Note>("notes");
+		await notes.put("a", { text: "v1" });
+		expect(await notes.get("a")).toEqual({ text: "v1" });
+		await notes.put("a", { text: "v2" });
+		expect(await notes.get("a")).toEqual({ text: "v2" });
+		expect((await notes.getVersioned("a"))?.value).toEqual({ text: "v2" });
+	});
+
+	it("sees a store's write on the same session: the account is found by address", async () => {
+		const h = makeIdentityHarness(sessions.request({ isWrite: true }).storage);
+		const registered = await h.customerStore.create({ email: email("raw@example.com") });
+		expect((await h.customerStore.getByEmail(email("raw@example.com")))?.id).toBe(registered.id);
+		expect((await h.customers.get(registered.id))?.email).toBe("raw@example.com");
+	});
+
+	it("sees a write committed by an earlier request when it presents that request's bookmark", async () => {
+		const writing = sessions.request({ isWrite: true });
+		await writing.collection<Note>("notes").put("a", { text: "written" });
+		const bookmark = writing.commit();
+		if (bookmark === undefined) throw new Error("an authenticated write must mint a bookmark");
+
+		const reading = sessions.request({ isWrite: false, bookmark });
+		expect(await reading.collection<Note>("notes").get("a")).toEqual({ text: "written" });
+	});
+});
