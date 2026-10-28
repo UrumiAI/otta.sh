@@ -356,6 +356,17 @@ export function createStripeWebhookSettleHandler(
 			throw err;
 		}
 
+		// #595: acknowledged with a 200, so Stripe will never flag it. On a shared
+		// account this is another tenant's payment; on an Otta-only one it means the
+		// store lost the order (a database restore, the wrong D1) and the payment
+		// needs a refund by hand. Info, not an anomaly: a shared account would flood
+		// the anomalies list.
+		if (!settled.ok && settled.reason === "ORDER_NOT_FOUND") {
+			console.info(
+				`[otta] ${STRIPE_WEBHOOK_SETTLE_ROUTE} verified event names no order in this store (ORDER_NOT_FOUND); acknowledged`,
+			);
+		}
+
 		// #531: record that a verified delivery arrived — Settings shows it. After
 		// verification only, and best-effort: `recordStripeWebhookVerified` never
 		// throws, so a kv failure is logged and Stripe still hears `settled`.
