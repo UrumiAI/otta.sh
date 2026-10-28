@@ -5,7 +5,7 @@
  *
  * Before: the product page read it twice (`getCartHoldTtlMinutes`, then
  * `getShowHoldTimer`) and /cart twice more than the cart's own lazy-expiry read
- * (`getShowHoldTimer`, `getSavedStoreCurrency`). The hold-window read had no
+ * (`getShowHoldTimer`, `getSavedStoreCurrency`; one read now, #570). The hold-window read had no
  * `catch`, so a busy settings read 500ed the product page.
  *
  * Every case goes through the real route handler over a real document store; the
@@ -109,7 +109,7 @@ describe("storefront pages read the settings once per render (#547)", () => {
 		expect(reads).toBe(2);
 	});
 
-	test("the cart page reads the settings document once beyond its own lazy-expiry read", async () => {
+	test("the cart page reads the settings document once, for the lazy expiry and the page alike (#570)", async () => {
 		const { cartId } = await h.client.createCart("USD");
 		let reads = 0;
 		const result = await cartRead(
@@ -117,9 +117,10 @@ describe("storefront pages read the settings once per render (#547)", () => {
 			withSettingsHook(h.ctx.storage as StorageAccess, () => void reads++),
 		);
 		expect(result).toMatchObject({ ok: true, showHoldTimer: false });
-		// One for `getCart`'s hold-window (the domain's lazy expiry), one for the page
-		// (was two for the page: the timer flag and the saved currency).
-		expect(reads).toBe(2);
+		// One read serves `getCart`'s hold window (the domain's lazy expiry) AND the
+		// page's timer flag and saved currency (`getCartWithSettings`); was two, and
+		// before #547 three.
+		expect(reads).toBe(1);
 	});
 
 	test("a busy settings read does not fail the product page: no hold note, default window", async () => {

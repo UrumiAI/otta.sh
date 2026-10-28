@@ -4,7 +4,9 @@
  * price display reads the settings separately (`getShopPriceDisplay`).
  * {@link readStorefrontSettings} is display-only: a busy or failed read answers
  * the defaults below instead of failing the page, so the page renders with the
- * timer hidden and no stale-currency notice rather than failing.
+ * timer hidden rather than failing. Only the product page (`pdp-route.ts`)
+ * degrades this way now; /cart and /checkout read the settings with the cart
+ * (`getCartWithSettings`), and an unreadable document fails those renders.
  */
 import { DEFAULT_OPERATIONAL_SETTINGS } from "@urumi.ai/otta-domain";
 import type { CommerceClient, StorefrontSettings } from "../product-commerce/commerce-client.js";

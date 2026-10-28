@@ -60,15 +60,24 @@ export interface HoldFrame {
  * countdown, so the shopper was never shown a hold) says nothing while the hold
  * is live, and on release reads out its note — `quietAnnounce` — rather than a
  * state label.
+ *
+ * A cart can have several lines lapse in the same second, each with its own
+ * ribbon and its own region, and "Hold released" read out three times says
+ * nothing about WHICH line. The announcement therefore leads with the line's
+ * product when the ribbon knows it (#570). The visible text is untouched.
  */
 function announceFor(
 	state: HoldState,
 	shownState: string,
 	quietAnnounce: string | undefined,
+	product: string | undefined,
 ): string | null {
 	if (state === shownState) return null;
-	if (quietAnnounce === undefined) return HOLD_LABELS[state];
-	return state === "released" ? quietAnnounce : null;
+	const said = quietAnnounce === undefined ? HOLD_LABELS[state] : quietAnnounce;
+	if (quietAnnounce !== undefined && state !== "released") return null;
+	// Nothing to say stays nothing: never a bare "Product: ".
+	if (said === "") return null;
+	return product ? `${product}: ${said}` : said;
 }
 
 /**
@@ -88,6 +97,7 @@ export function holdFrame(
 	shownState: string,
 	now: number,
 	quietAnnounce?: string,
+	product?: string,
 ): HoldFrame | null {
 	if (Number.isNaN(expiry)) return null;
 	const left = Math.max(0, Math.floor((expiry - now) / 1000));
@@ -101,7 +111,7 @@ export function holdFrame(
 		// Clamped: a hold longer than the window the page assumed must not draw
 		// a fill wider than its track.
 		fill: `${Math.min(100, (left / windowSeconds) * 100).toFixed(1)}%`,
-		announce: announceFor(state, shownState, quietAnnounce),
+		announce: announceFor(state, shownState, quietAnnounce, product),
 		live: left > 0,
 	};
 }
@@ -120,6 +130,9 @@ export interface HoldRibbonPort {
 	/** Set ⇒ a QUIET ribbon (no countdown shown): the text its release announces,
 	 *  and nothing is announced before then. */
 	readonly quietAnnounce?: string;
+	/** The line's product name, which every announcement leads with so several
+	 *  lines lapsing together can be told apart (#570). */
+	readonly product?: string;
 	/** Put a frame on screen. */
 	render(frame: HoldFrame): void;
 }
@@ -139,6 +152,7 @@ export function tickHoldRibbons(ribbons: readonly HoldRibbonPort[], now: number)
 			ribbon.shownState,
 			now,
 			ribbon.quietAnnounce,
+			ribbon.product,
 		);
 		if (frame === null) continue;
 		if (frame.live) live = true;

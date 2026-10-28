@@ -37,10 +37,12 @@ function ribbon(
 	secondsLeft: number,
 	shownState = "",
 	quietAnnounce?: string,
+	product?: string,
 ): HoldRibbonPort & { frames: HoldFrame[] } {
 	const frames: HoldFrame[] = [];
 	return {
 		...(quietAnnounce === undefined ? {} : { quietAnnounce }),
+		...(product === undefined ? {} : { product }),
 		expiry: T0 + secondsLeft * 1000,
 		window: HOLD_WINDOW_SECONDS,
 		shownState,
@@ -195,6 +197,63 @@ describe("a quiet ribbon (the countdown is off, #547) announces only its release
 		expect(r.frames[0]?.state).toBe("expiring");
 		tickHoldRibbons([r], T0 + 31_000);
 		expect(r.frames[1]?.state).toBe("released");
+	});
+});
+
+describe("a lapsed line names its product, so several lapsing together stay distinguishable (#570)", () => {
+	const NOTE = "This item leaves your cart when the page reloads — add it again.";
+	const run = (rs: ReturnType<typeof ribbon>[]): void => {
+		for (const second of [0, 30, 61, 200]) tickHoldRibbons(rs, T0 + second * 1000);
+	};
+
+	test("timer on: the released announcement leads with the product", () => {
+		const r = ribbon(120, "held", undefined, "Ethiopia Guji");
+		run([r]);
+		expect(announcements(r)).toEqual([
+			`Ethiopia Guji: ${HOLD_LABELS.expiring}`,
+			`Ethiopia Guji: ${HOLD_LABELS.released}`,
+		]);
+	});
+
+	test("timer off: the release announces the product and the note", () => {
+		const r = ribbon(120, "held", NOTE, "Ethiopia Guji");
+		run([r]);
+		expect(announcements(r)).toEqual([`Ethiopia Guji: ${NOTE}`]);
+	});
+
+	test("two lines lapsing together announce two different sentences (both modes)", () => {
+		for (const note of [undefined, NOTE]) {
+			const a = ribbon(100, "held", note, "Ethiopia Guji");
+			const b = ribbon(100, "held", note, "Kenya AA");
+			run([a, b]);
+			const [x] = announcements(a).slice(-1);
+			const [y] = announcements(b).slice(-1);
+			expect(x).toContain("Ethiopia Guji");
+			expect(y).toContain("Kenya AA");
+			expect(x).not.toBe(y);
+		}
+	});
+
+	test('an empty announcement text stays no announcement, never a bare "Product: "', () => {
+		const r = ribbon(120, "held", "", "Ethiopia Guji");
+		run([r]);
+		expect(announcements(r)).toEqual([]);
+	});
+
+	test("a product name with quotes, angle brackets and ampersands is announced verbatim", () => {
+		const name = `Mug "Big" <b> & co`;
+		const r = ribbon(120, "held", NOTE, name);
+		run([r]);
+		const [said] = announcements(r);
+		expect(said).toBe(`${name}: ${NOTE}`);
+		// The script writes it with `announce.textContent` (pinned in hold-ribbon.test.ts),
+		// so it is text, never parsed as markup.
+	});
+
+	test("a line with no product keeps the bare text", () => {
+		const r = ribbon(120, "held", NOTE);
+		run([r]);
+		expect(announcements(r)).toEqual([NOTE]);
 	});
 });
 

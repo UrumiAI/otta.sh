@@ -54,7 +54,6 @@ import {
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import { PRICES_AS_ENTERED, priceDisplayOrEntered } from "../catalog/shop-display.js";
-import { readStorefrontSettings } from "./storefront-settings.js";
 import type {
 	CartFailureReason,
 	CartLineWire,
@@ -221,8 +220,10 @@ export type CartCreateRouteResult =
  * The read's stale-currency fact (#440): the cart is ACTIVE and in another
  * currency than the one the operator saved, so nothing priced in the store
  * currency can be checked out of it. The storefront says so and offers
- * `cart/create` with `replacesStaleCurrencyCartId`. `null` otherwise — including
- * when the settings read failed, which never fails the cart read.
+ * `cart/create` with `replacesStaleCurrencyCartId`. `null` otherwise. The saved
+ * currency rides the same settings read as the cart's hold window, so an
+ * unreadable settings document fails the whole read with RENDER_FAILED rather
+ * than answering a cart without the notice.
  */
 export interface CartStaleCurrencyWire {
 	cartCurrency: string;
@@ -236,7 +237,8 @@ export type CartReadRouteResult =
 			pricing: CartPricingWire;
 			staleCurrency: CartStaleCurrencyWire | null;
 			/** Whether to show shoppers the hold countdown (the admin's
-			 *  `showHoldTimer`; off by default, and off when the read fails). */
+			 *  `showHoldTimer`; off by default; an unreadable settings document
+			 *  fails the read with RENDER_FAILED instead). */
 			showHoldTimer: boolean;
 	  }
 	| { ok: false; error: "INVALID_CART_ID" }
@@ -420,12 +422,9 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 			if (!isCartIdToken(cartId)) return { ok: false, error: "INVALID_CART_ID" } as const;
 
 			const client = await makeCommerceClient(ctx);
-			const [result, settings] = await Promise.all([
-				client.getCart(cartId),
-				// Display only — a failed read hides the timer and the stale-currency
-				// notice rather than failing the cart.
-				readStorefrontSettings(STOREFRONT_CART_READ_ROUTE, client),
-			]);
+			// The settings (timer flag, saved currency) ride the read `getCart` already
+			// makes for the hold window — one settings read, not two.
+			const { cart: result, settings } = await client.getCartWithSettings(cartId);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			const cart = result.cart;
 			const locale = sanitizeLocale(routeCtx.input.locale);

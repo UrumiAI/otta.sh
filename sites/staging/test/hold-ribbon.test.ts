@@ -141,6 +141,23 @@ describe("HoldRibbon — motion, and the reduced-motion contract (§6, §11)", (
 		);
 	});
 
+	test("the product rides along as data-product for the announcement, and is never drawn (#570)", async () => {
+		const html = await render({ expiresAt: inSeconds(300), product: "Kenya AA" });
+		expect(html).toContain('data-product="Kenya AA"');
+		expect(html.replace(/data-product="[^"]*"/, "")).not.toContain("Kenya AA");
+		expect(await render({ expiresAt: inSeconds(300) })).not.toContain("data-product");
+	});
+
+	test('a product name with ", < and & is escaped in data-product, and round-trips (#570)', async () => {
+		const name = `Mug "Big" <b> & co`;
+		const html = await render({ expiresAt: inSeconds(300), product: name });
+		// The quote and ampersand are entity-escaped, so the value cannot break out
+		// of the attribute (`<` is legal inside a quoted value).
+		const attr = /data-product="([^"]*)"/.exec(html)?.[1] ?? "";
+		expect(attr).toBe("Mug &quot;Big&quot; <b> &amp; co");
+		expect(html).not.toContain('"Big"');
+	});
+
 	test("the fill is rounded, not a float with sixteen digits in the markup", async () => {
 		const raw = /--pct: ([\d.]+)%/.exec(await render({ expiresAt: inSeconds(299) }))?.[1] ?? "";
 		expect(raw).toMatch(/^\d+\.\d$/);
@@ -306,6 +323,10 @@ describe("HoldClock — the client script", () => {
 		// writing the label on every frame.
 		expect(script).toContain("frame.announce !== null");
 		expect(script.match(/announce\.textContent/g) ?? []).toHaveLength(1);
+	});
+
+	test("it hands the ribbon's data-product to the tick for the announcement (#570)", () => {
+		expect(script).toContain("el.dataset.product");
 	});
 
 	test("a countdown-off ribbon is quiet: the script derives quietAnnounce from data-countdown and the note", () => {
