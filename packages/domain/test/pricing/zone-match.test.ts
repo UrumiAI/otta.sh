@@ -27,7 +27,7 @@ const physical = (country: string, region: string | null = null) => ({
 const required = (country: string) => ({ status: "region_code_required", country });
 
 /** The store's base address: never asked for a narrower region. */
-const storeBase = (country: string, region: string) => ({
+const storeBase = (country: string, region: string | null) => ({
 	...physical(country, region),
 	askForNarrower: false,
 });
@@ -228,6 +228,16 @@ describe("resolveShippingZone", () => {
 			).toEqual(matched("z-gb", "GB"));
 			// Nothing to fall back to: unmatched, never region_code_required.
 			expect(resolveShippingZone([TF], storeBase("ES", "CN"))).toEqual({ status: "unmatched" });
+		});
+
+		test("#594: a base address with no region falls back to the country zone, never region_code_required", () => {
+			const GB = zone("z-gb", ["GB"]);
+			const LND = zone("z-lnd", ["GB-LND"]);
+			expect(resolveShippingZone([GB, LND], storeBase("GB", null))).toEqual(matched("z-gb", "GB"));
+			// No country zone to fall back to: unmatched.
+			expect(resolveShippingZone([LND], storeBase("GB", null))).toEqual({ status: "unmatched" });
+			// A shopper with no region is still asked for one.
+			expect(resolveShippingZone([GB, LND], physical("GB"))).toEqual(required("GB"));
 		});
 
 		test("a blank region still asks for one when only a parent is zoned", () => {
