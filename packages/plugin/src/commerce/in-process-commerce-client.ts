@@ -1572,6 +1572,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		const order = await this.#stores.orderStore.getById(orderId);
 		if (order === null || order.state !== "pending") {
 			if (order !== null && isAbandonCancellation(order)) {
+				// A replay of an abandon whose first call died after its cancel:
+				// finish what it left, payment first. Both are keyed no-ops once done.
+				await this.#withdrawIntentsNow(orderId, startedAt);
 				await this.#stores.couponStore.releaseByOrder(orderId);
 			}
 			return { ok: true, cancelled: false, orderId: cart.orderId };
@@ -1586,13 +1589,15 @@ export class InProcessCommerceClient implements CommerceClient {
 				idempotencyKey: toIdempotencyKey(`shopper:new-cart:${cart.orderId}`),
 			},
 		);
+		// The payment is withdrawn FIRST: it never throws and has a time budget,
+		// so a slow or failing coupon release can neither skip nor starve it.
+		const cancelled = res.ok && res.cancelled;
+		if (cancelled) await this.#withdrawIntentsNow(orderId, startedAt);
 		// A concurrent cancel that won the race is released only if it was an
 		// abandon too — the recorded cancellation says whose it was.
 		if (res.ok && isAbandonCancellation(res.order)) {
 			await this.#stores.couponStore.releaseByOrder(orderId);
 		}
-		const cancelled = res.ok && res.cancelled;
-		if (cancelled) await this.#withdrawIntentsNow(orderId, startedAt);
 		return { ok: true, cancelled, orderId: cart.orderId };
 	}
 
