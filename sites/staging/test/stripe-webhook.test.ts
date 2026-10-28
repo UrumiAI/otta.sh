@@ -220,6 +220,12 @@ describe("POST /webhooks/stripe — the raw bytes reach the plugin unchanged", (
  * counts what the endpoint actually drew out of it, and `cancelled` records
  * that it stopped drawing.
  */
+/** The byte a streamed body carries at offset `p` — not periodic in any power of
+ *  two, so a chunk joined at the wrong offset or out of order changes the bytes. */
+function streamedByteAt(p: number): number {
+	return (p + Math.floor(p / 251)) & 0xff;
+}
+
 function streamedContext(
 	handler: unknown,
 	total: number,
@@ -234,8 +240,10 @@ function streamedContext(
 				return;
 			}
 			const size = Math.min(chunk, total - pulled);
+			const piece = new Uint8Array(size);
+			for (let i = 0; i < size; i++) piece[i] = streamedByteAt(pulled + i);
 			pulled += size;
-			controller.enqueue(new Uint8Array(size).fill(0x41));
+			controller.enqueue(piece);
 		},
 		cancel() {
 			cancelled = true;
@@ -307,8 +315,8 @@ describe("POST /webhooks/stripe — the body is capped BEFORE it is buffered (#6
 
 		expect(response.status).toBe(200);
 		expect(calls).toHaveLength(1);
-		const decoded = Buffer.from(calls[0]!.input["rawBodyBase64"] as string, "base64");
-		expect(decoded.byteLength).toBe(100 * 1024);
+		const expected = Uint8Array.from({ length: 100 * 1024 }, (_, p) => streamedByteAt(p));
+		expect(calls[0]!.input["rawBodyBase64"]).toBe(Buffer.from(expected).toString("base64"));
 	});
 
 	test("every byte value, across several base64 chunk boundaries, round-trips exactly", async () => {

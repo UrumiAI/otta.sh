@@ -132,6 +132,12 @@ export const POST: APIRoute = async (context) => {
 	// The bytes, untouched and capped — see the module doc. Never `json()`.
 	const rawBody = await readCappedBody(context.request, MAX_WEBHOOK_BYTES);
 	if (rawBody === null) {
+		console.warn(
+			"[site-staging] stripe webhook refused: body over",
+			MAX_WEBHOOK_BYTES,
+			"bytes; declared content-length",
+			context.request.headers.get("content-length"),
+		);
 		return new Response(JSON.stringify({ ok: false, reason: "PAYLOAD_TOO_LARGE" }), {
 			status: 413,
 			headers: { "Content-Type": "application/json" },
