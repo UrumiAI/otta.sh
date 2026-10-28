@@ -25,7 +25,7 @@ import {
 	playgroundRouteCaller,
 	playgroundWaitPath,
 	prepareDemoCommerce,
-	stampPlaygroundUser,
+	withPlaygroundCreatedAt,
 	type PlaygroundPorts,
 } from "../src/lib/playground-commerce.js";
 import { DEMO_PRICING, type ExistingCommerce } from "../scripts/seed-demo-commerce.js";
@@ -326,37 +326,34 @@ describe("playgroundRouteCaller", () => {
 	});
 });
 
-describe("stampPlaygroundUser", () => {
-	test("gives the session user the createdAt the admin console route needs", () => {
-		const user: Record<string, unknown> = {
+describe("withPlaygroundCreatedAt", () => {
+	test("returns a copy with the createdAt the admin console route needs", () => {
+		const shared = Object.freeze({
 			id: "playground-admin",
 			email: "playground@emdashcms.com",
 			name: "Playground User",
 			role: 50,
-		};
-		stampPlaygroundUser(user);
+		});
+		const user = withPlaygroundCreatedAt(shared) as Record<string, unknown>;
+		expect(user).not.toBe(shared);
+		expect(user).toMatchObject(shared);
 		expect(user["createdAt"]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
-		expect(user["id"]).toBe("playground-admin");
+		expect(shared).not.toHaveProperty("createdAt");
 	});
 
-	test("leaves a usable timestamp alone and replaces an invalid one", () => {
+	test("returns a user with a usable timestamp as it is, and replaces an invalid one", () => {
 		const stamped = { createdAt: "2026-10-24T21:35:43.995Z" };
-		stampPlaygroundUser(stamped);
-		expect(stamped.createdAt).toBe("2026-10-24T21:35:43.995Z");
+		expect(withPlaygroundCreatedAt(stamped)).toBe(stamped);
+		const dated = { createdAt: new Date("2026-10-24T21:35:43.995Z") };
+		expect(withPlaygroundCreatedAt(dated)).toBe(dated);
 
-		const date = new Date("2026-10-24T21:35:43.995Z");
-		const dated = { createdAt: date };
-		stampPlaygroundUser(dated);
-		expect(dated.createdAt).toBe(date);
-
-		const invalid: { createdAt: unknown } = { createdAt: new Date("not a date") };
-		stampPlaygroundUser(invalid);
-		expect(typeof invalid.createdAt).toBe("string");
+		const invalid = withPlaygroundCreatedAt({ createdAt: new Date("not a date") });
+		expect(typeof (invalid as { createdAt: unknown }).createdAt).toBe("string");
 	});
 
-	test("ignores a missing user", () => {
-		expect(() => stampPlaygroundUser(undefined)).not.toThrow();
-		expect(() => stampPlaygroundUser(null)).not.toThrow();
+	test("passes a missing user through", () => {
+		expect(withPlaygroundCreatedAt(undefined)).toBeUndefined();
+		expect(withPlaygroundCreatedAt(null)).toBeNull();
 	});
 });
 

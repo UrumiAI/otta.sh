@@ -32,7 +32,7 @@ import {
 	playgroundRouteCaller,
 	playgroundWaitPath,
 	prepareDemoCommerce,
-	stampPlaygroundUser,
+	withPlaygroundCreatedAt,
 	type PrepareResult,
 } from "./playground-commerce.js";
 
@@ -56,7 +56,7 @@ export async function playgroundGate(context: APIContext): Promise<Response | nu
 	if (!isPlaygroundBuild()) return null;
 	// Every request, not just documents: the admin's console calls are
 	// fetches, and they dispatch with this same user.
-	stampPlaygroundUser(context.locals.user);
+	context.locals.user = withPlaygroundCreatedAt(context.locals.user) as typeof context.locals.user;
 	const { request, url } = context;
 	if (
 		!isPlaygroundDocument(
