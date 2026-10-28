@@ -93,8 +93,14 @@ export interface CouponCollectionIndexDeclaration {
  *
  * The two counter collections are reached by document id alone and declare
  * nothing. Neither declares a unique index: uniqueness here is the claim
- * document and its create-if-absent write, never an index (no physical index
- * exists in any tier).
+ * document and its create-if-absent write, never an index.
+ *
+ * A declared field is, first, the queryable-field allow-list. EmDash 1.3.1 also
+ * materializes a physical index for it (`syncDeclaredStorageIndexes`, on the
+ * first scheduler tick after the declaration ships), but a query on a declared
+ * field works immediately either way, before that index exists. So a newly
+ * declared field — `idempotencyKey`, #598 — needs no migration, and every
+ * redemption document already carries it, so none needs a backfill.
  */
 export const COUPON_COLLECTIONS: Readonly<Record<string, CouponCollectionIndexDeclaration>> = {
 	[COUPONS_COLLECTION]: { indexes: ["createdAt"] },

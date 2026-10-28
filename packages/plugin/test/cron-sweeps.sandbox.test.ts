@@ -134,7 +134,7 @@ function leg(summary: CommerceSweepSummary, name: SweepLeg): SweepLegOutcome {
  *  hold-related leg acts on. */
 async function placeOrder(
 	suffix: string,
-	options: { at: Date; holdExpiresAt: string },
+	options: { at: Date; holdExpiresAt: string; appliedCouponCode?: string },
 ): Promise<{ id: string; sku: string; reservationId: string }> {
 	const s = stores(options.at);
 	const sku = `CRON-${suffix}`;
@@ -176,7 +176,14 @@ async function placeOrder(
 				reservationId: toReservationId(held.reservationId),
 			},
 		],
-		totals: { subtotal: cents(3998), total: cents(3998), currency: currency("USD") },
+		totals: {
+			subtotal: cents(3998),
+			total: cents(3998),
+			currency: currency("USD"),
+			...(options.appliedCouponCode !== undefined
+				? { appliedCouponCode: options.appliedCouponCode }
+				: {}),
+		},
 	});
 	return { id, sku, reservationId: held.reservationId };
 }
@@ -926,6 +933,8 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		const placed = await placeOrder(suffix, {
 			at: new Date(Date.now() - HOUR_MS),
 			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+			// The persisted order applied this coupon: that is what makes it the holder.
+			appliedCouponCode: `SWEEP${suffix.toUpperCase()}`,
 		});
 		await s.couponStore.create({
 			id: couponId,
@@ -962,6 +971,46 @@ describe("the five new sweepers, each from an injected partial state", () => {
 			createdAt: new Date().toISOString(),
 		});
 		expect(blocked).toMatchObject({ ok: false, reason: "COUPON_EXHAUSTED" });
+	}, 180_000);
+
+	test("coupon-orphans frees a redemption under an order's key when that order applied no coupon (#598 review)", async () => {
+		// Call 1 redeemed under the cart's key and died before its insert; the shopper
+		// dropped the coupon and placed again under the SAME key. The order the key now
+		// names never applied the coupon, so the redemption is dead and must be freed.
+		const suffix = "rebound-dead";
+		const couponId = `coupon-${suffix}`;
+		const s = stores();
+		const placed = await placeOrder(suffix, {
+			at: new Date(Date.now() - HOUR_MS),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+		});
+		await s.couponStore.create({
+			id: couponId,
+			code: "SWEEPREBOUNDDEAD",
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: cents(0),
+			startsAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
+			expiresAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+			maxUses: 1,
+			maxUsesPerCustomer: null,
+		});
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(`${placed.id}-never-persisted`),
+			idempotencyKey: idempotencyKey(`create-${suffix}`),
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		expect(claimed.ok).toBe(true);
+
+		await sweepInProcess({ cursors: freshCursors() });
+
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(0);
+		// The order itself is untouched.
+		expect((await s.orderStore.getById(toOrderId(placed.id)))?.state).toBe("pending");
 	}, 180_000);
 
 	test("coupon-orphans heals an EXPIRED order whose coupon release was lost to a crash — exactly once", async () => {

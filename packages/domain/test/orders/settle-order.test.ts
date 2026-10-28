@@ -340,6 +340,7 @@ describe("settleOrder", () => {
 			createFromCart: (i) => h.orderStore.createFromCart(i),
 			getById: (id) => h.orderStore.getById(id),
 			getByIdempotencyKey: (k) => h.orderStore.getByIdempotencyKey(k),
+			peekByIdempotencyKey: (k) => h.orderStore.peekByIdempotencyKey(k),
 			markPaid: async (id) => {
 				await expireOrders(h.expireDeps);
 				return h.orderStore.markPaid(id);

@@ -49,6 +49,19 @@ export interface OrderStore {
 	 */
 	getByIdempotencyKey(key: IdempotencyKey): Promise<Order | null>;
 	/**
+	 * What a creation key names, as a PURE read — for the sweeps (#598 review).
+	 * `getByIdempotencyKey` may write: a store whose creation is claim-then-create
+	 * (the document store) COMPLETES a key it finds still claimed, which persists the
+	 * order and reports its arrival. A sweep must never conjure an order for a
+	 * checkout that crashed mid-create, so it reads through this instead.
+	 *
+	 * `minted`: the key's order is durable. `claimed`: the key was claimed but its
+	 * order was never created; `order` is the PREPARED order the claim carries — it
+	 * does not exist, and any same-key replay (or `getByIdempotencyKey`) would create
+	 * exactly it. A store with no claim step only ever answers `minted` or null.
+	 */
+	peekByIdempotencyKey(key: IdempotencyKey): Promise<OrderKeyPeek | null>;
+	/**
 	 * Guarded `pending → paid` flip. 0 rows (not pending) ⇒ false.
 	 *
 	 * `providerRef` is the payment that settled the order: a won flip records it as
@@ -633,6 +646,9 @@ export interface OrderStore {
 
 /** The compare-and-set guard of {@link OrderStore.flagReconciliation}: the flag
  *  the caller read, which must still be the live one for the write to apply. */
+/** {@link OrderStore.peekByIdempotencyKey}'s answer. */
+export type OrderKeyPeek = { state: "minted"; order: Order } | { state: "claimed"; order: Order };
+
 export interface ReconciliationFlagGuard {
 	expectedFlag: string | null;
 }

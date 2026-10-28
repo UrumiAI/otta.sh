@@ -162,6 +162,7 @@ import {
 	orderHoldingRedemption,
 	orderId as toOrderId,
 	productId as toProductId,
+	redemptionIsOrphaned,
 	retryLatePaymentRefunds,
 	softDeleteProductCommerce,
 	UnitBackoff,
@@ -648,7 +649,10 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		"expire-holds": { entry: 2, unit: 14 },
 		// The flip, the email locator, the rollup delta, the batched hold release and
 		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22). A bigger order
-		// costs more, and the gate learns it from the first unit it sees.
+		// costs more, and the gate learns it from the first unit it sees. So does one
+		// with a coupon applied: its `releaseByOrder` is two indexed scans (by the
+		// order's id and by its creation key, #598) plus the release — 20, measured in
+		// cron-leg-costs.test.ts.
 		"expire-orders": { entry: 1, unit: 13 },
 		"hold-intents": { entry: 1, unit: 14 },
 		// entry: the two arms' first page reads; unit: one delete.
@@ -661,7 +665,12 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// not spend its whole allowance re-reading pages. The leg bounds a bigger day
 		// by the calls it has left (`healReportingRollups`), so it never exceeds them.
 		"reporting-heal": { entry: 1, unit: 8 },
-		"coupon-orphans": { entry: 2, unit: 7 },
+		// unit: judging one redemption, then its release (six calls). The judging is
+		// `orderHoldingRedemption`: the order read by id, and on a miss the key PEEK
+		// (the key, then the order it names) and the coupon read that confirms the key's
+		// order applied this coupon (#598) — 4 at worst, so 10 (measured; 8 when no
+		// order exists by id or key).
+		"coupon-orphans": { entry: 2, unit: 10 },
 		// entry: the state read, the one page of rows, and the circuit breaker's CMS list
 		// (`CONTENT_LIST_QUERIES`). unit: one row's reads at worst — two misses and then a
 		// document found (`ORPHAN_ROW_READ_QUERIES`) — then, for a confirmed orphan in a
@@ -3091,10 +3100,29 @@ function addDays(day: string, delta: number): string {
  * order that never became durable: the coupon looks exhausted, and the customer
  * looks like they already used it.
  *
- * WHAT IS RELEASED: a redemption whose order does not exist (the domain's rule —
- * `reconcileCouponRedemptions` in `@urumi.ai/otta-domain` releases exactly the case
- * where `orderHoldingRedemption` finds no order by the redemption's id or its
- * idempotency key), OR whose order is `expired`.
+ * WHAT IS RELEASED: a redemption no order holds (the domain's rule —
+ * `reconcileCouponRedemptions` in `@urumi.ai/otta-domain` releases exactly what
+ * `redemptionIsOrphaned` says of `orderHoldingRedemption`: no order by the
+ * redemption's id, and none by its idempotency key that APPLIED its coupon, or a
+ * key claimed but never created whose hold has lapsed), OR whose order is `expired`.
+ *
+ * THE KEY IS PEEKED, NOT RESOLVED (#598 review). `OrderStore.getByIdempotencyKey`
+ * completes a key it finds still `claimed` — it writes the order, its by-sku
+ * pointers and the key promotion, and reports the arrival to the rollups — so a
+ * sweep calling it would conjure an order for a checkout that crashed mid-create,
+ * which `expire-orders` would then mail a "Checkout expired" notice about. The leg
+ * reads `peekByIdempotencyKey` instead. A `claimed` key is treated as the pending
+ * order it would become: inside its hold the walk stops (as for a pending order
+ * waiting on expiry); past it the redemption is released, because no order exists
+ * for `expire-orders` to list and free it. The residual — a same-key replay arriving
+ * after that release, completing the claim and paying for it — is the one this leg
+ * always had for this window (before #598 it judged by `getById` alone, which
+ * released it too); it needs a crash mid-create and a replay later than the grace.
+ *
+ * WHAT THE LOOKUP COSTS: one order read when the redemption's id names its order;
+ * otherwise that miss, the key peek (the key, then the order it names) and — when
+ * the key's order applied a coupon — one coupon read: four calls at worst, before
+ * a release (`LEG_QUERY_COSTS["coupon-orphans"]`, measured in cron-leg-costs.test.ts).
  *
  * THE EXPIRED ARM IS THE RETRY FOR `expireOrders`, not a redundancy. That use-case
  * makes the guarded `pending → expired` flip durable FIRST and calls
@@ -3177,19 +3205,29 @@ async function releaseOrphanedRedemptions(
 	let released = 0;
 	const walked = await walkWindow(window, budget, "coupon-orphans", async (item) => {
 		// By id, then by idempotency key (#598): a same-key checkout replay can persist
-		// the order under another id than its redemption names, and that order holds it.
-		const order = await orderHoldingRedemption(stores.orderStore, {
+		// the order under another id than its redemption names, and that order holds it
+		// — when it applied this coupon. The key is PEEKED: a claimed key is reported,
+		// never completed (see above).
+		const holder = await orderHoldingRedemption(stores, {
 			orderId: toOrderId(item.data.orderId),
 			idempotencyKey: toIdempotencyKey(item.data.idempotencyKey),
+			couponId: item.data.couponId,
 		});
+		// A claim whose order was never created, still inside its hold, is judged
+		// once the hold lapses — bounded, as a pending order's wait for expiry is.
+		if (holder !== null && !holder.durable && !redemptionIsOrphaned(holder, nowIso)) {
+			return "stop";
+		}
+		const order = holder?.durable === true ? holder.order : null;
 		// An order the expiry has not reached yet (pending, its hold already lapsed)
 		// cannot be judged: it is about to become `expired`, which this leg would then
 		// owe a release. Wait for it — the walk stops here, the cursor stays before it.
 		if (order !== null && order.state === "pending" && order.holdExpiresAt <= nowIso) {
 			return "stop";
 		}
-		// A missing order is an orphan; an EXPIRED one is owed its coupon back and may
-		// have lost the release to a crash (see above). Every other state keeps it.
+		// No holder (or a lapsed claim) is an orphan; an EXPIRED order is owed its
+		// coupon back and may have lost the release to a crash (see above). Every other
+		// state keeps it.
 		if (order !== null && order.state !== "expired") return;
 		await stores.couponStore.release(item.data.redemptionId);
 		released++;

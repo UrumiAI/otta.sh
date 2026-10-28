@@ -109,3 +109,79 @@ test("expiring a same-key replay's persisted order frees the coupon use it holds
 	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(0);
 	expect(await h.couponStore.listRedemptionsCreatedBefore(FAR_FUTURE)).toEqual([]);
 });
+
+/**
+ * The key fallback's limit (#598 review). A redemption is claimed BEFORE its order
+ * insert, so a call that dies in between leaves it bound to the key alone — and the
+ * shopper can then drop or swap the coupon and place again under the SAME key. The
+ * order that persists under the key never applied the stranded coupon, so it holds
+ * none of its use: the redemption is dead and the sweep must free it. Otherwise a
+ * paid order leaks the use forever, and a coupon-less one never reaches the
+ * expiry's `releaseByOrder` at all.
+ */
+async function strandThenPlace(couponCode?: string): Promise<{ h: OrderHarness; order: Order }> {
+	const h = makeOrderHarness();
+	await h.seedPhysical({ productId: "p1", sku: "SKU-1", priceCents: 1000, title: "W", onHand: 10 });
+	for (const [id, code] of [
+		["cpn", "SAVE5"],
+		["cpn-other", "OTHER5"],
+	] as const) {
+		await h.couponStore.create({
+			id,
+			code,
+			type: "fixed_amount",
+			amountCents: cents(500),
+			rateBps: null,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 1,
+			maxUsesPerCustomer: null,
+		});
+	}
+	const key = idempotencyKey("k-strand");
+	// Call 1 redeemed SAVE5 under the key, then its isolate died before the insert.
+	const stranded = await h.couponStore.redeem({
+		couponId: "cpn",
+		orderId: orderId("o-never-inserted"),
+		idempotencyKey: key,
+		createdAt: h.clock.now().toISOString(),
+	});
+	expect(stranded.ok).toBe(true);
+	const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+	const placed = await createOrderFromCart(h.createDeps, {
+		cartId,
+		idempotencyKey: key,
+		buyerRef: "b@example.com",
+		paymentMethod: "stripe",
+		...(couponCode !== undefined ? { couponCode } : {}),
+	});
+	if (!placed.ok) throw new Error(placed.reason);
+	expect(placed.order.totals.appliedCouponCode).toBe(couponCode ?? null);
+	return { h, order: placed.order };
+}
+
+test("the orphan sweep frees a redemption whose key's order applied no coupon (#598 review)", async () => {
+	const { h } = await strandThenPlace();
+	h.clock.advance(10 * 60 * 1000);
+	const released = await reconcileCouponRedemptions(
+		{ couponStore: h.couponStore, orderStore: h.orderStore, clock: h.clock },
+		{ graceMs: 5 * 60 * 1000 },
+	);
+	expect(released).toBe(1);
+	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(0);
+});
+
+test("the orphan sweep frees a redemption whose key's order applied a DIFFERENT coupon, and keeps that one (#598 review)", async () => {
+	const { h } = await strandThenPlace("OTHER5");
+	h.clock.advance(10 * 60 * 1000);
+	const released = await reconcileCouponRedemptions(
+		{ couponStore: h.couponStore, orderStore: h.orderStore, clock: h.clock },
+		{ graceMs: 5 * 60 * 1000 },
+	);
+	expect(released).toBe(1);
+	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(0);
+	expect((await h.couponStore.findById("cpn-other"))?.usesCount).toBe(1);
+});

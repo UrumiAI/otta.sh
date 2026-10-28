@@ -103,6 +103,14 @@ export interface CouponStore {
 	 * call's redemption, which names that call's order id, while the order row —
 	 * deduped on the same key — can persist under the second call's id. The key is
 	 * what the two share, and an order store holds at most one order per key.
+	 *
+	 * A redemption under the key is released even when the order never applied its
+	 * coupon (#598 review: a call died after redeeming, and the shopper placed again
+	 * under the same key with another coupon or none). That is coherent with the
+	 * sweeps, not a second rule: `orderHoldingRedemption` says no order holds such a
+	 * redemption, so it is dead, and the sweep would free it anyway. No OTHER order
+	 * can hold it — the key names this order alone — so the release never takes a
+	 * live use. (A coupon-less order never calls this; the sweep frees those.)
 	 */
 	releaseByOrder(order: RedemptionOrderRef): Promise<number>;
 

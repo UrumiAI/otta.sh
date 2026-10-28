@@ -27,9 +27,22 @@ import {
 	type SettleDeps,
 } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
+import {
+	collectionOf,
+	ORDER_KEYS_COLLECTION,
+	ORDERS_COLLECTION,
+	type OrderDoc,
+	type OrderKeyDoc,
+} from "../src/index.js";
 import { COUPON_LIFECYCLE_LAYOUT } from "./coupon-collections.js";
 import { makeCouponHarness, type CouponHarness } from "./coupon-harness.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
+import {
+	failCall,
+	InjectedCrashError,
+	isClaimWrite,
+	withCollection,
+} from "./helpers/fault-injection.js";
 import { makeOrderHarness, type OrderHarness } from "./order-harness.js";
 
 const USD = currency("USD");
@@ -209,6 +222,82 @@ describeEachDialect("coupon lifecycle", (ctx) => {
 		expect((await fx.orders.store.getById(b.order.id))?.state).toBe("expired");
 		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(0);
 		expect(await fx.coupons.redemptions.count({ couponId: "cpn", holdsUse: "yes" })).toBe(0);
+	});
+
+	// #598 review: the orphan sweep reads the key through the PURE peek. A checkout
+	// that died between its key claim and its order document leaves a claim carrying
+	// a discounted order; the sweep must neither complete it (conjuring an order the
+	// expiry would mail about) nor free its use while that claim could still be
+	// finished inside its hold — and once the hold lapses, nothing else ever will.
+	test("a claim whose order never landed keeps its use inside the hold, frees it after, and is never completed by the sweep", async () => {
+		const fx = fixture();
+		await fx.orders.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1500,
+			title: "Widget",
+			onHand: 5,
+		});
+		await fx.coupons.store.create({
+			id: "cpn",
+			code: "SAVE5",
+			type: "fixed_amount",
+			amountCents: cents(500),
+			rateBps: null,
+			capCents: null,
+			currency: USD,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 1,
+			maxUsesPerCustomer: null,
+		});
+		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
+		const keys = collectionOf<OrderKeyDoc>(bound.storage, ORDER_KEYS_COLLECTION);
+		const crashing = failCall(orders, isClaimWrite, { mode: "instead" });
+		const crashed = makeOrderHarness(bound.storage, {
+			share: fx.orders.shared,
+			storageForOrders: withCollection(bound.storage, ORDERS_COLLECTION, crashing.collection),
+		});
+		const cartId = await fx.orders.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		// The isolate DIES at the order write: the use-case's in-process catch (which
+		// would release the redemption eagerly) never runs, so `release` does nothing.
+		const store = fx.coupons.store;
+		const dyingCoupons = new Proxy(store, {
+			get(target, prop) {
+				if (prop === "release") return async () => {};
+				const value: unknown = Reflect.get(target, prop, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		await expect(
+			createOrderFromCart({ ...crashed.createDeps, couponStore: dyingCoupons }, cmd(cartId)),
+		).rejects.toThrow(InjectedCrashError);
+		const claim = await keys.get(idempotencyKey("k-checkout"));
+		if (claim === null || claim.state !== "claimed") throw new Error("expected a CLAIMED key");
+		expect(claim.doc.totals.appliedCouponCode).toBe("SAVE5");
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(1);
+		const sweep = () =>
+			reconcileCouponRedemptions(
+				{ couponStore: fx.coupons.store, orderStore: fx.orders.store, clock: fx.orders.clock },
+				{ graceMs: 5 * 60 * 1000 },
+			);
+
+		// Past the grace, inside the claim's hold: kept, and nothing written.
+		fx.orders.advance(10 * 60 * 1000);
+		expect(await sweep()).toBe(0);
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(1);
+		expect(await orders.get(claim.orderId)).toBeNull();
+		expect((await keys.get(idempotencyKey("k-checkout")))?.state).toBe("claimed");
+
+		// Past the hold: freed — and still no order was conjured.
+		fx.orders.advance(10 * 60 * 1000);
+		expect(await sweep()).toBe(1);
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(0);
+		expect(await orders.get(claim.orderId)).toBeNull();
+		expect((await keys.get(idempotencyKey("k-checkout")))?.state).toBe("claimed");
 	});
 
 	test("a PAID order does NOT release its coupon — the use stays consumed", async () => {
