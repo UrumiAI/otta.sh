@@ -141,8 +141,9 @@ function absolutePeriod(range: Pick<ReportPeriod, "fromDay" | "toDay">): string 
  * and settings for the period, plus revenue and orders-by-status for the
  * PREVIOUS period. All but top
  * products and low stock read the `reporting_daily` rollup (day documents, never
- * a per-order scan), so the comparison costs two more range reads of the same
- * documents.
+ * a per-order scan). Revenue and orders-by-status for one period are asked for at
+ * once, so the store pages that period's documents ONCE for both (issue #572):
+ * one rollup read per period, and the comparison costs one more.
  *
  * Fails CLOSED: any error from a current-period read — including one raised while
  * the surface is CONSTRUCTED — renders the E-7 fail-closed banner rather than
