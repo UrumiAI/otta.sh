@@ -281,6 +281,29 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 		}
 	});
 
+	test("cart/read keeps its notice when only the first settings read succeeds: nothing reads settings twice (#570)", async () => {
+		await setStoreCurrency("EUR");
+		const { cartId } = await h.client.createCart("USD");
+		// Every settings read after the first rejects. The old route read settings
+		// twice (the cart's hold window, then the page's), so its second read failed
+		// and the notice silently dropped to null; the one shared read cannot.
+		let settingsReads = 0;
+		const failing = withCollection(h.ctx.storage as StorageAccess, SETTINGS_COLLECTION, () => {
+			settingsReads += 1;
+			if (settingsReads > 1) throw new Error("settings unreadable");
+		});
+		const read = await createCartReadRouteHandler()(
+			{ input: { cartId } as never, request },
+			{ ...h.ctx, storage: failing },
+		);
+		expect(read).toMatchObject({
+			ok: true,
+			cart: { cartId },
+			staleCurrency: { cartCurrency: "USD", storeCurrency: "EUR" },
+		});
+		expect(settingsReads).toBe(1);
+	});
+
 	/** The queries one `replaceStaleCurrencyCart` costs for a stale cart of `n`
 	 *  held lines, counted at the storage seam (one D1 query per call). */
 	async function replaceCost(n: number, tag: string): Promise<number> {
