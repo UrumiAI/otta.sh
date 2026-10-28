@@ -31,6 +31,7 @@ import {
 	CART_NO_ORDER_LINK,
 	CART_RESUME_PURPOSE,
 	CART_TERMINAL_COPY,
+	cartLineNames,
 	cartMoneyCell,
 	isCartPricingDegraded,
 	isCartTerminal,
@@ -106,6 +107,36 @@ const HEALTHY: CartPricingWire = {
 	total: null,
 	allLinesPriced: false,
 };
+
+describe("cartLineNames", () => {
+	test("a line is named by its title, else its SKU", () => {
+		expect(
+			cartLineNames([
+				{ sku: "KEN-AA", title: "Kenya AA" },
+				{ sku: "ETH-YIR", title: null },
+			]),
+		).toEqual(["Kenya AA", "ETH-YIR"]);
+	});
+
+	test("lines sharing a title (two variants) both carry their SKU (#570)", () => {
+		expect(
+			cartLineNames([
+				{ sku: "TEE-M", title: "Otta Tee" },
+				{ sku: "MUG", title: "Mug" },
+				{ sku: "TEE-L", title: "Otta Tee" },
+			]),
+		).toEqual(["Otta Tee (TEE-M)", "Mug", "Otta Tee (TEE-L)"]);
+	});
+
+	test("the page names its lines through it", () => {
+		const page = readFileSync(
+			path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/pages/cart/index.astro"),
+			"utf8",
+		);
+		expect(page).toContain("name: lineNames[index] ?? line.sku,");
+		expect(page).not.toContain("name: content?.title ?? line.sku,");
+	});
+});
 
 describe("isCartPricingDegraded", () => {
 	test("an explicit degraded flag is degraded", () => {

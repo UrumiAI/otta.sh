@@ -50,6 +50,7 @@ import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import HoldClock from "../../components/HoldClock.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import {
+	cartLineNames,
 	isCartPricingDegraded,
 	isCartTerminal,
 	isKnownCartState,
@@ -303,17 +304,23 @@ if (productIds.length > 0) {
  * already made, and a second, narrower view model would be a second place for
  * the title-or-SKU fallback rule to drift.
  */
-const lineViews = lines.map((line) => {
-	const content = line.productId === null ? null : (contentById.get(line.productId) ?? null);
+const contentOf = (line: (typeof lines)[number]) =>
+	line.productId === null ? null : (contentById.get(line.productId) ?? null);
+const lineNames = cartLineNames(
+	lines.map((line) => ({ sku: line.sku, title: contentOf(line)?.title ?? null })),
+);
+const lineViews = lines.map((line, index) => {
+	const content = contentOf(line);
 	const linePricing = pricing?.lines.find((entry) => entry.lineId === line.lineId) ?? null;
 	const unitPrice = lineMoneyText(linePricing?.unitPrice?.formatted, pricingDegraded);
 	return {
 		line,
 		/** The display-face name, or null when this store cannot name the line. */
 		title: content?.title ?? null,
-		/** What a screen reader calls the line — never null, so every control on
-		 *  the row is distinguishable from the one on the row above it. */
-		name: content?.title ?? line.sku,
+		/** What a screen reader calls the line — never null, and unique within
+		 *  the cart (`cartLineNames`), so every control on the row is
+		 *  distinguishable from the one on the row above it. */
+		name: lineNames[index] ?? line.sku,
 		image: content === null ? null : productImage(content),
 		/** Keys the coil (§5). Any stable per-product string; the SKU is the
 		 *  last resort so a contentless line still draws its own art. */

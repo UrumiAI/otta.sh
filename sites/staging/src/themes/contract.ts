@@ -278,7 +278,8 @@ export interface CartLineModel {
 	line: { lineId: string; sku: string; qty: number; expiresAt: string | null };
 	/** The display name, or `null` when this store cannot name the line. */
 	title: string | null;
-	/** What a screen reader calls the line — the title, else the SKU. Never null. */
+	/** What a screen reader calls the line — the title, else the SKU, with the SKU
+	 *  added when another line shares the title (`cartLineNames`). Never null. */
 	name: string;
 	image: string | null;
 	/** Keys the coil art. */

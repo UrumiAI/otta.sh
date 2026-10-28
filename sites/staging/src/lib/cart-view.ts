@@ -229,3 +229,22 @@ export function lineMoneyText(
 		PRICE_UNAVAILABLE_CELL,
 	);
 }
+
+/**
+ * What a screen reader calls each cart line: its title, else its SKU. When two
+ * lines share a title (two variants of one product) the SKU is added to both,
+ * so their controls and their "Hold released" announcements still differ
+ * (#570). Returned in the order given.
+ */
+export function cartLineNames(
+	lines: readonly { readonly sku: string; readonly title: string | null }[],
+): string[] {
+	const seen = new Map<string, number>();
+	for (const { title } of lines) {
+		if (title !== null) seen.set(title, (seen.get(title) ?? 0) + 1);
+	}
+	return lines.map(({ sku, title }) => {
+		if (title === null) return sku;
+		return (seen.get(title) ?? 0) > 1 ? `${title} (${sku})` : title;
+	});
+}
