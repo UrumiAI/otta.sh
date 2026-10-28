@@ -321,6 +321,8 @@ export function cartStoreContract(
 
 			const again = await addLine(deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
 			expect(again).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+			// Refused before the claim: nothing in the ledger under the key.
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k2"))).toBeNull();
 			expect(await h.onHand("SKU-1")).toBe(10_000);
 			const cart = await getCart(deps, cartId);
 			expect(cart?.lines).toHaveLength(1);
@@ -337,6 +339,7 @@ export function cartStoreContract(
 			if (!(await add(10_000, "k1")).ok) throw new Error("seed add must succeed");
 
 			expect(await add(10_000, "k2")).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k2"))).toBeNull();
 			expect((await getCart(deps, cartId))?.lines[0]?.qty).toBe(10_000);
 		});
 
@@ -361,6 +364,7 @@ export function cartStoreContract(
 			expect(await addLine(deps, cartId, sku("SKU-1"), null, 10_001, idempotencyKey("k1"))).toEqual(
 				{ ok: false, reason: "QTY_TOO_LARGE" },
 			);
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k1"))).toBeNull();
 			expect((await getCart(deps, cartId))?.lines).toHaveLength(0);
 			expect(await h.onHand("SKU-1")).toBe(20_000);
 
@@ -369,6 +373,7 @@ export function cartStoreContract(
 			expect(await updateLine(deps, cartId, add.line.lineId, 10_001, idempotencyKey("k3"))).toEqual(
 				{ ok: false, reason: "QTY_TOO_LARGE" },
 			);
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k3"))).toBeNull();
 			expect((await getCart(deps, cartId))?.lines[0]?.qty).toBe(2);
 			expect(await h.onHand("SKU-1")).toBe(19_998);
 		});
