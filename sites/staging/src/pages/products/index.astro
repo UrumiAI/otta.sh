@@ -37,17 +37,34 @@ import { cartErrorMessage } from "../../lib/error-messages.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
 import type { ShopModel } from "../../themes/contract.js";
 
-const {
-	entries,
-	hasMore,
-	error: catalogError,
-} = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
-
 /* An outage and an empty shop both arrive as zero entries, and only `error`
-   tells them apart. Read it, or the shop tells a shopper it sells nothing. */
-const catalogUnavailable = catalogError !== undefined;
+   tells them apart. Read it, or the shop tells a shopper it sells nothing.
+   The read is GUARDED too, as the home page's is: a missing binding (or
+   emdash's byline/term hydration after the main query) throws outright rather
+   than filling `error`, and both arms belong in the same outage branch — not
+   in Astro's raw 500. */
+let entries: readonly { data: unknown }[] = [];
+let hasMore: boolean | undefined;
+let catalogUnavailable = false;
+try {
+	const collection = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
+	if (collection.error !== undefined) {
+		catalogUnavailable = true;
+		console.error("[site-staging] shop catalog read failed:", collection.error);
+	} else {
+		entries = collection.entries;
+		hasMore = collection.hasMore;
+	}
+} catch (cause) {
+	catalogUnavailable = true;
+	console.error("[site-staging] shop catalog read threw:", cause);
+}
 if (catalogUnavailable) {
-	console.error("[site-staging] shop catalog read failed:", catalogError);
+	// The PDP's outage answer: 503 so the status says what the page says, and
+	// a short Retry-After so a crawler asks again soon instead of dropping the
+	// URL. 60s because the page cannot know how long the store will be down.
+	Astro.response.status = 503;
+	Astro.response.headers.set("Retry-After", "60");
 }
 
 // Defensive second bound: the route rejects pages over the cap outright.
