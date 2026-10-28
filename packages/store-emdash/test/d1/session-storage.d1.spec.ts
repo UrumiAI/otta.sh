@@ -8,7 +8,8 @@
  */
 import { DuplicateCustomerEmailError, email, idempotencyKey } from "@urumi.ai/otta-domain";
 import { CountingIdGen, FixedClock } from "@urumi.ai/otta-domain/testing";
-import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { describe, expect, it, vi } from "vitest";
 import {
 	CLAIM_ABANDON_AFTER_MS,
 	EmdashInventoryStore,
@@ -183,12 +184,22 @@ describe("read-after-write over sessions", () => {
 	});
 
 	it("sees a write committed by an earlier request when it presents that request's bookmark", async () => {
-		const writing = sessions.request({ isWrite: true });
-		await writing.collection<Note>("notes").put("a", { text: "written" });
-		const bookmark = writing.commit();
-		if (bookmark === undefined) throw new Error("an authenticated write must mint a bookmark");
+		// Spy on the binding the host opens sessions on, so the case pins WHICH
+		// constraint each request started with, not only that the read worked.
+		const spy = vi.spyOn(env.DB as { withSession(constraint: string): unknown }, "withSession");
+		try {
+			const writing = sessions.request({ isWrite: true });
+			await writing.collection<Note>("notes").put("a", { text: "written" });
+			const bookmark = writing.commit();
+			if (bookmark === undefined) throw new Error("an authenticated write must mint a bookmark");
 
-		const reading = sessions.request({ isWrite: false, bookmark });
-		expect(await reading.collection<Note>("notes").get("a")).toEqual({ text: "written" });
+			const reading = sessions.request({ isWrite: false, bookmark });
+			expect(await reading.collection<Note>("notes").get("a")).toEqual({ text: "written" });
+
+			// A write starts on the primary; the reader resumes from the writer's bookmark.
+			expect(spy.mock.calls.map(([constraint]) => constraint)).toEqual(["first-primary", bookmark]);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });
