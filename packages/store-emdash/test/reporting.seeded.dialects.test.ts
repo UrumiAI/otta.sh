@@ -607,6 +607,9 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 				status: "rejected",
 				reason: { code: "SCAN_PAGE_LIMIT", operation: "ordersByStatus" },
 			});
+			// The joiner's refusal keeps the one the scan raised, stack and all.
+			const joined = (statuses as PromiseRejectedResult).reason as Error;
+			expect(joined.cause).toBe((revenue as PromiseRejectedResult).reason);
 		});
 	});
 });
