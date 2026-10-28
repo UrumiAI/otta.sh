@@ -35,7 +35,11 @@ import {
 	createCartLineUpdateRouteHandler,
 	createCartReadRouteHandler,
 } from "../src/storefront/cart-routes.js";
-import { createOrderRouteHandler } from "../src/storefront/checkout-routes.js";
+import {
+	createCheckoutPlaceRouteHandler,
+	createCheckoutSummaryRouteHandler,
+	createOrderRouteHandler,
+} from "../src/storefront/checkout-routes.js";
 import type { RouteHandler } from "../src/types.js";
 import {
 	makeInProcessCommerce,
@@ -546,4 +550,60 @@ describe("storefront/cart/lines — the idempotency key is bounded and storable"
 			}),
 		).toMatchObject({ ok: true, line: { sku: SKU, qty: 2 } });
 	});
+});
+
+/**
+ * Issue #610: the checkout summary and place routes checked the cart id for
+ * "non-empty" only, so a tampered cart cookie threw out of the client's
+ * `requireIdToken` as RENDER_FAILED — "Something went wrong", an error log, and
+ * a token the site does not read as a bad cookie. The summary answers what the
+ * cart routes' read and the order routes answer for an id that cannot exist —
+ * no such cart — and the place, a write, answers INVALID_INPUT like the cart's
+ * write routes.
+ */
+describe("storefront/checkout — a cart id the store could never have minted", () => {
+	const MALFORMED_CART_IDS: Array<[string, string]> = [
+		["whitespace", "a b"],
+		["a control character", "tab\there"],
+		["non-ASCII", "cärt"],
+		["over 200 characters", "x".repeat(201)],
+	];
+
+	test.each(MALFORMED_CART_IDS)(
+		"summary: a cartId with %s is CART_NOT_FOUND",
+		async (_label, cartId) => {
+			expect(await invoke(createCheckoutSummaryRouteHandler(), { cartId })).toEqual({
+				ok: false,
+				reason: "CART_NOT_FOUND",
+			});
+		},
+	);
+
+	test("summary: a cartId that is not a string at all is still INVALID_INPUT", async () => {
+		expect(await invoke(createCheckoutSummaryRouteHandler(), { cartId: 42 })).toEqual({
+			ok: false,
+			error: "INVALID_INPUT",
+		});
+	});
+
+	test("summary: a minted cartId is still quoted (no regression)", async () => {
+		const { cartId } = await harness.client.createCart();
+		expect(await invoke(createCheckoutSummaryRouteHandler(), { cartId })).toEqual({
+			ok: false,
+			reason: "CART_EMPTY",
+		});
+	});
+
+	test.each(MALFORMED_CART_IDS)(
+		"place: a cartId with %s is INVALID_INPUT",
+		async (_label, cartId) => {
+			expect(
+				await invoke(createCheckoutPlaceRouteHandler(), {
+					cartId,
+					buyerRef: "buyer@example.com",
+					idempotencyKey: `checkout:${cartId}`,
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		},
+	);
 });
