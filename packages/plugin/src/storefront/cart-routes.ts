@@ -220,8 +220,10 @@ export type CartCreateRouteResult =
  * The read's stale-currency fact (#440): the cart is ACTIVE and in another
  * currency than the one the operator saved, so nothing priced in the store
  * currency can be checked out of it. The storefront says so and offers
- * `cart/create` with `replacesStaleCurrencyCartId`. `null` otherwise — including
- * when the settings read failed, which never fails the cart read.
+ * `cart/create` with `replacesStaleCurrencyCartId`. `null` otherwise. The saved
+ * currency rides the same settings read as the cart's hold window, so an
+ * unreadable settings document fails the whole read with RENDER_FAILED rather
+ * than answering a cart without the notice.
  */
 export interface CartStaleCurrencyWire {
 	cartCurrency: string;
@@ -235,7 +237,8 @@ export type CartReadRouteResult =
 			pricing: CartPricingWire;
 			staleCurrency: CartStaleCurrencyWire | null;
 			/** Whether to show shoppers the hold countdown (the admin's
-			 *  `showHoldTimer`; off by default, and off when the read fails). */
+			 *  `showHoldTimer`; off by default; an unreadable settings document
+			 *  fails the read with RENDER_FAILED instead). */
 			showHoldTimer: boolean;
 	  }
 	| { ok: false; error: "INVALID_CART_ID" }
