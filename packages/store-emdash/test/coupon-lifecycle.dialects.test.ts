@@ -65,6 +65,30 @@ function cmd(cartId: string) {
 	};
 }
 
+/** A gate one step waits on and another opens. */
+function opening(): { promise: Promise<void>; open: () => void } {
+	let open!: () => void;
+	const promise = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	return { promise, open };
+}
+
+/**
+ * `target` with some methods replaced, for ONE call's dependency bundle. Every other
+ * method is the target's own, bound to it (the stores keep `#private` state, which a
+ * method called on a copy could not reach).
+ */
+function overriding<T extends object>(target: T, overrides: Partial<T>): T {
+	return new Proxy(target, {
+		get(t, key) {
+			if (Object.hasOwn(overrides, key)) return overrides[key as keyof T];
+			const value: unknown = Reflect.get(t, key, t);
+			return typeof value === "function" ? value.bind(t) : value;
+		},
+	});
+}
+
 describeEachDialect("coupon lifecycle", (ctx) => {
 	const bound = ctx.useStorage(COUPON_LIFECYCLE_LAYOUT);
 
@@ -178,25 +202,73 @@ describeEachDialect("coupon lifecycle", (ctx) => {
 		const cartId = await fx.orders.cartWith([
 			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
 		]);
-		// Hold the first call at its insert until the second call's insert has landed.
-		let releaseFirst!: () => void;
-		const gate = new Promise<void>((resolve) => {
-			releaseFirst = resolve;
-		});
-		let calls = 0;
-		// The fixture is per test, so shadowing the method on this instance is local.
+		// The interleaving is FORCED, never left to the scheduler: each call gets its
+		// own dependency bundle, and three gates order the steps that matter.
+		//   1. call 1 redeems only once call 2 has quoted — both quote against the
+		//      unspent coupon, as a double click does. Left to timing, a Postgres pool
+		//      opening its second connection lets call 1 bump the counter first, and
+		//      call 2's quote then refuses the spent coupon (`maxUses: 1`) before it
+		//      ever reaches the replay this case is about;
+		//   2. call 2 redeems only once call 1's redeem has returned, so it REPLAYS
+		//      the redemption that names call 1's order id;
+		//   3. call 1 inserts only once call 2's insert has landed.
+		// A call that settles opens every gate it owns, so a refusal at ANY step fails
+		// the assertions below rather than parking the other call until the timeout.
+		const secondQuoted = opening();
+		const firstRedeemed = opening();
+		const secondInserted = opening();
+		const couponStore = fx.coupons.store;
 		const orderStore = fx.createDeps.orderStore;
-		const insert = orderStore.createFromCart.bind(orderStore);
-		orderStore.createFromCart = async (input) => {
-			const mine = ++calls;
-			if (mine === 1) await gate;
-			const out = await insert(input);
-			if (mine === 2) releaseFirst();
-			return out;
+		const first: CreateOrderDeps = {
+			...fx.createDeps,
+			couponStore: overriding(couponStore, {
+				async redeem(input) {
+					await secondQuoted.promise;
+					try {
+						return await couponStore.redeem(input);
+					} finally {
+						firstRedeemed.open();
+					}
+				},
+			}),
+			orderStore: overriding(orderStore, {
+				async createFromCart(input) {
+					await secondInserted.promise;
+					return await orderStore.createFromCart(input);
+				},
+			}),
+		};
+		const second: CreateOrderDeps = {
+			...fx.createDeps,
+			couponStore: overriding(couponStore, {
+				async findByCode(code) {
+					try {
+						return await couponStore.findByCode(code);
+					} finally {
+						secondQuoted.open();
+					}
+				},
+				async redeem(input) {
+					await firstRedeemed.promise;
+					return await couponStore.redeem(input);
+				},
+			}),
+			orderStore: overriding(orderStore, {
+				async createFromCart(input) {
+					try {
+						return await orderStore.createFromCart(input);
+					} finally {
+						secondInserted.open();
+					}
+				},
+			}),
 		};
 		const [a, b] = await Promise.all([
-			createOrderFromCart(fx.createDeps, cmd(cartId)),
-			createOrderFromCart(fx.createDeps, cmd(cartId)),
+			createOrderFromCart(first, cmd(cartId)).finally(() => firstRedeemed.open()),
+			createOrderFromCart(second, cmd(cartId)).finally(() => {
+				secondQuoted.open();
+				secondInserted.open();
+			}),
 		]);
 		if (!a.ok || !b.ok) throw new Error("both same-key calls must succeed");
 		expect(a.order.id).toBe(b.order.id);
