@@ -1161,10 +1161,13 @@ export class EmdashReportingStore implements ReportingStore {
 		const key = `${range.from}${KEY_SEP}${range.to}`;
 		const inFlight = this.#windowReads.get(key);
 		if (inFlight !== undefined) {
-			// A budget refusal names the operation that hit it; the joiner's is its own.
+			// A budget refusal names the operation that hit it; the joiner's is its own, with
+			// the original as its cause so the stack of the scan that stopped survives.
 			return inFlight.catch((err: unknown) => {
 				throw err instanceof ScanPageLimitError
-					? new ScanPageLimitError(operation, err.pages, err.collected, err.budgetOption)
+					? new ScanPageLimitError(operation, err.pages, err.collected, err.budgetOption, {
+							cause: err,
+						})
 					: err;
 			});
 		}
