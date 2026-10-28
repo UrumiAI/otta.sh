@@ -418,10 +418,10 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		if (index.terminalState !== undefined) {
 			await this.#prune(index.sku, this.#pruneEntries(index, reservationId), "release");
 			if (index.terminalState === "released") return; // benign double-release
-			// Typed, not a bare Error: a caller that must classify this — the cart
-			// expiry swallows it, because a hold an order already committed is not
-			// the cart's to return — should not have to match on a message. The text
-			// is unchanged from the bare error it replaces.
+			// Typed, not a bare Error: a caller that must classify this — a hold an
+			// order already committed is not the cart's to return — should not have
+			// to match on a message. The text is unchanged from the bare error it
+			// replaces.
 			throw new ReservationNotReleasableError(reservationId, index.terminalState);
 		}
 		const hold = await this.#liveHold(index, reservationId);
@@ -447,7 +447,9 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * which nothing adopts, commits or releases, so the units are never returned
 	 * twice and never sold under an order. Any later `releaseHeld` of that hold —
 	 * a concurrent one, or a retry — finds it pruned, completes that terminal
-	 * write and answers `true` (see `#releasedWithoutHold`).
+	 * write and answers `true` (see `#releasedWithoutHold`). That is why the
+	 * domain's `removeLine` routes a `pending` line here too: its retry is what
+	 * heals the crash.
 	 */
 	async releaseHeld(reservationId: string): Promise<boolean> {
 		const index = await this.#mustIndex(reservationId);

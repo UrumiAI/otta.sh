@@ -479,7 +479,9 @@ export async function updateLine(
  * Remove a line: claim the key, release the (held) reservation, then drop the
  * line and complete the claim. Double-remove is a no-op; a replay of a remove
  * that crashed after `release` but before the line delete finds the reservation
- * `released` and COMPLETES the removal (never a spurious `LINE_CHECKED_OUT`).
+ * `released` and COMPLETES the removal (never a spurious `LINE_CHECKED_OUT`) —
+ * as does one that crashed inside `releaseHeld`, after the units came back and
+ * before the terminal state was recorded (the line reads `pending`).
  * Fenced: a hold that is `committed`/`adopted` (a Phase-4 order owns it) is
  * `LINE_CHECKED_OUT` and never released — including one a checkout adopts
  * between the cart read and the release (#593).
@@ -502,8 +504,12 @@ export async function removeLine(
 	if (line.reservationId !== null) {
 		// `held` → release it; `released` → a crashed/expired remove already freed
 		// the stock, so the removal is completable; anything else (committed /
-		// adopted / …) is no longer the cart's to touch.
-		if (line.reservationState === "held") {
+		// adopted / …) is no longer the cart's to touch. `pending` goes through
+		// `releaseHeld` too: an adapter that returns the units before it records
+		// `released` reads a remove that crashed between the two as `pending`, and
+		// `releaseHeld` finishes that write (true) — while a reserve that never
+		// applied stays `false`, i.e. LINE_CHECKED_OUT, as before.
+		if (line.reservationState === "held" || line.reservationState === "pending") {
 			await deps.cartStore.claimMutation({ key, cartId, kind: "remove", lineId });
 			// The cart-scoped release (#593): `held` above is a snapshot, and a
 			// checkout may adopt the hold before this runs. `releaseHeld` decides in

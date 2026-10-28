@@ -317,6 +317,11 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 				lost: [claim.reservationId],
 			});
 			await expect(store.releaseAdopted(claim.reservationId, "ord-b")).resolves.toBeUndefined();
+			// A cart remove routes this `pending` shape through `releaseHeld` (#593):
+			// the key is still `claimed`, so it was never held — false, nothing written,
+			// which the remove answers as LINE_CHECKED_OUT.
+			expect(await store.releaseHeld(claim.reservationId)).toBe(false);
+			expect((await reverseIndex().get(claim.reservationId))?.terminalState).toBeUndefined();
 			// None of them moved a unit or resurrected a hold.
 			expect(await onHand("SKU-B")).toBe(5);
 			expect(await holdCount("SKU-B")).toBe(0);
