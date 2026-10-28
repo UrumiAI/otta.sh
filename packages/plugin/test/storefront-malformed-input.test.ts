@@ -567,6 +567,8 @@ describe("storefront/checkout — a cart id the store could never have minted", 
 		["a control character", "tab\there"],
 		["non-ASCII", "cärt"],
 		["over 200 characters", "x".repeat(201)],
+		["nothing in it", ""],
+		["only whitespace", "   "],
 	];
 
 	test.each(MALFORMED_CART_IDS)(

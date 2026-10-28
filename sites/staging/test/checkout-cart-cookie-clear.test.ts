@@ -53,5 +53,9 @@ describe("GET /checkout — which summary refusals drop the cart cookie", () => 
 		expect(frontmatter).toMatch(
 			/if \(checkoutDropsCartCookie\(result\)\)\s*\{?\s*Astro\.cookies\.delete\(CART_COOKIE_NAME, \{ path: CART_COOKIE_PATH \}\)/,
 		);
+		// …and before the redirect, or it never runs.
+		expect(frontmatter.indexOf("checkoutDropsCartCookie(result)")).toBeLessThan(
+			frontmatter.indexOf("checkoutEntryRedirect(cartId, result)"),
+		);
 	});
 });
