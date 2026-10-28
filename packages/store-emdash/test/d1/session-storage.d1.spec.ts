@@ -69,6 +69,22 @@ describe("compare-and-set over one session", () => {
 		expect(await notes.get("a")).toEqual({ text: "first" });
 	});
 
+	it("refuses a write at a revision another session has since replaced", async () => {
+		const a = sessions.request({ isWrite: true }).collection<Note>("notes");
+		const b = sessions.request({ isWrite: true }).collection<Note>("notes");
+		const created = await a.compareAndSet("a", null, { text: "v1" });
+		if (!created.applied) throw new Error("create-if-absent must apply on an empty row");
+
+		// A holds the revision; B, on its own session, moves the row on. Correctness
+		// must not depend on how fresh A's read was.
+		const held = await a.getVersioned("a");
+		expect((await b.compareAndSet("a", created.revision, { text: "by-b" })).applied).toBe(true);
+
+		const refused = await a.compareAndSet("a", held?.revision ?? null, { text: "by-a" });
+		expect(refused.applied).toBe(false);
+		expect(await b.get("a")).toEqual({ text: "by-b" });
+	});
+
 	it("serves a store's guarded write: the second reserve of the last unit is refused", async () => {
 		const request = sessions.request({ isWrite: true });
 		const inventory = request.collection<InventoryDoc>(INVENTORY_COLLECTION);
