@@ -102,7 +102,7 @@ export type StripeWebhookSettleResult =
 	| { ok: true; status: 200 }
 	| {
 			ok: false;
-			status: 400 | 401 | 404 | 200 | 503;
+			status: 400 | 401 | 200 | 503;
 			reason: Exclude<StripeWebhookSettleReason, "BUSY" | "LATE_PAYMENT_REFUND_RETRYABLE">;
 	  }
 	/** The refusals that say "the same delivery will work later": storage
@@ -151,8 +151,8 @@ function isNonEmptyString(value: unknown): value is string {
 
 /**
  * The `SettleResult` → status/reason table. It began as a mirror of the
- * standalone `@otta-sh/service`'s webhook route; the one deliberate departure is
- * UNKNOWN_EVENT (#300):
+ * standalone `@otta-sh/service`'s webhook route; the deliberate departures are
+ * UNKNOWN_EVENT (#300) and ORDER_NOT_FOUND (#595):
  *
  *  - settled (or an idempotent no-op) ⇒ 200, so Stripe stops retrying;
  *  - INVALID_SIGNATURE / MALFORMED ⇒ 400;
@@ -164,7 +164,9 @@ function isNonEmptyString(value: unknown): value is string {
  *    settle events). A 4xx would make Stripe retry it and, after enough
  *    failures, disable the endpoint — `payment_intent.succeeded` included — and
  *    a 200 to a verified body tells a forger nothing;
- *  - ORDER_NOT_FOUND ⇒ 404;
+ *  - ORDER_NOT_FOUND ⇒ 200 (#595), for the same reason: also only reached past
+ *    the HMAC, it is a `payment_intent.*` Otta did not create (a shared Stripe
+ *    account) — see the arm below for why Otta's own event cannot reach it;
  *  - AMOUNT_MISMATCH ⇒ 200, because it is a recorded anomaly that retrying will
  *    never fix.
  */
@@ -177,7 +179,12 @@ export function settleResultToResponse(res: SettleResult): StripeWebhookSettleRe
 		case "UNKNOWN_EVENT":
 			return { ok: false, status: 200, reason: res.reason };
 		case "ORDER_NOT_FOUND":
-			return { ok: false, status: 404, reason: res.reason };
+			// 200, not 404 (#595): a verified event naming an order this store never
+			// made. Every Otta order is inserted before its intent is created, and no
+			// order is ever deleted, so Otta's own event cannot reach this arm — it is
+			// another tenant's on a shared Stripe account, and a 4xx would get the
+			// endpoint disabled exactly as UNKNOWN_EVENT would.
+			return { ok: false, status: 200, reason: res.reason };
 		case "AMOUNT_MISMATCH":
 			return { ok: false, status: 200, reason: res.reason };
 		case "RECEIPT_REBOUND":
@@ -347,6 +354,17 @@ export function createStripeWebhookSettleHandler(
 				return { ok: false, status: 503, reason: "BUSY", retryable: true };
 			}
 			throw err;
+		}
+
+		// #595: acknowledged with a 200, so Stripe will never flag it. On a shared
+		// account this is another tenant's payment; on an Otta-only one it means the
+		// store lost the order (a database restore, the wrong D1) and the payment
+		// needs a refund by hand. Info, not an anomaly: a shared account would flood
+		// the anomalies list.
+		if (!settled.ok && settled.reason === "ORDER_NOT_FOUND") {
+			console.info(
+				`[otta] ${STRIPE_WEBHOOK_SETTLE_ROUTE} verified event names no order in this store (ORDER_NOT_FOUND); acknowledged`,
+			);
 		}
 
 		// #531: record that a verified delivery arrived — Settings shows it. After
