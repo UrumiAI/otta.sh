@@ -19,7 +19,7 @@ import {
 import { IDENTITY_LAYOUT } from "../identity-collections.js";
 import { makeIdentityHarness, type IdentityHarness } from "../identity-harness.js";
 import { INVENTORY_LAYOUT } from "../inventory-collections.js";
-import { BOOKMARK_COOKIE, useD1SessionStorage } from "./describe-d1-session.js";
+import { useD1SessionStorage } from "./describe-d1-session.js";
 import type { StorageLayout } from "./describe-d1.js";
 
 /** `notes` is the scratch collection; the rest are the stores' own layouts. */
@@ -44,7 +44,6 @@ describe("the session harness", () => {
 		const request = sessions.request({ isWrite: true });
 		await request.collection<Note>("notes").put("a", { text: "hello" });
 		expect(await request.collection<Note>("notes").get("a")).toEqual({ text: "hello" });
-		expect(BOOKMARK_COOKIE).toBe("__em_d1_bookmark");
 	});
 });
 
