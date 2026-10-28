@@ -211,12 +211,16 @@ export class ScanPageLimitError extends Error {
 		pages: number,
 		collected: number,
 		budgetOption = "maxExpiryPages",
+		options?: { cause?: unknown },
 	) {
 		super(
 			`${operation} reached its ${String(pages)}-page ceiling with more pages to read ` +
 				`(${String(collected)} rows collected before giving up) — returning them would have ` +
 				`been a silent truncation; raise the page budget (${budgetOption}) rather than ` +
 				"re-running this call unchanged",
+			// The refusal this one restates for another caller, when it is a restatement:
+			// its stack is where the scan actually stopped.
+			options?.cause === undefined ? undefined : { cause: options.cause },
 		);
 		this.operation = operation;
 		this.pages = pages;

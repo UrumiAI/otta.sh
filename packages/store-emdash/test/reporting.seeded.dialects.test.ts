@@ -34,6 +34,7 @@ import {
 	newShellProductDoc,
 	PRODUCT_COMMERCE_COLLECTION,
 	publishKeyFor,
+	REPORTING_DAILY_COLLECTION,
 	SKU_OWNERS_COLLECTION,
 	type InventoryDoc,
 	type ProductCommerceDoc,
@@ -531,6 +532,84 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 				);
 			expect(isScanPageLimitError(failure)).toBe(true);
 			expect((failure as { budgetOption: string }).budgetOption).toBe("maxReportPages");
+		});
+
+		/** A twin over the same rows whose `reporting_daily` queries are counted. */
+		function countingTwin(
+			h: ReportingHarness,
+			options: { maxReportPages?: number } = {},
+		): { store: ReportingHarness["store"]; dailyQueries: () => number } {
+			let queries = 0;
+			const daily = bound.storage[REPORTING_DAILY_COLLECTION]!;
+			const counted = new Proxy(daily, {
+				get(target, prop, receiver) {
+					const value: unknown = Reflect.get(target, prop, receiver);
+					if (typeof value !== "function") return value;
+					return (...args: unknown[]) => {
+						if (prop === "query") queries++;
+						return (value as (...a: unknown[]) => unknown).apply(target, args);
+					};
+				},
+			});
+			const twin = makeReportingHarness(bound.storage, {
+				clock: h.clock,
+				storageForStore: { ...bound.storage, [REPORTING_DAILY_COLLECTION]: counted },
+				...options,
+			});
+			return { store: twin.store, dailyQueries: () => queries };
+		}
+
+		const WIDE = { from: "2026-01-01T00:00:00.000Z", to: "2026-05-31T23:59:59.999Z" };
+
+		test("revenue and statuses asked for one window at once share one read of its documents (#572)", async () => {
+			const h = makeReportingHarness(bound.storage);
+			const total = await seedManyDays(h);
+			const { store, dailyQueries } = countingTwin(h);
+			const [days, statuses] = await Promise.all([
+				store.revenueByPeriod(WIDE, "day"),
+				store.ordersByStatus(WIDE),
+			]);
+			// 150 documents are two pages, read ONCE for both reports, not once each.
+			expect(dailyQueries()).toBe(2);
+			expect(days.reduce((sum, b) => sum + b.revenueCents, 0)).toBe(total);
+			expect(statuses).toEqual([{ status: "paid", orderCount: DAYS }]);
+		});
+
+		test("only a read in flight is shared: a later call reads the window afresh", async () => {
+			const h = makeReportingHarness(bound.storage);
+			await seedManyDays(h);
+			const { store, dailyQueries } = countingTwin(h);
+			expect(await store.ordersByStatus(WIDE)).toEqual([{ status: "paid", orderCount: DAYS }]);
+			await h.seedOrder({
+				id: "late",
+				state: "paid",
+				currency: "USD",
+				createdAt: "2026-03-01T12:00:00.000Z",
+				totalCents: 1,
+			});
+			expect(await store.ordersByStatus(WIDE)).toEqual([{ status: "paid", orderCount: DAYS + 1 }]);
+			expect(dailyQueries()).toBe(4);
+		});
+
+		test("a shared read's budget refusal names each caller's own operation", async () => {
+			const h = makeReportingHarness(bound.storage);
+			await seedManyDays(h);
+			const { store } = countingTwin(h, { maxReportPages: 1 });
+			const [revenue, statuses] = await Promise.allSettled([
+				store.revenueByPeriod(WIDE, "day"),
+				store.ordersByStatus(WIDE),
+			]);
+			expect(revenue).toMatchObject({
+				status: "rejected",
+				reason: { code: "SCAN_PAGE_LIMIT", operation: "revenueByPeriod" },
+			});
+			expect(statuses).toMatchObject({
+				status: "rejected",
+				reason: { code: "SCAN_PAGE_LIMIT", operation: "ordersByStatus" },
+			});
+			// The joiner's refusal keeps the one the scan raised, stack and all.
+			const joined = (statuses as PromiseRejectedResult).reason as Error;
+			expect(joined.cause).toBe((revenue as PromiseRejectedResult).reason);
 		});
 	});
 });

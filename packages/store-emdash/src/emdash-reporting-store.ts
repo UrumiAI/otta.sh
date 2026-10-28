@@ -300,6 +300,8 @@ export class EmdashReportingStore implements ReportingStore {
 	readonly #maxReportPages: number;
 	readonly #maxReconcilePages: number;
 	readonly #onAnomaly: (anomaly: ReportingAnomaly) => void;
+	/** The window reads in flight, by window — see {@link EmdashReportingStore.#windowDays}. */
+	readonly #windowReads = new Map<string, Promise<ReadonlyArray<Readonly<ReportingDailyDoc>>>>();
 
 	constructor(options: EmdashReportingStoreOptions) {
 		this.#daily = collectionOf<ReportingDailyStoredDoc>(
@@ -1141,8 +1143,43 @@ export class EmdashReportingStore implements ReportingStore {
 	 * have drifted, while an interior day is read from its document and carries whatever
 	 * that document holds. A single report can mix the two — an exact edge beside an
 	 * interior day that is reading low until the next recompute.
+	 *
+	 * **Concurrent reads of one window share one read** (issue #572). The Reports page asks
+	 * `revenueByPeriod` and `ordersByStatus` for the same window at once, and both fold the
+	 * same documents, so the second joins the read the first started rather than paging
+	 * the rollup again: one read per window instead of two, which halves the page's
+	 * rollup queries (a year over two currencies: 16 pages instead of 32). Only a read IN
+	 * FLIGHT is shared: the entry is dropped when it settles, so a later call always reads
+	 * afresh and nothing here can serve a stale window. The documents are shared too, so
+	 * they are typed read-only, and a caller must not mutate them: `Readonly` is shallow,
+	 * and a document's `stateCounts` is shared with every joiner as well.
 	 */
-	async #windowDays(range: DateRange, operation: string): Promise<ReportingDailyDoc[]> {
+	#windowDays(
+		range: DateRange,
+		operation: string,
+	): Promise<ReadonlyArray<Readonly<ReportingDailyDoc>>> {
+		const key = `${range.from}${KEY_SEP}${range.to}`;
+		const inFlight = this.#windowReads.get(key);
+		if (inFlight !== undefined) {
+			// A budget refusal names the operation that hit it; the joiner's is its own, with
+			// the original as its cause so the stack of the scan that stopped survives.
+			return inFlight.catch((err: unknown) => {
+				throw err instanceof ScanPageLimitError
+					? new ScanPageLimitError(operation, err.pages, err.collected, err.budgetOption, {
+							cause: err,
+						})
+					: err;
+			});
+		}
+		const read = this.#readWindowDays(range, operation).finally(() => {
+			this.#windowReads.delete(key);
+		});
+		this.#windowReads.set(key, read);
+		return read;
+	}
+
+	/** One read of a window's day counters — {@link EmdashReportingStore.#windowDays}'s body. */
+	async #readWindowDays(range: DateRange, operation: string): Promise<ReportingDailyDoc[]> {
 		if (range.to < range.from) return [];
 		const fromDay = dayKeyOf(range.from);
 		const toDay = dayKeyOf(range.to);
