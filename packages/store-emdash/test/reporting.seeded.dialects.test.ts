@@ -574,5 +574,21 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 			expect(days.reduce((sum, b) => sum + b.revenueCents, 0)).toBe(total);
 			expect(statuses).toEqual([{ status: "paid", orderCount: DAYS }]);
 		});
+
+		test("only a read in flight is shared: a later call reads the window afresh", async () => {
+			const h = makeReportingHarness(bound.storage);
+			await seedManyDays(h);
+			const { store, dailyQueries } = countingTwin(h);
+			expect(await store.ordersByStatus(WIDE)).toEqual([{ status: "paid", orderCount: DAYS }]);
+			await h.seedOrder({
+				id: "late",
+				state: "paid",
+				currency: "USD",
+				createdAt: "2026-03-01T12:00:00.000Z",
+				totalCents: 1,
+			});
+			expect(await store.ordersByStatus(WIDE)).toEqual([{ status: "paid", orderCount: DAYS + 1 }]);
+			expect(dailyQueries()).toBe(4);
+		});
 	});
 });
