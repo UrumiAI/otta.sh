@@ -590,5 +590,23 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 			expect(await store.ordersByStatus(WIDE)).toEqual([{ status: "paid", orderCount: DAYS + 1 }]);
 			expect(dailyQueries()).toBe(4);
 		});
+
+		test("a shared read's budget refusal names each caller's own operation", async () => {
+			const h = makeReportingHarness(bound.storage);
+			await seedManyDays(h);
+			const { store } = countingTwin(h, { maxReportPages: 1 });
+			const [revenue, statuses] = await Promise.allSettled([
+				store.revenueByPeriod(WIDE, "day"),
+				store.ordersByStatus(WIDE),
+			]);
+			expect(revenue).toMatchObject({
+				status: "rejected",
+				reason: { code: "SCAN_PAGE_LIMIT", operation: "revenueByPeriod" },
+			});
+			expect(statuses).toMatchObject({
+				status: "rejected",
+				reason: { code: "SCAN_PAGE_LIMIT", operation: "ordersByStatus" },
+			});
+		});
 	});
 });
