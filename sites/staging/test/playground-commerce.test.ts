@@ -25,6 +25,7 @@ import {
 	playgroundRouteCaller,
 	playgroundWaitPath,
 	prepareDemoCommerce,
+	stampPlaygroundUser,
 	type PlaygroundPorts,
 } from "../src/lib/playground-commerce.js";
 import { DEMO_PRICING, type ExistingCommerce } from "../scripts/seed-demo-commerce.js";
@@ -322,6 +323,40 @@ describe("playgroundRouteCaller", () => {
 			})?.createdAt,
 		).toBe("2026-10-24T21:35:43.995Z");
 		expect(playgroundRouteCaller({ id: "playground-admin", role: 50 })).toBeNull();
+	});
+});
+
+describe("stampPlaygroundUser", () => {
+	test("gives the session user the createdAt the admin console route needs", () => {
+		const user: Record<string, unknown> = {
+			id: "playground-admin",
+			email: "playground@emdashcms.com",
+			name: "Playground User",
+			role: 50,
+		};
+		stampPlaygroundUser(user);
+		expect(user["createdAt"]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+		expect(user["id"]).toBe("playground-admin");
+	});
+
+	test("leaves a usable timestamp alone and replaces an invalid one", () => {
+		const stamped = { createdAt: "2026-10-24T21:35:43.995Z" };
+		stampPlaygroundUser(stamped);
+		expect(stamped.createdAt).toBe("2026-10-24T21:35:43.995Z");
+
+		const date = new Date("2026-10-24T21:35:43.995Z");
+		const dated = { createdAt: date };
+		stampPlaygroundUser(dated);
+		expect(dated.createdAt).toBe(date);
+
+		const invalid: { createdAt: unknown } = { createdAt: new Date("not a date") };
+		stampPlaygroundUser(invalid);
+		expect(typeof invalid.createdAt).toBe("string");
+	});
+
+	test("ignores a missing user", () => {
+		expect(() => stampPlaygroundUser(undefined)).not.toThrow();
+		expect(() => stampPlaygroundUser(null)).not.toThrow();
 	});
 });
 

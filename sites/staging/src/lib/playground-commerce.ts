@@ -273,6 +273,24 @@ export function playgroundRouteCaller(user: unknown): {
 	};
 }
 
+/**
+ * Give the session user the `createdAt` EmDash's plugin dispatch reads.
+ *
+ * {@link playgroundRouteCaller} covers the gate's own dispatch. The admin's
+ * console calls (Orders, Reports, Coupons, Store settings) reach
+ * `/_emdash/api/plugins/otta/admin` with `locals.user` as-is, and without a
+ * timestamp that route answers 500. A user that already has a usable one is
+ * left alone; anything that is not an object is ignored.
+ */
+export function stampPlaygroundUser(user: unknown): void {
+	if (typeof user !== "object" || user === null) return;
+	const record = user as { createdAt?: unknown };
+	const current = record.createdAt;
+	if (typeof current === "string" && current.length > 0) return;
+	if (current instanceof Date && !Number.isNaN(current.getTime())) return;
+	record.createdAt = callerCreatedAt(current);
+}
+
 /** One nonce per sample product, stable across reloads, so the restock is
  *  once-only inside the visitor's database. */
 function restockNonce(row: DemoRow): string {
