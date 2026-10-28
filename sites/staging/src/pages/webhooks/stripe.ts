@@ -23,8 +23,8 @@
  * A Stripe HMAC covers the EXACT delivered bytes. `JSON.parse` followed by
  * `JSON.stringify` is a different byte string — different whitespace, possibly
  * different key order and number formatting — and would fail verification for
- * every genuine delivery. So the bytes are read with `arrayBuffer()` and
- * base64-encoded verbatim; this file contains no `JSON.parse` of the body, and
+ * every genuine delivery. So the bytes are read raw (a capped stream read —
+ * see below) and base64-encoded verbatim; this file contains no `JSON.parse` of the body, and
  * that absence is load-bearing. (Base64 is the transport because EmDash's route
  * framework JSON-parses a route's request body before any handler runs and
  * exposes no raw-body read.)
@@ -52,6 +52,18 @@
  * it to a blanket 500 would make Stripe retry deliveries that will never
  * succeed. The body is a diagnostic for the Stripe dashboard only — it carries
  * a fixed `reason` vocabulary and never a secret.
+ *
+ * ── Why the body is capped before it is read ──────────────────────────────
+ * Anything with a non-empty `stripe-signature` gets as far as the body read,
+ * and nothing in front of it bounds the size, so an unbounded read let one
+ * anonymous POST hold its body several times over (bytes, binary string,
+ * base64, JSON) and run the shared isolate out of memory (#605). The read is
+ * therefore capped at {@link MAX_WEBHOOK_BYTES} — by `Content-Length` before
+ * the body is touched, and again on the running total mid-stream for a body
+ * that declares no length — and an oversized one is a 413 that never reaches
+ * a dispatch. Stripe publishes no hard ceiling on an event payload, but its
+ * events are typically a few kilobytes and embedded lists are truncated
+ * (`has_more`), so the cap sits far above anything genuine.
  */
 import {
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
@@ -61,18 +73,32 @@ import {
 import type { APIRoute } from "astro";
 import { routeDispatcher } from "../../lib/cart-actions.js";
 import { BUSY_RETRY_AFTER_SECONDS, dispatchOttaRoute } from "../../lib/otta-api.js";
+import { readCappedBody } from "../../lib/request-body.js";
 import { webhookEdgeToken } from "../../lib/webhook-env.js";
 
 /** Stripe's own header, verbatim. Read case-insensitively by `Headers.get`. */
 const STRIPE_SIGNATURE_HEADER = "stripe-signature";
 
+/** The largest delivery this endpoint will read. See the module doc. */
+export const MAX_WEBHOOK_BYTES = 512 * 1024;
+
+/** Bytes per `String.fromCharCode` call — well under any engine's argument
+ *  limit, and large enough that the loop is a handful of iterations. */
+const BASE64_CHUNK = 0x8000;
+
 /** Encode bytes as base64 with `btoa` — an ambient global in workerd and in
  *  modern Node, mirroring the `atob` the plugin's route decodes with, so no
- *  `node:buffer` import appears on either side of this hop. Webhook payloads
- *  are a few kilobytes, so the per-byte loop is not worth chunking. */
+ *  `node:buffer` import appears on either side of this hop. Built a chunk at a
+ *  time rather than a byte at a time: a per-byte string append is CPU the
+ *  Workers Free limit does not have for a body near the cap. */
 function toBase64(bytes: Uint8Array): string {
 	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
+	for (let i = 0; i < bytes.length; i += BASE64_CHUNK) {
+		binary += String.fromCharCode.apply(
+			null,
+			bytes.subarray(i, i + BASE64_CHUNK) as unknown as number[],
+		);
+	}
 	return btoa(binary);
 }
 
@@ -103,8 +129,14 @@ export const POST: APIRoute = async (context) => {
 		return respond({ ok: false, status: 400, reason: "MALFORMED" });
 	}
 
-	// The bytes, untouched — see the module doc. `arrayBuffer()`, never `json()`.
-	const rawBody = new Uint8Array(await context.request.arrayBuffer());
+	// The bytes, untouched and capped — see the module doc. Never `json()`.
+	const rawBody = await readCappedBody(context.request, MAX_WEBHOOK_BYTES);
+	if (rawBody === null) {
+		return new Response(JSON.stringify({ ok: false, reason: "PAYLOAD_TOO_LARGE" }), {
+			status: 413,
+			headers: { "Content-Type": "application/json" },
+		});
+	}
 
 	// Absent ⇒ no header at all, NOT an empty one. The plugin's gate branches on
 	// the header's presence when a token IS configured, so an empty string would
