@@ -72,12 +72,16 @@ const items = entries
 	.slice(0, PLP_PAGE_SIZE_CAP)
 	.map((entry) => toCmsProductContent(entry.data as unknown as ProductEntryData));
 
-const result = await dispatchOttaRoute<PlpRouteResult>(
-	getPublicPluginApiRouteHandler(Astro.locals),
-	STOREFRONT_LIST_ROUTE,
-	{ items, query: { kind: "all" } },
-	Astro.url,
-);
+// With no catalog there is nothing to price: skip the call, so an outage costs
+// no commerce round-trip and a BUSY answer cannot replace the outage's 503.
+const result = catalogUnavailable
+	? null
+	: await dispatchOttaRoute<PlpRouteResult>(
+			getPublicPluginApiRouteHandler(Astro.locals),
+			STOREFRONT_LIST_ROUTE,
+			{ items, query: { kind: "all" } },
+			Astro.url,
+		);
 const view: ProductViewModel[] | null = result !== null && result.ok ? result.items : null;
 /* BUSY (storage contention, already retried once): same degraded cards, but a
    503 + short Retry-After so a crawler comes back for the priced page. */
