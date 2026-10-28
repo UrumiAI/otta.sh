@@ -325,10 +325,10 @@ describe("POST /webhooks/stripe — the plugin's status is replayed, never swall
 		expect(await response.json()).toMatchObject({ reason: "AMOUNT_MISMATCH" });
 	});
 
-	test("ORDER_NOT_FOUND ⇒ 404", async () => {
-		const { handler } = makeDispatcher({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+	test("ORDER_NOT_FOUND ⇒ 200, so a shared Stripe account's foreign event is not retried (#595)", async () => {
+		const { handler } = makeDispatcher({ ok: false, status: 200, reason: "ORDER_NOT_FOUND" });
 
-		expect((await POST(makeContext(handler))).status).toBe(404);
+		expect((await POST(makeContext(handler))).status).toBe(200);
 	});
 
 	test("NOT_CONFIGURED ⇒ 503, so Stripe RETRIES an unprovisioned deploy rather than dropping the event", async () => {

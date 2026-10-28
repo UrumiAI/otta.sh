@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { orderId } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { signStripeWebhook, StripePaymentGateway } from "../src/index.js";
@@ -128,5 +129,61 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 			headers: { "Stripe-Signature": allWrong },
 		});
 		expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
+	});
+});
+
+/** Sign an ARBITRARY event body the way Stripe does — `v1 = HMAC-SHA256(secret,
+ *  "<t>.<raw body>")` — for shapes `signStripeWebhook` will not mint (it always
+ *  stamps `metadata.order_id`). */
+function signedRaw(event: unknown): { body: Uint8Array; headers: Record<string, string> } {
+	const text = JSON.stringify(event);
+	const t = Math.floor(Date.now() / 1000);
+	const v1 = createHmac("sha256", SECRET).update(`${t}.${text}`).digest("hex");
+	return {
+		body: new TextEncoder().encode(text),
+		headers: { "Stripe-Signature": `t=${t},v1=${v1}` },
+	};
+}
+
+function intentEvent(metadata: unknown): unknown {
+	return {
+		id: "evt_foreign",
+		type: "payment_intent.succeeded",
+		data: { object: { id: "pi_foreign", amount: 1500, currency: "usd", metadata } },
+	};
+}
+
+describe("a VERIFIED payment_intent event that is not Otta's is UNKNOWN_EVENT, not MALFORMED (#595)", () => {
+	// A Stripe account shared with anything else (Payment Links, invoices, another
+	// plugin) sends correctly signed `payment_intent.*` events Otta never created.
+	// Refusing them as MALFORMED makes Stripe retry for days and, eventually,
+	// disable the endpoint — Otta's own settlements included.
+	const gateway = new StripePaymentGateway({ webhookSecret: SECRET });
+
+	test.each([
+		["metadata is empty", {}],
+		["metadata.order_id is the empty string", { order_id: "" }],
+		["metadata is absent", undefined],
+	])("%s ⇒ UNKNOWN_EVENT (and never throws)", async (_label, metadata) => {
+		const res = await gateway.verifyConfirmation({
+			kind: "webhook",
+			...signedRaw(intentEvent(metadata)),
+		});
+		expect(res).toEqual({ ok: false, reason: "UNKNOWN_EVENT" });
+	});
+
+	test("a signed body that is not an event shape stays MALFORMED", async () => {
+		for (const event of [
+			{ type: "payment_intent.succeeded", data: { object: {} } }, // no id
+			{ id: "evt_x", type: "payment_intent.succeeded" }, // no data.object
+			{
+				...(intentEvent({ order_id: "ord-1" }) as object),
+				data: { object: { id: "pi_1", metadata: { order_id: "ord-1" } } },
+			}, // no amount/currency
+			intentEvent({ order_id: 42 }), // Stripe metadata values are always strings
+		]) {
+			const res = await gateway.verifyConfirmation({ kind: "webhook", ...signedRaw(event) });
+			expect(res).toEqual({ ok: false, reason: "MALFORMED" });
+		}
 	});
 });
