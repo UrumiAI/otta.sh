@@ -155,6 +155,10 @@ overrides:
   "zod@>=4.0.0 <4.6.6": 4.6.6
 ```
 
+On npm the same range-keyed pin goes under `overrides` in `package.json`. Yarn's `resolutions`
+silently ignores a range key, so name the pinned version instead: `"zod@npm:4.5.4": "4.6.6"` on
+Yarn 2+, or `"zod": "4.6.6"` on Yarn 1 (which forces every `zod` in the tree).
+
 ## Architecture (summary)
 
 - **Product model = hybrid.** Content (title, description, images, SEO, taxonomies)
