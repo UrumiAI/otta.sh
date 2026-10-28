@@ -406,7 +406,10 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		// inventory write. The SQL adapter sees a `pending` row here and raises the
 		// same loud anomaly.
 		if (hold === undefined) throw new ReservationCommitLostError(reservationId, "pending");
-		await this.#settle(index, reservationId, "committed");
+		// A peer may have settled it between the read above and this terminal write
+		// (#593): the winner decides the prune, and a lost race is the same anomaly.
+		const winner = await this.#settle(index, reservationId, "committed");
+		if (winner !== "committed") throw new ReservationCommitLostError(reservationId, winner);
 	}
 
 	/** The `held|adopted → released` flip plus the stock return. */
@@ -415,17 +418,18 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		if (index.terminalState !== undefined) {
 			await this.#prune(index.sku, this.#pruneEntries(index, reservationId), "release");
 			if (index.terminalState === "released") return; // benign double-release
-			// Typed, not a bare Error: a caller that must classify this — the cart
-			// expiry swallows it, because a hold an order already committed is not
-			// the cart's to return — should not have to match on a message. The text
-			// is unchanged from the bare error it replaces.
+			// Typed, not a bare Error: a caller that must classify this — a hold an
+			// order already committed is not the cart's to return — should not have
+			// to match on a message. The text is unchanged from the bare error it
+			// replaces.
 			throw new ReservationNotReleasableError(reservationId, index.terminalState);
 		}
 		const hold = await this.#liveHold(index, reservationId);
 		if (hold === undefined) {
 			throw new ReservationNotReleasableError(reservationId, "pending");
 		}
-		await this.#settle(index, reservationId, "released");
+		const winner = await this.#settle(index, reservationId, "released");
+		if (winner !== "released") throw new ReservationNotReleasableError(reservationId, winner);
 	}
 
 	/**
@@ -443,7 +447,9 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * which nothing adopts, commits or releases, so the units are never returned
 	 * twice and never sold under an order. Any later `releaseHeld` of that hold —
 	 * a concurrent one, or a retry — finds it pruned, completes that terminal
-	 * write and answers `true` (see `#releasedWithoutHold`).
+	 * write and answers `true` (see `#releasedWithoutHold`). That is why the
+	 * domain's `removeLine` routes a `pending` line here too: its retry is what
+	 * heals the crash.
 	 */
 	async releaseHeld(reservationId: string): Promise<boolean> {
 		const index = await this.#mustIndex(reservationId);
@@ -611,8 +617,7 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 			terminalState: terminal,
 		});
 		if (written.applied) return terminal;
-		await this.#setTerminalState(reservationId, terminal);
-		return (await this.#index.get(reservationId))?.terminalState ?? terminal;
+		return this.#setTerminalState(reservationId, terminal);
 	}
 
 	/** `#prune`'s write against an aggregate already read. False when a peer moved it. */
@@ -676,13 +681,21 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 				});
 			}
 			if (prunable.length === 0) continue;
-			// The terminal records for EVERY id first, then one prune per SKU.
-			await Promise.all(
+			// The terminal records for EVERY id first, then one prune per SKU — by
+			// the state that WON (#593): an id a peer released between the read and
+			// this write is pruned as released, and reported lost.
+			const winners = await Promise.all(
 				prunable.map((entry) =>
 					this.#recordTerminal(entry.reserveKey, entry.reservationId, "committed"),
 				),
 			);
-			await this.#prune(sku, prunable, "commitMany");
+			const settled: PruneEntry[] = [];
+			for (const [i, entry] of prunable.entries()) {
+				const terminal = winners[i] ?? "committed";
+				if (terminal !== "committed") lost.push(entry.reservationId);
+				if (terminal !== "failed") settled.push({ ...entry, terminal });
+			}
+			await this.#prune(sku, settled, "commitMany");
 		}
 		return { lost };
 	}
@@ -1323,30 +1336,34 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * Writing the outcome before the prune is what keeps a reserve replay from
 	 * looking fresh after the hold is gone. Every step is idempotent, so any
 	 * replayer can finish an interrupted settle.
+	 *
+	 * The terminal state is first-wins, so the prune returns or consumes the units
+	 * by the state that WON — this call's, or a peer's that got there between this
+	 * call's read and its write (#593) — never by the one requested. Answers the
+	 * winner, so a caller that lost can say so.
 	 */
 	async #settle(
 		index: ReservationIndexDoc,
 		reservationId: string,
 		terminal: TerminalReservationState,
-	): Promise<void> {
-		await this.#recordTerminal(index.idempotencyKey, reservationId, terminal);
-		await this.#prune(
-			index.sku,
-			[{ reserveKey: index.idempotencyKey, reservationId, terminal }],
-			terminal === "committed" ? "commit" : "release",
-		);
+	): Promise<TerminalReservationState> {
+		const winner = await this.#recordTerminal(index.idempotencyKey, reservationId, terminal);
+		const entries = this.#pruneEntries({ ...index, terminalState: winner }, reservationId);
+		await this.#prune(index.sku, entries, terminal === "committed" ? "commit" : "release");
+		return winner;
 	}
 
-	/** Steps 1 and 2 of the settle: the reserve key's answer, then the terminal state. */
+	/** Steps 1 and 2 of the settle: the reserve key's answer, then the terminal
+	 *  state. Answers the terminal state that won (see `#setTerminalState`). */
 	async #recordTerminal(
 		reserveKey: string,
 		reservationId: string,
 		terminal: TerminalReservationState,
-	): Promise<void> {
+	): Promise<TerminalReservationState> {
 		// A hold exists, so the reserve succeeded: that is the answer the key
 		// document must carry once the hold is gone.
 		await this.#markKeyTerminal(reserveKey, { ok: true, reservationId }, reservationId);
-		await this.#setTerminalState(reservationId, terminal);
+		return this.#setTerminalState(reservationId, terminal);
 	}
 
 	/** Move a reservation key document to its terminal outcome. First writer wins. */
@@ -1373,21 +1390,26 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		});
 	}
 
-	/** First terminal state wins; a later one is a no-op. */
+	/**
+	 * First terminal state wins; a later one is a no-op. Answers the state that
+	 * WON — this call's, or the one a peer wrote first. (A missing index entry
+	 * cannot be settled by anyone else, so it answers the requested state.)
+	 */
 	async #setTerminalState(
 		reservationId: string,
 		terminal: TerminalReservationState,
-	): Promise<void> {
-		await this.#cas<void>("reservationTerminalState", async () => {
+	): Promise<TerminalReservationState> {
+		return this.#cas<TerminalReservationState>("reservationTerminalState", async () => {
 			const current = await this.#index.getVersioned(reservationId);
-			if (current === null || current.value.terminalState !== undefined) {
-				return casDone<void>(undefined);
+			if (current === null) return casDone(terminal);
+			if (current.value.terminalState !== undefined) {
+				return casDone(current.value.terminalState);
 			}
 			const written = await this.#index.compareAndSet(reservationId, current.revision, {
 				...current.value,
 				terminalState: terminal,
 			});
-			return written.applied ? casDone<void>(undefined) : CAS_RETRY;
+			return written.applied ? casDone(terminal) : CAS_RETRY;
 		});
 	}
 

@@ -147,6 +147,43 @@ describeEachDialect("cart-mutation fences", (ctx) => {
 		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(1);
 	});
 
+	test("remove on a hold ADOPTED after the cart read is LINE_CHECKED_OUT and releases nothing (#593)", async () => {
+		// Two tabs: this remove reads the cart while the line is still `held`, then a
+		// checkout's `adoptMany` flips the hold before the release runs (it adopts
+		// before it flips the cart, so the cart still reads active). A release
+		// decided on that stale read would put the order's units back on sale.
+		const h = make();
+		await h.seedStock("SKU-1", 5);
+		const cartId = await createCart(h.deps, USD);
+		const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+		if (!add.ok) throw new Error("add must succeed");
+		const reservationId = add.line.reservationId ?? "";
+
+		const get = h.store.get.bind(h.store);
+		h.store.get = async (id) => {
+			const read = await get(id);
+			h.store.get = get;
+			const adopted = await h.inventory.adoptMany({
+				reservationIds: [reservationId],
+				orderId: "order-racing",
+				holdExpiresAt: new Date(h.clock.now().getTime() + 30 * 60 * 1000).toISOString(),
+				now: h.clock.now().toISOString(),
+			});
+			expect(adopted.adopted).toEqual([reservationId]);
+			return read;
+		};
+
+		const res = await removeLine(h.deps, cartId, add.line.lineId, idempotencyKey("k2"));
+		expect(res).toEqual({ ok: false, reason: "LINE_CHECKED_OUT" });
+		expect(await h.onHand("SKU-1")).toBe(3);
+		const doc = await h.inventoryDocs.get("SKU-1");
+		if (doc === null) throw new Error("missing inventory document");
+		expect(normalizeInventoryDoc(doc).holds[idempotencyKey("k1")]?.state).toBe("adopted");
+		// The order's settle still finds its hold: no COMMIT_LOST, nothing returned.
+		expect(await h.inventory.commitMany([reservationId])).toEqual({ lost: [] });
+		expect(await h.onHand("SKU-1")).toBe(3);
+	});
+
 	test("any mutation on a checked_out cart is CART_CHECKED_OUT", async () => {
 		const h = make();
 		await h.seedStock("SKU-1", 5);
