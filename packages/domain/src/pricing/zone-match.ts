@@ -52,8 +52,9 @@ export function resolveShippingZone(
 	input: {
 		requiresShipping: boolean;
 		destination?: ZoneDestination;
-		/** `false` never refuses a pick that CONTAINS a zoned subdivision; it
-		 *  falls to the ancestor/country zone. Default `true` (a buyer). */
+		/** `false` never answers `region_code_required` — not for a pick that
+		 *  CONTAINS a zoned subdivision, nor for a blank region; it falls to the
+		 *  ancestor/country zone. Default `true` (a buyer). */
 		askForNarrower?: boolean;
 	},
 ): ZoneResolution {
@@ -65,7 +66,10 @@ export function resolveShippingZone(
 	const country = destination.country;
 	const parsed = zones.map((z) => ({ id: z.id, codes: parseZoneRegions(z.regions).codes }));
 
-	if (destination.region === null) {
+	// A buyer with no region, where a zone lists one of the country's
+	// subdivisions, is asked for it. The store's base address cannot be asked
+	// (the admin leaves its region optional, #594): it falls to the country's zone.
+	if (destination.region === null && input.askForNarrower !== false) {
 		const prefix = `${country}-`;
 		if (parsed.some((z) => z.codes.some((code) => code.startsWith(prefix)))) {
 			return { status: "region_code_required", country };
