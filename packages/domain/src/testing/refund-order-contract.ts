@@ -1041,6 +1041,105 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.state).toBe("refunded");
 		});
 
+		test("a same-key retry of a held reservation is refused, not reported done, when the gateway has turned refundable:false (#607)", async () => {
+			// The first attempt went to the provider and failed retryably, so its
+			// `reserved` row holds the whole ceiling. By the retry the gateway reads
+			// `refundable:false` (an unreadable Stripe secret), which would route it to
+			// the manual record — whose dedupe answers `duplicate` on that reserved
+			// row. No money moved, so the retry must not answer ok.
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-retry-manual", totalCents: 900 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
+			const cmd = {
+				orderId: id,
+				amount: cents(900),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("r1"),
+			};
+			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
+				ok: false,
+				reason: "GATEWAY_RETRYABLE",
+			});
+
+			gw.setRefundable(false);
+			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
+				ok: false,
+				reason: "GATEWAY_RETRYABLE",
+			});
+			const ledger = await h.orderStore.listRefunds(id);
+			expect(ledger.map((r) => r.status)).toEqual(["reserved"]);
+			expect((await h.orderStore.getById(id))?.state).toBe("paid");
+
+			// The reservation is still resumable once the gateway can refund again.
+			gw.setRefundable(true);
+			gw.setRefundResult({ ok: true, refundRef: "re_r1", amount: cents(900), currency: USD });
+			const resumed = await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			expect(resumed).toMatchObject({ ok: true, recorded: true, fullyRefunded: true });
+			expect((await h.orderStore.listRefunds(id)).map((r) => r.status)).toEqual(["recorded"]);
+		});
+
+		test("a manual record that lands on another request's held reservation is refused, never a duplicate success (#607)", async () => {
+			// The race window the replay read cannot see: the caller's ledger was read
+			// before a same-key gateway attempt reserved the row, so the manual record
+			// is the first sight of it and dedupes onto a `reserved` row.
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-manual-on-reserved", totalCents: 900 });
+			const stale = await h.orderStore.readOrderLedger(id);
+			if (stale === null) throw new Error("seeded order has no ledger");
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
+			const cmd = {
+				orderId: id,
+				amount: cents(900),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("r1-stale"),
+			};
+			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+
+			const manual = new FakePaymentGateway({ id: "stripe", refundable: false });
+			expect(await refundOrder({ orderStore: h.orderStore }, manual, cmd, stale)).toEqual({
+				ok: false,
+				reason: "GATEWAY_RETRYABLE",
+			});
+			expect((await h.orderStore.listRefunds(id)).map((r) => r.status)).toEqual(["reserved"]);
+		});
+
+		test("a recorded MANUAL refund replayed under the same key is the benign duplicate", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-manual-replay", totalCents: 900 });
+			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
+			const cmd = {
+				orderId: id,
+				amount: cents(900),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-manual-replay"),
+			};
+			const stale = await h.orderStore.readOrderLedger(id);
+			if (stale === null) throw new Error("seeded order has no ledger");
+			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toMatchObject({
+				ok: true,
+				recorded: true,
+				duplicate: false,
+			});
+			// Seen by the replay read, and — through a ledger read before the first
+			// record — only by the store's own dedupe: both answer ok.
+			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toMatchObject({
+				ok: true,
+				recorded: false,
+				duplicate: true,
+			});
+			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd, stale)).toMatchObject({
+				ok: true,
+				recorded: false,
+				duplicate: true,
+			});
+			expect((await h.orderStore.listRefunds(id)).map((r) => r.status)).toEqual(["recorded"]);
+		});
+
 		test("a RESUMED reservation whose provider pre-flight already shows the refund is held UNVERIFIED and flagged, never left reserved", async () => {
 			// The crash-heal window: an earlier attempt's refunds.create succeeded at
 			// the provider but the process died (or the call failed retryably) before

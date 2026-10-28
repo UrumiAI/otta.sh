@@ -402,6 +402,13 @@ async function refundOnLedger(
 	}
 
 	if (kind === "manual") {
+		// A held reservation under this key is an earlier GATEWAY attempt that never
+		// settled (RETRYABLE / NOT_STARTED / a crash before issue). The gateway now
+		// reads refundable:false (e.g. an unreadable Stripe secret), but the manual
+		// record cannot finish it: its dedupe would answer `duplicate` on a row that
+		// moved no money (#607). Refuse with the reservation's own answer — it is
+		// kept, and a same-key retry resumes it once the gateway can refund again.
+		if (resuming) return { ok: false, reason: "GATEWAY_RETRYABLE" };
 		// No gateway leg ⇒ the one-shot atomic record (arbitration + finalized
 		// insert + conditional flip in one transaction).
 		const res = await deps.orderStore.recordRefund({
@@ -627,6 +634,12 @@ function settleRecordOutcome(
 	if (res.outcome === "duplicate" && !refundMatchesCommand(res.refund, cmd)) {
 		return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 	}
+	// Only a FINALIZED row is a duplicate success. Any other status is a gateway
+	// attempt the replay read did not see, and it moved no money we know of — the
+	// same answers the replay check gives for that status (#607).
+	if (res.outcome === "duplicate" && res.refund.status !== "recorded") {
+		return { ok: false, reason: unsettledRefundReason(res.refund.status) };
+	}
 	return {
 		ok: true,
 		recorded: res.outcome === "recorded",
@@ -635,6 +648,21 @@ function settleRecordOutcome(
 		refund: res.refund,
 		order: res.order,
 	};
+}
+
+/** The refusal for a key whose row is not finalized — what the replay check at
+ *  the top of {@link refundOnLedger} answers for each status. */
+function unsettledRefundReason(
+	status: Exclude<RefundRecord["status"], "recorded">,
+): "GATEWAY_RETRYABLE" | "GATEWAY_UNVERIFIED" | "GATEWAY_TERMINAL" {
+	switch (status) {
+		case "reserved":
+			return "GATEWAY_RETRYABLE";
+		case "unverified":
+			return "GATEWAY_UNVERIFIED";
+		case "voided":
+			return "GATEWAY_TERMINAL";
+	}
 }
 
 /** Pick the tighter ceiling bound for an over-refund (ADR-0008) from the
