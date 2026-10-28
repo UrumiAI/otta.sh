@@ -258,6 +258,10 @@ export interface LedgerLine {
  *    a root that ships `data-minutes` has it kept current — opt-in, so a
  *    stylesheet can switch copy at a minute boundary (e.g. under five minutes,
  *    "Check out soon"). Ship the server's first frame in each.
+ *  - optional `data-product` on the root: the line's `name` (title, else SKU —
+ *    pass `CartLineModel.name`, which is never null). The live
+ *    region's announcements lead with it ("Kenya AA: Hold released"), so
+ *    several lines lapsing together can be told apart. Never drawn.
  *  - `data-countdown="off"` on the root marks a QUIET ribbon — the store hides the
  *    hold timer (`showHoldTimer` off). It ships only `[data-hold-note]` and
  *    `[data-hold-announce]`: no countdown while the hold is live, the note
@@ -274,7 +278,8 @@ export interface CartLineModel {
 	line: { lineId: string; sku: string; qty: number; expiresAt: string | null };
 	/** The display name, or `null` when this store cannot name the line. */
 	title: string | null;
-	/** What a screen reader calls the line — the title, else the SKU. Never null. */
+	/** What a screen reader calls the line — the title, else the SKU, with the SKU
+	 *  added when another line shares the title (`cartLineNames`). Never null. */
 	name: string;
 	image: string | null;
 	/** Keys the coil art. */

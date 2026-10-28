@@ -255,52 +255,53 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 		expect(await createRoute(input)).toEqual({ ok: false, error: "INVALID_INPUT" });
 	});
 
-	test("cart/read still answers when the store-currency read rejects: staleCurrency is null", async () => {
+	test("cart/read answers RENDER_FAILED when the settings read rejects: one read serves the cart and the page (#570)", async () => {
 		await setStoreCurrency("EUR");
 		const { cartId } = await h.client.createCart("USD");
 		expect(await readRoute(cartId)).toMatchObject({
 			ok: true,
 			staleCurrency: { cartCurrency: "USD", storeCurrency: "EUR" },
 		});
-		// The cart read itself reads settings once (the hold TTL); every settings
-		// read after that one rejects — so only the storefront-settings read fails.
+		// The cart's hold window and the page's timer flag / saved currency are ONE
+		// settings read now, so there is no second read left to fail on its own and
+		// leave a cart without a notice: an unreadable document fails the render, as
+		// it already did when the cart's own read hit it.
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		const failing = withCollection(h.ctx.storage as StorageAccess, SETTINGS_COLLECTION, () => {
+			throw new Error("settings unreadable");
+		});
+		try {
+			const read = await createCartReadRouteHandler()(
+				{ input: { cartId } as never, request },
+				{ ...h.ctx, storage: failing },
+			);
+			expect(read).toEqual({ ok: false, error: "RENDER_FAILED" });
+		} finally {
+			errors.mockRestore();
+		}
+	});
+
+	test("cart/read keeps its notice when only the first settings read succeeds: nothing reads settings twice (#570)", async () => {
+		await setStoreCurrency("EUR");
+		const { cartId } = await h.client.createCart("USD");
+		// Every settings read after the first rejects. The old route read settings
+		// twice (the cart's hold window, then the page's), so its second read failed
+		// and the notice silently dropped to null; the one shared read cannot.
 		let settingsReads = 0;
 		const failing = withCollection(h.ctx.storage as StorageAccess, SETTINGS_COLLECTION, () => {
 			settingsReads += 1;
 			if (settingsReads > 1) throw new Error("settings unreadable");
 		});
-		const read = (await createCartReadRouteHandler()(
+		const read = await createCartReadRouteHandler()(
 			{ input: { cartId } as never, request },
 			{ ...h.ctx, storage: failing },
-		)) as CartReadRouteResult;
-		expect(read).toMatchObject({ ok: true, cart: { cartId }, staleCurrency: null });
-		expect(settingsReads).toBeGreaterThan(1);
-	});
-
-	test("cart/read still answers when the storefront-settings read rejects: the timer is hidden (#546, #547)", async () => {
-		seq += 1;
-		await h.stores.settingsStore.update(
-			{ showHoldTimer: true },
-			idempotencyKey(`hold-timer-on-${String(seq)}`),
 		);
-		const { cartId } = await h.client.createCart("USD");
-		expect(await readRoute(cartId)).toMatchObject({ ok: true, showHoldTimer: true });
-		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-		const failing = vi
-			.spyOn(InProcessCommerceClient.prototype, "getStorefrontSettings")
-			.mockRejectedValueOnce(new Error("settings unreadable"));
-		try {
-			expect(await readRoute(cartId)).toMatchObject({
-				ok: true,
-				cart: { cartId },
-				showHoldTimer: false,
-			});
-			expect(failing).toHaveBeenCalledTimes(1);
-			expect(errors.mock.calls.flat().map(String).join(" ")).toContain("settings read failed");
-		} finally {
-			failing.mockRestore();
-			errors.mockRestore();
-		}
+		expect(read).toMatchObject({
+			ok: true,
+			cart: { cartId },
+			staleCurrency: { cartCurrency: "USD", storeCurrency: "EUR" },
+		});
+		expect(settingsReads).toBe(1);
 	});
 
 	/** The queries one `replaceStaleCurrencyCart` costs for a stale cart of `n`
