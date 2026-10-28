@@ -20,6 +20,7 @@ import {
 	currency,
 	expireOrders,
 	idempotencyKey,
+	reconcileCouponRedemptions,
 	settleOrder,
 	type CreateOrderDeps,
 	type ExpireOrdersDeps,
@@ -130,6 +131,84 @@ describeEachDialect("coupon lifecycle", (ctx) => {
 		fx.orders.advance(16 * 60 * 1000);
 		expect(await expireOrders(fx.expireDeps)).toBe(1);
 		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(0);
+	});
+
+	// Issue #598: the storefront's key is fixed per cart, so a double-clicked Place
+	// runs two same-key checkouts. Each mints its own order id; the second REPLAYS the
+	// first's redemption (keyed on coupon + key), which names the first call's id —
+	// and here the second call's insert lands first, so the order persists under the
+	// second call's id. The order still holds the use: the orphan sweep must not free
+	// it, and the order's own expiry must.
+	test("a same-key double place whose second insert lands first: the persisted order keeps, then frees, the use", async () => {
+		const fx = fixture();
+		await fx.orders.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1500,
+			title: "Widget",
+			onHand: 5,
+		});
+		await fx.coupons.store.create({
+			id: "cpn",
+			code: "SAVE5",
+			type: "fixed_amount",
+			amountCents: cents(500),
+			rateBps: null,
+			capCents: null,
+			currency: USD,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 1,
+			maxUsesPerCustomer: null,
+		});
+		const cartId = await fx.orders.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		// Hold the first call at its insert until the second call's insert has landed.
+		let releaseFirst!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		let calls = 0;
+		// The fixture is per test, so shadowing the method on this instance is local.
+		const orderStore = fx.createDeps.orderStore;
+		const insert = orderStore.createFromCart.bind(orderStore);
+		orderStore.createFromCart = async (input) => {
+			const mine = ++calls;
+			if (mine === 1) await gate;
+			const out = await insert(input);
+			if (mine === 2) releaseFirst();
+			return out;
+		};
+		const [a, b] = await Promise.all([
+			createOrderFromCart(fx.createDeps, cmd(cartId)),
+			createOrderFromCart(fx.createDeps, cmd(cartId)),
+		]);
+		if (!a.ok || !b.ok) throw new Error("both same-key calls must succeed");
+		expect(a.order.id).toBe(b.order.id);
+		expect(b.order.totals.discount).toBe(500);
+		const [redemption] = await fx.coupons.store.listRedemptionsCreatedBefore(
+			"9999-12-31T00:00:00.000Z",
+		);
+		expect(redemption?.orderId).not.toBe(b.order.id);
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(1);
+
+		// Past a grace window, the order still pending inside its hold.
+		fx.orders.advance(10 * 60 * 1000);
+		const released = await reconcileCouponRedemptions(
+			{ couponStore: fx.coupons.store, orderStore: fx.orders.store, clock: fx.orders.clock },
+			{ graceMs: 5 * 60 * 1000 },
+		);
+		expect(released).toBe(0);
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(1);
+
+		// Unpaid past its hold: expiry frees the use the order actually holds.
+		fx.orders.advance(10 * 60 * 1000);
+		expect(await expireOrders(fx.expireDeps)).toBe(1);
+		expect((await fx.orders.store.getById(b.order.id))?.state).toBe("expired");
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(0);
+		expect(await fx.coupons.redemptions.count({ couponId: "cpn", holdsUse: "yes" })).toBe(0);
 	});
 
 	test("a PAID order does NOT release its coupon — the use stays consumed", async () => {

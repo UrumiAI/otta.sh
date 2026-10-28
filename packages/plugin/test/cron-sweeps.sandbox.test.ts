@@ -915,6 +915,55 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		expect(blocked).toMatchObject({ ok: false, reason: "COUPON_MAX_PER_CUSTOMER" });
 	}, 180_000);
 
+	test("coupon-orphans leaves a redemption alone while an order holds its idempotency key under another id (#598)", async () => {
+		// A same-key checkout replay (a double-clicked Place): the second call replays
+		// the first's redemption — which names the FIRST call's order id — while the
+		// order row, deduped on the same key, persisted under the second call's id. No
+		// order exists by the redemption's id, yet a live, discounted order holds it.
+		const suffix = "rebound";
+		const couponId = `coupon-${suffix}`;
+		const s = stores();
+		const placed = await placeOrder(suffix, {
+			at: new Date(Date.now() - HOUR_MS),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+		});
+		await s.couponStore.create({
+			id: couponId,
+			code: `SWEEP${suffix.toUpperCase()}`,
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: cents(0),
+			startsAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
+			expiresAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+			maxUses: 1,
+			maxUsesPerCustomer: null,
+		});
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(`${placed.id}-never-persisted`),
+			// `placeOrder`'s creation key — the one the persisted order holds.
+			idempotencyKey: idempotencyKey(`create-${suffix}`),
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		expect(claimed.ok).toBe(true);
+		expect(await s.orderStore.getById(toOrderId(`${placed.id}-never-persisted`))).toBeNull();
+
+		await sweepInProcess({ cursors: freshCursors() });
+
+		// Still held: the single use belongs to the live order.
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(1);
+		const blocked = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(`order-${suffix}-second`),
+			idempotencyKey: idempotencyKey(`redeem-${suffix}-2`),
+			createdAt: new Date().toISOString(),
+		});
+		expect(blocked).toMatchObject({ ok: false, reason: "COUPON_EXHAUSTED" });
+	}, 180_000);
+
 	test("coupon-orphans heals an EXPIRED order whose coupon release was lost to a crash — exactly once", async () => {
 		// THE CRASH WINDOW in `expireOrders`: the guarded pending → expired flip is
 		// durable FIRST and `releaseByOrder` runs after it. A crash between the two

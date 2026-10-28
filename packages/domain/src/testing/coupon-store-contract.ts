@@ -299,21 +299,58 @@ export function couponStoreContract(
 				createdAt: "2026-07-10T00:00:00.000Z",
 			});
 			expect(res.ok).toBe(true);
-			const released = await store.releaseByOrder(orderId("o1"));
+			const order = { id: orderId("o1"), idempotencyKey: idempotencyKey("k1") };
+			const released = await store.releaseByOrder(order);
 			expect(released).toBe(1);
 			expect((await store.findById("c1"))?.usesCount).toBe(0);
 			const remaining = await store.listRedemptionsCreatedBefore(FAR_FUTURE);
 			expect(remaining).toHaveLength(0);
 			// Idempotent: a second release finds nothing.
-			expect(await store.releaseByOrder(orderId("o1"))).toBe(0);
+			expect(await store.releaseByOrder(order)).toBe(0);
 			expect((await store.findById("c1"))?.usesCount).toBe(0);
 		});
 
 		test("releaseByOrder on an order with no redemption is a no-op returning 0", async () => {
 			const { store } = await makeStore();
 			await store.create(fixedCoupon({ maxUses: 5 }));
-			expect(await store.releaseByOrder(orderId("no-such-order"))).toBe(0);
+			expect(
+				await store.releaseByOrder({
+					id: orderId("no-such-order"),
+					idempotencyKey: idempotencyKey("k-none"),
+				}),
+			).toBe(0);
 			expect((await store.findById("c1"))?.usesCount).toBe(0);
+		});
+
+		// Issue #598: a same-key checkout replay replays the FIRST call's redemption,
+		// which names that call's order id, while the order row (deduped on the same
+		// key) can persist under the SECOND call's id. The order's release must still
+		// find the use it holds — through the key they share — and only that use.
+		test("releaseByOrder also releases a redemption bound to the order's idempotency key under another order id", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon({ maxUses: 5 }));
+			const mine = await store.redeem({
+				couponId: "c1",
+				orderId: orderId("o-never-persisted"),
+				idempotencyKey: idempotencyKey("k-shared"),
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			const other = await store.redeem({
+				couponId: "c1",
+				orderId: orderId("o-other"),
+				idempotencyKey: idempotencyKey("k-other"),
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			expect(mine.ok && other.ok).toBe(true);
+			if (!mine.ok || !other.ok) return;
+			const persisted = { id: orderId("o-persisted"), idempotencyKey: idempotencyKey("k-shared") };
+			expect(await store.releaseByOrder(persisted)).toBe(1);
+			expect((await store.findById("c1"))?.usesCount).toBe(1);
+			const remaining = await store.listRedemptionsCreatedBefore(FAR_FUTURE);
+			expect(remaining.map((r) => r.id)).toEqual([other.redemptionId]);
+			// Idempotent, and never a second decrement.
+			expect(await store.releaseByOrder(persisted)).toBe(0);
+			expect((await store.findById("c1"))?.usesCount).toBe(1);
 		});
 
 		test("listRedemptionsCreatedBefore returns only rows strictly older than the cutoff", async () => {

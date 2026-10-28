@@ -159,6 +159,7 @@ import {
 	expireOrdersBatch,
 	finishCancellationRestock,
 	idempotencyKey as toIdempotencyKey,
+	orderHoldingRedemption,
 	orderId as toOrderId,
 	productId as toProductId,
 	retryLatePaymentRefunds,
@@ -3091,8 +3092,9 @@ function addDays(day: string, delta: number): string {
  * looks like they already used it.
  *
  * WHAT IS RELEASED: a redemption whose order does not exist (the domain's rule —
- * `reconcileCouponRedemptions` in `@urumi.ai/otta-domain` releases exactly the
- * `getById === null` case), OR whose order is `expired`.
+ * `reconcileCouponRedemptions` in `@urumi.ai/otta-domain` releases exactly the case
+ * where `orderHoldingRedemption` finds no order by the redemption's id or its
+ * idempotency key), OR whose order is `expired`.
  *
  * THE EXPIRED ARM IS THE RETRY FOR `expireOrders`, not a redundancy. That use-case
  * makes the guarded `pending → expired` flip durable FIRST and calls
@@ -3174,7 +3176,12 @@ async function releaseOrphanedRedemptions(
 	);
 	let released = 0;
 	const walked = await walkWindow(window, budget, "coupon-orphans", async (item) => {
-		const order = await stores.orderStore.getById(toOrderId(item.data.orderId));
+		// By id, then by idempotency key (#598): a same-key checkout replay can persist
+		// the order under another id than its redemption names, and that order holds it.
+		const order = await orderHoldingRedemption(stores.orderStore, {
+			orderId: toOrderId(item.data.orderId),
+			idempotencyKey: toIdempotencyKey(item.data.idempotencyKey),
+		});
 		// An order the expiry has not reached yet (pending, its hold already lapsed)
 		// cannot be judged: it is about to become `expired`, which this leg would then
 		// owe a release. Wait for it — the walk stops here, the cursor stays before it.

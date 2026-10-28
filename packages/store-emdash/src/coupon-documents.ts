@@ -77,11 +77,14 @@ export interface CouponCollectionIndexDeclaration {
  * that is never issued. There is deliberately no `active` index — the coupon
  * table has no active or soft-delete column at all.
  *
- * `coupon_redemptions` declares five fields, and every one of them is a port
+ * `coupon_redemptions` declares six fields, and every one of them is a port
  * method's only handle:
  *
  * - `couponId` — the delete guard counts the coupon's redemptions.
  * - `orderId` — `releaseByOrder` finds them by order.
+ * - `idempotencyKey` — `releaseByOrder` also finds them by the order's creation
+ *   key: a same-key checkout replay can persist the order under a different id
+ *   than its redemption names (issue #598).
  * - `createdAt` — `listRedemptionsCreatedBefore` both RANGES and ORDERS on it.
  * - `redemptionId` — `release` is given the generated id, not the document id.
  * - `holdsUse` — the text mirror that keeps a REFUSED key out of all three of
@@ -97,7 +100,7 @@ export const COUPON_COLLECTIONS: Readonly<Record<string, CouponCollectionIndexDe
 	[COUPONS_COLLECTION]: { indexes: ["createdAt"] },
 	[COUPON_CODES_COLLECTION]: {},
 	[COUPON_REDEMPTIONS_COLLECTION]: {
-		indexes: ["couponId", "orderId", "createdAt", "redemptionId", "holdsUse"],
+		indexes: ["couponId", "orderId", "idempotencyKey", "createdAt", "redemptionId", "holdsUse"],
 	},
 	[COUPON_CUSTOMER_CAPS_COLLECTION]: {},
 };
