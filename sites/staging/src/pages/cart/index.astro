@@ -492,7 +492,7 @@ const hasLiveHolds =
 <Storefront
 	view="cart"
 	model={model}
-	title={errorTitle("Cart", model.errorMessage !== null)}
+	title={errorTitle("Cart", model.errorMessage !== null || model.staleCurrency !== null)}
 	cartCount={cart === null || terminal ? null : totalQty(cart)}
 	currency={cart?.currency ?? null}
 >

@@ -75,7 +75,12 @@ import { buyerLocationErrorToken, locationBlock } from "../../lib/checkout-locat
 import { regionChoice, regionContainsOthers } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { CART_ERROR_ID, errorTitle } from "../../lib/error-notice.js";
+import {
+	CART_ERROR_ID,
+	CHECKOUT_ERROR_ID,
+	checkoutNoticeId,
+	errorTitle,
+} from "../../lib/error-notice.js";
 import { checkoutFootnote } from "../../lib/totals.js";
 import { readStripePublishableKey } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
@@ -338,15 +343,18 @@ const shownErrorToken =
 		: shownError;
 const model: CheckoutModel = {
 	summary,
+	/* Said ONCE (`checkoutNoticeId`, the decision place.ts names its redirect's
+	   fragment by): a coupon refused at place beside the coupon; a place refused
+	   for the region keeps the country in the URL, so the summary refuses it
+	   again and the delivery block says it; and a list update beside a refusal of
+	   the destination (the country refused, or a region REQUIRED) says only that
+	   refusal — never "leave it blank". */
 	errorMessage:
 		shownErrorToken !== null &&
-		placeCouponError === null &&
-		/* Said ONCE: a place refused for the region keeps the country in the URL,
-		   so the summary refuses it again and the delivery block says it. */
-		shownErrorToken !== destinationError?.reason &&
-		/* A list update beside a refusal of the destination (the country refused,
-		   or a region REQUIRED): only that refusal is said — never "leave it blank". */
-		!(shownErrorToken === "REGION_LIST_UPDATED" && destinationError !== null)
+		checkoutNoticeId(shownErrorToken, {
+			placeCouponRefused: placeCouponError !== null,
+			destinationReason: destinationError?.reason,
+		}) === CHECKOUT_ERROR_ID
 			? cartErrorMessage(shownErrorToken, { holdTimer: summary.showHoldTimer })
 			: null,
 	checkedOut,

@@ -40,7 +40,7 @@
 import { BUYER_REF_MAX, ORDER_ADDRESS_MAX_LENGTHS } from "@urumi.ai/otta-plugin";
 import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
-import { CHECKOUT_ERROR_ID } from "../../lib/error-notice.js";
+import { CHECKOUT_ERROR_ID, COUPON_ERROR_ID, DELIVERY_ERROR_ID } from "../../lib/error-notice.js";
 import StepTrack from "../../components/StepTrack.astro";
 import Sum from "../../components/Sum.astro";
 import type { CheckoutModel } from "../contract.js";
@@ -231,7 +231,7 @@ const {
 							</button>
 						</div>
 						{couponError !== null && (
-							<div id="coupon-error" role="alert">
+							<div id={COUPON_ERROR_ID} role="alert" tabindex="-1">
 								<Notice>{couponError}</Notice>
 							</div>
 						)}
@@ -281,7 +281,7 @@ const {
 							</p>
 						)}
 						{destinationError !== null && (
-							<div id="delivery-error" role="alert">
+							<div id={DELIVERY_ERROR_ID} role="alert" tabindex="-1">
 								<Notice>{destinationError}</Notice>
 							</div>
 						)}

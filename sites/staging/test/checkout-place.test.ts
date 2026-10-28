@@ -962,7 +962,7 @@ describe("the coupon at place", () => {
 
 		const location = (await PLACE_POST(context)).headers.get("location");
 
-		expect(location).toBe("/checkout?error=COUPON_EXHAUSTED#checkout-error");
+		expect(location).toBe("/checkout?error=COUPON_EXHAUSTED#coupon-error");
 	});
 
 	test("a non-coupon failure keeps ?coupon", async () => {
@@ -1055,7 +1055,7 @@ describe("the buyer's location at place (#426)", () => {
 		const response = await PLACE_POST(
 			makeContext({ ...BUYER, fromCountry: "", deliveryCountry: "DE" }, handler).context,
 		);
-		expect(response.headers.get("location")).toBe("/checkout?country=DE");
+		expect(response.headers.get("location")).toBe("/checkout?country=DE#delivery-error");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1078,7 +1078,7 @@ describe("the buyer's location at place (#426)", () => {
 				handler,
 			).context,
 		);
-		expect(response.headers.get("location")).toBe("/checkout?country=DE");
+		expect(response.headers.get("location")).toBe("/checkout?country=DE#delivery-error");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1103,7 +1103,7 @@ describe("the buyer's location at place (#426)", () => {
 				handler,
 			).context,
 		);
-		expect(response.headers.get("location")).toBe("/checkout?country=ES&region=CN");
+		expect(response.headers.get("location")).toBe("/checkout?country=ES&region=CN#delivery-error");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1205,11 +1205,11 @@ describe("the delivery address at place (ADR-0021)", () => {
 	test.each([
 		[
 			"SHIPPING_ZONE_NOT_MATCHED",
-			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_ZONE_NOT_MATCHED#checkout-error",
+			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_ZONE_NOT_MATCHED#delivery-error",
 		],
 		[
 			"SHIPPING_REGION_CODE_REQUIRED",
-			"/checkout?coupon=C&country=US&error=SHIPPING_REGION_CODE_REQUIRED#checkout-error",
+			"/checkout?coupon=C&country=US&error=SHIPPING_REGION_CODE_REQUIRED#delivery-error",
 		],
 		[
 			"SHIPPING_METHOD_NOT_IN_ZONE",
@@ -1226,7 +1226,7 @@ describe("the delivery address at place (ADR-0021)", () => {
 		],
 		[
 			"COUPON_NOT_FOUND",
-			"/checkout?country=US&region=CA&method=m-1&error=COUPON_NOT_FOUND#checkout-error",
+			"/checkout?country=US&region=CA&method=m-1&error=COUPON_NOT_FOUND#coupon-error",
 		],
 		[
 			"PAYMENT_INTENT_FAILED",

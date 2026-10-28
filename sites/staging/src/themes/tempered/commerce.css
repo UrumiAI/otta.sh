@@ -352,6 +352,8 @@
    the air under them. */
 [data-theme-id] .cart-notice-slot {
 	margin-bottom: 1.5rem;
+	/* #603: a refused POST lands on its notice by fragment; not flush to the edge. */
+	scroll-margin-top: 1rem;
 }
 
 /* #440's way out sits under its notice, on the notice's own left edge. */
@@ -419,6 +421,12 @@
 [data-theme-id] .checkout-notice-slot,
 [data-theme-id] .checkout-restart {
 	margin-bottom: 1.5rem;
+}
+/* #603: a refused place lands on a notice by fragment; not flush to the edge. */
+[data-theme-id] .checkout-notice-slot,
+[data-theme-id] #coupon-error,
+[data-theme-id] #delivery-error {
+	scroll-margin-top: 1rem;
 }
 [data-theme-id] .checkout-restart {
 	margin-top: -0.5rem;

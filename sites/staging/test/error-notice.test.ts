@@ -19,19 +19,32 @@ import { beforeAll, describe, expect, test, vi } from "vitest";
 
 const { getEmDashEntry } = vi.hoisted(() => ({ getEmDashEntry: vi.fn() }));
 vi.mock("emdash", () => ({ getEmDashEntry }));
+// The publishable key is a build-time define, absent under vitest: card payment
+// "configured", so a place reaches the plugin and its refusal.
+vi.mock("../src/lib/stripe-config.js", () => ({
+	readStripePublishableKey: async () => ({ state: "configured", key: "pk_test_fake" }),
+}));
 
 import { seeOther } from "../src/lib/cart-actions.js";
+import { readCheckoutDraft } from "../src/lib/checkout-draft.js";
+import { isCouponFailure } from "../src/lib/checkout-selection.js";
 import { countryOptions } from "../src/lib/countries.js";
+import { cartErrorMessage } from "../src/lib/error-messages.js";
 import {
 	CART_ERROR_ID,
 	CHECKOUT_ERROR_ID,
+	checkoutNoticeId,
+	COUPON_ERROR_ID,
+	DELIVERY_ERROR_ID,
 	errorTitle,
 	PRODUCT_ERROR_ID,
+	placeRefusalNoticeId,
 } from "../src/lib/error-notice.js";
 import { regionChoice } from "../src/lib/regions.js";
 import { POST as CART_ADD_POST } from "../src/pages/cart/add.js";
 import { POST as CART_REMOVE_POST } from "../src/pages/cart/remove.js";
 import { POST as CART_UPDATE_POST } from "../src/pages/cart/update.js";
+import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
 import type { CartModel, CheckoutModel, ProductContentModel } from "../src/themes/contract.js";
 import CartView from "../src/themes/tempered/CartView.astro";
 import CheckoutView from "../src/themes/tempered/CheckoutView.astro";
@@ -289,5 +302,141 @@ describe("a refused POST redirects to the notice's fragment", () => {
 			"/cart?error=X#cart-error",
 		);
 		expect(seeOther(context, "/cart", "X").headers.get("location")).toBe("/cart?error=X");
+	});
+});
+
+describe("the checkout says each refusal ONCE, and place names that notice (checkoutNoticeId)", () => {
+	const none = { placeCouponRefused: false, destinationReason: undefined };
+
+	test("the page-level notice by default", () => {
+		expect(checkoutNoticeId("INVALID_EMAIL", none)).toBe(CHECKOUT_ERROR_ID);
+		expect(checkoutNoticeId("REGION_LIST_UPDATED", none)).toBe(CHECKOUT_ERROR_ID);
+	});
+
+	test("a coupon refused at place is said beside the coupon", () => {
+		expect(checkoutNoticeId("COUPON_EXHAUSTED", { ...none, placeCouponRefused: true })).toBe(
+			COUPON_ERROR_ID,
+		);
+	});
+
+	test("a refusal the summary repeats for the destination, or a list update beside one, in the delivery block", () => {
+		const refused = { ...none, destinationReason: "SHIPPING_ZONE_NOT_MATCHED" };
+		expect(checkoutNoticeId("SHIPPING_ZONE_NOT_MATCHED", refused)).toBe(DELIVERY_ERROR_ID);
+		expect(checkoutNoticeId("REGION_LIST_UPDATED", refused)).toBe(DELIVERY_ERROR_ID);
+		expect(checkoutNoticeId("PAYMENT_INTENT_FAILED", refused)).toBe(CHECKOUT_ERROR_ID);
+	});
+
+	test("place's prediction: a repeated destination refusal only while a country is kept; never an address one", () => {
+		const kept = { coupon: false, country: true };
+		expect(placeRefusalNoticeId("SHIPPING_ZONE_NOT_MATCHED", kept)).toBe(DELIVERY_ERROR_ID);
+		expect(placeRefusalNoticeId("SHIPPING_REGION_CODE_REQUIRED", kept)).toBe(DELIVERY_ERROR_ID);
+		expect(placeRefusalNoticeId("INVALID_SHIPPING_ADDRESS", kept)).toBe(CHECKOUT_ERROR_ID);
+		expect(placeRefusalNoticeId("SHIPPING_ZONE_NOT_MATCHED", { ...kept, country: false })).toBe(
+			CHECKOUT_ERROR_ID,
+		);
+		expect(placeRefusalNoticeId("COUPON_EXHAUSTED", { coupon: true, country: false })).toBe(
+			COUPON_ERROR_ID,
+		);
+	});
+
+	test("a coupon refused at place: the review renders the element the Location's fragment names", async () => {
+		const jar = new Map<string, string>();
+		const url = new URL("/checkout/place", SITE);
+		const context = {
+			request: new Request(url, {
+				method: "POST",
+				headers: { origin: SITE, "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({
+					email: "buyer@example.com",
+					idempotencyKey: "checkout:cart-1",
+					couponCode: "SAVE10",
+				}).toString(),
+			}),
+			url,
+			cookies: {
+				get: (name: string) => {
+					const value = name === "otta_cart" ? "cart-1" : jar.get(name);
+					return value === undefined ? undefined : { value };
+				},
+				set: (name: string, value: string) => jar.set(name, value),
+				delete: (name: string) => jar.delete(name),
+			},
+			locals: {
+				emdash: {
+					handlePublicPluginApiRoute: async (_id: string, _method: string, route: string) =>
+						route.includes("checkout/place")
+							? { success: true, data: { ok: false, reason: "COUPON_EXHAUSTED" } }
+							: { success: false },
+				},
+			},
+			redirect: (target: string, status = 302) =>
+				new Response(null, { status, headers: { location: target } }),
+		} as unknown as APIContext;
+
+		const location = (await PLACE_POST(context)).headers.get("location")!;
+		const landed = new URL(location, SITE);
+		expect(landed.searchParams.get("error")).toBe("COUPON_EXHAUSTED");
+		const fragment = landed.hash.slice(1);
+		expect(fragment).toBe(COUPON_ERROR_ID);
+
+		// The review's model, decided as pages/checkout/index.astro decides it:
+		// the draft place wrote carries the refused code back into the field.
+		const token = "COUPON_EXHAUSTED";
+		const draft = readCheckoutDraft(context.cookies);
+		const placeCouponRefused =
+			isCouponFailure(token) && draft?.error === token && draft.coupon !== undefined;
+		expect(placeCouponRefused).toBe(true);
+		const message = cartErrorMessage(token);
+		const model: CheckoutModel = {
+			...checkoutModel(
+				checkoutNoticeId(token, { placeCouponRefused, destinationReason: undefined }) ===
+					CHECKOUT_ERROR_ID
+					? message
+					: null,
+			),
+			couponValue: "SAVE10",
+			refusedCouponCode: "SAVE10",
+			couponError: message,
+		};
+		const container = await AstroContainer.create();
+		const html = await container.renderToString(CheckoutView, { props: { model } });
+		const open = openTagWithId(html, fragment);
+		expect(open).toContain('tabindex="-1"');
+		expect(open).toContain('role="alert"');
+		expect(openTagWithId(html, CHECKOUT_ERROR_ID)).toBe("");
+	});
+});
+
+describe("the cart's stale-currency notice stands in for the refusal it replaces", () => {
+	const staleCurrency = {
+		lead: "This cart is in EUR.",
+		body: "Its items are released.",
+		action: "Switch",
+	};
+
+	test("with no error notice, it carries #cart-error (once)", async () => {
+		const container = await AstroContainer.create();
+		const html = await container.renderToString(CartView, {
+			props: { model: { ...cartModel(null), staleCurrency } },
+		});
+		expect(html.match(/id="cart-error"/g)).toHaveLength(1);
+		expectAnnouncedNotice(html, CART_ERROR_ID, "This cart is in EUR.");
+	});
+
+	test("beside an error notice, only the error notice carries it", async () => {
+		const container = await AstroContainer.create();
+		const html = await container.renderToString(CartView, {
+			props: { model: { ...cartModel("Something went wrong."), staleCurrency } },
+		});
+		expect(html.match(/id="cart-error"/g)).toHaveLength(1);
+		expectAnnouncedNotice(html, CART_ERROR_ID, "Something went wrong.");
+		expect(html.match(/role="alert"/g)).toHaveLength(1);
+	});
+
+	test("the cart page titles itself an error while either shows", () => {
+		const source = readFileSync(path.join(SRC, "pages/cart/index.astro"), "utf8");
+		expect(source).toMatch(
+			/errorTitle\(\s*"Cart",\s*model\.errorMessage !== null \|\| model\.staleCurrency !== null/,
+		);
 	});
 });
