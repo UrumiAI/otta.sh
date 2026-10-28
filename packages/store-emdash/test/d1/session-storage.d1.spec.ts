@@ -6,21 +6,24 @@
  * a session, not that a replica read is never stale. Staging still has to show that
  * before read replication is switched on (#490).
  */
-import { idempotencyKey } from "@urumi.ai/otta-domain";
+import { DuplicateCustomerEmailError, email, idempotencyKey } from "@urumi.ai/otta-domain";
 import { CountingIdGen, FixedClock } from "@urumi.ai/otta-domain/testing";
 import { describe, expect, it } from "vitest";
 import {
+	CLAIM_ABANDON_AFTER_MS,
 	EmdashInventoryStore,
 	INVENTORY_COLLECTION,
 	newInventoryDoc,
 	type InventoryDoc,
 } from "../../src/index.js";
+import { IDENTITY_LAYOUT } from "../identity-collections.js";
+import { makeIdentityHarness, type IdentityHarness } from "../identity-harness.js";
 import { INVENTORY_LAYOUT } from "../inventory-collections.js";
 import { BOOKMARK_COOKIE, useD1SessionStorage } from "./describe-d1-session.js";
 import type { StorageLayout } from "./describe-d1.js";
 
 /** `notes` is the scratch collection; the rest are the stores' own layouts. */
-const LAYOUT: StorageLayout = { notes: { indexes: [] }, ...INVENTORY_LAYOUT };
+const LAYOUT: StorageLayout = { notes: { indexes: [] }, ...IDENTITY_LAYOUT, ...INVENTORY_LAYOUT };
 
 interface Note {
 	text: string;
@@ -84,5 +87,65 @@ describe("compare-and-set over one session", () => {
 		const doc = await inventory.get("sku-1");
 		expect(doc?.onHand).toBe(0);
 		expect(Object.keys(doc?.holds ?? {})).toEqual(["k1"]);
+	});
+});
+
+describe("claims and leases over sessions", () => {
+	const ORPHAN = "orphan@example.com";
+
+	/** A claim no account holds, stamped by `h`'s clock: a registrant mid-flight. */
+	async function leaveLiveClaim(h: IdentityHarness): Promise<void> {
+		await h.emailClaims.put(ORPHAN, {
+			emailLower: ORPHAN,
+			customerId: "cust-crashed",
+			claimedAt: h.now(),
+		});
+	}
+
+	it("refuses a second registrant while the first holds the address, on another session", async () => {
+		const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+		const first = makeIdentityHarness(sessions.request({ isWrite: true }).storage, { clock });
+		const second = makeIdentityHarness(sessions.request({ isWrite: true }).storage, {
+			clock,
+			idPrefix: "b-",
+		});
+
+		const registered = await first.customerStore.create({ email: email("held@example.com") });
+		await expect(
+			second.customerStore.create({ email: email("held@example.com") }),
+		).rejects.toBeInstanceOf(DuplicateCustomerEmailError);
+		expect((await second.customerStore.getByEmail(email("held@example.com")))?.id).toBe(
+			registered.id,
+		);
+	});
+
+	it("refuses a claimant while the holder's claim is inside its lease", async () => {
+		const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+		const holder = makeIdentityHarness(sessions.request({ isWrite: true }).storage, { clock });
+		const claimant = makeIdentityHarness(sessions.request({ isWrite: true }).storage, {
+			clock,
+			idPrefix: "b-",
+		});
+		await leaveLiveClaim(holder);
+
+		holder.advance(CLAIM_ABANDON_AFTER_MS - 1);
+		await expect(claimant.customerStore.create({ email: email(ORPHAN) })).rejects.toBeInstanceOf(
+			DuplicateCustomerEmailError,
+		);
+		expect((await claimant.emailClaims.get(ORPHAN))?.customerId).toBe("cust-crashed");
+	});
+
+	it("lets a claimant take the claim over once the lease has lapsed", async () => {
+		const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+		const holder = makeIdentityHarness(sessions.request({ isWrite: true }).storage, { clock });
+		const claimant = makeIdentityHarness(sessions.request({ isWrite: true }).storage, {
+			clock,
+			idPrefix: "b-",
+		});
+		await leaveLiveClaim(holder);
+
+		holder.advance(CLAIM_ABANDON_AFTER_MS);
+		const registered = await claimant.customerStore.create({ email: email(ORPHAN) });
+		expect((await claimant.emailClaims.get(ORPHAN))?.customerId).toBe(registered.id);
 	});
 });
