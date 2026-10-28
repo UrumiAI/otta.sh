@@ -115,7 +115,17 @@ export const POST: APIRoute = async (context) => {
 	// cannot render, and the theme already owns that lookup via
 	// `getEmDashEntry` (the same slug-or-id lookup `[slug].astro` uses).
 	if (productId !== undefined) {
-		const { entry, error: entryError } = await getEmDashEntry("products", productId);
+		// The read reports a query failure in `error`, but a missing binding — or
+		// emdash's byline/term hydration after the main query — throws outright.
+		// That arm is the same outage, so it gets the same turn, not a 500.
+		let read: Awaited<ReturnType<typeof getEmDashEntry>>;
+		try {
+			read = await getEmDashEntry("products", productId);
+		} catch (cause) {
+			console.error("[site-staging] add-to-cart content lookup threw:", cause);
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+		}
+		const { entry, error: entryError } = read;
 		// Reproduced live against a real dev instance (real astro:content live
 		// loader — our unit tests mock this dependency and originally missed
 		// this): a genuinely nonexistent-but-well-formed id does NOT come back

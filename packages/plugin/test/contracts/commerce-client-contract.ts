@@ -3193,6 +3193,79 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			},
 		);
 
+		// Issue #596: the abandoned order's coupon use goes back with it. Nothing
+		// else would free it — the expiry sweep lists only pending orders and the
+		// orphan sweep only redemptions whose order is gone — so a one-use coupon
+		// stayed spent on an order that was never paid, while a shopper who merely
+		// waited for the hold to lapse got it back.
+		test.skipIf(tier.payments === undefined)(
+			"abandonCartOrder gives the abandoned order's coupon use back, so the replacement cart can redeem it; a replay frees nothing else (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-co-abandon-coupon",
+					sku: "SKU-CO-ABANDON-COUPON",
+					title: "Abandon Coupon Product",
+					price: { amount: 2000, currency: "USD" },
+					onHand: 5,
+					idempotencyKey: "co-abandon-coupon-seed",
+				});
+				await tier.arrange.coupon({
+					id: "coupon-abandon-once",
+					code: "ABANDONONCE",
+					amount: { amount: 500, currency: "USD" },
+					maxUses: 1,
+				});
+				const placeOne = async (tag: string) => {
+					const cartId = await tier.arrange.cart("USD");
+					const added = await client.addCartLine(
+						cartId,
+						"SKU-CO-ABANDON-COUPON",
+						productId,
+						1,
+						`co-abandon-coupon-add-${tag}`,
+					);
+					if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+					const placed = await client.createOrder(
+						{
+							cartId,
+							paymentMethod,
+							buyerRef: "abandon-coupon@example.test",
+							couponCode: "ABANDONONCE",
+						},
+						`checkout:${cartId}`,
+					);
+					return { cartId, placed };
+				};
+
+				const first = await placeOne("first");
+				expect(first.placed.ok && first.placed.order.totals.totalCents).toBe(1500);
+				// The control: while the first order holds the one use, it is spent.
+				expect((await placeOne("while-held")).placed).toEqual({
+					ok: false,
+					reason: "COUPON_EXHAUSTED",
+				});
+
+				expect(await client.abandonCartOrder(first.cartId)).toMatchObject({
+					ok: true,
+					cancelled: true,
+				});
+				const replacement = await placeOne("replacement");
+				expect(replacement.placed.ok && replacement.placed.order.totals.totalCents).toBe(1500);
+
+				// A replay of the abandon releases only ITS order's use — never the
+				// replacement's, which still holds the one use.
+				expect(await client.abandonCartOrder(first.cartId)).toMatchObject({
+					ok: true,
+					cancelled: false,
+				});
+				expect((await placeOne("after-replay")).placed).toEqual({
+					ok: false,
+					reason: "COUPON_EXHAUSTED",
+				});
+			},
+		);
+
 		test("abandonCartOrder of a cart with no order, or no such cart, is a no-op success; a malformed id is rejected", async () => {
 			const active = await tier.arrange.cart("USD");
 			expect(await client.abandonCartOrder(active)).toEqual({
