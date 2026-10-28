@@ -231,6 +231,37 @@ describe("POST /cart/add — productId pre-check (item 3)", () => {
 		expect(calls.some((c) => c.route === STOREFRONT_CART_LINE_ADD_ROUTE)).toBe(false);
 	});
 
+	test("the CMS lookup THROWING (missing binding, post-query hydration) redirects with SERVICE_UNAVAILABLE back to returnTo, not a 500 (issue #597)", async () => {
+		// `getEmDashEntry` reports a query failure in `error`, but a missing
+		// binding — or emdash's byline/term hydration after the main query —
+		// throws outright. That arm must land on the same turn as the one above.
+		getEmDashEntry.mockRejectedValue(new Error("EmDash database not configured"));
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const { handler, calls } = makeHandler({});
+		const context = makeContext(
+			{
+				sku: "SKU-1",
+				productId: "prod-1",
+				idempotencyKey: "idem-4t",
+				returnTo: "/products/bamboo-water-bottle",
+			},
+			handler,
+		);
+
+		try {
+			const response = await POST(context);
+
+			expect(response.status).toBe(303);
+			expect(response.headers.get("location")).toBe(
+				"/products/bamboo-water-bottle?error=SERVICE_UNAVAILABLE",
+			);
+			expect(calls).toHaveLength(0);
+			expect(errorSpy).toHaveBeenCalled();
+		} finally {
+			errorSpy.mockRestore();
+		}
+	});
+
 	test("a VALID productId+sku pair reaches the add-line route and succeeds", async () => {
 		getEmDashEntry.mockResolvedValue({
 			entry: { data: { id: "prod-1", slug: "bamboo", title: "Bamboo Water Bottle" } },
