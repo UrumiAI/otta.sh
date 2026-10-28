@@ -417,8 +417,8 @@ function billingLocationOf(
  * location (#426), when there is one, comes first, under the same rules — and,
  * like a ship-to, it needs a region where its country's zones go down to one.
  * A base region that CONTAINS a
- * zoned subdivision is never asked to be narrower: it takes its ancestor's or
- * the country's zone.
+ * zoned subdivision, or a blank base region, is never asked to be narrower: it
+ * takes its ancestor's or the country's zone (#594).
  */
 async function taxLocationOf(
 	deps: QuoteDeps,

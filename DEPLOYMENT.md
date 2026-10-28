@@ -414,6 +414,13 @@ order of appearance in a deployment's life:
     ignores all saved tax options, falling back to its never-saved rule. Nothing is deleted.
     Do not save Tax settings while the old build runs: a save replaces the stored options.
     After rolling forward, re-check Tax settings.
+  - **A base address with no region now takes its country's zone (#594):** if the shop base
+    address has no region and any zone lists a region of that country (for example a
+    `GB-LND` zone beside `GB`), digital orders, and physical orders under "Based on shop base
+    address", are now taxed at the country zone's rate instead of 0%, and prices shown
+    including tax rise to match. Orders already placed keep their saved tax. Check Tax
+    settings and the country zone's rates before deploying. Rolling back returns these
+    stores to 0%; nothing stored changes.
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
