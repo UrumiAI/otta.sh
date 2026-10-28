@@ -75,6 +75,8 @@ function announceFor(
 	if (state === shownState) return null;
 	const said = quietAnnounce === undefined ? HOLD_LABELS[state] : quietAnnounce;
 	if (quietAnnounce !== undefined && state !== "released") return null;
+	// Nothing to say stays nothing: never a bare "Product: ".
+	if (said === "") return null;
 	return product ? `${product}: ${said}` : said;
 }
 
