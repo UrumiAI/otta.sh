@@ -54,7 +54,6 @@ import {
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import { PRICES_AS_ENTERED, priceDisplayOrEntered } from "../catalog/shop-display.js";
-import { readStorefrontSettings } from "./storefront-settings.js";
 import type {
 	CartFailureReason,
 	CartLineWire,
@@ -420,12 +419,9 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 			if (!isCartIdToken(cartId)) return { ok: false, error: "INVALID_CART_ID" } as const;
 
 			const client = await makeCommerceClient(ctx);
-			const [result, settings] = await Promise.all([
-				client.getCart(cartId),
-				// Display only — a failed read hides the timer and the stale-currency
-				// notice rather than failing the cart.
-				readStorefrontSettings(STOREFRONT_CART_READ_ROUTE, client),
-			]);
+			// The settings (timer flag, saved currency) ride the read `getCart` already
+			// makes for the hold window — one settings read, not two.
+			const { cart: result, settings } = await client.getCartWithSettings(cartId);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			const cart = result.cart;
 			const locale = sanitizeLocale(routeCtx.input.locale);
