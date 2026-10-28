@@ -313,6 +313,35 @@ describe("the base address is never asked for a more specific region (ADR-0021)"
 		expect(q.taxLocated).toBe(true);
 	});
 
+	test("#594: base address with no region and a GB-LND zone taxes at GB's rate (digital-only cart)", async () => {
+		await save({
+			...NEW_STORE_TAX_SETTINGS,
+			enabled: true,
+			baseAddress: { country: "GB", region: null },
+		});
+		const q = await computeQuote(deps, digital);
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.breakdown.taxCents).toBe(200); // the UK 20%, not 0%
+		expect(q.taxLocated).toBe(true);
+	});
+
+	test("#594: base address with no region and a GB-LND zone taxes at GB's rate ('base')", async () => {
+		await save({
+			...NEW_STORE_TAX_SETTINGS,
+			enabled: true,
+			basedOn: "base",
+			baseAddress: { country: "GB", region: null },
+		});
+		const q = await computeQuote(deps, {
+			...physical,
+			destination: { country: "US", region: "NY" },
+			methodId: "m-z-us",
+		});
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.breakdown.taxCents).toBe(240 + 100);
+		expect(q.taxLocated).toBe(true);
+	});
+
 	test("base address ES-CN with an ES-TF zone taxes at ES's rate", async () => {
 		await deps.shippingRules.createZone({ id: "z-es", name: "Spain", regions: ["ES"] });
 		await deps.shippingRules.createZone({ id: "z-tf", name: "Tenerife", regions: ["ES-TF"] });
