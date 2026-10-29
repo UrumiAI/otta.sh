@@ -351,6 +351,14 @@ const MAX_LIST_PAGES = 1000;
  */
 const LIST_PAGE_SIZE = 100;
 
+/**
+ * The most values one `in` query carries — EmDash's own `SQL_BATCH_SIZE`, and a
+ * DIFFERENT bound from {@link LIST_PAGE_SIZE}: D1 binds at most 100 parameters per
+ * statement and the host binds its own beside the values (issue #578). See the same
+ * constant in `emdash-product-commerce-store.ts`.
+ */
+const IN_BATCH = 50;
+
 /** The outcome of a hold-bracket completion: what landed, and what was lost. */
 export interface HoldCompletionResult {
 	/** True when this call had outstanding work and finished it. */
@@ -2416,8 +2424,8 @@ export class EmdashOrderStore implements OrderStore {
 	 * frozen `createdAt` and are indexed `[sku, createdAt]`, so the list reads them
 	 * newest-first and opens only the orders it could actually return — `need` of them,
 	 * drained past the boundary tie group like any other arm. The pointer gives an order
-	 * ID; the document is then read by id, which is one read per order the arm returns
-	 * rather than an N+1 over the table.
+	 * ID, and each index PAGE's orders are then read together by {@link #readOrdersById}
+	 * — `ceil(page / IN_BATCH)` queries per page, not one `get` per pointer (issue #601).
 	 *
 	 * **The COUNT passes `Infinity` and is therefore `O(matches)`.** A cardinality has no
 	 * page to stop at, so counting a sku resolves every order that ever bought it. The
@@ -2448,13 +2456,13 @@ export class EmdashOrderStore implements OrderStore {
 				limit: LIST_PAGE_SIZE,
 				cursor: indexCursor,
 			});
+			const byId = await this.#readOrdersById(result.items.map(({ data }) => data.orderId));
 			for (const { data } of result.items) {
 				if (boundary !== null && data.createdAt !== boundary) return docs;
-				const stored = await this.#orders.get(data.orderId);
+				const doc = byId.get(data.orderId);
 				// A pointer with no order behind it, or one the lines no longer bear, is not a
 				// row: the pointer is derived and may never widen the predicate.
-				if (stored === null) continue;
-				const doc = normalizeOrderDoc(stored);
+				if (doc === undefined) continue;
 				if (!orderSkuKeys(doc).includes(search)) continue;
 				if (!matchesOrderFilter(doc, filter) || !isAfterCursor(doc, cursor)) continue;
 				docs.push(doc);
@@ -2464,6 +2472,45 @@ export class EmdashOrderStore implements OrderStore {
 			indexCursor = result.cursor;
 		}
 		throw new ScanPageLimitError("listOrders", this.#maxListPages, docs.length, "maxListPages");
+	}
+
+	/**
+	 * A batch of order documents by id, keyed by id — the sku arm's anti-N+1 read.
+	 *
+	 * `orderId` is not a declared field, so the batch rides {@link OrderDoc.searchKey}, the
+	 * declared FOLDED id: `searchKey in [...]`, {@link IN_BATCH} ids per query, each paged
+	 * to its end. A fold can collide (two ids differing only in case), so a document is
+	 * kept only when its own `orderId` was asked for. An id the batch did not return — a
+	 * document that predates `searchKey` and carries none, or a pointer with no order
+	 * behind it — falls back to a `get`, so the batch never narrows what the per-id read
+	 * found; a healthy store issues none. Missing ids are simply absent from the map.
+	 */
+	async #readOrdersById(ids: readonly string[]): Promise<Map<string, OrderDoc>> {
+		const wanted = new Set(ids);
+		const found = new Map<string, OrderDoc>();
+		const keys = [...new Set([...wanted].map((id) => searchKeyFor(id)))];
+		for (let start = 0; start < keys.length; start += IN_BATCH) {
+			const chunk = keys.slice(start, start + IN_BATCH);
+			let cursor: string | undefined;
+			do {
+				const result = await this.#orders.query({
+					where: { searchKey: { in: chunk } },
+					limit: LIST_PAGE_SIZE,
+					cursor,
+				});
+				for (const { data } of result.items) {
+					const doc = normalizeOrderDoc(data);
+					if (wanted.has(doc.orderId)) found.set(doc.orderId, doc);
+				}
+				cursor = result.hasMore ? result.cursor : undefined;
+			} while (cursor !== undefined);
+		}
+		for (const id of wanted) {
+			if (found.has(id)) continue;
+			const stored = await this.#orders.get(id);
+			if (stored !== null) found.set(id, normalizeOrderDoc(stored));
+		}
+		return found;
 	}
 
 	/**
