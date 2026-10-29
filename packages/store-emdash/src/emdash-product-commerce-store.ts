@@ -33,11 +33,11 @@
  *   sku — an OR of which one half no index can serve — so it is resolved IN MEMORY
  *   over the rows the indexed axes narrowed;
  * - `lowStockThreshold` pairs each candidate with its `inventory` document. There
- *   is no join, so the `inventory` collection is paged ONCE into a sku → on-hand
- *   map and every candidate is decided against it. A read per candidate sku cost
- *   one storage call per scanned product — the whole catalogue when few rows are
- *   low — and the page's list and count each paid it (issue #600). A list and a
- *   count that overlap share one in-flight read of the map.
+ *   is no join, so the matching set is resolved ONCE per request: the indexed
+ *   axes and `search` pick the candidates that carry a sku, and their stock is
+ *   read whichever way is cheaper — one `get` per distinct sku, or the whole
+ *   `inventory` collection paged into a map. A list and a count that overlap
+ *   share that one resolution (issue #600).
  *
  * The scan is bounded exactly as the order store's is: reaching the page ceiling
  * with rows still owed is a typed `ScanPageLimitError`, never a silently short
@@ -318,8 +318,8 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	readonly #retry: CasRetryOptions;
 	readonly #maxListPages: number;
 	readonly #claimAbandonAfterMs: number;
-	/** The stock map a low-stock list or count is reading right now; see {@link #stockMap}. */
-	#stockMapInFlight: Promise<ReadonlyMap<string, number>> | null = null;
+	/** The low-stock resolutions running right now, by filter; see {@link #lowStockMatches}. */
+	readonly #lowStockInFlight = new Map<string, Promise<LowStockMatches>>();
 
 	constructor(options: EmdashProductCommerceStoreOptions) {
 		this.#products = collectionOf<ProductCommerceDoc>(options.storage, PRODUCT_COMMERCE_COLLECTION);
@@ -559,9 +559,16 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		// `limit + 1` is the port's own next-page probe: one row past the page decides
 		// whether `nextCursor` is a position or null.
 		const wanted = page.limit + 1;
-		// Started before the first await, so a count issued beside this list joins it.
-		const lowStock = filter.lowStockThreshold === undefined ? null : this.#stockMap("listProducts");
-		const stock = lowStock === null ? this.#stockReader() : stockFromMap(await lowStock);
+		if (filter.lowStockThreshold !== undefined) {
+			// Started before the first await, so a count issued beside this list joins it.
+			const { rows, onHand } = await this.#lowStockMatches(filter);
+			return pageOf(
+				rows.filter((doc) => isAfterCursor(doc, cursor)),
+				page.limit,
+				async (sku) => onHand.get(sku) ?? null,
+			);
+		}
+		const stock = this.#stockReader();
 		const keep = async (doc: ProductCommerceDoc): Promise<boolean> =>
 			isAfterCursor(doc, cursor) && (await matchesInMemory(doc, filter, stock));
 
@@ -572,22 +579,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			wanted,
 			keep,
 		);
-		// Sorted in CODE-UNIT order here, which is the adapter's total order; the scan
-		// drained past its boundary tie group, so this slice cannot drop a tied row the
-		// host's collation happened to order differently.
-		const merged = scanned.toSorted(byNewestFirst).slice(0, wanted);
-		const returned = merged.length > page.limit ? merged.slice(0, page.limit) : merged;
-		const last = returned.at(-1);
-		const nextCursor =
-			merged.length > page.limit && last !== undefined
-				? { createdAt: last.createdAt, productId: last.productId }
-				: null;
-		const products = await Promise.all(
-			returned.map(async (doc) =>
-				toProductSummary(doc, doc.sku === null ? null : await stock(doc.sku)),
-			),
-		);
-		return { products, nextCursor };
+		// The scan drained past its boundary tie group, so the code-unit slice in
+		// `pageOf` cannot drop a tied row the host's collation ordered differently.
+		return pageOf(scanned, page.limit, stock);
 	}
 
 	/**
@@ -605,10 +599,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		if (filter.search === undefined && filter.lowStockThreshold === undefined) {
 			return this.#products.count(where);
 		}
-		const stock =
-			filter.lowStockThreshold === undefined
-				? this.#stockReader()
-				: stockFromMap(await this.#stockMap("countProducts"));
+		if (filter.lowStockThreshold !== undefined) {
+			return (await this.#lowStockMatches(filter)).rows.length;
+		}
+		const stock = this.#stockReader();
 		const matched = await this.#scanProducts(
 			"countProducts",
 			where,
@@ -680,26 +674,64 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
-	 * Every sku's on-hand count, paged out of `inventory` at the page ceiling — the
-	 * low-stock filter's one stock read per request, as `EmdashReportingStore.lowStock`
-	 * reads it. A sku with no inventory document has no entry, so it stays unknown.
+	 * Every row a `lowStockThreshold` filter accepts, and the stock it was decided
+	 * on — resolved once and shared by every call that overlaps it.
 	 *
-	 * The read IN FLIGHT is shared: the admin page issues its list and its count in
-	 * parallel under one filter, and both decide against the same map. Joining a read
-	 * that is already running is indistinguishable from a read started a moment
-	 * earlier; once it settles the next call reads afresh, so nothing is cached past
+	 * The admin page issues its list and its count in parallel under one filter, so
+	 * they join one resolution, keyed by the filter. Joining a resolution that is
+	 * already running is indistinguishable from one started a moment earlier; once
+	 * it settles, or fails, the next call resolves afresh, so nothing is cached past
 	 * the calls that overlapped it.
 	 */
-	#stockMap(operation: string): Promise<ReadonlyMap<string, number>> {
-		if (this.#stockMapInFlight !== null) return this.#stockMapInFlight;
-		const read = this.#readStockMap(operation).finally(() => {
-			if (this.#stockMapInFlight === read) this.#stockMapInFlight = null;
+	#lowStockMatches(filter: ProductListFilter): Promise<LowStockMatches> {
+		const key = lowStockKey(filter);
+		const running = this.#lowStockInFlight.get(key);
+		if (running !== undefined) return running;
+		const read = this.#resolveLowStock(filter).finally(() => {
+			if (this.#lowStockInFlight.get(key) === read) this.#lowStockInFlight.delete(key);
 		});
-		this.#stockMapInFlight = read;
+		this.#lowStockInFlight.set(key, read);
 		return read;
 	}
 
-	async #readStockMap(operation: string): Promise<ReadonlyMap<string, number>> {
+	/**
+	 * The candidates are the rows the indexed axes and `search` accept that carry a
+	 * sku — a row with none is unknown stock and never low, so it costs no read.
+	 * Their stock is then read the CHEAPER way: one `get` per distinct sku, or the
+	 * whole `inventory` collection paged at the ceiling into a map (as
+	 * `EmdashReportingStore.lowStock` reads it), decided against the collection's
+	 * `count()` read beside the candidate scan. Either way a sku with no document
+	 * has no entry, so it stays unknown.
+	 */
+	async #resolveLowStock(filter: ProductListFilter): Promise<LowStockMatches> {
+		const threshold = filter.lowStockThreshold ?? Number.NaN;
+		const [inventoryDocs, candidates] = await Promise.all([
+			this.#inventory.count(),
+			this.#scanProducts(
+				"lowStock",
+				productListWhere(filter, null),
+				{ createdAt: "desc" },
+				Number.POSITIVE_INFINITY,
+				async (doc) => doc.sku !== null && matchesSearch(doc, filter),
+			),
+		]);
+		const skus = [...new Set(candidates.flatMap((doc) => (doc.sku === null ? [] : [doc.sku])))];
+		const mapPages = Math.max(1, Math.ceil(inventoryDocs / LIST_PAGE_SIZE));
+		const onHand =
+			skus.length === 0
+				? new Map<string, number>()
+				: mapPages <= skus.length && mapPages <= this.#maxListPages
+					? await this.#readStockMap()
+					: await this.#readStockOf(skus);
+		const rows = candidates.filter((doc) => {
+			const count = doc.sku === null ? undefined : onHand.get(doc.sku);
+			return count !== undefined && count <= threshold;
+		});
+		return { rows, onHand };
+	}
+
+	/** Every sku's on-hand count, paged out of `inventory` at the page ceiling. */
+	async #readStockMap(): Promise<ReadonlyMap<string, number>> {
 		const onHand = new Map<string, number>();
 		let cursor: string | undefined;
 		for (let page = 0; page < this.#maxListPages; page++) {
@@ -708,7 +740,21 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			if (!result.hasMore || result.cursor === undefined) return onHand;
 			cursor = result.cursor;
 		}
-		throw new ScanPageLimitError(operation, this.#maxListPages, onHand.size, "maxListPages");
+		throw new ScanPageLimitError("lowStockMap", this.#maxListPages, onHand.size, "maxListPages");
+	}
+
+	/** The on-hand count of each of `skus` that has a document, a page of reads at a time. */
+	async #readStockOf(skus: readonly string[]): Promise<ReadonlyMap<string, number>> {
+		const onHand = new Map<string, number>();
+		for (let at = 0; at < skus.length; at += LIST_PAGE_SIZE) {
+			const batch = skus.slice(at, at + LIST_PAGE_SIZE);
+			const docs = await Promise.all(batch.map((sku) => this.#inventory.get(sku)));
+			docs.forEach((doc, i) => {
+				const sku = batch[i];
+				if (doc !== null && sku !== undefined) onHand.set(sku, doc.onHand);
+			});
+		}
+		return onHand;
 	}
 
 	// -- upsert: the CMS-sync / integrator channel -----------------------------
@@ -1996,9 +2042,48 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 
 // -- predicates and projections ---------------------------------------------
 
-/** A stock reader over the low-stock filter's sku → on-hand map; absent is `null`. */
-function stockFromMap(map: ReadonlyMap<string, number>): (sku: string) => Promise<number | null> {
-	return async (sku) => map.get(sku) ?? null;
+/** What one low-stock resolution found; see `#lowStockMatches`. */
+interface LowStockMatches {
+	/** Every row the whole filter accepts, in no particular order. */
+	readonly rows: readonly ProductCommerceDoc[];
+	/** The on-hand count the rows were decided on, by sku; absent is unknown. */
+	readonly onHand: ReadonlyMap<string, number>;
+}
+
+/** The filter axes a low-stock resolution depends on — equal keys, equal results. */
+function lowStockKey(filter: ProductListFilter): string {
+	return JSON.stringify([
+		filter.deleted === true,
+		filter.active ?? null,
+		filter.productKind ?? null,
+		filter.search ?? null,
+		filter.lowStockThreshold ?? null,
+	]);
+}
+
+/**
+ * One page of `rows` under `created_at DESC, product_id DESC` — sorted in
+ * CODE-UNIT order here, which is the adapter's total order — with the `limit + 1`
+ * row deciding whether `nextCursor` is a position or null.
+ */
+async function pageOf(
+	rows: readonly ProductCommerceDoc[],
+	limit: number,
+	stock: (sku: string) => Promise<number | null>,
+): Promise<ProductListResult> {
+	const merged = rows.toSorted(byNewestFirst).slice(0, limit + 1);
+	const returned = merged.length > limit ? merged.slice(0, limit) : merged;
+	const last = returned.at(-1);
+	const nextCursor =
+		merged.length > limit && last !== undefined
+			? { createdAt: last.createdAt, productId: last.productId }
+			: null;
+	const products = await Promise.all(
+		returned.map(async (doc) =>
+			toProductSummary(doc, doc.sku === null ? null : await stock(doc.sku)),
+		),
+	);
+	return { products, nextCursor };
 }
 
 /**
@@ -2055,6 +2140,15 @@ function byNewestFirst(a: ProductCommerceDoc, b: ProductCommerceDoc): number {
 		: codeUnitDesc(a.createdAt, b.createdAt);
 }
 
+/** The `search` half of {@link matchesInMemory}; an absent `search` accepts every row. */
+function matchesSearch(doc: ProductCommerceDoc, filter: ProductListFilter): boolean {
+	if (filter.search === undefined) return true;
+	const needle = filter.search.toLowerCase();
+	const bySku = doc.sku !== null && doc.sku.toLowerCase() === needle;
+	const byTitle = doc.title !== null && doc.title.toLowerCase().includes(needle);
+	return bySku || byTitle;
+}
+
 /**
  * The two axes the filter algebra cannot express, applied to a document the
  * indexed axes already accepted.
@@ -2074,12 +2168,7 @@ async function matchesInMemory(
 	filter: ProductListFilter,
 	stock: (sku: string) => Promise<number | null>,
 ): Promise<boolean> {
-	if (filter.search !== undefined) {
-		const needle = filter.search.toLowerCase();
-		const bySku = doc.sku !== null && doc.sku.toLowerCase() === needle;
-		const byTitle = doc.title !== null && doc.title.toLowerCase().includes(needle);
-		if (!bySku && !byTitle) return false;
-	}
+	if (!matchesSearch(doc, filter)) return false;
 	if (filter.lowStockThreshold !== undefined) {
 		const onHand = doc.sku === null ? null : await stock(doc.sku);
 		if (onHand === null || onHand > filter.lowStockThreshold) return false;
