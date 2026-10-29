@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
 import { idempotencyKey, orderId, productId, reservationId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
@@ -7,7 +7,9 @@ import { cancelOrder } from "../orders/cancel-order.js";
 import { expireOrders } from "../orders/expire-orders.js";
 import type { Order } from "../orders/model.js";
 import { settleOrder } from "../orders/settle-order.js";
+import type { Logger } from "../ports/logger.js";
 import type { PaymentIntentRecord } from "../ports/order-store.js";
+import { RecordingLogger } from "./recording-logger.js";
 import { FakePaymentGateway } from "./fake-payment-gateway.js";
 import type { PaymentDeclineHarness } from "./payment-decline-contract.js";
 
@@ -82,12 +84,14 @@ function sweep(
 	gateway: FakePaymentGateway,
 	now: Date,
 	options: Parameters<typeof cancelDueIntents>[1] = {},
+	logger?: Logger,
 ) {
 	return cancelDueIntents(
 		{
 			orderStore: h.settleDeps.orderStore,
 			clock: { now: () => now },
 			gateways: () => ({ stripe: gateway }),
+			...(logger !== undefined ? { logger } : {}),
 		},
 		options,
 	);
@@ -344,17 +348,16 @@ export function intentCancelContract(
 					return gateway.cancelIntent(input);
 				},
 			});
-			const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-			await sweep(h, racing, at(s, MINUTE));
+			const logger = new RecordingLogger();
+			await sweep(h, racing, at(s, MINUTE), {}, logger);
 			expect((await intentOf(h, s.order.id)).cancelOutcome).toBe("failed");
 			expect((await store.getById(s.order.id))?.reconciliationFlag).toBe(
 				"an anomaly raised meanwhile",
 			);
 			// The refused write is not dropped silently: it is logged, naming the order.
-			expect(warn.mock.calls.some((args) => String(args[0]).includes("flag not written"))).toBe(
-				true,
-			);
-			warn.mockRestore();
+			expect(
+				logger.entries.some((e) => e.level === "warn" && e.message.includes("flag not written")),
+			).toBe(true);
 		});
 
 		test("a cancel the caller has no time for is NOT started and NOT counted — the intent stays due, its attempts unchanged", async () => {

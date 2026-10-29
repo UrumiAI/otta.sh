@@ -7,6 +7,7 @@ import {
 	InMemoryInventoryStore,
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
+	RecordingLogger,
 	intentCancelContract,
 } from "@urumi.ai/otta-domain/testing";
 
@@ -27,7 +28,7 @@ intentCancelContract(
 				paymentEventStore: new InMemoryPaymentEventStore(),
 				clock,
 			},
-			expireDeps: { orderStore, inventoryStore, couponStore, clock },
+			expireDeps: { orderStore, inventoryStore, couponStore, clock, logger: new RecordingLogger() },
 			async holdForCheckout(sku, qty, key) {
 				const reserved = await inventoryStore.reserve(sku, qty, idempotencyKey(key));
 				if (!reserved.ok) throw new Error(`reserve failed: ${reserved.reason}`);

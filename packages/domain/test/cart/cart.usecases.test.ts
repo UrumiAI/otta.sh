@@ -6,7 +6,7 @@ import {
 	updateLine,
 } from "@urumi.ai/otta-domain";
 import { currency, idempotencyKey, sku } from "@urumi.ai/otta-domain";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import { makeFakeCartHarness } from "./fake-harness.js";
 
 const USD = currency("USD");
@@ -63,15 +63,15 @@ describe("cart use-cases (fake)", () => {
 		h.cartStore.abandonClaim = async () => {
 			throw new Error("storage contended");
 		};
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
+		{
 			const oos = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
 			expect(oos).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
-			expect(warn).toHaveBeenCalledTimes(1);
-			expect(String(warn.mock.calls[0]?.join(" "))).toContain("storage contended");
+			expect(h.logger.entries).toHaveLength(1);
+			expect(h.logger.entries[0]).toMatchObject({
+				level: "warn",
+				fields: { error: { name: "Error", message: "storage contended" } },
+			});
 			expect(await h.onHand("SKU-1")).toBe(1);
-		} finally {
-			warn.mockRestore();
 		}
 	});
 

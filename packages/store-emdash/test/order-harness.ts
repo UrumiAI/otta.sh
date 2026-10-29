@@ -45,6 +45,7 @@ import {
 	FakeEmailSender,
 	FakePaymentGateway,
 	FixedClock,
+	RecordingLogger,
 	InMemoryCouponStore,
 	InMemoryEntitlementStore,
 	InMemoryOrderNotesStore,
@@ -256,7 +257,8 @@ export function makeOrderHarness(
 	} = shared;
 	let seq = 0;
 
-	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock };
+	const logger = new RecordingLogger();
+	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock, logger };
 	const createDeps: CreateOrderDeps = {
 		orderStore: store,
 		cartStore,
@@ -266,6 +268,7 @@ export function makeOrderHarness(
 		taxRules: shared.taxRules,
 		couponStore,
 		clock,
+		logger,
 		idGen: uuidIdGen,
 		gateways: { stripe: stripeGateway },
 	};
@@ -281,6 +284,7 @@ export function makeOrderHarness(
 		inventoryStore: inventory,
 		couponStore,
 		clock,
+		logger,
 	};
 
 	const orders = collectionOf<OrderDoc>(options.storageForOrders ?? storage, ORDERS_COLLECTION);

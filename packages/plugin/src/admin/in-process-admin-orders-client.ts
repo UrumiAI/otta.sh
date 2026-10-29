@@ -159,6 +159,7 @@ import {
 	type SendOrderEmailsNowOptions,
 } from "../email/send-order-emails-now.js";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
+import { CONSOLE_LOGGER } from "../logging/console-logger.js";
 import type { PluginContext } from "../types.js";
 import type {
 	AddNoteResult,
@@ -585,6 +586,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				inventoryStore: this.#stores.inventory,
 				paymentEventStore: this.#stores.paymentEventStore,
 				clock: this.#stores.clock,
+				logger: CONSOLE_LOGGER,
 				// A busy store after the refund reads "the store was busy", not "did not finish".
 				isRetryable: isRetryableStorageBusy,
 				// The cancellation's refund is the whole remainder: it revokes (issue #376).
@@ -810,6 +812,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				orderStore: this.#stores.orderStore,
 				paymentEventStore: this.#stores.paymentEventStore,
 				clock: this.#stores.clock,
+				logger: CONSOLE_LOGGER,
 				// A FULL refund revokes the order's download access (issue #376). The
 				// dependency is optional on the use-case, so leaving it out here would
 				// refund correctly and keep the file downloadable.
@@ -897,6 +900,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				// A confirm that returns the money in full revokes (issue #376).
 				entitlementStore: this.#stores.entitlementStore,
 				isRetryable: isRetryableStorageBusy,
+				logger: CONSOLE_LOGGER,
 			},
 			{
 				orderId: oid,
