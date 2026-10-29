@@ -18,12 +18,15 @@ import {
 } from "@urumi.ai/otta-domain";
 import { FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
+	collectionOf,
 	EmdashCartStore,
 	EmdashInventoryStore,
 	EmdashOrderStore,
 	EmdashReportingStore,
+	ORDERS_COLLECTION,
 	systemClock,
 	uuidIdGen,
+	type OrderDoc,
 	type StorageAccess,
 } from "@urumi.ai/otta-store-emdash";
 import type { SweepCursorStore } from "../src/cron/index.js";
@@ -386,4 +389,35 @@ export async function placePaidOrderOwingCommit(
 		toOrderId(placed.id),
 	);
 	return placed;
+}
+
+/**
+ * Rewrite a placed order as a STRANDED one (#631): the shape #599 left before #629.
+ * The order is `state`, its adoption and its release intents are complete, and
+ * `holdsPendingAt` is null, so no hold-intent sweep visits it. Its holds stay
+ * `adopted` in the inventory. `releaseOutstanding` leaves the release intent owed
+ * instead: an order still mid-transition, which `hold-intents` owns.
+ */
+export async function strandOrder(
+	storage: StorageAccess,
+	orderId: string,
+	state: "expired" | "cancelled" | "failed",
+	at: Date,
+	options: { releaseOutstanding?: boolean } = {},
+): Promise<void> {
+	const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
+	const doc = await orders.get(orderId);
+	if (doc === null) throw new Error(`no order ${orderId} to strand`);
+	const atIso = at.toISOString();
+	const reservationIds = doc.items
+		.map((item) => item.reservationId)
+		.filter((id): id is NonNullable<typeof id> => id !== null);
+	const outstanding = options.releaseOutstanding === true;
+	await orders.put(orderId, {
+		...doc,
+		state,
+		holdsAdopted: doc.holdsAdopted === null ? null : { ...doc.holdsAdopted, completedAt: atIso },
+		holdsReleased: { reservationIds, recordedAt: atIso, completedAt: outstanding ? null : atIso },
+		holdsPendingAt: outstanding ? atIso : null,
+	});
 }

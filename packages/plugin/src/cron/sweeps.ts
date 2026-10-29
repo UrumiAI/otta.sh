@@ -1,5 +1,5 @@
 /**
- * The scheduled sweep: twelve legs, one tick (INC-C4).
+ * The scheduled sweep: thirteen legs, one tick (INC-C4).
  *
  * WHY THIS FILE EXISTS AT ALL. ADR-0019 §7 says it plainly — the aggregates are
  * one document each, a coupling that spans two of them is made *idempotently
@@ -174,6 +174,8 @@ import {
 import {
 	CARTS_COLLECTION,
 	collectionOf,
+	INVENTORY_COLLECTION,
+	normalizeInventoryDoc,
 	COUPON_REDEMPTIONS_COLLECTION,
 	EmdashReportingStore,
 	isScanPageLimitError,
@@ -181,6 +183,7 @@ import {
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	type CouponRedemptionDoc,
+	type InventoryDoc,
 	type OrderDoc,
 	type ProductCommerceDoc,
 	type StorageAccess as AdapterStorageAccess,
@@ -222,7 +225,7 @@ import {
 	WHOLE_TICK,
 } from "./tick-budget.js";
 
-/** The twelve legs in the order a SUMMARY lists them (and the order the sweep ran
+/** The thirteen legs in the order a SUMMARY lists them (and the order the sweep ran
  *  them in before QA2 M2). The order a tick RUNS them in is `LEG_PRIORITY`, with
  *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
@@ -236,6 +239,7 @@ export const SWEEP_LEGS = [
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
+	"stranded-holds",
 	"product-orphans",
 	"late-refunds",
 ] as const;
@@ -243,7 +247,7 @@ export const SWEEP_LEGS = [
 export type SweepLeg = (typeof SWEEP_LEGS)[number];
 
 /**
- * The legs that run on the slow cadence rather than every tick: the five that walk
+ * The legs that run on the slow cadence rather than every tick: the six that walk
  * a collection (or a whole closed day) on every run, and the sign-in challenge
  * prune. The others find their work from a predicate that narrows as the work
  * completes, so an idle run is one empty query — cheap enough for every minute.
@@ -258,6 +262,10 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
+	// Units a dead order still holds (#631) are off sale, but they have been since
+	// before #629 shipped: a fifteen-minute cadence costs nothing a shopper notices,
+	// and the leg pages the whole inventory over its rotation.
+	"stranded-holds",
 	// A CMS document whose delete hook was lost is not customer-visible within
 	// minutes (the storefront lists from the CMS); what it blocks — the sku, a
 	// tidy Pricing & inventory list — can wait for the slow cadence.
@@ -278,12 +286,15 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     by abandoned carts — the costliest unit, about twenty calls on Free);
  *  3. `late-refunds` — a customer's money, best-effort behind Stripe's own retries
  *     (and leading one tick per interval on Free, see `runCommerceSweeps`);
- *  4. housekeeping: `prune-challenges` and the five scans. `coupon-orphans` stays
+ *  4. housekeeping: `prune-challenges` and the six scans. `coupon-orphans` stays
  *     after `expire-orders`, though it no longer depends on it finishing, and runs
  *     ahead of `reporting-heal`: its unit is fixed (10 calls since #598) while the
  *     heal sizes itself to the calls left, so the other way round a Free tick the
  *     heal had busy deferred the coupon leg every time — and a held coupon use is
- *     something a shopper can hit, a stale rollup is not;
+ *     something a shopper can hit, a stale rollup is not. `stranded-holds` (#631)
+ *     comes after the heal: the units it returns have been off sale since before
+ *     #629, its first pass over the inventory is a real cost on a busy store, and
+ *     aging still brings it to the head of a tick it keeps missing;
  *     `product-orphans` is last of all, the leg nothing else waits on.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
@@ -300,6 +311,7 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"order-sku-index",
 	"coupon-orphans",
 	"reporting-heal",
+	"stranded-holds",
 	"product-orphans",
 ];
 
@@ -675,6 +687,11 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// order applied this coupon (#598) — 4 at worst, so 10 (measured; 8 when no
 		// order exists by id or key).
 		"coupon-orphans": { entry: 2, unit: 10 },
+		// entry: the cursor read and the first inventory page. unit: one sku holding
+		// one unit for a dead order — the order read, then `releaseAdoptedMany` for one
+		// id on one sku (five calls) — 6, measured. A sku holding more is sized from the
+		// document in hand (`strandedHoldCost`).
+		"stranded-holds": { entry: 2, unit: 6 },
 		// entry: the state read, the one page of rows, and the circuit breaker's CMS list
 		// (`CONTENT_LIST_QUERIES`). unit: one row's reads at worst — two misses and then a
 		// document found (`ORPHAN_ROW_READ_QUERIES`) — then, for a confirmed orphan in a
@@ -1104,6 +1121,7 @@ const SKU_INDEX_CURSOR = "order-sku-index";
 const COUPON_CURSOR = "coupon-orphans";
 const PRODUCT_ORPHAN_CURSOR = "product-orphans";
 const REPORTING_CURSOR = "reporting-heal";
+const STRANDED_HOLDS_CURSOR = "stranded-holds";
 /** One JSON document — each scan's last completion, each leg's consecutive
  *  deferrals — so the cadence costs one read per tick, and a write only when
  *  something changed. */
@@ -1881,6 +1899,12 @@ export async function runCommerceSweeps(
 				"coupon-orphans",
 				async (legBudget) =>
 					await releaseOrphanedRedemptions(storage, stores, now, cursors, options, legBudget),
+			),
+		"stranded-holds": async () =>
+			await run(
+				"stranded-holds",
+				async (legBudget) =>
+					await releaseStrandedHolds(storage, stores, cursors, options, legBudget),
 			),
 		"product-orphans": async () => {
 			// The host hands `ctx.content` over only under `content:read`, and the
@@ -3273,6 +3297,185 @@ async function releaseOrphanedRedemptions(
 	const next = nextCursorAfterWalk(walked.handled, walked.incomplete, from);
 	if (next !== null && next !== from) await cursors.write(COUPON_CURSOR, next);
 	return legResult(released, walked.incomplete);
+}
+
+/**
+ * STRANDED HOLDS (issue #631): return units still `adopted` by an order that is
+ * already dead.
+ *
+ * WHY IT IS OWED. Before #629, the hold-intent recovery could adopt a checkout's
+ * holds for an order a cancel had already moved on (#599). The cancel's release
+ * ran while the holds were still cart-`held`, so it released nothing, and it
+ * stamped its intent complete. The order then has `holdsPendingAt` null, so
+ * `hold-intents` never visits it again, and hold expiry skips `adopted` holds. The
+ * units stay off sale until something releases them. #629 stops new cases; this
+ * leg returns the ones live stores already have.
+ *
+ * WHAT IS RELEASED. A hold whose order is in a state that releases its holds —
+ * the order store's own `RELEASES_ADOPTED_HOLDS`: `expired`, `cancelled`, `failed`
+ * — and whose order owes no hold work (`holdsPendingAt` null). The release is
+ * `releaseAdoptedMany(ids, orderId)`, the call that order's own transition would
+ * have made: order-scoped (only a hold THAT order adopted), idempotent, and a
+ * no-op on a hold that is already terminal. Never released:
+ *  - a hold whose order is `pending`, `paid` or any later state. A paid order's
+ *    adopted hold is owed a COMMIT, not a release;
+ *  - a hold whose order still owes an intent (`holdsPendingAt` set). That order is
+ *    mid-transition and `hold-intents` owns it;
+ *  - a hold whose order cannot be read. Adoption follows the order write, so this
+ *    should not happen; the leg leaves it rather than guess.
+ *
+ * WHY A LATE SETTLE CANNOT COMMIT WHAT THIS RETURNS. The three states are terminal:
+ * the order state machine has no way out of them, and `markPaid` is a guarded
+ * `pending → paid` flip. Once this leg has READ one of them, the order can never
+ * be paid, and `settleOrder` commits an order's holds only after it is paid (it
+ * won the flip, or found the order paid). A payment that arrives for an expired
+ * or cancelled order takes the late-payment path instead: recorded, refunded or
+ * flagged, and nothing committed. The one transition into `cancelled` from a paid
+ * order closes every commit bracket BEFORE its flip (`closeBrackets`), so such an
+ * order's holds are committed, not adopted. And if some other committer did race
+ * this release on the same reservation, the reservation's terminal state is
+ * first-wins: a commit that lands first makes this release prune the hold as
+ * committed, with no units returned. The units are never both sold and returned.
+ *
+ * DISCOVERY. `inventory` declares no index, so the leg pages the collection in
+ * the host's own order (`createdAt`, then id) and judges each document in hand: a
+ * sku with no adopted hold costs nothing past its share of the page. One order
+ * read per order holding the sku decides it.
+ *
+ * THE CURSOR ROTATES, like `sku-transfers`': nothing on an inventory document
+ * says "stranded", so the predicate cannot narrow as the work completes. The
+ * cursor is the host's page cursor plus the id of the last document handled on
+ * that page, kept in `ctx.kv`. A run that stops mid-page resumes after that id;
+ * a run that reaches the end wraps to the start. A lost or unreadable cursor
+ * restarts the rotation, which costs re-reads and nothing else.
+ */
+async function releaseStrandedHolds(
+	storage: AdapterStorageAccess,
+	stores: InProcessCommerceStores,
+	cursors: SweepCursorStore,
+	options: CommerceSweepOptions,
+	budget: LegBudget,
+): Promise<{ count: number; incomplete?: true }> {
+	const inventory = collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION);
+	const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
+	const saved = parseStrandedCursor(await cursors.read(STRANDED_HOLDS_CURSOR));
+	let place = saved;
+	const limit = options.pageSize ?? DEFAULT_PAGE_SIZE;
+	const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
+	const gate = budget.gate(0, LEG_QUERY_COSTS["stranded-holds"].unit);
+	let released = 0;
+	let incomplete = true;
+	walk: for (let pages = 0; pages < maxPages; pages++) {
+		if (!gate()) break;
+		let page: Awaited<ReturnType<typeof inventory.query>>;
+		try {
+			page = await inventory.query({
+				limit,
+				...(place.page === null ? {} : { cursor: place.page }),
+			});
+		} catch (err) {
+			// A cursor the host refuses (a format change, a hand-edited kv) must not fail
+			// the leg on every run: start the rotation again, and fail this run loudly.
+			if (place.page !== null) await cursors.write(STRANDED_HOLDS_CURSOR, "");
+			throw err;
+		}
+		const after = place.after;
+		const seen = after === null ? -1 : page.items.findIndex((item) => item.id === after);
+		for (const item of page.items.slice(seen + 1)) {
+			if (!gate(strandedHoldCost(item.data))) break walk;
+			released += await releaseStrandedOnSku(item.data, orders, stores);
+			place = { page: place.page, after: item.id };
+		}
+		if (!page.hasMore || page.cursor === undefined) {
+			// The end of the inventory: wrap, and this rotation is done.
+			place = { page: null, after: null };
+			incomplete = false;
+			break;
+		}
+		place = { page: page.cursor, after: null };
+	}
+	if (place.page !== saved.page || place.after !== saved.after) {
+		await cursors.write(
+			STRANDED_HOLDS_CURSOR,
+			place.page === null && place.after === null ? "" : JSON.stringify(place),
+		);
+	}
+	return legResult(released, incomplete);
+}
+
+/** The states in which an order no longer claims its holds: the order store's
+ *  `RELEASES_ADOPTED_HOLDS`. `paid` and every later state are absent on purpose. */
+const RELEASES_ADOPTED_HOLDS: ReadonlySet<OrderState> = new Set(["expired", "cancelled", "failed"]);
+
+/** `stranded-holds`' place: the host page cursor (`null` for the first page) and
+ *  the id of the last document handled on that page (`null` for none yet). */
+interface StrandedCursor {
+	readonly page: string | null;
+	readonly after: string | null;
+}
+
+/** A saved cursor, or the start of the rotation for anything unreadable. */
+function parseStrandedCursor(raw: string | null): StrandedCursor {
+	if (raw === null || raw === "") return { page: null, after: null };
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== "object" || parsed === null) return { page: null, after: null };
+		const { page, after } = parsed as { page?: unknown; after?: unknown };
+		return {
+			page: typeof page === "string" && page !== "" ? page : null,
+			after: typeof after === "string" && after !== "" ? after : null,
+		};
+	} catch {
+		return { page: null, after: null };
+	}
+}
+
+/** Each order's adopted reservation ids on one inventory document. */
+function adoptedByOrder(doc: InventoryDoc): Map<string, string[]> {
+	const byOrder = new Map<string, string[]>();
+	for (const hold of Object.values(normalizeInventoryDoc(doc).holds)) {
+		if (hold.state !== "adopted" || typeof hold.orderId !== "string") continue;
+		byOrder.set(hold.orderId, [...(byOrder.get(hold.orderId) ?? []), hold.reservationId]);
+	}
+	return byOrder;
+}
+
+/**
+ * The most one inventory document can cost `stranded-holds`: per order holding it,
+ * the order read and a release of its ids on this sku (`releaseAdoptedMany`: three
+ * calls an id and two for the sku). Zero for a sku with no adopted hold. Exported
+ * for `cron-leg-costs.test.ts`.
+ */
+export function strandedHoldCost(doc: InventoryDoc): number {
+	let calls = 0;
+	for (const ids of adoptedByOrder(doc).values()) calls += 1 + 3 * ids.length + 2;
+	return calls;
+}
+
+/**
+ * `stranded-holds`' unit: release the holds on one inventory document whose order
+ * is dead and owes no hold work, and say how many it released. Exported for
+ * `cron-leg-costs.test.ts`, which measures it.
+ */
+export async function releaseStrandedOnSku(
+	doc: InventoryDoc,
+	orders: { get(id: string): Promise<OrderDoc | null> },
+	stores: Pick<InProcessCommerceStores, "inventory">,
+): Promise<number> {
+	let released = 0;
+	for (const [orderId, reservationIds] of adoptedByOrder(doc)) {
+		const order = await orders.get(orderId);
+		if (order === null || !RELEASES_ADOPTED_HOLDS.has(order.state)) continue;
+		// Still owing an intent: mid-transition, and `hold-intents`' to finish.
+		if (order.holdsPendingAt !== null) continue;
+		await stores.inventory.releaseAdoptedMany(reservationIds, orderId);
+		released += reservationIds.length;
+		console.warn(
+			`[otta] cron sweep: released ${String(reservationIds.length)} hold(s) on ${doc.sku}` +
+				` still adopted by ${order.state} order ${orderId} (#631)`,
+		);
+	}
+	return released;
 }
 
 /**

@@ -746,10 +746,10 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all twelve sweep legs: they share a store composition
-and a clock, and splitting them would only put twelve rows in contention on the same documents. The
-five scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
-`product-orphans`) and the sign-in challenge prune run at most every fifteen minutes inside that
+hook when it comes due. One task drives all thirteen sweep legs: they share a store composition
+and a clock, and splitting them would only put thirteen rows in contention on the same documents. The
+six scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`stranded-holds`, `product-orphans`) and the sign-in challenge prune run at most every fifteen minutes inside that
 task (housekeeping: the scans read a page budget of a collection per run); a scan cut short by
 the budget carries on next tick until its pass is done. `product-orphans` soft-deletes a
 commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
@@ -1129,9 +1129,13 @@ page. No second charge is made. A reload after the cut-over shows the right stat
 **Stock stranded under a cancelled order (#599).** Before this fix, the cron sweep's recovery of
 a crashed checkout could adopt a hold for an order that an admin cancelled (or that expired) at
 the same moment. The units then stayed off sale for good, because nothing releases an adopted
-hold of a terminal order. The fix stops **new** cases. It does **not** return units already
-stranded on a live store; that heal is tracked in #631. To see whether a store is affected, run
-this **read-only** query (D1 / SQLite):
+hold of a terminal order. The fix stops **new** cases. Units already stranded on a live store are
+returned by the `stranded-holds` sweep leg (#631), with no operator step: on the slow cadence it
+walks the inventory, and releases each hold still `adopted` by an `expired`, `cancelled` or
+`failed` order that owes no other hold work. Each release logs one
+`[otta] cron sweep: released … (#631)` line. A full pass over a large inventory takes several
+runs, fifteen minutes apart. To see whether a store still has stranded holds, run this
+**read-only** query (D1 / SQLite):
 
 ```bash
 wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "SELECT inv.id AS sku, h.value ->> '$.reservationId' AS reservation_id, h.value ->> '$.qty' AS qty, h.value ->> '$.orderId' AS order_id, o.data ->> '$.state' AS order_state FROM _plugin_storage inv, json_each(inv.data, '$.holds') h JOIN _plugin_storage o ON o.plugin_id = 'otta' AND o.collection = 'orders' AND o.id = h.value ->> '$.orderId' WHERE inv.plugin_id = 'otta' AND inv.collection = 'inventory' AND h.value ->> '$.state' = 'adopted' AND o.data ->> '$.state' IN ('expired', 'cancelled', 'failed')"
@@ -1139,9 +1143,9 @@ wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc
 
 Each row is one hold still `adopted` by an order that no longer claims it; `qty` is the units it
 keeps off sale. No rows means nothing is stranded. If there are rows, **do not** correct the
-counts with a manual stock adjustment: those units come back on their own when the #631 heal
+counts with a manual stock adjustment: those units come back on their own when `stranded-holds`
 releases the hold, and an adjustment made now would count them twice and let the store oversell.
-Do not edit `_plugin_storage` rows by hand either. Note the affected SKUs and wait for #631.
+Do not edit `_plugin_storage` rows by hand either. Wait for the leg's pass to reach them.
 
 **Upgrading the EmDash host (0.38 → 1.0.1).** The host runs its own schema migrations on the
 **first request** after the deploy, with no separate step: EmDash 1.0.1 adds
