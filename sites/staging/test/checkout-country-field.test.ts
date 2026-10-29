@@ -55,7 +55,9 @@ describe("an unknown country code", () => {
 	test("ZZ is refused here, never dispatched, with the country field marked", async () => {
 		const { context, calls } = post({ ...FORM, country: "ZZ" });
 		const response = await PLACE_POST(context);
-		expect(response.headers.get("location")).toBe("/checkout?error=INVALID_SHIPPING_ADDRESS");
+		expect(response.headers.get("location")).toBe(
+			"/checkout?error=INVALID_SHIPPING_ADDRESS#checkout-error",
+		);
 		expect(calls).toHaveLength(0);
 		expect(readCheckoutDraft(context.cookies)?.errors).toEqual({ country: "invalid" });
 	});

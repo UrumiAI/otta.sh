@@ -503,6 +503,8 @@
 
 [data-theme-id="tempered"] .pdp-notice-slot {
 	margin-bottom: 1.5rem;
+	/* #603: a refused add lands on its notice by fragment; not flush to the edge. */
+	scroll-margin-top: 1rem;
 }
 
 /* §8: an empty screen is an invitation to act, not an apology. */

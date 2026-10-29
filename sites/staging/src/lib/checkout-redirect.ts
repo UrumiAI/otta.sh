@@ -59,3 +59,19 @@ export function checkoutEntryRedirect(
 	// cannot check out, and `/cart` is where they can do something about it.
 	return { path: "/cart", error: "reason" in result ? result.reason : result.error };
 }
+
+/**
+ * Whether the summary says the `otta_cart` cookie names no cart, so the page
+ * drops it as the cart's write shims do (`BAD_CART_COOKIE_TOKENS`, #447) — and a
+ * tampered or expired cookie stops landing the shopper on the same refusal
+ * (#610). Not the summary's `INVALID_INPUT`: this page also dispatches the
+ * URL's coupon, destination and method, and a hand-edited query string must
+ * never cost the shopper their cart.
+ */
+export function checkoutDropsCartCookie(result: CheckoutSummaryRouteResult | null): boolean {
+	if (result === null || result.ok) return false;
+	// `INVALID_CART_ID` is the cart READ's answer, listed (as there) so a summary
+	// that ever starts giving it drops the cookie too.
+	const token: string = "reason" in result ? result.reason : result.error;
+	return token === "CART_NOT_FOUND" || token === "INVALID_CART_ID";
+}

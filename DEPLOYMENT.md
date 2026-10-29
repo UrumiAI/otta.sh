@@ -1125,6 +1125,23 @@ PaymentIntent that has already succeeded or is processing, and the pay page trea
 as "landed" (`refusalOf` in `pages/checkout/pay.astro`) and sends the buyer back to the order
 page. No second charge is made. A reload after the cut-over shows the right state.
 
+**Stock stranded under a cancelled order (#599).** Before this fix, the cron sweep's recovery of
+a crashed checkout could adopt a hold for an order that an admin cancelled (or that expired) at
+the same moment. The units then stayed off sale for good, because nothing releases an adopted
+hold of a terminal order. The fix stops **new** cases. It does **not** return units already
+stranded on a live store; that heal is tracked in #631. To see whether a store is affected, run
+this **read-only** query (D1 / SQLite):
+
+```bash
+wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "SELECT inv.id AS sku, h.value ->> '$.reservationId' AS reservation_id, h.value ->> '$.qty' AS qty, h.value ->> '$.orderId' AS order_id, o.data ->> '$.state' AS order_state FROM _plugin_storage inv, json_each(inv.data, '$.holds') h JOIN _plugin_storage o ON o.plugin_id = 'otta' AND o.collection = 'orders' AND o.id = h.value ->> '$.orderId' WHERE inv.plugin_id = 'otta' AND inv.collection = 'inventory' AND h.value ->> '$.state' = 'adopted' AND o.data ->> '$.state' IN ('expired', 'cancelled', 'failed')"
+```
+
+Each row is one hold still `adopted` by an order that no longer claims it; `qty` is the units it
+keeps off sale. No rows means nothing is stranded. If there are rows, **do not** correct the
+counts with a manual stock adjustment: those units come back on their own when the #631 heal
+releases the hold, and an adjustment made now would count them twice and let the store oversell.
+Do not edit `_plugin_storage` rows by hand either. Note the affected SKUs and wait for #631.
+
 **Upgrading the EmDash host (0.38 → 1.0.1).** The host runs its own schema migrations on the
 **first request** after the deploy, with no separate step: EmDash 1.0.1 adds
 `078_menu_item_translation_groups` through `089_auto_seed_completion` on top of 0.38's

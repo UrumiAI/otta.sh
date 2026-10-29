@@ -45,6 +45,7 @@
  */
 import {
 	CART_COOKIE_NAME,
+	CART_COOKIE_PATH,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	type CheckoutSummaryRouteResult,
 } from "@urumi.ai/otta-plugin";
@@ -54,7 +55,7 @@ import RegionPicker from "../../components/RegionPicker.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { checkoutEmailNote, signedInEmail } from "../../lib/account.js";
 import { keepPrivate } from "../../lib/no-store.js";
-import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
+import { checkoutDropsCartCookie, checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import { resumeHref } from "../../lib/checkout-resume.js";
 import { lockedOtherEmailNotice, reviewErrorToken } from "../../lib/checkout-review.js";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
@@ -75,6 +76,12 @@ import { buyerLocationErrorToken, locationBlock } from "../../lib/checkout-locat
 import { regionChoice, regionContainsOthers } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import {
+	CART_ERROR_ID,
+	CHECKOUT_ERROR_ID,
+	checkoutNoticeId,
+	errorTitle,
+} from "../../lib/error-notice.js";
 import { checkoutFootnote } from "../../lib/totals.js";
 import { readStripePublishableKey } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
@@ -123,6 +130,9 @@ const result =
 			)
 		: null;
 
+/* A cookie naming no cart is dropped on the way to /cart (#610). */
+if (checkoutDropsCartCookie(result)) Astro.cookies.delete(CART_COOKIE_NAME, { path: CART_COOKIE_PATH });
+
 /* A BUSY summary (already retried once) deliberately takes the same 303 to
    /cart?error=BUSY as every other non-renderable state, NOT a 503 here: /checkout
    is a transactional GET only a buyer with a cart reaches (nothing to crawl or
@@ -132,8 +142,10 @@ const result =
 const redirect = checkoutEntryRedirect(cartId, result);
 if (redirect !== null) {
 	const target = new URL(redirect.path, Astro.url);
-	if (redirect.error !== undefined) target.searchParams.set("error", redirect.error);
-	return Astro.redirect(target.pathname + target.search, 303);
+	if (redirect.error === undefined) return Astro.redirect(target.pathname + target.search, 303);
+	target.searchParams.set("error", redirect.error);
+	/* #603: onto the cart's notice, the way a refused POST lands on its own. */
+	return Astro.redirect(`${target.pathname}${target.search}#${CART_ERROR_ID}`, 303);
 }
 
 // `checkoutEntryRedirect` returning null means exactly this shape.
@@ -146,7 +158,7 @@ const { lines, totals } = summary;
  *  read that failed is busy, never "not set up" — the same 303 to
  *  /cart?error=BUSY a busy summary takes. */
 const stripeKey = await readStripePublishableKey(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
-if (stripeKey.state === "unavailable") return Astro.redirect("/cart?error=BUSY", 303);
+if (stripeKey.state === "unavailable") return Astro.redirect(`/cart?error=BUSY#${CART_ERROR_ID}`, 303);
 const paymentConfigured = stripeKey.state === "configured";
 
 /** The dead-cart trap's exit, offered only where it applies. */
@@ -335,15 +347,18 @@ const shownErrorToken =
 		: shownError;
 const model: CheckoutModel = {
 	summary,
+	/* Said ONCE (`checkoutNoticeId`, the decision place.ts names its redirect's
+	   fragment by): a coupon refused at place beside the coupon; a place refused
+	   for the region keeps the country in the URL, so the summary refuses it
+	   again and the delivery block says it; and a list update beside a refusal of
+	   the destination (the country refused, or a region REQUIRED) says only that
+	   refusal — never "leave it blank". */
 	errorMessage:
 		shownErrorToken !== null &&
-		placeCouponError === null &&
-		/* Said ONCE: a place refused for the region keeps the country in the URL,
-		   so the summary refuses it again and the delivery block says it. */
-		shownErrorToken !== destinationError?.reason &&
-		/* A list update beside a refusal of the destination (the country refused,
-		   or a region REQUIRED): only that refusal is said — never "leave it blank". */
-		!(shownErrorToken === "REGION_LIST_UPDATED" && destinationError !== null)
+		checkoutNoticeId(shownErrorToken, {
+			placeCouponRefused: placeCouponError !== null,
+			destinationReason: destinationError?.reason,
+		}) === CHECKOUT_ERROR_ID
 			? cartErrorMessage(shownErrorToken, { holdTimer: summary.showHoldTimer })
 			: null,
 	checkedOut,
@@ -427,8 +442,19 @@ const model: CheckoutModel = {
 ---
 
 {/* The footer's currency comes from the totals this page already holds —
-    the layout never invents one (§7). */}
-<Storefront view="checkout" model={model} title="Checkout" currency={totals.total.money?.currency ?? null}>
+    the layout never invents one (§7). The title leads with "Error: " while the
+    page says a refusal (#603), so the reload after a refused place is announced
+    as one: the checkout has no script to move focus, and the title is what a
+    screen reader reads on load. */}
+<Storefront
+	view="checkout"
+	model={model}
+	title={errorTitle(
+		"Checkout",
+		model.errorMessage !== null || model.couponError !== null || model.destinationError !== null,
+	)}
+	currency={totals.total.money?.currency ?? null}
+>
 	{/* The coupon code is in this page's URL; no subresource or outbound link
 	    may carry it off to another host in a Referer. `same-origin`, NOT
 	    `no-referrer`: under `no-referrer` browsers send `Origin: null` on this

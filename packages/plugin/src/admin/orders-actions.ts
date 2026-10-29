@@ -970,7 +970,7 @@ function cancelRefundFailureNotice(refundFailure: string | undefined): Notice {
 				variant: "error",
 				title: "Not cancelled — refund status unknown",
 				description:
-					"The order was not cancelled. The refund request timed out and its outcome is unknown. Do NOT retry — check your provider dashboard first, then reconcile.",
+					"The order was not cancelled. This refund's outcome is unknown — the payment provider may or may not have issued it. Do NOT retry — check your provider dashboard first, then resolve it in Money → Refunds.",
 			};
 		case "PROVIDER_ALREADY_REFUNDED":
 			return {
@@ -1412,7 +1412,7 @@ function refundFailureNotice(reason: string | undefined, currency: string): Noti
 				variant: "error",
 				title: "Refund status unknown",
 				description:
-					"The refund request timed out and its outcome is unknown. Do NOT retry — check your provider dashboard first, then reconcile.",
+					"This refund's outcome is unknown — the payment provider may or may not have issued it (the request timed out, or an earlier attempt never finished). Do NOT retry — check your provider dashboard first, then resolve it in Money → Refunds.",
 			};
 		case "IDEMPOTENCY_KEY_REUSED":
 			return {
