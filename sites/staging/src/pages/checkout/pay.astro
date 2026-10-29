@@ -151,10 +151,10 @@ const model: PayModel = {
 					{/* #604: a refusal the script reports (a declined card, a confirm
 					    that failed, a page that cannot take payment). The ALERT region
 					    is in the DOM from first render and never hidden — only its
-					    text is — for the reason #payment-closed below gives; `fail()`
-					    clears the text and sets it a tick later, so a repeat of the
-					    same decline is a change that is announced again, and focuses
-					    the region (`tabindex="-1"`). */}
+					    text is — for the reason #payment-closed below gives. Each new
+					    attempt hides the text, so a repeat of the same decline appears
+					    again and is announced again; `fail()` focuses the region
+					    (`tabindex="-1"`) after a refused attempt. */}
 					<div id={PAY_ERROR_ID} class="pay-error-region" role="alert" tabindex="-1">
 						<p id="payment-error-text" class="pay-error" hidden />
 					</div>
@@ -227,20 +227,29 @@ const model: PayModel = {
 						}
 
 						/**
-						 * Say why (#604): the region (#payment-error, role=alert) is
-						 * always in the DOM; its text is cleared NOW and set on the next
-						 * tick, so even the same message twice is a change the region
-						 * announces. Focus goes to the region unless the buyer has moved
-						 * on to something outside the form.
+						 * Say why (#604). The region (#payment-error, role=alert) is
+						 * always in the DOM, and the text appearing in it is what is
+						 * announced. A repeat of the same decline is announced again
+						 * because the submit handler hides the text for the Stripe round
+						 * trip (`clearFailure`); the text is cleared here and set, and
+						 * shown, a tick later, so a newer submit or a close in between
+						 * wins and the box is never shown empty. Focus goes to the region
+						 * unless this is the load-time give-up (`atLoad`: announced, not
+						 * focused), the page has closed (its own notice speaks and holds
+						 * focus), or the buyer has moved on to something outside the form.
 						 */
-						function fail(message) {
+						function fail(message, atLoad) {
 							var active = document.activeElement;
-							var moveFocus = !active || active === document.body || form.contains(active);
+							var moveFocus =
+								!atLoad && (!active || active === document.body || form.contains(active));
 							submit.disabled = true;
 							clearTimeout(failTimer);
 							errorText.textContent = "";
-							errorText.hidden = false;
 							failTimer = setTimeout(function () {
+								// Closed meanwhile (the deadline module's close(), which
+								// cannot reach this timer): its own notice speaks and holds focus.
+								if (payClosed()) return;
+								errorText.hidden = false;
 								errorText.textContent = message;
 								if (moveFocus) errorBox.focus();
 							}, 0);
@@ -255,7 +264,7 @@ const model: PayModel = {
 						function giveUp(message) {
 							var box = mount.closest(".mount");
 							if (box) box.hidden = true;
-							fail(message);
+							fail(message, true);
 						}
 
 						/** Set by the deadline script (below) when the hold runs out

@@ -41,7 +41,9 @@ const ERROR_MARKUP = (() => {
 		.replace(/\/>/g, "></p>");
 })();
 
-type ConfirmResult = { error?: { message?: string; code?: string } };
+type ConfirmResult = {
+	error?: { message?: string; code?: string; payment_intent?: { status: string } };
+};
 
 function stubStripe(confirm: () => Promise<ConfirmResult>): void {
 	vi.stubGlobal("Stripe", function Stripe() {
@@ -71,8 +73,13 @@ function render(): void {
 				<div id="payment-element" data-client-secret="pi_1_secret_2" data-publishable-key="pk_test_x" data-return-url="/orders/o1"></div>
 			</div>
 			${ERROR_MARKUP}
+			<div id="payment-closed" role="alert">
+				<div id="payment-closed-body" hidden><a id="payment-closed-link" href="/orders/o1">View your order</a></div>
+				<div id="payment-cancelled-body" hidden><a id="payment-cancelled-link" href="/orders/o1">View your order</a></div>
+			</div>
 			<button id="payment-submit" type="submit">Pay</button>
-		</form>`;
+		</form>
+		<button id="outside" type="button">Elsewhere</button>`;
 	new Function(INLINE ?? "")();
 }
 
@@ -137,23 +144,101 @@ describe("a declined card is announced, every time, and focused (#604)", () => {
 		expect(document.activeElement).toBe(region());
 	});
 
-	test("the source pins the order: clear first, then the text in a timeout", () => {
-		const body = /function fail\(message\) \{([\s\S]*?)\n\t{6}\}/.exec(INLINE ?? "")?.[1] ?? "";
-		const clear = body.indexOf('errorText.textContent = ""');
-		const later = body.indexOf("setTimeout(");
-		const set = body.indexOf("errorText.textContent = message");
-		expect(clear).toBeGreaterThan(-1);
-		expect(later).toBeGreaterThan(clear);
-		expect(set).toBeGreaterThan(later);
-		expect(body).toMatch(/errorBox\.focus\(\)/);
-	});
-
-	test("a give-up at load still says why, in the same region", async () => {
+	test("a give-up at load is said in the region, but takes no focus (it is announced, not jumped to)", async () => {
 		// No Stripe at all: Stripe.js did not load.
 		render();
 		await settle();
 		expect(text().hidden).toBe(false);
 		expect(text().textContent).toMatch(/couldn't load our payment provider/);
 		expect(region().hidden).toBe(false);
+		expect(document.activeElement).not.toBe(region());
+	});
+});
+
+/** Let promise callbacks run, but NOT timers: still inside the decline's macrotask. */
+const microtasks = async (): Promise<void> => {
+	for (let i = 0; i < 10; i += 1) await Promise.resolve();
+};
+
+/** A `confirmPayment` answering each call from `answers` in turn; the rest never settle. */
+function answering(...answers: Array<() => ConfirmResult>): () => Promise<ConfirmResult> {
+	let call = 0;
+	return () => {
+		const answer = answers[call];
+		call += 1;
+		return answer === undefined ? new Promise<ConfirmResult>(() => {}) : Promise.resolve(answer());
+	};
+}
+
+const DECLINE: ConfirmResult = {
+	error: { code: "card_declined", message: "Your card was declined." },
+};
+
+const form = (): HTMLFormElement => document.getElementById("payment-form") as HTMLFormElement;
+const outside = (): HTMLElement => document.getElementById("outside")!;
+
+describe("a pending refusal never outlives what came after it (#604)", () => {
+	test("a new attempt before the text appears: the stale text stays hidden, focus does not move", async () => {
+		stubStripe(answering(() => DECLINE));
+		render();
+		submit().click();
+		await microtasks();
+		// Pay again, in the same macrotask, before the decline's text is shown.
+		form().requestSubmit();
+		await settle();
+		expect(text().hidden).toBe(true);
+		expect(document.activeElement).not.toBe(region());
+	});
+
+	test("the page closed by its deadline before the text appears: hidden, and focus stays on the closed notice", async () => {
+		stubStripe(answering(() => DECLINE));
+		render();
+		submit().focus();
+		submit().click();
+		await microtasks();
+		// What the deadline module's close() does (pay.astro's bundled script):
+		// mark the form closed, show the closed notice, focus its link.
+		form().dataset.payClosed = "true";
+		document.getElementById("payment-closed-body")!.hidden = false;
+		const link = document.getElementById("payment-closed-link")!;
+		link.focus();
+		await settle();
+		expect(text().hidden).toBe(true);
+		expect(document.activeElement).toBe(link);
+	});
+
+	test("an intent withdrawn on the next attempt (the inline close): hidden, focus on its link", async () => {
+		stubStripe(
+			answering(
+				() => DECLINE,
+				() => ({
+					error: {
+						code: "payment_intent_unexpected_state",
+						payment_intent: { status: "canceled" },
+					} as ConfirmResult["error"],
+				}),
+			),
+		);
+		render();
+		submit().click();
+		await microtasks();
+		submit().focus();
+		form().requestSubmit();
+		await settle();
+		expect(text().hidden).toBe(true);
+		expect(document.activeElement).not.toBe(region());
+		expect(document.getElementById("payment-closed-body")!.hidden).toBe(false);
+	});
+
+	test("focus the buyer moved outside the form stays there", async () => {
+		stubStripe(async () => {
+			outside().focus();
+			return DECLINE;
+		});
+		render();
+		submit().click();
+		await settle();
+		expect(text().textContent).toBe("Your card was declined.");
+		expect(document.activeElement).toBe(outside());
 	});
 });
