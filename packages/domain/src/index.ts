@@ -728,6 +728,7 @@ export {
 } from "./ports/cart-store.js";
 export {
 	addLine,
+	cartMutationKey,
 	createCart,
 	DEFAULT_HOLD_TTL_MS,
 	expireHolds,

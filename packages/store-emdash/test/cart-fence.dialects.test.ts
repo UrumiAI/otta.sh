@@ -20,6 +20,7 @@
  */
 import {
 	addLine,
+	cartMutationKey,
 	createCart,
 	currency,
 	getCart,
@@ -70,9 +71,9 @@ describeEachDialect("cart-mutation fences", (ctx) => {
 		// The deadline really is on the hold, not only on the cart line.
 		const doc = await h.inventoryDocs.get("SKU-1");
 		if (doc === null) throw new Error("missing inventory document");
-		expect(normalizeInventoryDoc(doc).holds[idempotencyKey("k1")]?.expiresAt).toBe(
-			add.line.expiresAt,
-		);
+		expect(
+			normalizeInventoryDoc(doc).holds[cartMutationKey(cartId, idempotencyKey("k1"))]?.expiresAt,
+		).toBe(add.line.expiresAt);
 
 		const now = h.clock.now().toISOString();
 		const adopted = await h.inventory.adoptMany({
@@ -123,7 +124,7 @@ describeEachDialect("cart-mutation fences", (ctx) => {
 		// The adopted hold keeps the ORDER's deadline: the refused stamp touched nothing.
 		const doc = await h.inventoryDocs.get("SKU-1");
 		if (doc === null) throw new Error("missing inventory document");
-		const hold = normalizeInventoryDoc(doc).holds[idempotencyKey("k1")];
+		const hold = normalizeInventoryDoc(doc).holds[cartMutationKey(cartId, idempotencyKey("k1"))];
 		expect(hold?.state).toBe("adopted");
 		expect(hold?.expiresAt).toBe(new Date(h.clock.now().getTime() + 30 * 60 * 1000).toISOString());
 	});
@@ -178,7 +179,9 @@ describeEachDialect("cart-mutation fences", (ctx) => {
 		expect(await h.onHand("SKU-1")).toBe(3);
 		const doc = await h.inventoryDocs.get("SKU-1");
 		if (doc === null) throw new Error("missing inventory document");
-		expect(normalizeInventoryDoc(doc).holds[idempotencyKey("k1")]?.state).toBe("adopted");
+		expect(
+			normalizeInventoryDoc(doc).holds[cartMutationKey(cartId, idempotencyKey("k1"))]?.state,
+		).toBe("adopted");
 		// The order's settle still finds its hold: no COMMIT_LOST, nothing returned.
 		expect(await h.inventory.commitMany([reservationId])).toEqual({ lost: [] });
 		expect(await h.onHand("SKU-1")).toBe(3);
