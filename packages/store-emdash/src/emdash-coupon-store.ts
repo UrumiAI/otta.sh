@@ -615,8 +615,14 @@ export class EmdashCouponStore implements CouponStore {
 		if (previous === null || !sameDrift(previous, observation)) {
 			return { outcome: "drift", observation };
 		}
-		if (Date.parse(at) - Date.parse(previous.observedAt) < COUPON_RECOUNT_SETTLE_MS) {
-			return { outcome: "drift", observation: previous };
+		// Written so a NaN (an unreadable time on either side) is NOT settled: NaN
+		// compares false, and `< SETTLE` would have let it through.
+		const elapsed = Date.parse(at) - Date.parse(previous.observedAt);
+		if (!(elapsed >= COUPON_RECOUNT_SETTLE_MS)) {
+			// Inside the window, keep the first look. A time that cannot be ordered
+			// against now (unreadable, or ahead of it) is replaced by this look instead,
+			// or it would hold the coupon back for good.
+			return { outcome: "drift", observation: elapsed >= 0 ? previous : observation };
 		}
 		// Not retried: a refusal means the counter moved, and the next pass judges again.
 		const written = await this.#coupons.compareAndSet(couponId, read.revision, {

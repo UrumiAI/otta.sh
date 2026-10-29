@@ -220,4 +220,28 @@ describeEachDialect("EmdashCouponStore.recountUses interleavings", (ctx) => {
 		});
 		expect(await h.usesOf("c1")).toBe(1);
 	});
+	test(`it counts bumping BEFORE applied: a redeem settling between the counts is seen in one of them [${ctx.dialect}]`, async () => {
+		// The order is the guard, not a style: a redeem moves bumping -> applied. Counted
+		// bumping-first, a redeem caught between the counts is in flight at the first or
+		// applied at the second. Counted the other way round, it can miss both — absent
+		// from "applied", then gone from "bumping" — and its landed +1 reads as drift.
+		const h = makeCouponHarness(bound.storage);
+		await drifted(h, 2, 3);
+		const counts: unknown[] = [];
+		const redemptions = bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION);
+		const recording = new Proxy(redemptions, {
+			get(target, prop, receiver) {
+				const value: unknown = Reflect.get(target, prop, receiver);
+				if (prop !== "count" || typeof value !== "function") return value;
+				return async (where: { state?: unknown }) => {
+					counts.push(where.state);
+					return await (value as (w: unknown) => Promise<number>).call(target, where);
+				};
+			},
+		});
+		const twin = wrappedTwin(h, COUPON_REDEMPTIONS_COLLECTION, recording);
+		const result = await twin.store.recountUses("c1", null, T0);
+		expect(result).toMatchObject({ outcome: "drift", observation: { usesCount: 3, liveUses: 2 } });
+		expect(counts).toEqual(["bumping", "applied"]);
+	});
 });

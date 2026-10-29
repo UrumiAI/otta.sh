@@ -792,6 +792,36 @@ export function couponStoreContract(
 			expect((await h.store.findById("c1"))?.usesCount).toBe(1);
 		});
 
+		test("recountUses never confirms on an observation whose time is unreadable or ahead of now: it observes afresh", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "c1", code: "CLOCK", usesCount: 2 }));
+			const first = await h.store.recountUses("c1", null, RECOUNT_T0);
+			if (first.outcome !== "drift") throw new Error(`expected drift, got ${first.outcome}`);
+			// An unparseable time is NaN, and NaN compares false to everything: it must
+			// read as NOT settled, never skip the window.
+			const garbled = { ...first.observation, observedAt: "not-a-time" };
+			const onGarbled = await h.store.recountUses("c1", garbled, settled());
+			expect(onGarbled).toEqual({
+				outcome: "drift",
+				observation: { ...first.observation, observedAt: settled() },
+			});
+			expect((await h.store.findById("c1"))?.usesCount).toBe(2);
+			// Nor may a future time hold the coupon back until the clock reaches it.
+			const ahead = { ...first.observation, observedAt: settled(100) };
+			const onAhead = await h.store.recountUses("c1", ahead, settled());
+			expect(onAhead).toEqual({
+				outcome: "drift",
+				observation: { ...first.observation, observedAt: settled() },
+			});
+			if (onAhead.outcome !== "drift") return;
+			// The fresh observation confirms one settle window later, as any first look does.
+			expect(await h.store.recountUses("c1", onAhead.observation, settled(2))).toEqual({
+				outcome: "corrected",
+				from: 2,
+				to: 0,
+			});
+		});
+
 		test("recountUses of an unknown coupon is not_found, and an observation of another coupon confirms nothing", async () => {
 			const h = await makeStore();
 			expect(await h.store.recountUses("nope", null, RECOUNT_T0)).toEqual({

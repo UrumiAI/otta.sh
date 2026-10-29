@@ -147,7 +147,9 @@ export interface CouponStore {
 	 *
 	 * Idempotent: once the counter matches, every further call answers `exact`.
 	 * `at` is the caller's clock (the sweep's tick instant), stamped on an
-	 * observation and compared against the previous one's. A redemption's
+	 * observation and compared against the previous one's. A `previous` whose time
+	 * cannot be read, or lies ahead of `at`, is never taken as settled: the call
+	 * answers `drift` with a fresh observation stamped `at`. A redemption's
 	 * per-customer slot is not recounted here.
 	 */
 	recountUses(
