@@ -40,6 +40,7 @@ import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import AddToCartKey from "../../components/AddToCartKey.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { cartErrorAction, cartErrorMessage } from "../../lib/error-messages.js";
+import { errorTitle } from "../../lib/error-notice.js";
 import { holdNote } from "../../lib/hold.js";
 import { productKey, toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { BUSY, dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
@@ -223,7 +224,10 @@ const model: ProductModel =
 	view="product"
 	model={model}
 	jsonLd={jsonLd}
-	title={content?.title ?? (contentUnavailable ? "Product unavailable" : "Product not found")}
+	title={errorTitle(
+		content?.title ?? (contentUnavailable ? "Product unavailable" : "Product not found"),
+		model.state === "ok" && model.errorMessage !== null,
+	)}
 	description={content?.description}
 	currency={product?.price?.currency ?? null}
 >

@@ -253,7 +253,7 @@ describe("POST /cart/add — productId pre-check (item 3)", () => {
 
 			expect(response.status).toBe(303);
 			expect(response.headers.get("location")).toBe(
-				"/products/bamboo-water-bottle?error=SERVICE_UNAVAILABLE",
+				"/products/bamboo-water-bottle?error=SERVICE_UNAVAILABLE#product-error",
 			);
 			expect(calls).toHaveLength(0);
 			expect(errorSpy).toHaveBeenCalled();

@@ -304,7 +304,7 @@ describe("6a — /checkout/new-cart clears BOTH cookies", () => {
 			const response = await NEW_CART_POST(context);
 
 			expect(response.status).toBe(303);
-			expect(response.headers.get("location")).toBe("/cart?error=NEW_CART_NOT_CLEARED");
+			expect(response.headers.get("location")).toBe("/cart?error=NEW_CART_NOT_CLEARED#cart-error");
 			expect(cookieOps).toHaveLength(0);
 		},
 	);
@@ -333,6 +333,8 @@ describe("6b — email validation happens on the SITE, before any dispatch", () 
 			const location = response.headers.get("location")!;
 			expect(location).toContain("/checkout");
 			expect(location).toContain("error=INVALID_EMAIL");
+			// #603: to the notice, so the reload lands on the refusal, not the top.
+			expect(location).toMatch(/#checkout-error$/);
 			expect(calls).toHaveLength(0);
 		},
 	);
@@ -912,7 +914,7 @@ describe("the coupon at place", () => {
 
 		const location = (await PLACE_POST(context)).headers.get("location");
 
-		expect(location).toBe("/checkout?error=COUPON_NOT_FOUND");
+		expect(location).toBe("/checkout?error=COUPON_NOT_FOUND#checkout-error");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -960,7 +962,7 @@ describe("the coupon at place", () => {
 
 		const location = (await PLACE_POST(context)).headers.get("location");
 
-		expect(location).toBe("/checkout?error=COUPON_EXHAUSTED");
+		expect(location).toBe("/checkout?error=COUPON_EXHAUSTED#coupon-error");
 	});
 
 	test("a non-coupon failure keeps ?coupon", async () => {
@@ -969,7 +971,7 @@ describe("the coupon at place", () => {
 
 		const location = (await PLACE_POST(context)).headers.get("location");
 
-		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=PAYMENT_INTENT_FAILED");
+		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=PAYMENT_INTENT_FAILED#checkout-error");
 	});
 
 	test("an INVALID_EMAIL redirect keeps the coupon but still carries no personal data", async () => {
@@ -990,7 +992,7 @@ describe("the coupon at place", () => {
 
 		const location = (await PLACE_POST(context)).headers.get("location")!;
 
-		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=INVALID_EMAIL");
+		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=INVALID_EMAIL#checkout-error");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1001,7 +1003,7 @@ describe("the coupon at place", () => {
 
 		const location = (await PLACE_POST(context)).headers.get("location");
 
-		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=STRIPE_NOT_CONFIGURED");
+		expect(location).toBe("/checkout?coupon=CK-SAVE5&error=STRIPE_NOT_CONFIGURED#checkout-error");
 		expect(calls).toHaveLength(0);
 	});
 });
@@ -1053,7 +1055,7 @@ describe("the buyer's location at place (#426)", () => {
 		const response = await PLACE_POST(
 			makeContext({ ...BUYER, fromCountry: "", deliveryCountry: "DE" }, handler).context,
 		);
-		expect(response.headers.get("location")).toBe("/checkout?country=DE");
+		expect(response.headers.get("location")).toBe("/checkout?country=DE#delivery-error");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1076,7 +1078,7 @@ describe("the buyer's location at place (#426)", () => {
 				handler,
 			).context,
 		);
-		expect(response.headers.get("location")).toBe("/checkout?country=DE");
+		expect(response.headers.get("location")).toBe("/checkout?country=DE#delivery-error");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1086,7 +1088,9 @@ describe("the buyer's location at place (#426)", () => {
 			makeContext({ ...BUYER, email: "nope", fromCountry: "DE", deliveryCountry: "DE" }, handler)
 				.context,
 		);
-		expect(response.headers.get("location")).toBe("/checkout?country=DE&error=INVALID_EMAIL");
+		expect(response.headers.get("location")).toBe(
+			"/checkout?country=DE&error=INVALID_EMAIL#checkout-error",
+		);
 	});
 
 	test("#478: a forged Place with a refused location still selected is re-priced, never placed", async () => {
@@ -1099,7 +1103,7 @@ describe("the buyer's location at place (#426)", () => {
 				handler,
 			).context,
 		);
-		expect(response.headers.get("location")).toBe("/checkout?country=ES&region=CN");
+		expect(response.headers.get("location")).toBe("/checkout?country=ES&region=CN#delivery-error");
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1150,7 +1154,7 @@ describe("the delivery address at place (ADR-0021)", () => {
 		const response = await PLACE_POST(makeContext({ ...ZONED, name: "A Buyer" }, handler).context);
 
 		expect(response.headers.get("location")).toBe(
-			"/checkout?country=US&region=CA&method=m-1&error=INVALID_SHIPPING_ADDRESS",
+			"/checkout?country=US&region=CA&method=m-1&error=INVALID_SHIPPING_ADDRESS#checkout-error",
 		);
 		expect(calls).toHaveLength(0);
 	});
@@ -1180,7 +1184,9 @@ describe("the delivery address at place (ADR-0021)", () => {
 				.context,
 		);
 
-		expect(response.headers.get("location")).toBe("/checkout?error=SHIPPING_REGION_CODE_REQUIRED");
+		expect(response.headers.get("location")).toBe(
+			"/checkout?error=SHIPPING_REGION_CODE_REQUIRED#checkout-error",
+		);
 		expect(calls).toHaveLength(0);
 	});
 
@@ -1190,36 +1196,41 @@ describe("the delivery address at place (ADR-0021)", () => {
 			makeContext({ ...VALID_FORM, ...TYPED, country: "United States" }, handler).context,
 		);
 
-		expect(response.headers.get("location")).toBe("/checkout?error=INVALID_SHIPPING_ADDRESS");
+		expect(response.headers.get("location")).toBe(
+			"/checkout?error=INVALID_SHIPPING_ADDRESS#checkout-error",
+		);
 		expect(calls).toHaveLength(0);
 	});
 
 	test.each([
 		[
 			"SHIPPING_ZONE_NOT_MATCHED",
-			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_ZONE_NOT_MATCHED",
+			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_ZONE_NOT_MATCHED#delivery-error",
 		],
 		[
 			"SHIPPING_REGION_CODE_REQUIRED",
-			"/checkout?coupon=C&country=US&error=SHIPPING_REGION_CODE_REQUIRED",
+			"/checkout?coupon=C&country=US&error=SHIPPING_REGION_CODE_REQUIRED#delivery-error",
 		],
 		[
 			"SHIPPING_METHOD_NOT_IN_ZONE",
-			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_METHOD_NOT_IN_ZONE",
+			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_METHOD_NOT_IN_ZONE#checkout-error",
 		],
 		[
 			"MISSING_SHIPPING_ADDRESS",
-			"/checkout?coupon=C&country=US&region=CA&error=MISSING_SHIPPING_ADDRESS",
+			"/checkout?coupon=C&country=US&region=CA&error=MISSING_SHIPPING_ADDRESS#checkout-error",
 		],
 		// A zoned order's incomplete street address keeps its state too.
 		[
 			"INVALID_SHIPPING_ADDRESS",
-			"/checkout?coupon=C&country=US&region=CA&error=INVALID_SHIPPING_ADDRESS",
+			"/checkout?coupon=C&country=US&region=CA&error=INVALID_SHIPPING_ADDRESS#checkout-error",
 		],
-		["COUPON_NOT_FOUND", "/checkout?country=US&region=CA&method=m-1&error=COUPON_NOT_FOUND"],
+		[
+			"COUPON_NOT_FOUND",
+			"/checkout?country=US&region=CA&method=m-1&error=COUPON_NOT_FOUND#coupon-error",
+		],
 		[
 			"PAYMENT_INTENT_FAILED",
-			"/checkout?coupon=C&country=US&region=CA&method=m-1&error=PAYMENT_INTENT_FAILED",
+			"/checkout?coupon=C&country=US&region=CA&method=m-1&error=PAYMENT_INTENT_FAILED#checkout-error",
 		],
 	])("a %s failure redirects with the blamed part dropped", async (reason, expected) => {
 		const { handler } = makeHandler({ ok: false, reason });
@@ -1235,14 +1246,17 @@ describe("the delivery address at place (ADR-0021)", () => {
 	// (readDestinationParams) may ride a failure redirect; anything else is dropped.
 	test.each([
 		// A region means nothing without its country: both go.
-		[{ country: "Ada Lovelace", region: "CA" }, "/checkout?method=m-1&error=INVALID_EMAIL"],
+		[
+			{ country: "Ada Lovelace", region: "CA" },
+			"/checkout?method=m-1&error=INVALID_EMAIL#checkout-error",
+		],
 		[
 			{ country: "US", region: "1 Private Road" },
-			"/checkout?country=US&method=m-1&error=INVALID_EMAIL",
+			"/checkout?country=US&method=m-1&error=INVALID_EMAIL#checkout-error",
 		],
 		[
 			{ country: "us", region: "ca" },
-			"/checkout?country=US&region=CA&method=m-1&error=INVALID_EMAIL",
+			"/checkout?country=US&region=CA&method=m-1&error=INVALID_EMAIL#checkout-error",
 		],
 	])(
 		"a crafted hidden destination %j is shape-checked before it enters a redirect",
@@ -1264,7 +1278,7 @@ describe("the delivery address at place (ADR-0021)", () => {
 		);
 
 		expect(response.headers.get("location")).toBe(
-			"/checkout?method=m-1&error=PAYMENT_INTENT_FAILED",
+			"/checkout?method=m-1&error=PAYMENT_INTENT_FAILED#checkout-error",
 		);
 	});
 

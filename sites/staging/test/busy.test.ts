@@ -446,7 +446,9 @@ describe("form endpoints that end BUSY answer 503, not the generic 303", () => {
 		);
 
 		expect(response.status).toBe(303);
-		expect(response.headers.get("location")).toBe("/products?error=SERVICE_UNAVAILABLE");
+		expect(response.headers.get("location")).toBe(
+			"/products?error=SERVICE_UNAVAILABLE#product-error",
+		);
 	});
 
 	test("/cart/update: 503 + Retry-After", async () => {
@@ -563,7 +565,7 @@ describe("seeOther — the redirect itself never leaves the site", () => {
 				formContext("/cart/add", { sku: "S", idempotencyKey: "k", returnTo }, handler),
 			);
 			expect(response.status).toBe(303);
-			expect(response.headers.get("location")).toBe("/products?error=RENDER_FAILED");
+			expect(response.headers.get("location")).toBe("/products?error=RENDER_FAILED#product-error");
 		},
 	);
 });

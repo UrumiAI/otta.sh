@@ -20,6 +20,7 @@
 import HoldRibbon from "../../components/HoldRibbon.astro";
 import MediaPanel from "../../components/MediaPanel.astro";
 import Notice from "../../components/Notice.astro";
+import { CART_ERROR_ID } from "../../lib/error-notice.js";
 import PriceTag from "../../components/PriceTag.astro";
 import QtyField from "../../components/QtyField.astro";
 import Sum from "../../components/Sum.astro";
@@ -68,17 +69,27 @@ const {
     WRAPPED rather than handed a class: a page's scoped selector cannot reach
     a component's root, so spacing around one lives on an element this view
     owns (see src/lib/rest-props.ts). */}
+{/* #603: the refusal is the element its redirect names as the fragment —
+    an alert, focusable so focus starts here after the reload. */}
 {errorMessage !== null && (
-	<div class="cart-notice-slot">
+	<div class="cart-notice-slot" id={CART_ERROR_ID} role="alert" tabindex="-1">
 		<Notice>{errorMessage}</Notice>
 	</div>
 )}
 {/* #440: the cart is in a currency the shop no longer sells in. The notice
     says what the button costs before it is clicked (the items are released,
     not moved), and the button is the only way out a shopper had besides
-    clearing their cookies. A POST, so the origin guard covers it. */}
+    clearing their cookies. A POST, so the origin guard covers it.
+
+    #603: when it stands in for the refusal (/checkout's CURRENCY_MISMATCH
+    bounce lands on #cart-error, and the page says this instead of the generic
+    copy), it carries the refusal's id, role and focus — only then, so the id
+    is never on two elements. */}
 {staleCurrency !== null && (
-	<div class="cart-notice-slot">
+	<div
+		class="cart-notice-slot"
+		{...(errorMessage === null ? { id: CART_ERROR_ID, role: "alert", tabindex: "-1" } : {})}
+	>
 		<Notice lead={staleCurrency.lead}>{staleCurrency.body}</Notice>
 		{/* Beside the notice, not in it: its body is a <p>, which holds no form. */}
 		<form method="POST" action="/cart/switch-currency" class="cart-currency-switch">
