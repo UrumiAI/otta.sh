@@ -121,7 +121,10 @@ export type RefundOrderFailure =
 	| "GATEWAY_TERMINAL"
 	/** The ambiguous timeout — `refunds.create` errored with an unknown fate.
 	 *  The reservation is marked UNVERIFIED and KEEPS holding ceiling capacity
-	 *  (the safe direction). Do NOT blind-retry; re-check the provider first. */
+	 *  (the safe direction). Do NOT blind-retry; re-check the provider first.
+	 *  Also the answer when a held reservation can no longer be finished — a
+	 *  resume the pre-flight refuses, or a retry the gateway now routes to the
+	 *  manual path (#607): the row is held `unverified` the same way. */
 	| "GATEWAY_UNVERIFIED"
 	/** The gateway declared itself unable to refund at the moment of the call
 	 *  (a defensive mapping — the use-case already branches on `refundable`, so a
@@ -246,7 +249,9 @@ export function sumFinalizedRefunds(refunds: RefundRecord[]): number {
  *
  * The MANUAL path (`refundable:false` — e.g. no Stripe secret) has no gateway
  * leg, so it stays the one-shot atomic `recordRefund` (insert finalized + flip),
- * which is reserve-and-finalize collapsed into one transaction.
+ * which is reserve-and-finalize collapsed into one transaction. A same-key
+ * retry that finds an earlier gateway attempt's reservation still held there is
+ * not recorded: it is held `unverified` and flagged for a person (#607).
  *
  * "Issued but unrecorded" is impossible by construction: issuance strictly
  * follows a committed reservation, and `finalizeRefund` updates that existing
@@ -402,6 +407,18 @@ async function refundOnLedger(
 	}
 
 	if (kind === "manual") {
+		// A held reservation under this key is an earlier GATEWAY attempt that never
+		// settled: it failed RETRYABLE or NOT_STARTED, or the process died before or
+		// AFTER `refunds.create` — so the provider may hold that refund or not. The
+		// gateway now reads refundable:false (e.g. an unreadable Stripe secret), so
+		// nothing here can ask the provider, and the manual record cannot finish it
+		// either: its dedupe would answer `duplicate` on a row that moved no money we
+		// know of (#607). Answering "try again" would be a dead end — every retry the
+		// same while the secret stays unreadable, the row holding the ceiling — so it
+		// is handed to a person, as the late-payment sweep's give-up does: held
+		// `unverified`, the order flagged, and resolved in Money → Refunds (confirmed
+		// at the provider, or voided — which releases the ceiling).
+		if (resuming) return holdForCheck(deps, cmd, target);
 		// No gateway leg ⇒ the one-shot atomic record (arbitration + finalized
 		// insert + conditional flip in one transaction).
 		const res = await deps.orderStore.recordRefund({
@@ -548,7 +565,7 @@ async function refundOnLedger(
 							: ` The provider shows ${flagAmount(gwRes.provider.refunded, target.currency)} of ${flagAmount(gwRes.provider.captured, target.currency)} refunded.`;
 					await deps.orderStore.flagReconciliation(
 						cmd.orderId,
-						`${unverifiedRefundFlagPrefix(target.amount, target.currency, cmd.idempotencyKey)} — check the provider, then resolve the unverified refund in Money → Refunds.${figures}`,
+						`${unverifiedRefundFlagPrefix(target.amount, target.currency, cmd.idempotencyKey)} the provider already shows it refunded but the ledger never finalized it — check the provider, then resolve the unverified refund in Money → Refunds.${figures}`,
 					);
 				}
 				return { ok: false, reason: "GATEWAY_UNVERIFIED" };
@@ -602,12 +619,54 @@ async function refundOnLedger(
 	};
 }
 
-/** The start of the flag the RESUME arm writes when it holds a refund
- *  `unverified` — exact for that refund (its amount, currency and key), so the
- *  person who resolves it (`resolveUnverifiedRefund`) can compare-and-clear THIS
- *  flag and never another. */
+/** The start of every flag written when a refund is held `unverified` for a
+ *  person — the RESUME arm's and the manual path's (#607) — exact for that refund
+ *  (its amount, currency and key), so the person who resolves it
+ *  (`resolveUnverifiedRefund`) can compare-and-clear THIS flag and never another.
+ *  Flags written before #607 carried the resume arm's wording inside the prefix;
+ *  they still start with this one. */
 export function unverifiedRefundFlagPrefix(amount: number, currency: string, key: string): string {
-	return `refund ${String(amount)} ${currency} (key ${key}): the provider already shows it refunded but the ledger never finalized it`;
+	return `refund ${String(amount)} ${currency} (key ${key}):`;
+}
+
+/**
+ * Hand a held gateway reservation that the MANUAL path reached to a person
+ * (#607): `reserved → unverified` (the capacity stays held — the safe direction,
+ * as the provider may have issued it) and the order flagged with the refund's own
+ * {@link unverifiedRefundFlagPrefix}, so resolving it in Money → Refunds clears
+ * exactly this flag. The flip is guarded to `reserved`: when the row was settled
+ * since it was read (a concurrent owner finalized or voided it), nothing is
+ * flagged and the answer is the settled row's own — what the replay check would
+ * have said had it read the row a moment later.
+ */
+async function holdForCheck(
+	deps: RefundOrderDeps,
+	cmd: RefundOrderCommand,
+	held: Pick<RefundRecord, "amount" | "currency">,
+): Promise<RefundOrderOutcome> {
+	if (await deps.orderStore.markRefundUnverified(cmd.idempotencyKey)) {
+		await deps.orderStore.flagReconciliation(
+			cmd.orderId,
+			`${unverifiedRefundFlagPrefix(held.amount, held.currency, cmd.idempotencyKey)} an earlier attempt through the payment provider never finished, and the provider can no longer be reached to finish it (refunds are recorded manually now) — check the provider, then resolve the unverified refund in Money → Refunds.`,
+		);
+		return { ok: false, reason: "GATEWAY_UNVERIFIED" };
+	}
+	const settled = await deps.orderStore.getRefundByIdempotencyKey(cmd.idempotencyKey);
+	if (settled?.status === "voided") return { ok: false, reason: "GATEWAY_TERMINAL" };
+	if (settled?.status === "recorded") {
+		const order = await deps.orderStore.getById(cmd.orderId);
+		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		return {
+			ok: true,
+			recorded: false,
+			duplicate: true,
+			fullyRefunded: order.state === "refunded",
+			refund: settled,
+			order,
+		};
+	}
+	// `unverified` (another caller held it first), or a row that vanished: check.
+	return { ok: false, reason: "GATEWAY_UNVERIFIED" };
 }
 
 /** Map a one-shot `recordRefund` result (the manual path) to the outcome. */
@@ -626,6 +685,24 @@ function settleRecordOutcome(
 	// the store's `duplicate` is the first sight of it — same content rule.
 	if (res.outcome === "duplicate" && !refundMatchesCommand(res.refund, cmd)) {
 		return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+	}
+	// Only a FINALIZED row is a duplicate success (#607). Any other status is a
+	// gateway attempt the replay read did not see (a stale `known` ledger, or a
+	// concurrent same-key reserve). A `reserved` row here is most likely a
+	// same-key gateway request IN FLIGHT right now, so it is NOT held for a
+	// person: flagging it would invite a void before the provider shows that
+	// request's refund, which would then finalize against a voided row (money
+	// moved, ceiling freed). It is left `reserved` and answered "try again"; the
+	// retry's replay read sees it, and the manual guard above hands it to a person
+	// if it is still held. A settled row gets the replay check's answer.
+	if (res.outcome === "duplicate" && res.refund.status === "reserved") {
+		return { ok: false, reason: "GATEWAY_RETRYABLE" };
+	}
+	if (res.outcome === "duplicate" && res.refund.status === "unverified") {
+		return { ok: false, reason: "GATEWAY_UNVERIFIED" };
+	}
+	if (res.outcome === "duplicate" && res.refund.status === "voided") {
+		return { ok: false, reason: "GATEWAY_TERMINAL" };
 	}
 	return {
 		ok: true,
