@@ -122,6 +122,41 @@ export interface CouponStore {
 	listRedemptionsCreatedBefore(cutoff: string): Promise<CouponRedemption[]>;
 
 	/**
+	 * RECOUNT one coupon's `usesCount` from the redemptions that hold a use (issue
+	 * #619). Nothing else heals a counter that has drifted from its records: a
+	 * release cut between its delete and its decrement leaves it one HIGH (and a
+	 * capped coupon then refuses a shopper it has room for); a counter write lost
+	 * any other way leaves it LOW.
+	 *
+	 * The truth is the number of redemptions whose use the counter has provably
+	 * taken — `applied` ones. A redemption mid-bump is the one state that cannot be
+	 * judged (its `+1` may or may not have landed), so while one exists the answer
+	 * is `in_flight` and nothing is written.
+	 *
+	 * TWO CALLS, AT LEAST {@link COUPON_RECOUNT_SETTLE_MS} APART, before anything is
+	 * written. The first sees the drift and returns it as an observation; the
+	 * caller hands that back on a later call (`previous`), and only when the
+	 * counter has not moved at all since (`version`), the live count is the same,
+	 * and the observation is old enough, is the counter set — by a single guarded
+	 * write that refuses if the counter moved in between (`moved`). The wait is
+	 * what makes a release that is BETWEEN its delete and its decrement safe: the
+	 * deleted redemption is no longer counted, the decrement has not landed yet,
+	 * and correcting then would take the use twice. A release finishes within one
+	 * invocation; one whose decrement is still to come after the settle window is
+	 * the residual (it would leave the counter one low).
+	 *
+	 * Idempotent: once the counter matches, every further call answers `exact`.
+	 * `at` is the caller's clock (the sweep's tick instant), stamped on an
+	 * observation and compared against the previous one's. A redemption's
+	 * per-customer slot is not recounted here.
+	 */
+	recountUses(
+		couponId: string,
+		previous: CouponUsesObservation | null,
+		at: string,
+	): Promise<CouponRecountResult>;
+
+	/**
 	 * Admin Coupons console: view-only list (admin-UX Increment 3, "coupon
 	 * enumerate + coupon list" — the missing atomic primitive this slice adds,
 	 * mirroring `ProductCommerceStore.listProducts`'s proven keyset shape 1:1).
@@ -306,6 +341,44 @@ export type DeleteCouponResult =
 	| { ok: true }
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "in_use_by_redemptions" };
+
+/**
+ * How long a drifted counter must stay unchanged before `CouponStore.recountUses`
+ * corrects it: far longer than any one invocation (a release's delete and its
+ * decrement are adjacent calls in one), and shorter than the sweep's fifteen-minute
+ * maintenance cadence, so the next pass over a coupon can always confirm what the
+ * last one saw.
+ */
+export const COUPON_RECOUNT_SETTLE_MS = 10 * 60 * 1000;
+
+/** One look at a coupon whose counter disagrees with its live redemptions — what
+ *  `recountUses` returns as `drift` and is handed back to confirm. Plain JSON, so a
+ *  sweep can keep it between ticks. */
+export interface CouponUsesObservation {
+	readonly couponId: string;
+	/** The counter as read. */
+	readonly usesCount: number;
+	/** The redemptions that held a use, as counted. */
+	readonly liveUses: number;
+	/** The adapter's opaque version of the coupon: it changes on every write of
+	 *  it, so an unchanged version means no redeem or release moved the counter. */
+	readonly version: string;
+	/** The caller's `at` when this was observed. */
+	readonly observedAt: string;
+}
+
+/** What one `CouponStore.recountUses` call found or did. */
+export type CouponRecountResult =
+	| { readonly outcome: "not_found" }
+	/** The counter matches its live redemptions. */
+	| { readonly outcome: "exact"; readonly usesCount: number }
+	/** A redemption is mid-bump: nothing can be judged now. */
+	| { readonly outcome: "in_flight" }
+	/** The counter disagrees. Hand `observation` back on a later call to confirm. */
+	| { readonly outcome: "drift"; readonly observation: CouponUsesObservation }
+	/** The counter moved between this call's read and its write: nothing written. */
+	| { readonly outcome: "moved" }
+	| { readonly outcome: "corrected"; readonly from: number; readonly to: number };
 
 /** What `CouponStore.releaseByOrder` matches an order's redemptions by — an
  *  `Order` satisfies it. */

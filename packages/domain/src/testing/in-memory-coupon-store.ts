@@ -1,21 +1,24 @@
 import type { CustomerId, IdempotencyKey } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
-import type {
-	CouponListFilter,
-	CouponListPage,
-	CouponListResult,
-	CouponRecord,
-	CouponRedemption,
-	CouponStore,
-	CouponSummary,
-	CreateCouponInput,
-	DeleteCouponResult,
-	RedeemCouponInput,
-	RedeemResult,
-	RedemptionOrderRef,
-	UpdateCouponInput,
-	UpdateCouponResult,
+import {
+	COUPON_RECOUNT_SETTLE_MS,
+	type CouponListFilter,
+	type CouponListPage,
+	type CouponListResult,
+	type CouponRecord,
+	type CouponRecountResult,
+	type CouponRedemption,
+	type CouponStore,
+	type CouponSummary,
+	type CouponUsesObservation,
+	type CreateCouponInput,
+	type DeleteCouponResult,
+	type RedeemCouponInput,
+	type RedeemResult,
+	type RedemptionOrderRef,
+	type UpdateCouponInput,
+	type UpdateCouponResult,
 } from "../ports/coupon-store.js";
 import {
 	CouponCodeConflictError,
@@ -39,6 +42,9 @@ interface RedemptionRow {
  *  fields `ProductSummary` alone projects). */
 interface StoredCoupon extends CouponRecord {
 	createdAt: Date;
+	/** Bumped on every write of the coupon — `recountUses`' version, as the
+	 *  document store's revision is. */
+	revision: number;
 }
 
 /** Test-only seed shape for the admin-list contract — a direct coupon row (no
@@ -118,6 +124,7 @@ export class InMemoryCouponStore implements CouponStore {
 			maxUsesPerCustomer: input.maxUsesPerCustomer,
 			usesCount: 0,
 			createdAt: this.#clock.now(),
+			revision: 0,
 		};
 		this.#coupons.set(record.id, record);
 		this.#byCode.set(foldCouponCode(record.code), record.id);
@@ -156,6 +163,7 @@ export class InMemoryCouponStore implements CouponStore {
 		coupon.expiresAt = input.expiresAt;
 		coupon.maxUses = input.maxUses;
 		coupon.maxUsesPerCustomer = input.maxUsesPerCustomer;
+		coupon.revision += 1;
 		return { ok: true, coupon: toRecord(coupon) };
 	}
 
@@ -203,6 +211,7 @@ export class InMemoryCouponStore implements CouponStore {
 
 		// Claim + increment as one block.
 		coupon.usesCount += 1;
+		coupon.revision += 1;
 		const id = this.#idGen.newId();
 		this.#redemptions.set(id, {
 			id,
@@ -219,8 +228,7 @@ export class InMemoryCouponStore implements CouponStore {
 		const row = this.#redemptions.get(redemptionId);
 		if (row === undefined) return; // already released / never redeemed: no-op
 		this.#redemptions.delete(redemptionId);
-		const coupon = this.#coupons.get(row.couponId);
-		if (coupon !== undefined && coupon.usesCount > 0) coupon.usesCount -= 1;
+		this.#decrement(row.couponId);
 	}
 
 	async releaseByOrder(order: RedemptionOrderRef): Promise<number> {
@@ -228,8 +236,7 @@ export class InMemoryCouponStore implements CouponStore {
 		for (const [id, row] of this.#redemptions) {
 			if (row.orderId !== order.id && row.idempotencyKey !== order.idempotencyKey) continue;
 			this.#redemptions.delete(id);
-			const coupon = this.#coupons.get(row.couponId);
-			if (coupon !== undefined && coupon.usesCount > 0) coupon.usesCount -= 1;
+			this.#decrement(row.couponId);
 			released++;
 		}
 		return released;
@@ -246,6 +253,48 @@ export class InMemoryCouponStore implements CouponStore {
 				idempotencyKey: r.idempotencyKey,
 				createdAt: r.createdAt,
 			}));
+	}
+
+	/** The guarded `- 1` (never below zero), moving the version with it. */
+	#decrement(couponId: string): void {
+		const coupon = this.#coupons.get(couponId);
+		if (coupon === undefined || coupon.usesCount <= 0) return;
+		coupon.usesCount -= 1;
+		coupon.revision += 1;
+	}
+
+	/**
+	 * The port's two-call recount. Every redemption here is applied the moment it
+	 * exists (redeem is one synchronous block), so there is never one in flight;
+	 * the protocol is kept anyway, so a caller written against the fake drives a
+	 * real adapter the same way.
+	 */
+	async recountUses(
+		couponId: string,
+		previous: CouponUsesObservation | null,
+		at: string,
+	): Promise<CouponRecountResult> {
+		const coupon = this.#coupons.get(couponId);
+		if (coupon === undefined) return { outcome: "not_found" };
+		const liveUses = this.redemptionCount(couponId);
+		if (liveUses === coupon.usesCount) return { outcome: "exact", usesCount: liveUses };
+		const observation: CouponUsesObservation = {
+			couponId,
+			usesCount: coupon.usesCount,
+			liveUses,
+			version: String(coupon.revision),
+			observedAt: at,
+		};
+		if (previous === null || !sameDrift(previous, observation)) {
+			return { outcome: "drift", observation };
+		}
+		if (Date.parse(at) - Date.parse(previous.observedAt) < COUPON_RECOUNT_SETTLE_MS) {
+			return { outcome: "drift", observation: previous };
+		}
+		const from = coupon.usesCount;
+		coupon.usesCount = liveUses;
+		coupon.revision += 1;
+		return { outcome: "corrected", from, to: liveUses };
 	}
 
 	// -- Admin Coupons console: view-only keyset list (admin-UX Increment 3) --
@@ -336,6 +385,8 @@ export class InMemoryCouponStore implements CouponStore {
 			maxUsesPerCustomer: row.maxUsesPerCustomer ?? null,
 			usesCount: row.usesCount ?? 0,
 			createdAt: new Date(row.createdAt),
+			// A re-seed is a write of the counter like any other.
+			revision: (this.#coupons.get(row.id)?.revision ?? 0) + 1,
 		};
 		// The seed bypasses `create`, so it re-asserts the same uniqueness: a
 		// case-variant of a live code would make a folded lookup ambiguous.
@@ -346,6 +397,16 @@ export class InMemoryCouponStore implements CouponStore {
 		this.#coupons.set(record.id, record);
 		this.#byCode.set(foldCouponCode(record.code), record.id);
 	}
+}
+
+/** The same drift, seen again: same coupon, same counter, same version, same count. */
+function sameDrift(a: CouponUsesObservation, b: CouponUsesObservation): boolean {
+	return (
+		a.couponId === b.couponId &&
+		a.usesCount === b.usesCount &&
+		a.liveUses === b.liveUses &&
+		a.version === b.version
+	);
 }
 
 /** Project a `StoredCoupon` down to the public `CouponRecord` (drops the

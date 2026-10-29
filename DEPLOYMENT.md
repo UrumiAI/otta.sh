@@ -746,12 +746,15 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all twelve sweep legs: they share a store composition
-and a clock, and splitting them would only put twelve rows in contention on the same documents. The
-five scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
-`product-orphans`) and the sign-in challenge prune run at most every fifteen minutes inside that
-task (housekeeping: the scans read a page budget of a collection per run); a scan cut short by
-the budget carries on next tick until its pass is done. `product-orphans` soft-deletes a
+hook when it comes due. One task drives all thirteen sweep legs: they share a store composition
+and a clock, and splitting them would only put thirteen rows in contention on the same documents. The
+six scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`coupon-recount`, `product-orphans`) and the sign-in challenge prune run at most every fifteen
+minutes inside that task (housekeeping: the scans read a page budget of a collection per run); a
+scan cut short by the budget carries on next tick until its pass is done. `coupon-recount` sets a
+coupon's use count back to the uses its redemptions hold when the two disagree (a release cut
+between its delete and its decrement leaves it one high); it corrects only on a second look, a
+pass later, that finds the same drift with the counter untouched, and logs each correction. `product-orphans` soft-deletes a
 commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
 soft delete was lost. It reads each live row's document through `ctx.content` (the
 `content:read` capability already declared) and is built for a CMS read that LIES: on the
