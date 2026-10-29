@@ -332,11 +332,13 @@ export class LegBudget {
 		let last: { ms: number; queries: number } | undefined;
 		let unitMs = 0;
 		let unitQueries = Math.max(1, minUnitQueries);
-		// The most this leg could EVER be given: a unit estimated above it is clamped
-		// to it, so an oversized unit (a ten-line order's completion) still runs when
-		// the leg has its whole slice — and the ceiling, not a refusal on every tick
-		// forever, is what stops it part-way. Its guarded writes persist, so the next
-		// attempt starts further on.
+		// What this leg has left when the gate is made: a unit estimated above it is
+		// clamped to it, so an oversized unit (a ten-line order's completion) still
+		// runs when it is the FIRST unit this gate checks — and the ceiling, not a
+		// refusal on every tick forever, is what stops it part-way. Its guarded writes
+		// persist, so the next attempt starts further on. A LATER check has spent part
+		// of the cap already, so a clamped unit there is refused: a loop must size each
+		// unit whole, before any of its calls, and start a fresh gate per run.
 		const cap = Math.max(1, this.remainingQueries());
 		return (unitHint?: number) => {
 			const now = { ms: this.#budget.elapsedMs(), queries: this.#budget.queriesUsed() };

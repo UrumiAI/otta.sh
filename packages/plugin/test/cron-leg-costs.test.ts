@@ -63,6 +63,8 @@ import {
 	SWEEP_LEGS,
 	EMAIL_SEND_AND_RECORD_CALLS,
 	holdIntentCost,
+	releaseStrandedOnSku,
+	strandedReleaseCost,
 	TICK_OVERHEAD_QUERIES,
 	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
@@ -77,6 +79,7 @@ import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways
 import { STORE_DISPLAY_NAME_KEY } from "../src/email/email-render-context.js";
 import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
+import { strandOrder } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
 const MINUTE_MS = 60_000;
@@ -688,6 +691,70 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		});
 		expect(used).toBe(COUPON_ORPHAN_WORST_UNIT);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["coupon-orphans"].unit);
+	});
+
+	test("stranded-holds: one sku holding one unit for a dead order, released (#631)", async () => {
+		const placed = await placeOrder("stranded", new Date(Date.now() + DAY_MS).toISOString());
+		await strandOrder(storage, placed.id, "cancelled", new Date());
+		// The leg gets the inventory document from its page, so that read is not the unit's.
+		const doc = await collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION).get(placed.sku);
+		if (doc === null) throw new Error("the placed sku must exist");
+		expect(1 + strandedReleaseCost(1)).toBe(LEG_QUERY_COSTS["stranded-holds"].unit);
+		const s = counted();
+		const orders = collectionOf<OrderDoc>(wrappedStorage(), ORDERS_COLLECTION);
+		let released = 0;
+		const used = await cost(async () => {
+			released = (await releaseStrandedOnSku(doc, orders, s)).released;
+		});
+		expect(released).toBe(1);
+		expect(
+			(await collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION).get(placed.sku))?.onHand,
+		).toBe(10);
+		expect(used, `measured ${String(used)}`).toBe(LEG_QUERY_COSTS["stranded-holds"].unit);
+	});
+
+	test("stranded-holds: a sku held by a live order costs its order read alone", async () => {
+		const placed = await placeOrder("stranded-live", new Date(Date.now() + DAY_MS).toISOString());
+		const doc = await collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION).get(placed.sku);
+		if (doc === null) throw new Error("the placed sku must exist");
+		const s = counted();
+		const orders = collectionOf<OrderDoc>(wrappedStorage(), ORDERS_COLLECTION);
+		const used = await cost(async () => {
+			expect(await releaseStrandedOnSku(doc, orders, s)).toEqual({ released: 0 });
+		});
+		expect(used).toBe(1);
+	});
+
+	test("stranded-holds: the release of three holds one order adopted on one sku fits strandedReleaseCost(3)", async () => {
+		const s = counted();
+		const sku = "COST-STRANDED-MANY";
+		await s.inventory.seedOnHand(toSku(sku), 10);
+		const held: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			const reserved = await s.inventory.reserve(
+				toSku(sku),
+				1,
+				idempotencyKey(`res-stranded-many-${String(i)}`),
+			);
+			if (!reserved.ok) throw new Error(reserved.reason);
+			await s.inventory.stampHoldDeadline(
+				reserved.reservationId,
+				new Date(Date.now() + DAY_MS).toISOString(),
+			);
+			held.push(reserved.reservationId);
+		}
+		await s.inventory.adoptMany({
+			reservationIds: held,
+			orderId: toOrderId("order-stranded-many"),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+			now: new Date().toISOString(),
+		});
+		const used = await cost(async () => {
+			expect(
+				await s.inventory.releaseAdoptedManyReporting(held, "order-stranded-many"),
+			).toHaveLength(3);
+		});
+		expect(used, `measured ${String(used)}`).toBe(strandedReleaseCost(3));
 	});
 
 	test("sku-transfers: one product with a stranded carry", async () => {

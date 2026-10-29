@@ -131,7 +131,7 @@ describe("the sweep's schedule and timeout are pinned", () => {
 	test("the critical legs come first in the summary, expiry before the coupon sweeper, and only housekeeping is on the slow cadence", () => {
 		expect(SWEEP_LEGS.slice(0, 3)).toEqual([...CRITICAL_LEGS]);
 		expect(SWEEP_LEGS.indexOf("expire-orders")).toBeLessThan(SWEEP_LEGS.indexOf("coupon-orphans"));
-		// The five scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
+		// The six scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
 		// customer never waits on.
 		expect([...MAINTENANCE_LEGS].toSorted()).toEqual(
 			[
@@ -141,6 +141,7 @@ describe("the sweep's schedule and timeout are pinned", () => {
 				"prune-challenges",
 				"reporting-heal",
 				"sku-transfers",
+				"stranded-holds",
 			].toSorted(),
 		);
 		expect(MAINTENANCE_LEG_INTERVAL_MS).toBe(15 * MINUTE_MS);
