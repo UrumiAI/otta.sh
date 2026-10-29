@@ -56,8 +56,8 @@ import {
 	type CommerceSweepSummary,
 } from "./sweeps.js";
 
-/** The task name this plugin registers. One task drives all fifteen legs: they share
- *  a store composition and a clock, and splitting them would buy nothing but fifteen
+/** The task name this plugin registers. One task drives all sixteen legs: they share
+ *  a store composition and a clock, and splitting them would buy nothing but sixteen
  *  rows contending on the same documents.
  *
  *  Splitting would NOT buy isolation from a slow leg either, which is the obvious
@@ -65,7 +65,7 @@ import {
  *  due rows and invokes their hooks ONE AFTER ANOTHER in a single scheduled event,
  *  each under its own timeout, and a timed-out hook is only raced, never cancelled
  *  (`src/plugins/hooks.ts`, `executeWithTimeout`) — it keeps running unobserved. Fifteen
- *  tasks could therefore hold the event for fifteen timeouts back to back. One task
+ *  tasks could therefore hold the event for sixteen timeouts back to back. One task
  *  with its own time budget (`SWEEP_TICK_BUDGET_MS`) stops cleanly instead. */
 export const SWEEP_TASK_NAME = "commerce-sweeps";
 

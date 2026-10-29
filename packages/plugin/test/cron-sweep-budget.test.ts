@@ -131,7 +131,7 @@ describe("the sweep's schedule and timeout are pinned", () => {
 	test("the critical legs come first in the summary, expiry before the coupon sweeper, and only housekeeping is on the slow cadence", () => {
 		expect(SWEEP_LEGS.slice(0, 3)).toEqual([...CRITICAL_LEGS]);
 		expect(SWEEP_LEGS.indexOf("expire-orders")).toBeLessThan(SWEEP_LEGS.indexOf("coupon-orphans"));
-		// The seven scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
+		// The eight scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
 		// customer never waits on.
 		expect([...MAINTENANCE_LEGS].toSorted()).toEqual(
 			[
@@ -140,6 +140,7 @@ describe("the sweep's schedule and timeout are pinned", () => {
 				"order-sku-index",
 				"product-orphans",
 				"prune-carts",
+				"product-reconcile",
 				"prune-challenges",
 				"reporting-heal",
 				"sku-transfers",
@@ -1194,9 +1195,11 @@ function context(
 			},
 		},
 		storage: store,
-		// A CMS in which every product exists, so `product-orphans` runs (and is
-		// budgeted) like any scan here rather than reporting itself unwired.
-		content: fakeCms().access(),
+		// A CMS in which every product exists, so `product-orphans` and
+		// `product-reconcile` run (and are budgeted) like any scan here rather than
+		// reporting themselves unwired. Its calls are counted with the kv's, charged
+		// as the sweep charges them.
+		content: fakeCms().access(onKvCall),
 	} as unknown as PluginContext;
 }
 

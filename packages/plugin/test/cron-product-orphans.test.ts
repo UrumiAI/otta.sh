@@ -1295,6 +1295,8 @@ describe("scheduling and logging", () => {
 		const order = tickOrder(waits);
 		expect(order.indexOf("product-orphans")).toBe(LEG_PRIORITY.indexOf("product-orphans"));
 		expect(order[order.indexOf("product-orphans") + 1]).toBe("prune-carts");
+		// …and `product-reconcile` (#95) is last of all.
+		expect(order.at(-1)).toBe("product-reconcile");
 		expect(starvingLeg(waits)).toBeUndefined();
 		// While an ordinary leg that waited is promoted as before.
 		expect(tickOrder({ "coupon-orphans": AGING_TICKS })[0]).toBe("coupon-orphans");

@@ -801,11 +801,11 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all fifteen sweep legs: they share a store composition
-and a clock, and splitting them would only put fifteen rows in contention on the same documents. The
-eight scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
-`coupon-recount`, `stranded-holds`, `product-orphans`, `prune-carts`) and the sign-in challenge
-prune run at most every fifteen minutes inside that task (housekeeping: the scans read a page budget
+hook when it comes due. One task drives all sixteen sweep legs: they share a store composition
+and a clock, and splitting them would only put sixteen rows in contention on the same documents. The
+nine scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`coupon-recount`, `stranded-holds`, `product-orphans`, `prune-carts`, `product-reconcile`) and the
+sign-in challenge prune run at most every fifteen minutes inside that task (housekeeping: the scans read a page budget
 of a collection per run); a scan cut short by the budget carries on next tick until its pass is done.
 `prune-carts` (#39) deletes each cart that is active, has no lines, owes no hold work, was handed
 off to no order, and has not been written for 30 days (the cart cookie's lifetime), together with
@@ -893,6 +893,49 @@ Workers Free preset, and about 7 on Paid. An orphan is tombstoned on the third p
 it: on Free, a 1000-product catalog's orphan went after about 900 ticks, and worst case it is up
 to about eighteen hours. The leg has no deadline, so it is never promoted ahead of other legs
 by aging.
+
+`product-reconcile` (#95) repairs a commerce row whose content sync was lost — every content hook
+is fire-and-forget, and since publish atomicity a save of live content sends nothing, so a lost
+publish no longer heals on the next save. It walks the CMS `products` collection through
+`ctx.content` (`content:read`, already declared), fifty documents a page behind the host's own
+cursor (kept in `cron:sweep:cursor:product-reconcile` and saved after every page), reads each
+page's commerce rows in one query, and for a **published** document whose row is missing, behind
+the content's `updatedAt`, carrying a different title, inactive, or out of step with the variant
+repeater, runs the publish hook's own sync (title, activation, variants) from the live content —
+which is what `ctx.content` returns: a pending draft lives in its revision, not the content
+columns. It deactivates an active row whose document is **not** published (a lost unpublish).
+Before each repair it re-reads the document and goes ahead only if it is unchanged since the page
+was listed, so a publish or unpublish landing mid-walk is never overwritten with the stale page.
+It never activates an unpublished product, never writes an unpublished product's title, never
+touches a tombstoned row, never overrules a newer lifecycle event (every flip is watermarked),
+writes no commercial field and touches no order. After a repair it re-reads the row and counts
+the product only if it is now in sync; one that is not is logged as an anomaly ("attempted and
+is still out of sync"), never as re-synced. Every product attempted on a page is remembered and
+stepped past on a re-read of that page, so a repair that cannot hold never pins the walk; one cut
+short by the tick's query ceiling three runs in a row is stepped past and logged. Either is tried
+again on the next pass.
+
+Costs: an in-sync page costs six queries (the list's four, the row read, the cursor write) and
+no commerce writes; the entry adds the cursor read. A repair is gated at thirteen calls — eleven
+measured (recording the attempt, the document re-read, the sync's six, the row re-read) plus room
+for a compare-and-set retry; a lost unpublish, seven. On the Workers Free preset a tick that runs
+the leg repairs one product, and the leg yields to the other legs on many ticks: measured, 107
+drifted products healed in 286 ticks, so a catalogue-wide outage of 1000 products takes about two
+days. The leg only starts when its floor fits — the entry's seven queries plus one repair's
+thirteen, of the roughly twenty-eight a Free tick can spend — so on a busy Free store, where the
+customer-facing legs take most of each tick, repairs run only on the quieter ticks. An in-sync 1000-product catalogue is one pass of twenty pages, a page or two a tick. On large
+catalogues (roughly 1500 products and up on Free) a pass may not finish inside its fifteen-minute
+cadence: a pass cut short carries on every tick until it ends, so the leg then runs on leftover
+budget every minute rather than every fifteen. The cadence is measured from the end of a pass,
+not its start; a gap measured from the start would bound that, and is a follow-up.
+
+What it does not repair: a **leaked price** from before PR 1b (the sync carries no commercial
+field and the published content holds no price to compare against — re-price it in Pricing &
+inventory), and a **variant orphaned by a leaked draft** that the live repeater still declares
+(the orphan carries the draft's newer watermark and a declare resurrects only on a strictly newer
+one — publishing the product again brings it back). Each repair logs a `cron sweep
+product-reconcile` warning naming the product and why; a failed or no-op repair logs an error.
+"Publish changes" still repairs a product at once.
 
 **A dense block of real orphans is struck out like any rows,** five a minute at most. An example
 is a bulk delete of an import whose hooks were all lost. Measured with every read truthful:
