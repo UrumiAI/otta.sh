@@ -38,7 +38,12 @@ import {
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
+	CART_CREATE_KEYS_COLLECTION,
+	CARTS_COLLECTION,
 	collectionOf,
+	ORDER_KEYS_COLLECTION,
+	type CartCreateKeyDoc,
+	type CartDoc,
 	COUPONS_COLLECTION,
 	INVENTORY_COLLECTION,
 	ORDERS_COLLECTION,
@@ -67,6 +72,8 @@ import {
 	SWEEP_LEGS,
 	EMAIL_SEND_AND_RECORD_CALLS,
 	holdIntentCost,
+	PRUNE_CART_CALLS,
+	pruneAbandonedCart,
 	releaseStrandedOnSku,
 	strandedReleaseCost,
 	TICK_OVERHEAD_QUERIES,
@@ -736,6 +743,30 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			(await collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION).get(placed.sku))?.onHand,
 		).toBe(10);
 		expect(used, `measured ${String(used)}`).toBe(LEG_QUERY_COSTS["stranded-holds"].unit);
+	});
+
+	test("prune-carts: one abandoned keyed cart, deleted with its create-key record (#39)", async () => {
+		const s = counted();
+		const cartId = await s.cartStore.create(currency("USD"), idempotencyKey("create:cost-prune"));
+		const wrapped = wrappedStorage();
+		const collections = {
+			carts: collectionOf<CartDoc>(wrapped, CARTS_COLLECTION),
+			createKeys: collectionOf<CartCreateKeyDoc>(wrapped, CART_CREATE_KEYS_COLLECTION),
+			orderKeys: collectionOf<unknown>(wrapped, ORDER_KEYS_COLLECTION),
+		};
+		// A cutoff after the cart's own clock: it is abandoned as of this measurement.
+		const cutoffMs = Date.now() + DAY_MS;
+		let outcome = "";
+		const used = await cost(async () => {
+			outcome = await pruneAbandonedCart(cartId, cutoffMs, collections);
+		});
+		expect(outcome).toBe("pruned");
+		expect(await collectionOf(storage, CARTS_COLLECTION).get(cartId)).toBeNull();
+		expect(
+			await collectionOf(storage, CART_CREATE_KEYS_COLLECTION).get("create:cost-prune"),
+		).toBeNull();
+		expect(used, `measured ${String(used)}`).toBe(PRUNE_CART_CALLS);
+		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["prune-carts"].unit);
 	});
 
 	test("stranded-holds: a sku held by a live order costs its order read alone", async () => {

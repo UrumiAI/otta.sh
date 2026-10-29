@@ -1,5 +1,5 @@
 /**
- * The scheduled sweep: fourteen legs, one tick (INC-C4).
+ * The scheduled sweep: fifteen legs, one tick (INC-C4).
  *
  * WHY THIS FILE EXISTS AT ALL. ADR-0019 §7 says it plainly — the aggregates are
  * one document each, a coupling that spans two of them is made *idempotently
@@ -175,8 +175,12 @@ import {
 	type OutboxEmail,
 } from "@urumi.ai/otta-domain";
 import {
+	CART_CREATE_KEYS_COLLECTION,
 	CARTS_COLLECTION,
 	collectionOf,
+	ORDER_KEYS_COLLECTION,
+	type CartCreateKeyDoc,
+	type CartDoc,
 	INVENTORY_COLLECTION,
 	normalizeInventoryDoc,
 	COUPON_REDEMPTIONS_COLLECTION,
@@ -217,6 +221,7 @@ import {
 	type PaymentGateways,
 } from "../payments/resolve-payment-gateways.js";
 import type { StripeGatewayOptions } from "../payments/stripe-wiring.js";
+import { checkoutIdempotencyKey } from "../storefront/checkout-view-model.js";
 import { deriveDeleteIdempotencyKey } from "../sync/derive-idempotency-key.js";
 import { PRODUCTS_COLLECTION } from "../sync/hooks.js";
 import type { ContentReadAccess, PluginContext } from "../types.js";
@@ -231,7 +236,7 @@ import {
 	WHOLE_TICK,
 } from "./tick-budget.js";
 
-/** The fourteen legs in the order a SUMMARY lists them (and the order the sweep ran
+/** The fifteen legs in the order a SUMMARY lists them (and the order the sweep ran
  *  them in before QA2 M2). The order a tick RUNS them in is `LEG_PRIORITY`, with
  *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
@@ -248,6 +253,7 @@ export const SWEEP_LEGS = [
 	"coupon-recount",
 	"stranded-holds",
 	"product-orphans",
+	"prune-carts",
 	"late-refunds",
 ] as const;
 
@@ -280,6 +286,9 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
 	// minutes (the storefront lists from the CMS); what it blocks — the sku, a
 	// tidy Pricing & inventory list — can wait for the slow cadence.
 	"product-orphans",
+	// An abandoned cart is a month untouched before it is judged (#39); deleting it
+	// is storage hygiene, and its walk pages the active carts.
+	"prune-carts",
 ];
 
 /**
@@ -310,7 +319,8 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     call short of finishing, so the next, idle minute ran the heal again
  *     (`cron-late-refunds.test.ts`). After the orphan sweep, too, so a use the sweep
  *     frees this tick is not first seen as drift;
- *     `product-orphans` is last of all, the leg nothing else waits on.
+ *     `product-orphans` is next to last, and `prune-carts` (#39) last of all: an
+ *     empty cart a month untouched is nothing anyone waits on.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
  */
@@ -329,6 +339,7 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"stranded-holds",
 	"coupon-recount",
 	"product-orphans",
+	"prune-carts",
 ];
 
 /**
@@ -569,6 +580,8 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// A CMS read per row: under a long walk it must not take the tick from the legs
 	// a customer waits on. Its leftovers come back to it in the second pass.
 	"product-orphans": { time: 0.3, queries: 0.3 },
+	// Storage hygiene with a month's slack: a thin slice, its leftovers in the second pass.
+	"prune-carts": { time: 0.2, queries: 0.2 },
 };
 
 /** The legs a customer waits on: the outbox and the two expiry legs. Each has a
@@ -607,6 +620,11 @@ export const CONTENT_LIST_QUERIES = 4;
  * ceiling is for.
  */
 export const PRODUCT_ORPHAN_DELETE_CALLS = 4;
+
+/** One abandoned cart's prune at worst (`pruneAbandonedCart`): the checkout-key
+ *  read, the cart's versioned read, its create-key record's versioned read and
+ *  guarded delete, and the cart's guarded delete. */
+export const PRUNE_CART_CALLS = 5;
 
 /** One coupon's recount at worst (`EmdashCouponStore.recountUses`): the coupon read,
  *  its in-flight and applied counts, and the correcting write. */
@@ -703,6 +721,8 @@ export const UNPROMOTED_LEGS: readonly SweepLeg[] = [
 	// more ticks behind a backlog cost nothing; promoted, its turns took calls from the
 	// expiry under the midnight backlog (cron-sweep-backlog.test.ts).
 	"coupon-recount",
+	// #39: a cart a month abandoned can wait a few more ticks behind any backlog.
+	"prune-carts",
 ];
 
 /** The most one row's reads can cost: `ORPHAN_READS_PER_STRIKE - 1` misses, then a
@@ -776,6 +796,11 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 			entry: 2 + CONTENT_LIST_QUERIES,
 			unit: ORPHAN_ROW_READ_QUERIES + CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS,
 		},
+		// entry: the cursor read and the first page of active carts. unit: one abandoned
+		// cart (`pruneAbandonedCart`) — its checkout-key read, its versioned read, its
+		// create-key record's versioned read and delete, and the cart's guarded delete:
+		// 5, measured. An unkeyed cart costs 3.
+		"prune-carts": { entry: 2, unit: PRUNE_CART_CALLS },
 		// entry: resolving the gateways — Stripe's two secret kv reads
 		// (`stripeGatewayFromCtx`), measured in cron-leg-costs.test.ts — once, and only
 		// when a unit needs them. A new gateway adds its own reads here. The due list
@@ -1199,6 +1224,7 @@ const COUPON_RECOUNT_CURSOR = "coupon-recount";
 const PRODUCT_ORPHAN_CURSOR = "product-orphans";
 const REPORTING_CURSOR = "reporting-heal";
 const STRANDED_HOLDS_CURSOR = "stranded-holds";
+const PRUNE_CARTS_CURSOR = "prune-carts";
 /** One JSON document — each scan's last completion, each leg's consecutive
  *  deferrals — so the cadence costs one read per tick, and a write only when
  *  something changed. */
@@ -2008,6 +2034,21 @@ export async function runCommerceSweeps(
 				);
 				// Stopped by its share with skus left: a candidate for the second pass.
 				if (legBudget.stopped) stoppedByBudget.add("stranded-holds");
+				return result;
+			}),
+		"prune-carts": async () =>
+			await run("prune-carts", async (legBudget) => {
+				const result = await pruneAbandonedCarts(
+					storage,
+					now,
+					cursors,
+					options,
+					legBudget,
+					// The cursor write that records a run's place, even one the ceiling stopped.
+					() => budget.allowCommit(1),
+				);
+				// Stopped by its share with carts left: a candidate for the second pass.
+				if (legBudget.stopped) stoppedByBudget.add("prune-carts");
 				return result;
 			}),
 		"product-orphans": async () => {
@@ -4586,4 +4627,312 @@ function parseMarks(raw: unknown, nowMs: number, ttlMs: number): Record<string, 
 		marks[id] = { n, at };
 	}
 	return marks;
+}
+
+/**
+ * How long an empty cart must sit untouched (`updatedAt`) before `prune-carts`
+ * deletes it (issue #39). Thirty days: the cart cookie's own lifetime
+ * (`CART_COOKIE_MAX_AGE_SECONDS`). The cookie is issued only by the cart-create
+ * route — a fresh create, or a REPLAY of a `create:`, `rotate:` or `recurrency:`
+ * key, which answers an existing cart — and the store's keyed create moves an
+ * active cart's `updatedAt` on every replay. So each cookie issued is matched by a
+ * write at least as recent, and a cart untouched this long has no live cookie naming
+ * it: the prune never pulls a cart out from under a shopper. (If a stale cookie did
+ * come back, the site already treats `CART_NOT_FOUND` as "drop the cookie, mint
+ * afresh".) A test pins the window at or above the cookie's lifetime, and the store
+ * suite pins the replay's write.
+ */
+export const ABANDONED_CART_TTL_MS = 30 * DAY_MS;
+
+/**
+ * How long a FINISHED pass over the active carts rests before the next one. The
+ * window is a month, so a day's delay in noticing a cart costs nothing, while
+ * re-reading every active cart every fifteen minutes would cost a busy Free store a
+ * real share of its ticks. A resting run is one kv read.
+ */
+export const ABANDONED_CART_PASS_INTERVAL_MS = DAY_MS;
+
+/**
+ * At most this many carts deleted per RUN of the leg, whatever the budget allows: a
+ * backlog on a large store drains over ticks (an unfinished pass runs again on the
+ * very next one) instead of spending a Paid tick's whole share on deletes. Per run,
+ * not per tick: a leg that stops with work left may run a second time on what the
+ * tick has left (the second pass, `runAgain`), so one tick deletes at most twice
+ * this.
+ */
+export const ABANDONED_CARTS_PER_RUN = 50;
+
+/** `prune-carts`' place in a pass, and when the last pass finished. */
+interface PruneCartsCursor {
+	/** The host's keyset cursor for the page the pass is in; null for the first. */
+	readonly cursor: string | null;
+	/** The last cart on that page judged and left in place; null for none yet. A
+	 *  resume re-reads the page and carries on after this id (a cart pruned after it
+	 *  is gone from the re-read, so nothing unjudged lies between). Not a count of
+	 *  judged rows: a row that leaves the page between runs (pruned, checked out,
+	 *  deleted by an overlapping tick) would shift a count and pass over an unjudged
+	 *  cart. If this row itself has left, the page is judged again from its start —
+	 *  a live cart costs nothing to judge, a cart already pruned is no longer on it,
+	 *  and only a candidate kept last time is tried again. (Not the
+	 *  host's own `(created_at, id)` keyset: a query item carries the id and the
+	 *  document, not the row's `created_at`, so the plugin cannot build one, only
+	 *  resume from the host's.) */
+	readonly after: string | null;
+	/** When the last pass reached the end; null while one is under way. */
+	readonly passDoneAt: string | null;
+}
+
+const PRUNE_CARTS_START: PruneCartsCursor = { cursor: null, after: null, passDoneAt: null };
+const PRUNE_CARTS_START_SERIALIZED = JSON.stringify(PRUNE_CARTS_START);
+
+function parsePruneCartsCursor(raw: string | null): PruneCartsCursor {
+	if (raw === null || raw === "") return PRUNE_CARTS_START;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== "object" || parsed === null) return PRUNE_CARTS_START;
+		const p = parsed as Record<string, unknown>;
+		return {
+			cursor: cursorText(p.cursor),
+			after: cursorText(p.after),
+			passDoneAt: cursorText(p.passDoneAt),
+		};
+	} catch {
+		return PRUNE_CARTS_START;
+	}
+}
+
+/** What `prune-carts` reads of a cart and a create-key record, written structurally so
+ *  `pruneAbandonedCart`'s exported signature keeps `@urumi.ai/otta-store-emdash`'s
+ *  document types out of the plugin's emitted declarations (the same rule as
+ *  {@link releaseStrandedOnSku}; `bundle-imports.test.ts`). `lines` and `mutations`
+ *  are optional because a document an earlier build wrote may lack them
+ *  (`normalizeCartDoc`). */
+interface PrunableCartView {
+	readonly state: string;
+	readonly orderId: string | null;
+	readonly lines?: Readonly<Record<string, unknown>>;
+	readonly mutations?: Readonly<
+		Record<string, { readonly completed: boolean; readonly abandoned?: boolean }>
+	>;
+	readonly holdExpiresAt: string | null;
+	readonly createKey?: string;
+	readonly createdAt: string;
+	readonly updatedAt?: string;
+}
+interface PrunableCreateKeyView {
+	readonly cartId: string;
+}
+/** The calls `pruneAbandonedCart` makes on one collection. */
+interface PruneCollection<T> {
+	get(id: string): Promise<T | null>;
+	getVersioned(id: string): Promise<{ readonly value: T; readonly revision: string } | null>;
+	compareAndDelete(id: string, expectedRevision: string): Promise<{ readonly applied: boolean }>;
+}
+
+/**
+ * Whether a cart, as stored, is one `prune-carts` may delete: ACTIVE (a checked-out
+ * cart is its order's), handed off to no order, with NO line (a digital line has no
+ * hold, so no sweep would ever reap it — it stays the shopper's), owing no hold work
+ * (`holdExpiresAt` null, and no add claimed and neither completed nor abandoned —
+ * that claim is the crash marker the hold sweep follows to a dangling hold), and
+ * untouched since `cutoffMs`. A cart carries no customer at all — sessions and
+ * customers hold no cart id — so every cart is anonymous to the store, and this is
+ * the whole of "abandoned".
+ */
+function isAbandonedCart(doc: PrunableCartView, cutoffMs: number): boolean {
+	if (doc.state !== "active" || doc.orderId !== null) return false;
+	if (Object.keys(doc.lines ?? {}).length > 0) return false;
+	if (doc.holdExpiresAt !== null) return false;
+	for (const record of Object.values(doc.mutations ?? {})) {
+		if (!record.completed && record.abandoned !== true) return false;
+	}
+	const touched = Date.parse(doc.updatedAt ?? doc.createdAt);
+	return Number.isFinite(touched) && touched <= cutoffMs;
+}
+
+/**
+ * `prune-carts`' unit: delete one abandoned cart and its create-key record. Says
+ * whether the cart is gone (`pruned`), or stays (`kept`).
+ *
+ * 1. A cart an order was placed from is never touched. An order needs lines, so an
+ *    empty active cart with an order behind it is rare (a checkout whose holds were
+ *    lost leaves one), but the storefront's checkout key is `checkout:<cartId>`
+ *    (`checkoutIdempotencyKey`), so one read of its `order_keys` record says. ONLY
+ *    that key is recognised: a headless client that checks out under a key of its
+ *    own leaves no record this read can find, and such a cart is guarded only by
+ *    what step 2 judges (an order needs lines, and a placed cart is `checked_out`).
+ * 2. The cart is re-read VERSIONED and judged again: the page was a snapshot.
+ * 3. Its create-key record goes FIRST, and only while the record still names this
+ *    cart (a guarded delete on the revision read). Key first, so a crash or the
+ *    tick's ceiling between the two leaves a cart the next pass finds again, never a
+ *    record no pass can find (the cart is the only way to it). A cart minted before
+ *    `createKey` existed has none to read: its record, if any, stays, and a late
+ *    replay of that key re-creates the id, empty — #582's accepted residual, and that
+ *    cart is pruned in its turn.
+ * 4. The cart's own delete is guarded on the revision judged, so a shopper's write in
+ *    between keeps it. Then the record is already gone and a replay of that key mints
+ *    a new cart; the shopper holding this one is unaffected.
+ *
+ * The cart's `cart_mutation_index` locators are left: each is a key a shared cached
+ * page may have handed to many carts, so deleting one safely costs a read and a
+ * guarded delete, per key, and a locator whose cart is gone already answers "no
+ * record" (`recordedMutation`).
+ *
+ * Exported for `cron-leg-costs.test.ts`, which measures it.
+ */
+export async function pruneAbandonedCart(
+	cartId: string,
+	cutoffMs: number,
+	collections: {
+		readonly carts: PruneCollection<PrunableCartView>;
+		readonly createKeys: PruneCollection<PrunableCreateKeyView>;
+		readonly orderKeys: Pick<PruneCollection<unknown>, "get">;
+	},
+): Promise<"pruned" | "kept"> {
+	const { carts, createKeys, orderKeys } = collections;
+	if ((await orderKeys.get(checkoutIdempotencyKey(cartId))) !== null) return "kept";
+	const current = await carts.getVersioned(cartId);
+	if (current === null) return "kept";
+	if (!isAbandonedCart(current.value, cutoffMs)) return "kept";
+	const key = current.value.createKey;
+	if (typeof key === "string" && key !== "") {
+		const record = await createKeys.getVersioned(key);
+		if (record !== null && record.value.cartId === cartId) {
+			await createKeys.compareAndDelete(key, record.revision);
+		}
+	}
+	const deleted = await carts.compareAndDelete(cartId, current.revision);
+	return deleted.applied ? "pruned" : "kept";
+}
+
+/**
+ * ABANDONED CARTS (issue #39): delete each empty, anonymous cart nobody has touched
+ * for `ABANDONED_CART_TTL_MS`, with its `cart_create_keys` record.
+ *
+ * WHY IT IS OWED. A cart is minted on a shopper's first add and nothing removed
+ * one: the hold sweep reaps a lapsed line and leaves the cart, empty, for good, and
+ * every checkout mints a replacement cart that most shoppers never fill. Each is a
+ * document (and, keyed, a key record) a store keeps forever.
+ *
+ * DISCOVERY. Nothing on a cart says "empty and old" in an index — `carts` declares
+ * `state` and `holdExpiresAt` — so the leg pages the ACTIVE carts in the host's own
+ * `(createdAt, id)` order by its keyset cursor and judges each document in hand
+ * (`isAbandonedCart`): a live cart costs nothing past its share of a page. A
+ * candidate costs a unit (`PRUNE_CART_CALLS`, at most). A pass that reaches the end
+ * rests for `ABANDONED_CART_PASS_INTERVAL_MS`; one the budget cuts short keeps its
+ * place (the page's cursor and the last cart on it judged) and
+ * carries on next tick. A cursor the host refuses starts the pass again.
+ *
+ * BOUNDED: by the leg's share of the tick, its gate per unit, `maxPages` pages and
+ * `ABANDONED_CARTS_PER_RUN` deletes a run. IDEMPOTENT: every delete is guarded, a
+ * cart already gone is skipped, and a run interrupted anywhere is finished by the
+ * next. A cart whose prune throws (anything but the tick's ceiling) is logged and
+ * stepped past; the next pass tries it again.
+ */
+async function pruneAbandonedCarts(
+	storage: AdapterStorageAccess,
+	now: Date,
+	cursors: SweepCursorStore,
+	options: CommerceSweepOptions,
+	budget: LegBudget,
+	allowCursorWrite: () => void,
+): Promise<{ count: number; incomplete?: true; anomalies?: readonly string[] }> {
+	const raw = await cursors.read(PRUNE_CARTS_CURSOR);
+	const saved = parsePruneCartsCursor(raw);
+	if (saved.passDoneAt !== null) {
+		const rested = now.getTime() - Date.parse(saved.passDoneAt);
+		// A stamp ahead of now (a clock step) is not a reason to rest forever.
+		if (rested >= 0 && rested < ABANDONED_CART_PASS_INTERVAL_MS) return { count: 0 };
+	}
+	const collections = {
+		carts: collectionOf<CartDoc>(storage, CARTS_COLLECTION),
+		createKeys: collectionOf<CartCreateKeyDoc>(storage, CART_CREATE_KEYS_COLLECTION),
+		orderKeys: collectionOf<unknown>(storage, ORDER_KEYS_COLLECTION),
+	};
+	const cutoffMs = now.getTime() - ABANDONED_CART_TTL_MS;
+	const limit = options.pageSize ?? DEFAULT_PAGE_SIZE;
+	const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
+	const unit = LEG_QUERY_COSTS["prune-carts"].unit;
+	let place: PruneCartsCursor = { ...saved, passDoneAt: null };
+	const anomalies: string[] = [];
+	let pruned = 0;
+	let incomplete = true;
+	// Even when the run throws, its progress is kept: a run stopped at the ceiling
+	// may still record its place. No write when nothing moved: the place read back,
+	// or a fresh start where nothing was stored.
+	const savePlace = async (): Promise<void> => {
+		const serialized = JSON.stringify(place);
+		if (serialized === (raw ?? PRUNE_CARTS_START_SERIALIZED)) return;
+		allowCursorWrite();
+		await cursors.write(PRUNE_CARTS_CURSOR, serialized);
+	};
+	try {
+		walk: for (let pages = 0; pages < maxPages; pages++) {
+			// Room for the page and one cart's prune after it.
+			if (!budget.canStart(1, unit)) {
+				budget.stopped = true;
+				break;
+			}
+			let page: Awaited<ReturnType<typeof collections.carts.query>>;
+			try {
+				page = await collections.carts.query({
+					where: { state: "active" },
+					limit,
+					...(place.cursor === null ? {} : { cursor: place.cursor }),
+				});
+			} catch (err) {
+				if (place.cursor !== null && isInvalidCursorError(err)) {
+					console.warn("[otta] cron sweep prune-carts: its cursor was refused; starting over");
+					place = PRUNE_CARTS_START;
+				}
+				throw err;
+			}
+			// Created after the page read, so the read cannot leave the cap short of a unit.
+			const gate = budget.gate(0, unit);
+			const at = place.after === null ? -1 : page.items.findIndex((i) => i.id === place.after);
+			for (const item of page.items.slice(at + 1)) {
+				if (!isAbandonedCart(item.data, cutoffMs)) {
+					place = { ...place, after: item.id };
+					continue;
+				}
+				if (pruned >= ABANDONED_CARTS_PER_RUN || !gate()) break walk;
+				let outcome: "pruned" | "kept";
+				try {
+					outcome = await pruneAbandonedCart(item.id, cutoffMs, collections);
+				} catch (err) {
+					if (isSweepQueryCeilingError(err)) throw err;
+					console.error(
+						`[otta] cron sweep prune-carts: cart ${item.id} FAILED, stepped past:`,
+						err,
+					);
+					anomalies.push(
+						`cart ${item.id}: prune failed, passed over until next pass: ` +
+							(err instanceof Error ? err.message : String(err)),
+					);
+					outcome = "kept";
+				}
+				// A pruned cart is gone from a re-read of the page, so it is no anchor:
+				// the last cart judged and LEFT is.
+				if (outcome === "pruned") pruned++;
+				else place = { ...place, after: item.id };
+			}
+			if (!page.hasMore || page.cursor === undefined) {
+				place = { ...PRUNE_CARTS_START, passDoneAt: now.toISOString() };
+				incomplete = false;
+				break;
+			}
+			place = { cursor: page.cursor, after: null, passDoneAt: null };
+		}
+	} catch (err) {
+		// The run's own error is what it reports; a cursor write failing after it is
+		// only logged (the place is lost, and the next run judges those carts again).
+		try {
+			await savePlace();
+		} catch (writeErr) {
+			console.error("[otta] cron sweep prune-carts: its cursor write FAILED:", writeErr);
+		}
+		throw err;
+	}
+	await savePlace();
+	return legResult(pruned, incomplete, anomalies);
 }

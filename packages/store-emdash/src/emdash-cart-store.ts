@@ -221,21 +221,63 @@ export class EmdashCartStore implements CartStore {
 	}
 
 	async #createKeyed(currency: Currency, key: IdempotencyKey): Promise<string> {
-		let cartId = this.#idGen.newId();
-		const claimed = await this.#createKeys.compareAndSet(key, null, { cartId });
-		if (!claimed.applied) {
-			const winner = await this.#createKeys.get(key);
-			if (winner === null) throw new Error(`cart create key ${key} vanished after a lost claim`);
-			cartId = winner.cartId;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const cartId = await this.#claimCreateKey(key);
+			const now = this.#clock.now().toISOString();
+			// Create-if-absent: a refusal here means the cart is already written (by the
+			// winner, or by an earlier call), which is exactly the answer wanted. The cart
+			// records its key, so the abandoned-cart prune can delete the key record with
+			// it (issue #39); every caller writes the same key, so whoever lands it agrees.
+			const written = await this.#carts.compareAndSet(
+				cartId,
+				null,
+				newCartDoc(cartId, currency, now, key),
+			);
+			if (written.applied) return cartId;
+			if (await this.#touchReplayed(cartId, now)) return cartId;
+			// Gone between the two writes: the prune deleted it, and its key record
+			// first (#39). Claim the key again.
 		}
-		// Create-if-absent: a refusal here means the cart is already written (by the
-		// winner, or by an earlier call), which is exactly the answer wanted.
-		await this.#carts.compareAndSet(
-			cartId,
-			null,
-			newCartDoc(cartId, currency, this.#clock.now().toISOString()),
-		);
-		return cartId;
+		throw new Error(`cart create key ${key} answered a cart that vanished, twice`);
+	}
+
+	/**
+	 * A REPLAY answers an existing cart, and the route that asked hands the shopper a
+	 * fresh cart cookie for it. So an ACTIVE cart's `updatedAt` moves to `now`: the
+	 * abandoned-cart prune (#39) judges a cart by its last write, and its window is the
+	 * cookie's lifetime, so no cookie may outlive the write that would keep its cart.
+	 * One read and one guarded write, on a replay only (a double submit, a rotation or
+	 * re-currency asked again). A checked-out cart is an order's record and is left as
+	 * it is. A lost write means another write landed — which moved `updatedAt` itself —
+	 * unless the cart is gone. Says whether the cart is still there.
+	 */
+	async #touchReplayed(cartId: string, now: string): Promise<boolean> {
+		const current = await this.#carts.getVersioned(cartId);
+		if (current === null) return false;
+		if (current.value.state !== "active") return true;
+		const touched = await this.#carts.compareAndSet(cartId, current.revision, {
+			...current.value,
+			updatedAt: now,
+		});
+		return touched.applied || (await this.#carts.get(cartId)) !== null;
+	}
+
+	/**
+	 * The cart id `key` names: claimed here for a fresh id, or the winner's read back.
+	 * A lost claim whose record is gone by the read was deleted in between — the
+	 * abandoned-cart prune removes a record with its cart (issue #39) — so the key is
+	 * free again and the claim is retried ONCE, with a fresh id. A second vanish is
+	 * not a race this store expects, and stays loud.
+	 */
+	async #claimCreateKey(key: IdempotencyKey): Promise<string> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const cartId = this.#idGen.newId();
+			const claimed = await this.#createKeys.compareAndSet(key, null, { cartId });
+			if (claimed.applied) return cartId;
+			const winner = await this.#createKeys.get(key);
+			if (winner !== null) return winner.cartId;
+		}
+		throw new Error(`cart create key ${key} vanished after a lost claim, twice`);
 	}
 
 	async get(cartId: string): Promise<Cart | null> {

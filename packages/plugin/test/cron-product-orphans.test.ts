@@ -1290,7 +1290,8 @@ describe("intermittent CMS failures never tombstone a live product (seeded)", ()
 describe("scheduling and logging", () => {
 	test("never promoted: however long it waits, product-orphans does not jump the queue or the starvation guard", () => {
 		const waits = { "product-orphans": STARVING_TICKS * 10 };
-		expect(tickOrder(waits).at(-1)).toBe("product-orphans");
+		// It keeps its own place at the back: only `prune-carts` (#39), unpromoted too, follows it.
+		expect(tickOrder(waits).slice(-2)).toEqual(["product-orphans", "prune-carts"]);
 		expect(starvingLeg(waits)).toBeUndefined();
 		// While an ordinary leg that waited is promoted as before.
 		expect(tickOrder({ "coupon-orphans": AGING_TICKS })[0]).toBe("coupon-orphans");

@@ -801,12 +801,30 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all fourteen sweep legs: they share a store composition
-and a clock, and splitting them would only put fourteen rows in contention on the same documents. The
-seven scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
-`coupon-recount`, `stranded-holds`, `product-orphans`) and the sign-in challenge prune run at most
-every fifteen minutes inside that task (housekeeping: the scans read a page budget of a collection
-per run); a scan cut short by the budget carries on next tick until its pass is done.
+hook when it comes due. One task drives all fifteen sweep legs: they share a store composition
+and a clock, and splitting them would only put fifteen rows in contention on the same documents. The
+eight scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`coupon-recount`, `stranded-holds`, `product-orphans`, `prune-carts`) and the sign-in challenge
+prune run at most every fifteen minutes inside that task (housekeeping: the scans read a page budget
+of a collection per run); a scan cut short by the budget carries on next tick until its pass is done.
+`prune-carts` (#39) deletes each cart that is active, has no lines, owes no hold work, was handed
+off to no order, and has not been written for 30 days (the cart cookie's lifetime), together with
+its `cart_create_keys` record. It pages the active carts at most once a day (its kv cursor,
+`cron:sweep:cursor:prune-carts`, records when the last pass finished) and deletes at most 50 carts a
+run (a run, not a tick: a leg with work left may run a second time in the same tick, so up to 100).
+A replay of a cart-create, rotation or re-currency key that hands out a fresh cookie also moves the
+cart's `updatedAt`, so no cart cookie outlives its cart's window. A cart is never deleted while an
+`order_keys` record names its storefront checkout (`checkout:<cartId>`); a headless client that
+checks out under a key of its own is not recognised by that guard (such a cart is still kept by
+having lines, or by being checked out). Known residuals, left as follow-ups:
+- **Legacy key records.** Carts minted before this release do not record their create key, so
+  their `cart_create_keys` record, if they have one, stays behind; a late replay of that key
+  re-creates the cart empty, now recording its key, and a later pass prunes both.
+- **`cart_mutation_index` locators.** A pruned cart's mutation-key locators are not deleted (one
+  key can be shared by many carts through a cached page, so a safe delete costs a read and a
+  guarded delete per key). A locator whose cart is gone already answers "no record".
+- **Digital-only carts.** A cart holding only digital lines (no hold) is never empty, so it is
+  never pruned, and no other sweep removes it.
 `stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
 nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
 read a run from then on. Deleting that key starts it again. `coupon-recount` sets a
