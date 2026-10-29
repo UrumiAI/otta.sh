@@ -41,7 +41,7 @@ import {
 } from "../src/cron/index.js";
 import {
 	COUPON_RECOUNT_MAX_SEEN,
-	COUPON_RECOUNT_SEEN_TTL_MS,
+	COUPON_RECOUNT_RECHECKS_PER_TICK,
 	COUPON_RECOUNTS_PER_TICK,
 	MAINTENANCE_LEG_INTERVAL_MS,
 	SWEEP_LEGS,
@@ -138,58 +138,123 @@ async function tick(
 }
 
 interface RecountRecord {
-	at: string | null;
-	id: string | null;
+	cursor: string | null;
+	skip: number;
 	seen: Record<string, CouponUsesObservation & { code?: string }>;
 }
 
 async function record(cursors: SweepCursorStore): Promise<RecountRecord> {
 	const raw = await cursors.read("coupon-recount");
-	return raw === null ? { at: null, id: null, seen: {} } : (JSON.parse(raw) as RecountRecord);
+	return raw === null ? { cursor: null, skip: 0, seen: {} } : (JSON.parse(raw) as RecountRecord);
+}
+
+/** The store, with every coupon a recount JUDGES recorded (a recount reads its
+ *  coupon with one versioned read; nothing else in the leg does). */
+function judging(): { store: StorageAccess; take(): string[] } {
+	let judged: string[] = [];
+	const store: StorageAccess = { ...storage };
+	const coupons = collectionOf<CouponDoc>(storage, COUPONS_COLLECTION);
+	store[COUPONS_COLLECTION] = new Proxy(coupons, {
+		get(target, prop, receiver) {
+			const value: unknown = Reflect.get(target, prop, receiver);
+			if (prop !== "getVersioned" || typeof value !== "function") return value;
+			return async (id: string) => {
+				judged.push(id);
+				return await (value as (id: string) => Promise<unknown>).call(target, id);
+			};
+		},
+	}) as StorageAccess[string];
+	return {
+		store,
+		take() {
+			const taken = judged;
+			judged = [];
+			return taken;
+		},
+	};
+}
+
+/** One whole pass at `at`: the coupons each run judged, until the pass wraps. */
+async function pass(
+	cursors: SweepCursorStore,
+	at: Date,
+	recorder: ReturnType<typeof judging>,
+): Promise<string[][]> {
+	const runs: string[][] = [];
+	for (let i = 0; i < 40; i++) {
+		const leg = await tick(cursors, at, recorder.store);
+		expect(leg.ok).toBe(true);
+		runs.push(recorder.take());
+		if (leg.incomplete !== true) return runs;
+	}
+	throw new Error("the pass never wrapped in 40 runs");
 }
 
 const minutes = (n: number): Date => new Date(T0.getTime() + n * MINUTE_MS);
 
-test("the rotation judges ten a run, crosses the page seam and wraps", async () => {
+test("the rotation judges ten a run, crosses the page seam and wraps, every coupon once", async () => {
 	const ids = await seedCoupons(PAGE + 15);
 	const cursors = memoryCursors();
-	const positions: (string | null)[] = [];
-	let runs = 0;
-	for (; runs < 30; runs++) {
-		// One instant throughout: no observation settles, so every run is rotation.
-		const leg = await tick(cursors, T0);
-		expect(leg.ok).toBe(true);
-		positions.push((await record(cursors)).id);
-		if (leg.incomplete !== true) break;
-	}
-	// Ten a run over 115 coupons, plus at most one short run at the seam (the page's
-	// last group is left whole for the next page).
-	expect(runs + 1).toBeGreaterThanOrEqual(Math.ceil(ids.length / COUPON_RECOUNTS_PER_TICK));
-	expect(runs + 1).toBeLessThanOrEqual(Math.ceil(ids.length / COUPON_RECOUNTS_PER_TICK) + 1);
-	const walked = positions.slice(0, -1);
-	// Strictly forward, and past the seam onto the second page.
-	expect(walked).toEqual(walked.toSorted());
-	expect(new Set(walked).size).toBe(walked.length);
-	// The wrapping run judged what was left after the last saved position: no more
-	// than one run's worth.
-	const lastSaved = ids.indexOf(walked.at(-1) ?? "");
-	expect(ids.length - 1 - lastSaved).toBeGreaterThan(0);
-	expect(ids.length - 1 - lastSaved).toBeLessThanOrEqual(COUPON_RECOUNTS_PER_TICK);
-	expect(walked.some((id) => id !== null && id > (ids[PAGE - 1] ?? ""))).toBe(true);
+	// One instant throughout: no observation settles, so every run is rotation.
+	const runs = await pass(cursors, T0, judging());
+	for (const run of runs) expect(run.length).toBeLessThanOrEqual(COUPON_RECOUNTS_PER_TICK);
+	expect(runs).toHaveLength(Math.ceil(ids.length / COUPON_RECOUNTS_PER_TICK));
+	// In order, across the page seam, none twice and none missed.
+	expect(runs.flat()).toEqual(ids);
 	// Wrapped: the next pass starts again from the beginning.
-	expect(positions.at(-1)).toBeNull();
+	expect(await record(cursors)).toMatchObject({ cursor: null, skip: 0 });
 	// And the leg is done for the cadence.
 	expect((await tick(cursors, minutes(1))).notDue).toBe(true);
 });
 
-test("a createdAt group bigger than a page never stalls the rotation", async () => {
-	// One instant for all: no `createdAt` bound reaches past the first page.
-	await seedCoupons(PAGE + 5, [], true);
+test("a createdAt group bigger than a page is walked through: its last coupon is judged and corrected", async () => {
+	// One instant for all: only the host's keyset cursor reaches past the first page.
+	const ids = await seedCoupons(PAGE + 5, [PAGE + 4], true);
+	const last = ids[PAGE + 4] ?? "";
 	const cursors = memoryCursors();
-	let wrapped = false;
-	for (let i = 0; i < 30 && !wrapped; i++) wrapped = (await tick(cursors, T0)).incomplete !== true;
-	expect(wrapped, "the pass wrapped").toBe(true);
-	expect(await record(cursors)).toMatchObject({ at: null, id: null });
+	const recorder = judging();
+	const runs = await pass(cursors, T0, recorder);
+	expect(runs.flat().toSorted()).toEqual(ids);
+	expect(Object.keys((await record(cursors)).seen)).toEqual([last]);
+	// A cadence on, its recheck confirms it.
+	await tick(cursors, minutes(1 + MAINTENANCE_LEG_INTERVAL_MS / MINUTE_MS), recorder.store);
+	expect(await usesOf(last)).toBe(0);
+});
+
+test("rechecks never take the whole allowance: the rotation moves on every run", async () => {
+	// Ten drifted coupons with settled observations that no longer match (a redeem
+	// voided each), so every one is due for a recheck on every run.
+	const ids = await seedCoupons(
+		COUPON_RECOUNTS_PER_TICK + 5,
+		Array.from({ length: COUPON_RECOUNTS_PER_TICK }, (_, i) => i + 5),
+	);
+	const busy = ids.slice(5);
+	const cursors = memoryCursors();
+	const now = minutes(60);
+	const stale = new Date(now.getTime() - COUPON_RECOUNT_SETTLE_MS).toISOString();
+	await cursors.write(
+		"coupon-recount",
+		JSON.stringify({
+			cursor: null,
+			skip: 0,
+			seen: Object.fromEntries(
+				busy.map((id) => [
+					id,
+					{ couponId: id, usesCount: 1, liveUses: 0, version: "voided", observedAt: stale },
+				]),
+			),
+		}),
+	);
+	const recorder = judging();
+	await tick(cursors, now, recorder.store);
+	const judged = recorder.take();
+	expect(judged.filter((id) => busy.includes(id))).toHaveLength(COUPON_RECOUNT_RECHECKS_PER_TICK);
+	// The rest of the allowance went to the rotation, from the top of the catalog.
+	expect(judged.filter((id) => !busy.includes(id))).toEqual(
+		ids.slice(0, COUPON_RECOUNTS_PER_TICK - COUPON_RECOUNT_RECHECKS_PER_TICK),
+	);
+	// And the rotation's place moved past them.
+	expect((await record(cursors)).cursor).not.toBeNull();
 });
 
 test("a drifted coupon is confirmed by its recheck a settle window on, long before the rotation comes round", async () => {
@@ -222,7 +287,7 @@ test("a drifted coupon is confirmed by its recheck a settle window on, long befo
 		await tick(cursors, minutes(minute));
 	}
 	expect(await usesOf(late)).toBe(0);
-	const observedLate = 11; // its run in the pass: the 11th or 12th (seam)
+	const observedLate = 11; // its run in the pass: the 11th
 	expect(minute).toBeLessThanOrEqual(
 		observedLate + 1 + (COUPON_RECOUNT_SETTLE_MS + MAINTENANCE_LEG_INTERVAL_MS) / MINUTE_MS,
 	);
@@ -258,35 +323,38 @@ function observation(couponId: string, at: Date): CouponUsesObservation {
 	};
 }
 
-test("a kept observation of a deleted coupon is dropped: by its recheck, or by age", async () => {
+test("a kept observation of a deleted coupon is dropped by its recheck, however old; an unreadable or future one is dropped unread", async () => {
 	await seedCoupons(1);
 	const cursors = memoryCursors();
 	const now = minutes(60);
 	await cursors.write(
 		"coupon-recount",
 		JSON.stringify({
-			at: null,
-			id: null,
+			cursor: null,
+			skip: 0,
 			seen: {
 				// Settled: rechecked, not found, forgotten.
 				"gone-settled": observation(
 					"gone-settled",
 					new Date(now.getTime() - COUPON_RECOUNT_SETTLE_MS),
 				),
-				// Past the age limit: dropped without a look.
-				"gone-stale": observation(
-					"gone-stale",
-					new Date(now.getTime() - COUPON_RECOUNT_SEEN_TTL_MS - 1),
-				),
+				// Hours old (a starved leg's runs can be far apart): still rechecked, and
+				// only then forgotten — age alone never drops an observation.
+				"gone-old": observation("gone-old", new Date(now.getTime() - 120 * MINUTE_MS)),
 				// An unreadable time and a future one: dropped too.
 				"gone-garbled": { ...observation("gone-garbled", now), observedAt: "not-a-time" },
 				"gone-ahead": observation("gone-ahead", new Date(now.getTime() + MINUTE_MS)),
 			},
 		}),
 	);
-	const leg = await tick(cursors, now);
+	const recorder = judging();
+	const leg = await tick(cursors, now, recorder.store);
 	expect(leg.ok).toBe(true);
 	expect((await record(cursors)).seen).toEqual({});
+	const judged = recorder.take();
+	expect(judged).toEqual(expect.arrayContaining(["gone-settled", "gone-old"]));
+	expect(judged).not.toContain("gone-garbled");
+	expect(judged).not.toContain("gone-ahead");
 });
 
 test("a coupon whose recount throws is logged and passed over: the cursor is saved and the run's corrections stay logged", async () => {
@@ -315,7 +383,7 @@ test("a coupon whose recount throws is logged and passed over: the cursor is sav
 	expect(one.anomalies?.some((line) => line.includes(boom) && line.includes("injected"))).toBe(
 		true,
 	);
-	expect(await record(cursors)).toMatchObject({ id: boom });
+	expect(await record(cursors)).toMatchObject({ cursor: null, skip: 2 });
 	expect(Object.keys((await record(cursors)).seen)).toEqual([a]);
 
 	// Run 2: not pinned — `c` is judged and the pass wraps.

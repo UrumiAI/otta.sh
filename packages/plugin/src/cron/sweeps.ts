@@ -3429,30 +3429,28 @@ async function releaseOrphanedRedemptions(
  *  ticks, never in one. */
 export const COUPON_RECOUNTS_PER_TICK = 10;
 
-/** The coupon page a run reads: one host page (one call), wide enough to hold a
- *  whole group of coupons created in the same millisecond. */
+/** The most of those that may be RECHECKS, so the rotation always moves on: busy
+ *  coupons whose drift keeps being voided could otherwise take every slot of every
+ *  run, and the rest of the catalog would never be looked at. */
+export const COUPON_RECOUNT_RECHECKS_PER_TICK = COUPON_RECOUNTS_PER_TICK - 2;
+
+/** The host's page ceiling: the most rows one `query` returns. */
 const COUPON_RECOUNT_SCAN_ROWS = 100;
 
-/** The most drift observations the leg keeps between runs. A coupon past it is
- *  simply observed again on its next turn. */
+/** The most drift observations the leg keeps between runs — its only bound. A
+ *  coupon past it is simply observed again on its next turn. */
 export const COUPON_RECOUNT_MAX_SEEN = 100;
-
-/** How old a kept observation may grow before it is dropped unconfirmed. A live
- *  one is rechecked within a run or two of settling, and either confirmed or
- *  replaced, so only an observation nothing could recheck — its coupon deleted
- *  while the leg was starved, a time that cannot be read — lives this long. Two
- *  cadences: never shorter than the wait a confirmation legitimately takes. */
-export const COUPON_RECOUNT_SEEN_TTL_MS = 2 * MAINTENANCE_LEG_INTERVAL_MS;
 
 /** A kept observation, with the coupon's code for the log line a correction writes. */
 type SeenObservation = CouponUsesObservation & { readonly code?: string };
 
 /** Where the rotation stands, and the drift each coupon showed at its last look. */
 interface CouponRecountState {
-	/** The last coupon judged: `createdAt`, then `couponId`. Both null at the start;
-	 *  `id` alone null means past every coupon created at `at`. */
-	readonly at: string | null;
-	readonly id: string | null;
+	/** The host's keyset cursor for the page the rotation is in; null at the start
+	 *  of a pass (the first page). */
+	readonly cursor: string | null;
+	/** How many of that page's rows are already judged. */
+	readonly skip: number;
 	readonly seen: Record<string, SeenObservation>;
 }
 
@@ -3477,18 +3475,21 @@ interface CouponRecountState {
  * A RUN HAS TWO PHASES, sharing `COUPON_RECOUNTS_PER_TICK`:
  *
  * 1. RECHECKS. Every kept observation old enough to confirm is looked at again, by
- *    id, oldest first. So the second look comes one settle window after the first
- *    (give or take a cadence), however big the catalog: waiting for the rotation to
- *    come round again would take a full pass, and a busy coupon whose drift a redeem
- *    voids in between would never be confirmed on a big catalog.
- * 2. THE ROTATION through `coupons` by `(createdAt, couponId)`: one page read, the
- *    rest of the allowance judged, and the position saved, so a big catalog is
- *    spread over many ticks; at the end it wraps, and the leg is stamped done for
- *    the cadence. A coupon already rechecked this run is passed over. A group of
- *    coupons sharing one `createdAt` is never split across a page seam (the page's
- *    last, possibly cut, group waits for the next run) unless one group fills the
- *    whole page; then the rows past that page are stepped over for this pass, since
- *    no `createdAt` bound can reach them.
+ *    id, oldest first, up to `COUPON_RECOUNT_RECHECKS_PER_TICK`. So the second look
+ *    comes one settle window after the first (give or take a cadence), however big
+ *    the catalog: waiting for the rotation to come round again would take a full
+ *    pass, and a busy coupon whose drift a redeem voids in between would never be
+ *    confirmed on a big catalog. A kept observation leaves only by being judged
+ *    (confirmed, replaced, or its coupon gone), never by age: a run on a starved
+ *    Free tick can come long after the last, and dropping the observation then
+ *    would only start the wait again.
+ * 2. THE ROTATION through `coupons` in the host's own `(createdAt, id)` order, by its
+ *    keyset cursor: one page read of the rest of the allowance, judged, and the
+ *    place saved (the page's cursor, plus how many of its rows were judged when the
+ *    budget cut the walk short), so a big catalog is spread over many ticks and any
+ *    number of coupons sharing one `createdAt` is walked through. At the end it
+ *    wraps, and the leg is stamped done for the cadence. A coupon already rechecked
+ *    this run is passed over. A cursor the host refuses starts the pass again.
  *
  * A CORRECTION IS LOGGED THE MOMENT IT IS WRITTEN, by code and id, so nothing later
  * in the run can lose the line. A coupon whose recount THROWS is logged, passed over
@@ -3514,9 +3515,8 @@ async function recountCouponUses(
 	const nowMs = now.getTime();
 	const seen: Record<string, SeenObservation> = {};
 	for (const [couponId, observation] of Object.entries(state.seen)) {
-		const age = nowMs - Date.parse(observation.observedAt);
-		// NaN and a future time fail both tests and are dropped with the stale ones.
-		if (age >= 0 && age <= COUPON_RECOUNT_SEEN_TTL_MS) seen[couponId] = observation;
+		// A time ahead of now could never settle; an unreadable one never parses.
+		if (nowMs - Date.parse(observation.observedAt) >= 0) seen[couponId] = observation;
 	}
 	const anomalies: string[] = [];
 	let corrected = 0;
@@ -3559,7 +3559,7 @@ async function recountCouponUses(
 	const due = Object.values(seen)
 		.filter((observation) => nowMs - Date.parse(observation.observedAt) >= COUPON_RECOUNT_SETTLE_MS)
 		.toSorted((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
-		.slice(0, COUPON_RECOUNTS_PER_TICK)
+		.slice(0, COUPON_RECOUNT_RECHECKS_PER_TICK)
 		.map((observation) => ({ id: observation.couponId, data: { code: observation.code } }));
 	const rechecks = await walkWindow(
 		{ items: due, reachedEnd: true, outOfTime: false },
@@ -3572,45 +3572,27 @@ async function recountCouponUses(
 		return await saveRecount(cursors, raw, { ...state, seen }, corrected, anomalies);
 	}
 
-	// 2. The rotation, with what the rechecks left of the allowance.
-	const page = await coupons.query({
-		...(state.at === null
-			? {}
-			: { where: { createdAt: state.id === null ? { gt: state.at } : { gte: state.at } } }),
-		orderBy: { createdAt: "asc" },
-		limit: COUPON_RECOUNT_SCAN_ROWS,
-	});
-	let rows = page.items
-		.map((item) => ({
-			id: item.id,
-			data: { createdAt: item.data.createdAt, code: item.data.code },
-		}))
-		.toSorted(byCreatedThenId)
-		.filter((row) => isAfterRecountCursor(row, state));
-	if (page.hasMore) {
-		// The page's last group may continue on the next page: leave it whole for then.
-		const cut = rows.at(-1)?.data.createdAt;
-		const whole = rows.filter((row) => row.data.createdAt !== cut);
-		if (whole.length > 0) rows = whole;
+	// 2. The rotation, with what the rechecks left of the allowance (at least two).
+	const room = COUPON_RECOUNTS_PER_TICK - rechecks.handled.length;
+	let page: Awaited<ReturnType<typeof coupons.query>>;
+	try {
+		page = await coupons.query({
+			orderBy: { createdAt: "asc" },
+			limit: Math.min(COUPON_RECOUNT_SCAN_ROWS, state.skip + room),
+			...(state.cursor === null ? {} : { cursor: state.cursor }),
+		});
+	} catch (err) {
+		if (!isInvalidCursorError(err)) throw err;
+		// A cursor the host no longer reads: start the pass again from the top.
+		anomalies.push(`rotation cursor refused, pass restarted: ${err.message}`);
+		return await saveRecount(cursors, raw, { cursor: null, skip: 0, seen }, corrected, anomalies);
 	}
-	if (rows.length === 0 && page.hasMore && state.at !== null) {
-		// A page that is all one `createdAt` group, every row of it judged: the group is
-		// bigger than a page and the page can never reach past it. Step over the rest
-		// of it (`id: null` reads `gt`), or the rotation would stop here for good.
-		return await saveRecount(cursors, raw, { at: state.at, id: null, seen }, corrected, anomalies);
-	}
-	const batch: typeof rows = [];
-	let room = COUPON_RECOUNTS_PER_TICK - rechecks.handled.length;
-	for (const row of rows) {
-		if (!rechecked.has(row.id)) {
-			if (room === 0) break;
-			room--;
-		}
-		batch.push(row);
-	}
-	const reachedEnd = !page.hasMore && batch.length === rows.length;
+	const rows = page.items
+		.slice(state.skip)
+		.map((item) => ({ id: item.id, data: { code: item.data.code } }));
+	const nextPage = page.hasMore ? (page.cursor ?? null) : null;
 	const walked = await walkWindow(
-		{ items: batch, reachedEnd, outOfTime: false },
+		{ items: rows, reachedEnd: nextPage === null, outOfTime: false },
 		budget,
 		"coupon-recount",
 		async (item) => {
@@ -3622,14 +3604,22 @@ async function recountCouponUses(
 		},
 		(item) => (rechecked.has(item.id) ? 0 : COUPON_RECOUNT_CALLS),
 	);
-	const last = walked.handled.at(-1);
-	const wrapped = reachedEnd && !walked.incomplete && !failed;
-	const next: CouponRecountState = wrapped
-		? { at: null, id: null, seen }
-		: last === undefined
-			? { ...state, seen }
-			: { at: last.data.createdAt, id: last.id, seen };
+	const pageDone = walked.handled.length === rows.length;
+	const wrapped = pageDone && nextPage === null;
+	const next: CouponRecountState = pageDone
+		? { cursor: nextPage, skip: 0, seen }
+		: { cursor: state.cursor, skip: state.skip + walked.handled.length, seen };
 	return await saveRecount(cursors, raw, next, corrected, anomalies, wrapped);
+}
+
+/** The host's refusal of a pagination cursor it cannot read (EmDash's
+ *  `InvalidCursorError`, which it does not export): by name, and by message for a
+ *  bridge that passes only the message through. */
+function isInvalidCursorError(err: unknown): err is Error {
+	return (
+		err instanceof Error &&
+		(err.name === "InvalidCursorError" || err.message.startsWith("Invalid pagination cursor"))
+	);
 }
 
 /** Write the leg's record when it changed, and report the run. */
@@ -3646,29 +3636,11 @@ async function saveRecount(
 	return legResult(corrected, !wrapped, anomalies);
 }
 
-/** `(createdAt, id)` ascending, in plain code-unit order — the rotation's own order,
- *  so a tie group's order never depends on the host's collation. */
-function byCreatedThenId(
-	a: { id: string; data: { createdAt: string } },
-	b: { id: string; data: { createdAt: string } },
-): number {
-	if (a.data.createdAt !== b.data.createdAt) return a.data.createdAt < b.data.createdAt ? -1 : 1;
-	return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
-
-function isAfterRecountCursor(
-	row: { id: string; data: { createdAt: string } },
-	state: CouponRecountState,
-): boolean {
-	if (state.at === null) return true;
-	if (row.data.createdAt !== state.at) return row.data.createdAt > state.at;
-	return state.id !== null && row.id > state.id;
-}
-
-/** The saved record, or a fresh start: a record that does not parse, or an entry
- *  that is not an observation, is dropped — the next look observes it again. */
+/** The saved record, or a fresh start: a record that does not parse (or one in an
+ *  earlier shape), or an entry that is not an observation, is dropped — the next
+ *  look observes it again. */
 function parseRecountState(raw: string | null): CouponRecountState {
-	const fresh: CouponRecountState = { at: null, id: null, seen: {} };
+	const fresh: CouponRecountState = { cursor: null, skip: 0, seen: {} };
 	if (raw === null) return fresh;
 	let parsed: unknown;
 	try {
@@ -3677,9 +3649,13 @@ function parseRecountState(raw: string | null): CouponRecountState {
 		return fresh;
 	}
 	if (typeof parsed !== "object" || parsed === null) return fresh;
-	const record = parsed as { at?: unknown; id?: unknown; seen?: unknown };
+	const record = parsed as { cursor?: unknown; skip?: unknown; seen?: unknown };
 	const positioned =
-		typeof record.at === "string" && (typeof record.id === "string" || record.id === null);
+		(typeof record.cursor === "string" || record.cursor === null) &&
+		typeof record.skip === "number" &&
+		Number.isInteger(record.skip) &&
+		record.skip >= 0 &&
+		record.skip < COUPON_RECOUNT_SCAN_ROWS;
 	const seen: Record<string, SeenObservation> = {};
 	if (typeof record.seen === "object" && record.seen !== null) {
 		for (const [couponId, value] of Object.entries(record.seen)) {
@@ -3690,8 +3666,8 @@ function parseRecountState(raw: string | null): CouponRecountState {
 		}
 	}
 	return {
-		at: positioned ? (record.at as string) : null,
-		id: positioned ? (record.id as string | null) : null,
+		cursor: positioned ? (record.cursor as string | null) : null,
+		skip: positioned ? (record.skip as number) : 0,
 		seen,
 	};
 }
