@@ -46,6 +46,9 @@ import {
 	planReconcile,
 	RECONCILE_MAX_INTERRUPTS,
 	RECONCILE_PAGE_SIZE,
+	RECONCILE_PASS_INTERVAL_FREE_MS,
+	RECONCILE_PASS_INTERVAL_PAID_MS,
+	reconcilePassIntervalMs,
 } from "../src/cron/product-reconcile.js";
 import {
 	CONTENT_LIST_QUERIES,
@@ -115,6 +118,8 @@ interface Doc {
 class Cms {
 	readonly docs = new Map<string, Doc>();
 	listCalls = 0;
+	/** The reconcile's own page reads (`product-orphans` lists one item at a time). */
+	pageLists = 0;
 	/** Runs once, after the next reconcile-sized `list` has taken its page and
 	 *  before it returns: a content hook landing between the reconcile's list and
 	 *  its row read. (`product-orphans` lists too, one item at a time.) */
@@ -159,6 +164,7 @@ class Cms {
 				const items = all.slice(start, start + limit);
 				const next = start + limit;
 				const page = items.map((doc) => structuredClone(doc) as unknown as Record<string, unknown>);
+				if (limit === RECONCILE_PAGE_SIZE) this.pageLists++;
 				const hook = limit === RECONCILE_PAGE_SIZE ? this.afterList : undefined;
 				if (hook !== undefined) {
 					this.afterList = undefined;
@@ -197,9 +203,18 @@ function writeCounting(base: StorageAccess, writes: Writes): StorageAccess {
 	return wrapped;
 }
 
+/**
+ * The plugin's kv as one store kept across ticks. Handed to `tick` in place of a
+ * cursor store, the sweep keeps its cursors (and its own state) in `ctx.kv` as in
+ * production, so every cursor read and write is charged to the tick's budget.
+ */
+class PersistentKv {
+	readonly map = new Map<string, unknown>();
+}
+
 async function tick(
 	cms: Cms,
-	cursors: SweepCursorStore,
+	cursors: SweepCursorStore | PersistentKv,
 	{
 		offsetMs = 0,
 		budget = PAID,
@@ -208,11 +223,26 @@ async function tick(
 ): Promise<CommerceSweepSummary> {
 	const counted = writes === undefined ? storage : writeCounting(storage, writes);
 	const ctx = sweepContext(counted, undefined, { [BACKGROUND_WORK_KEY]: budget });
-	const withCms = Object.assign(Object.create(ctx) as PluginContext, {
+	let base: PluginContext = ctx;
+	if (cursors instanceof PersistentKv) {
+		const map = cursors.map;
+		map.set(BACKGROUND_WORK_KEY, budget);
+		base = Object.assign(Object.create(ctx) as PluginContext, {
+			kv: {
+				get: async (key: string) => (map.has(key) ? map.get(key) : null),
+				set: async (key: string, value: unknown) => {
+					map.set(key, value);
+				},
+				delete: async (key: string) => map.delete(key),
+				list: async () => [...map].map(([key, value]) => ({ key, value })),
+			},
+		});
+	}
+	const withCms = Object.assign(Object.create(base) as PluginContext, {
 		content: cms.access(() => undefined),
 	});
 	return await runCommerceSweeps(withCms, SWEEP_TASK_NAME, {
-		cursors,
+		...(cursors instanceof PersistentKv ? {} : { cursors }),
 		now: new Date(NOW.getTime() + offsetMs),
 	});
 }
@@ -418,7 +448,7 @@ describe("the publish gate: never live without a publish, never over a newer lif
 				createdAt: new Date(Date.parse(T1) + i * 1000).toISOString(),
 			});
 		}
-		const cursors = memoryCursors();
+		const cursors = new PersistentKv();
 		const writes = { n: 0 };
 		let ended = false;
 		for (let t = 0; t < 30 && !ended; t++) {
@@ -556,15 +586,18 @@ describe("the cost table (LEG_QUERY_COSTS)", () => {
 
 		expect(outcome.count).toBe(1);
 		const { entry, unit } = LEG_QUERY_COSTS["product-reconcile"];
-		// The suite's cursor store is not the counted kv, so neither the entry's cursor
-		// read and write nor the repair's attempt write are in `queries`: what is left
-		// over the page and its row read is the repair — the document re-read (3), the
-		// sync (6) and the row re-read (1). Measured: 10; the unit adds the attempt's
-		// cursor write and two calls of compare-and-set headroom.
-		const repair = outcome.queries - (entry - 2);
-		expect(repair).toBe(10);
+		// The entry: the cursor read, the list, and a full page's two row reads.
+		expect(entry).toBe(1 + CONTENT_LIST_QUERIES + 2);
+		// The suite's cursor store is not the counted kv, so neither the cursor read and
+		// write nor the repair's attempt write are in `queries`. Past the page's list and
+		// its ONE row read (a page of one is one `in` chunk), the repair: the fresh row
+		// read (1), the document read (3), the sync (6) and the row re-read (1).
+		// Measured: 11; the unit adds the attempt's cursor write, and nothing else (it
+		// must start in an idle Free tick).
+		const repair = outcome.queries - (CONTENT_LIST_QUERIES + 1);
+		expect(repair).toBe(11);
 		expect(unit).toBe(PRODUCT_RECONCILE_REPAIR_CALLS);
-		expect(repair + 1 + 2).toBe(unit);
+		expect(repair + 1).toBe(unit);
 		expect((await row("p1"))?.variants["m"]?.title).toBe("Medium");
 	});
 });
@@ -572,7 +605,7 @@ describe("the cost table (LEG_QUERY_COSTS)", () => {
 describe("bounded by the tick's budget, resumed across ticks", () => {
 	test("on Workers Free a catalogue-wide outage heals over ticks: every tick stays inside the budget, the cursor walks every page, and the pass ends", async () => {
 		const cms = new Cms();
-		const N = RECONCILE_PAGE_SIZE * 2 + 7;
+		const N = RECONCILE_PAGE_SIZE + 7;
 		for (let i = 0; i < N; i++) {
 			const id = `p${String(i).padStart(3, "0")}`;
 			// Distinct creation times, so the CMS's own order is stable.
@@ -583,11 +616,12 @@ describe("bounded by the tick's budget, resumed across ticks", () => {
 				createdAt: new Date(Date.parse(T1) + i * 1000).toISOString(),
 			});
 		}
-		const cursors = memoryCursors();
+		// The cursors live in the counted kv, so their reads and writes are inside FREE.
+		const cursors = new PersistentKv();
 		let ticks = 0;
 		let repaired = 0;
 		let finished = false;
-		while (!finished && ticks < 400) {
+		while (!finished && ticks < 600) {
 			const summary = await tick(cms, cursors, { budget: FREE, offsetMs: ticks * MINUTE_MS });
 			ticks++;
 			expect(summary.budget.queriesUsed).toBeLessThanOrEqual(FREE);
@@ -606,6 +640,9 @@ describe("bounded by the tick's budget, resumed across ticks", () => {
 		for (const id of cms.docs.keys()) {
 			expect(await row(id), id).toMatchObject({ active: true, lifecycle: "live" });
 		}
+		// Each page is LISTED ONCE for the whole pass — the host's whole-collection count
+		// runs beside every list, so a resumed page must not be listed again.
+		expect(cms.pageLists).toBe(Math.ceil(N / RECONCILE_PAGE_SIZE));
 		// More than one tick, and more than one page: a resumed walk, not one big bite.
 		expect(ticks).toBeGreaterThan(N / 3);
 		expect(errors).toEqual([]);
@@ -709,7 +746,7 @@ describe("a hook that lands between the page and its rows never loses to the sta
 });
 
 describe("the walk always moves", () => {
-	test("on Workers Free, a repair that is a no-op (a pending leaked draft under its REAL save key) neither wedges the walk nor counts as repaired", async () => {
+	test("on Workers Free, a repair that is a no-op (a pending leaked draft under its REAL save key) is never retried as an error, never wedges the walk, and never counts as repaired", async () => {
 		const cms = new Cms();
 		// The leak: the draft save's upsert under the save key the live columns also
 		// derive (same `updatedAt`, same `version`), so the sweep's upsert replays it.
@@ -738,7 +775,7 @@ describe("the walk always moves", () => {
 				createdAt: new Date(Date.parse(T1) + i * 1000).toISOString(),
 			});
 		});
-		const cursors = memoryCursors();
+		const cursors = new PersistentKv();
 		const anomalies: string[] = [];
 		let repaired = 0;
 		let ticks = 0;
@@ -757,11 +794,15 @@ describe("the walk always moves", () => {
 		for (const id of others) {
 			expect(await row(id), id).toMatchObject({ title: `Product ${id}`, active: true });
 		}
-		// Counted only where the write held; the no-op is reported once, as such.
+		// Counted only where a write held. The leak is not attempted at all — its upsert
+		// would replay — and is said ONCE a pass, at info, never as an error.
 		expect(repaired).toBe(others.length);
-		expect(anomalies.filter((line) => line.includes("p-leak"))).toEqual([
-			expect.stringContaining("product p-leak was attempted and is still out of sync"),
-		]);
+		expect(anomalies).toEqual([]);
+		expect(errors).toEqual([]);
+		const said = vi
+			.mocked(console.info)
+			.mock.calls.filter((args) => String(args[0]).includes("product_id=p-leak carries a title"));
+		expect(said).toHaveLength(1);
 		expect((await row("p-leak"))?.title).toBe("DRAFT name");
 	});
 
@@ -785,7 +826,7 @@ describe("the walk always moves", () => {
 		expect(await row("p2")).toMatchObject({ title: "Two", active: true });
 		expect(leg(summary).anomalies).toEqual([expect.stringContaining("product p1 was cut short")]);
 
-		await tick(cms, cursors, { offsetMs: MAINTENANCE_LEG_INTERVAL_MS });
+		await tick(cms, cursors, { offsetMs: RECONCILE_PASS_INTERVAL_PAID_MS });
 		expect(await row("p1")).toMatchObject({ title: "One", active: true });
 	});
 
@@ -818,5 +859,104 @@ describe("the walk always moves", () => {
 		const places = written.map((value) => (JSON.parse(value) as { cursor: string | null }).cursor);
 		// Past page one, past page two, then the wrap at the end of the catalogue.
 		expect(places).toEqual([String(RECONCILE_PAGE_SIZE), String(RECONCILE_PAGE_SIZE * 2), null]);
+	});
+});
+
+describe("the pass interval: a pass's D1 rows read are paid once per interval, from its START", () => {
+	test("Free waits a day between pass starts, Paid six hours", () => {
+		expect(reconcilePassIntervalMs(FREE)).toBe(RECONCILE_PASS_INTERVAL_FREE_MS);
+		expect(reconcilePassIntervalMs(PAID)).toBe(RECONCILE_PASS_INTERVAL_PAID_MS);
+		expect(RECONCILE_PASS_INTERVAL_FREE_MS).toBe(24 * 60 * 60 * 1000);
+		expect(RECONCILE_PASS_INTERVAL_PAID_MS).toBe(6 * 60 * 60 * 1000);
+	});
+
+	test("a COMPLETED pass does not restart before the interval from its start, and does after it", async () => {
+		const cms = new Cms();
+		cms.put({ id: "p1", title: "Shirt", updatedAt: T2 });
+		const cursors = memoryCursors();
+		expect(leg(await tick(cms, cursors))).toMatchObject({ count: 1 });
+		const listed = cms.pageLists;
+		// Lost again after the pass: the next pass must not see it before its time.
+		await store(T3).deactivate(toProductId("p1"), idempotencyKey("products:p1:x"), T3);
+		cms.put({ id: "p1", title: "Shirt", updatedAt: T3 });
+
+		// Past the fifteen-minute cadence, inside the interval: not due, and no CMS list.
+		for (const offsetMs of [
+			MAINTENANCE_LEG_INTERVAL_MS,
+			RECONCILE_PASS_INTERVAL_PAID_MS - MINUTE_MS,
+		]) {
+			expect(leg(await tick(cms, cursors, { offsetMs }))).toMatchObject({ count: 0, notDue: true });
+		}
+		expect(cms.pageLists).toBe(listed);
+		expect(await row("p1")).toMatchObject({ active: false });
+
+		// Past the interval from the START of the last pass (and the leg's own cadence
+		// after the probe just above): a new pass, and the repair.
+		const next = RECONCILE_PASS_INTERVAL_PAID_MS - MINUTE_MS + MAINTENANCE_LEG_INTERVAL_MS;
+		expect(leg(await tick(cms, cursors, { offsetMs: next }))).toMatchObject({ count: 1 });
+		expect(await row("p1")).toMatchObject({ active: true });
+	});
+
+	test("an UNFINISHED pass resumes every tick, and its start — not its end — times the next one", async () => {
+		const cms = new Cms();
+		const N = RECONCILE_PAGE_SIZE + 5;
+		for (let i = 0; i < N; i++) {
+			cms.put({
+				id: `p${String(i).padStart(3, "0")}`,
+				title: `Product ${String(i)}`,
+				updatedAt: T2,
+				createdAt: new Date(Date.parse(T1) + i * 1000).toISOString(),
+			});
+		}
+		const cursors = new PersistentKv();
+		let t = 0;
+		let ended = false;
+		let firstRunAt: number | undefined;
+		for (; t < 600 && !ended; t++) {
+			const outcome = leg(await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS }));
+			// Never "not due" while the pass is unfinished.
+			expect(outcome.notDue).toBeUndefined();
+			if (firstRunAt === undefined && outcome.deferred !== true) firstRunAt = t;
+			ended = outcome.incomplete === undefined && outcome.deferred !== true;
+		}
+		expect(ended).toBe(true);
+		const endedAt = t - 1;
+		expect(endedAt).toBeGreaterThan(firstRunAt ?? 0);
+
+		// The next pass is due a day after the FIRST tick of this one, not after its end:
+		// no page is read before then (the leg may be deferred on a Free tick, or find
+		// itself not due — either way it reads nothing), and one is at or soon after it.
+		const dueAt = (firstRunAt ?? 0) * MINUTE_MS + RECONCILE_PASS_INTERVAL_FREE_MS;
+		const read = cms.pageLists;
+		for (const offsetMs of [endedAt * MINUTE_MS + MAINTENANCE_LEG_INTERVAL_MS, dueAt - MINUTE_MS]) {
+			const early = leg(await tick(cms, cursors, { budget: FREE, offsetMs }));
+			expect(early.notDue === true || early.deferred === true, JSON.stringify(early)).toBe(true);
+		}
+		expect(cms.pageLists).toBe(read);
+		for (let k = 0; k < 120 && cms.pageLists === read; k++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: dueAt + k * MINUTE_MS });
+		}
+		expect(cms.pageLists).toBeGreaterThan(read);
+	});
+});
+
+describe("log levels", () => {
+	test("a product with no commerce row at all is a FIRST sync, said at info, not as a lost publish", async () => {
+		const cms = new Cms();
+		cms.put({ id: "p-new", title: "New", updatedAt: T2 });
+		await syncedRow("p-old", "Old name", T1);
+		cms.put({ id: "p-old", title: "New name", updatedAt: T2 });
+
+		await tick(cms, memoryCursors());
+
+		const info = vi.mocked(console.info).mock.calls.map((args) => String(args[0]));
+		const warn = vi.mocked(console.warn).mock.calls.map((args) => String(args[0]));
+		expect(info.filter((line) => line.includes("product_id=p-new"))).toEqual([
+			expect.stringContaining("(a first sync)"),
+		]);
+		expect(warn.filter((line) => line.includes("product_id=p-new"))).toEqual([]);
+		expect(warn.filter((line) => line.includes("product_id=p-old"))).toEqual([
+			expect.stringContaining("a lost publish sync"),
+		]);
 	});
 });

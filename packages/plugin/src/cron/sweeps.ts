@@ -237,6 +237,8 @@ import {
 import {
 	PRODUCT_RECONCILE_ENTRY_QUERIES,
 	PRODUCT_RECONCILE_REPAIR_CALLS,
+	RECONCILE_IN_BATCH,
+	reconcilePassIntervalMs,
 	reconcileProductCommerce,
 	type ReconcileRows,
 } from "./product-reconcile.js";
@@ -2148,6 +2150,7 @@ export async function runCommerceSweeps(
 					content,
 					cursors,
 					legBudget,
+					{ now, passIntervalMs: reconcilePassIntervalMs(queryBudget) },
 				);
 				if (legBudget.stopped) stoppedByBudget.add("product-reconcile");
 				return result;
@@ -5095,10 +5098,17 @@ function reconcileRows(storage: AdapterStorageAccess): ReconcileRows {
 	const products = collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION);
 	return {
 		async many(ids) {
-			const found = await products.query({ where: { productId: { in: [...ids] } }, limit: 100 });
-			return new Map(
-				found.items.map(({ data }) => [data.productId, normalizeProductDoc(data)] as const),
-			);
+			// Chunked: D1's 100-parameter bound (`RECONCILE_IN_BATCH`).
+			const rows = new Map<string, ProductCommerceDoc>();
+			for (let start = 0; start < ids.length; start += RECONCILE_IN_BATCH) {
+				const chunk = ids.slice(start, start + RECONCILE_IN_BATCH);
+				const found = await products.query({
+					where: { productId: { in: [...chunk] } },
+					limit: RECONCILE_IN_BATCH,
+				});
+				for (const { data } of found.items) rows.set(data.productId, normalizeProductDoc(data));
+			}
+			return rows;
 		},
 		async one(id) {
 			const doc = await products.get(id);

@@ -1029,7 +1029,14 @@ describe("per-leg cadence", () => {
 			SWEEP_TASK_NAME,
 			at(MAINTENANCE_LEG_INTERVAL_MS),
 		);
-		for (const leg of MAINTENANCE_LEGS) expect(outcome(later, leg).notDue).toBeUndefined();
+		for (const leg of MAINTENANCE_LEGS) {
+			// Except `product-reconcile`, which spaces its PASSES from their start (the D1
+			// rows a pass reads, #657): its fifteen-minute check runs, and finds the next
+			// pass not due for hours yet.
+			if (leg === "product-reconcile") continue;
+			expect(outcome(later, leg).notDue).toBeUndefined();
+		}
+		expect(outcome(later, "product-reconcile")).toMatchObject({ ok: true, notDue: true, count: 0 });
 	}, 120_000);
 
 	test("a FAILED scan is stamped: it retries at its own cadence, not every minute", async () => {
