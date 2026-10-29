@@ -360,10 +360,13 @@ export function createStripeWebhookSettleHandler(
 		// account this is another tenant's payment; on an Otta-only one it means the
 		// store lost the order (a database restore, the wrong D1) and the payment
 		// needs a refund by hand. Info, not an anomaly: a shared account would flood
-		// the anomalies list.
+		// the anomalies list. The line names the Stripe event and the order id it
+		// carried (#616): settle records nothing for it, so this is the only trace,
+		// and both are what an operator searches Stripe by. Neither is a credential;
+		// both are JSON-quoted, because the order id is another tenant's metadata.
 		if (!settled.ok && settled.reason === "ORDER_NOT_FOUND") {
 			console.info(
-				`[otta] ${STRIPE_WEBHOOK_SETTLE_ROUTE} verified event names no order in this store (ORDER_NOT_FOUND); acknowledged`,
+				`[otta] ${STRIPE_WEBHOOK_SETTLE_ROUTE} verified event ${JSON.stringify(settled.dedupeKey)} names order ${JSON.stringify(settled.orderId)}, which is not in this store (ORDER_NOT_FOUND); acknowledged`,
 			);
 		}
 

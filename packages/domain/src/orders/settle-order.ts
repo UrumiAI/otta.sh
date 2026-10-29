@@ -1,4 +1,4 @@
-import { idempotencyKey } from "../money/ids.js";
+import { idempotencyKey, type OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { ConfirmationResult } from "../ports/payment-gateway.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
@@ -20,7 +20,12 @@ export interface SettleDeps {
 
 export type SettleResult =
 	| { ok: true; order: Order | null; noop: boolean }
-	| { ok: false; reason: SettleFailure };
+	/** A verified confirmation naming an order this store does not have (#616):
+	 *  another tenant's payment on a shared gateway account, or an order the store
+	 *  lost. It carries the event's dedupe key and the order id it named, so the
+	 *  caller can log them — nothing was recorded that would otherwise name them. */
+	| { ok: false; reason: "ORDER_NOT_FOUND"; orderId: OrderId; dedupeKey: string }
+	| { ok: false; reason: Exclude<SettleFailure, "ORDER_NOT_FOUND"> };
 
 /** The success-side of a verified confirmation, after narrowing. */
 type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
@@ -32,6 +37,11 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *
  * 1. `gateway.verifyConfirmation(raw)` — a reject (bad signature / unknown /
  *    malformed) is a typed failure (HTTP 400). All crypto is adapter-side.
+ * 1b. Read the order the confirmation names. None ⇒ `ORDER_NOT_FOUND`, BEFORE
+ *    anything is recorded (#616): a verified event for an order this store does
+ *    not have (another tenant on a shared Stripe account) must not leave a
+ *    `payment_events` row behind, because nothing could ever prune it — a purge is
+ *    exactly what would open the fail-closed arm of step 2b.
  * 2. Record the delivery in `payment_events` (UNIQUE `dedupeKey` — the audit
  *    trail). **A duplicate OF THE SAME ORDER does NOT short-circuit**: every
  *    delivery re-DRIVES the
@@ -101,6 +111,30 @@ export async function settleOrder(
 
 	const now = deps.clock.now().toISOString();
 
+	// 1b. The order first, the claim second (#616). A confirmation naming no order
+	// here records NOTHING: claiming its key first left one orphan dedupe row per
+	// foreign payment, forever. Reading before the claim weakens nothing below:
+	//  - the receipt binding (2b) is unchanged for any order that EXISTS — a key
+	//    bound to A and aimed at an existing B still fails the claim and is
+	//    refused. Aimed at a missing order it now answers ORDER_NOT_FOUND instead
+	//    of RECEIPT_REBOUND: no order, so nothing can settle, and the key stays
+	//    bound to A, so a later aim at a real order is still refused;
+	//  - nothing below trusts this snapshot to be current. Every state move is
+	//    guarded (`markPaid`, `commit`, the flag compare-and-set) and re-reads on a
+	//    lost race, and the claim never serialized against order writes anyway —
+	//    a snapshot read just after the claim was just as stale;
+	//  - no order is ever deleted, and an Otta order exists before its intent, so a
+	//    present order cannot vanish between this read and the claim.
+	const order = await deps.orderStore.getById(conf.orderId);
+	if (order === null) {
+		return {
+			ok: false,
+			reason: "ORDER_NOT_FOUND",
+			orderId: conf.orderId,
+			dedupeKey: conf.dedupeKey,
+		};
+	}
+
 	// 2. Record the delivery (UNIQUE dedupe_key = the audit row). A duplicate of
 	// THIS order is deliberately NOT a short-circuit — see the function doc:
 	// replays re-drive by state. A duplicate naming a DIFFERENT order is not a
@@ -148,9 +182,6 @@ export async function settleOrder(
 			return { ok: false, reason: "RECEIPT_REBOUND" };
 		}
 	}
-
-	const order = await deps.orderStore.getById(conf.orderId);
-	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 
 	// A verified FAILURE event (a declined attempt) is recorded above and moves
 	// nothing: no state flip, no stock or coupon release, whatever state the order

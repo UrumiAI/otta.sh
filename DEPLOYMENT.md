@@ -443,8 +443,8 @@ order of appearance in a deployment's life:
 > **The Stripe account may be shared with other software** (#595). A verified
 > `payment_intent.*` event Otta did not create — no `metadata.order_id`, or one naming no order
 > in this store — is answered 200 with reason `UNKNOWN_EVENT` or `ORDER_NOT_FOUND`, so the
-> endpoint stays healthy; the second kind is logged at info level and leaves one small
-> `payment_events` row, which is never pruned. Foreign events also keep Settings' "last
+> endpoint stays healthy; the second kind is logged at info level, naming the Stripe event id and
+> the order id it carried, and records nothing (#616). Foreign events also keep Settings' "last
 > verified delivery" fresh: it proves the signing secret, not that Otta's own payments arrive.
 >
 > **The trust anchor is the Stripe HMAC**, verified unconditionally inside the plugin route
