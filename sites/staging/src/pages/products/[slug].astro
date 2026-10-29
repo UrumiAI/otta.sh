@@ -36,8 +36,10 @@ import {
 	type ProductViewModel,
 } from "@urumi.ai/otta-plugin";
 import { getEmDashEntry } from "emdash";
+import { getDb } from "emdash/runtime";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import AddToCartKey from "../../components/AddToCartKey.astro";
+import { contentTableAnswers } from "../../lib/content-store.js";
 import Storefront from "../../layouts/Storefront.astro";
 import { cartErrorAction, cartErrorMessage } from "../../lib/error-messages.js";
 import { errorTitle } from "../../lib/error-notice.js";
@@ -74,21 +76,19 @@ if (slug === undefined) return Astro.redirect("/products");
  * `cachedQuery`, and hydrates the row afterwards. A fault in any of those
  * throws, and an uncaught throw in page frontmatter is a 500 on a product URL.
  *
- * ── WHAT THIS DOES NOT CATCH, measured rather than assumed ─────────────────
- * A MISSING TABLE OR COLUMN. em-dash's loader catches those and returns a bare
+ * ── THE FOURTH ARM: a missing TABLE (issue #140) ─────────────────────────
+ * em-dash's loader catches a missing-table fault and returns a bare
  * `{ entry: null }` — no `error` key, no throw, no log (`isMissingTableError`
- * → bare `return`) — so a store whose `ec_products` table is gone still
- * renders "Product not found." at 404. Verified under a workerd preview
- * against a database with the table renamed away: 404, and nothing in the log.
- * The collection API has the same hole (see the shape-keyed warn in
- * `cart/index.astro`, which is the workaround there), but a SINGLE-entry read
- * has no equivalent signal to key on — "no row came back" is precisely what a
- * genuine 404 looks like. Filed as issue #140: closing it needs an
- * em-dash-side signal, not another branch here.
- *
- * So the scope is exact: a reported error (query fault, misconfigured database,
- * anything else the loader hands back) and a throw from the machinery around
- * the loader. That is the whole of what this page can see.
+ * → bare `return`; astro then wraps that in the same `LiveEntryNotFoundError`
+ * a genuine 404 gets). Verified under a workerd preview against a database
+ * with `ec_products` renamed away: 404 "Product not found.", nothing logged.
+ * "No row came back" is byte-for-byte what a genuine 404 looks like, so when
+ * nothing else has already said outage, the page asks the store one cheap
+ * question before it believes the 404: can the products table, and the core
+ * emdash tables the read depends on, be read at all (`contentTableAnswers`,
+ * src/lib/content-store.ts, which lists what it covers)? If not, it is the 503 and
+ * the probe has logged it for the operator. A product page that FOUND its
+ * product never runs the probe.
  */
 let entry: Awaited<ReturnType<typeof getEmDashEntry>>["entry"] = null;
 let contentUnavailable = false;
@@ -102,6 +102,9 @@ try {
 } catch (cause) {
 	contentUnavailable = true;
 	console.error("[site-staging] product content read threw:", cause);
+}
+if (entry === null && !contentUnavailable) {
+	contentUnavailable = !(await contentTableAnswers("products", getDb, "product page"));
 }
 
 if (entry === null) {

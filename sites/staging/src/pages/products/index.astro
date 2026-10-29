@@ -21,6 +21,12 @@
  * collection — and rendering the empty state would tell a shopper the shop is
  * empty and hand them the admin link. That is the wrong fact and the wrong
  * audience.
+ *
+ * A missing TABLE does not even fill `error`: em-dash's loader returns a bare
+ * `{ entries: [] }` for it (issue #140). So an empty answer is not believed
+ * until `contentTableAnswers` has confirmed the products table and the core
+ * emdash tables the read depends on can be read;
+ * the empty state, admin link and all, is for a store that genuinely has none.
  */
 import {
 	PLP_PAGE_SIZE_CAP,
@@ -29,8 +35,10 @@ import {
 	type ProductViewModel,
 } from "@urumi.ai/otta-plugin";
 import { getEmDashCollection } from "emdash";
+import { getDb } from "emdash/runtime";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../layouts/Storefront.astro";
+import { contentTableAnswers } from "../../lib/content-store.js";
 import { productKey, toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { exactCount, itemCountLabel } from "../../lib/tape.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
@@ -51,6 +59,14 @@ try {
 	if (collection.error !== undefined) {
 		catalogUnavailable = true;
 		console.error("[site-staging] shop catalog read failed:", collection.error);
+	} else if (
+		collection.entries.length === 0 &&
+		!(await contentTableAnswers("products", getDb, "shop catalog"))
+	) {
+		// The loader's OTHER outage: a missing table comes back as `{ entries: [] }`
+		// with no `error` (issue #140). Only an empty answer is probed, so a shop
+		// with products pays nothing; the probe has already logged the fault.
+		catalogUnavailable = true;
 	} else {
 		entries = collection.entries;
 		hasMore = collection.hasMore;
