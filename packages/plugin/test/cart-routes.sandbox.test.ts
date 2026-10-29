@@ -1,4 +1,5 @@
 import {
+	NOOP_LOGGER,
 	addLine as addLineInDomain,
 	cents,
 	currency,
@@ -762,6 +763,7 @@ describe("storefront cart routes (workerd sandbox)", () => {
 					}),
 					inventoryStore: inventory,
 					clock: systemClock,
+					logger: NOOP_LOGGER,
 				},
 				cartId,
 				toSku(`SKU-ONLYBARE-${SUFFIX}`),

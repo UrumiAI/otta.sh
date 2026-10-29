@@ -119,7 +119,6 @@ describe("bounded order expiry", () => {
 	// store cannot address, say) must neither end the batch nor strand the holds of
 	// the orders after it. Each order is its own unit; its failure is logged.
 	test("a release that throws for one order: that order stays expired, the rest of the batch still runs", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const orders = await pendingOrders(3);
 		const release = vi.spyOn(h.inventory, "releaseAdoptedMany");
 		release.mockRejectedValueOnce(new Error("storage refused"));
@@ -131,13 +130,11 @@ describe("bounded order expiry", () => {
 		// The orders after the failing one had their holds returned.
 		expect(h.inventory.onHand("SKU-2")).toBe(5);
 		expect(h.inventory.onHand("SKU-3")).toBe(5);
-		expect(error).toHaveBeenCalledTimes(1);
-		expect(String(error.mock.calls[0]?.[0])).toMatch(/releasing the holds of expired order/);
-		error.mockRestore();
+		expect(h.logger.entries).toHaveLength(1);
+		expect(String(h.logger.entries[0]?.message)).toMatch(/releasing the holds of expired order/);
 	});
 
 	test("a flip that throws for one order: it stays pending for the next run, the rest still expire", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const orders = await pendingOrders(3);
 		const flip = vi.spyOn(h.orderStore, "expireWithOrder");
 		flip.mockRejectedValueOnce(new Error("storage down"));
@@ -145,9 +142,8 @@ describe("bounded order expiry", () => {
 		expect(result).toEqual({ count: 2, drained: true });
 		expect(await expiredCount(orders)).toBe(2);
 		expect((await h.orderStore.getById(orders[0]?.id ?? ("" as never)))?.state).toBe("pending");
-		expect(error).toHaveBeenCalledTimes(1);
-		expect(String(error.mock.calls[0]?.[0])).toMatch(/expiring order/);
-		error.mockRestore();
+		expect(h.logger.entries).toHaveLength(1);
+		expect(String(h.logger.entries[0]?.message)).toMatch(/expiring order/);
 		// The next run picks it up.
 		expect(await expireOrdersBatch(h.expireDeps)).toEqual({ count: 1, drained: true });
 		expect(h.inventory.onHand("SKU-1")).toBe(5);
@@ -159,7 +155,6 @@ describe("bounded order expiry", () => {
 	// attempted threw. One failure among successes is not that (see the test above:
 	// its result carries no flag), and neither is a call that attempted nothing.
 	test("a call where every attempted flip threw reports allFailed, and still backs each order off", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const orders = await pendingOrders(3);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValue(new Error("storage down"));
 		const backoff = new UnitBackoff();
@@ -169,7 +164,7 @@ describe("bounded order expiry", () => {
 			allFailed: true,
 		});
 		expect(backoff.size).toBe(3);
-		expect(error).toHaveBeenCalledTimes(3);
+		expect(h.logger.entries).toHaveLength(3);
 		// While they all wait, nothing is attempted: no flag.
 		expect(await expireOrdersBatch(h.expireDeps, undefined, { backoff })).toEqual({
 			count: 0,
@@ -179,7 +174,6 @@ describe("bounded order expiry", () => {
 	});
 
 	test("onFlipOutcome hears each attempted order: failed for a throw, not for an expiry or a lost guard (#478)", async () => {
-		vi.spyOn(console, "error").mockImplementation(() => {});
 		const orders = await pendingOrders(3);
 		const real = h.orderStore.expireWithOrder.bind(h.orderStore);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockImplementation(async (id, now) => {
@@ -209,7 +203,6 @@ describe("bounded order expiry", () => {
 		// of the list, every run spent its bite on them and the third order's stock
 		// stayed held forever. With a back-off, a failed order waits its turn and the
 		// list reads past it.
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const orders = await pendingOrders(3);
 		const real = h.orderStore.expireWithOrder.bind(h.orderStore);
 		const poisoned = new Set([orders[0]?.id, orders[1]?.id]);
@@ -245,7 +238,6 @@ describe("bounded order expiry", () => {
 		});
 		expect(await expiredCount(orders)).toBe(3);
 		expect(backoff.size).toBe(0);
-		error.mockRestore();
 	});
 
 	/**
@@ -282,12 +274,10 @@ describe("bounded order expiry", () => {
 		// evicted a waiting one every tick, so a failing order held the bite forever.
 		// Sized to the look's page (98 at a bite of 1), the good order is reached.
 		// Measured: tick 119 (each failing order is retried at most once an hour).
-		vi.spyOn(console, "error").mockImplementation(() => {});
 		expect(await ticksToReachGoodOrder(33, 1, 100 - (1 + 1), 600)).toBeLessThanOrEqual(130);
 	}, 60_000);
 
 	test("50 always-failing orders at the Paid bite of 18 no longer starve the order behind them (polish P-3)", async () => {
-		vi.spyOn(console, "error").mockImplementation(() => {});
 		// Measured: tick 3 (sized cap 81; with the old cap of 32 it never was).
 		expect(await ticksToReachGoodOrder(50, 18, 100 - (18 + 1), 600)).toBeLessThanOrEqual(10);
 	}, 60_000);
@@ -297,12 +287,10 @@ describe("bounded order expiry", () => {
 		// bite of 1 has room for fewer than 60 such retries an hour. Pinned so the
 		// docs' bound stays true; 59 is reached (tick 375 measured), 60 is not. If this
 		// starts failing because the good order IS reached, raise the documented bound.
-		vi.spyOn(console, "error").mockImplementation(() => {});
 		expect(await ticksToReachGoodOrder(60, 1, 100 - (1 + 1), 600)).toBeNull();
 	}, 60_000);
 
 	test("a pre-listed `due` set skips the orders still backing off", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const orders = await pendingOrders(2);
 		const ids = orders.map((o) => o.id);
 		const backoff = new UnitBackoff();
@@ -312,12 +300,10 @@ describe("bounded order expiry", () => {
 		).toEqual({ count: 1, drained: true });
 		expect((await h.orderStore.getById(ids[0] ?? ("" as never)))?.state).toBe("pending");
 		expect((await h.orderStore.getById(ids[1] ?? ("" as never)))?.state).toBe("expired");
-		expect(error).not.toHaveBeenCalled();
-		error.mockRestore();
+		expect(h.logger.entries).toEqual([]);
 	});
 
 	test("an error that stops the whole batch (the sweep's query ceiling) is rethrown, not logged as one order's failure (review round 3, A I2)", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const orders = await pendingOrders(2);
 		const ceiling = Object.assign(new Error("tick query ceiling reached"), {
 			name: "SweepQueryCeilingError",
@@ -330,7 +316,7 @@ describe("bounded order expiry", () => {
 				stopsBatch: (err) => err instanceof Error && err.name === "SweepQueryCeilingError",
 			}),
 		).rejects.toBe(ceiling);
-		expect(error).not.toHaveBeenCalled();
+		expect(h.logger.entries).toEqual([]);
 		expect(backoff.size).toBe(0);
 		expect(await expiredCount(orders)).toBe(0);
 
@@ -342,12 +328,10 @@ describe("bounded order expiry", () => {
 				stopsBatch: (err) => err instanceof Error && err.name === "SweepQueryCeilingError",
 			}),
 		).rejects.toBe(ceiling);
-		expect(error).not.toHaveBeenCalled();
-		error.mockRestore();
+		expect(h.logger.entries).toEqual([]);
 	});
 
 	test("a unit failure logs the error's name, code and a short message with quoted values removed (review round 3, B I5)", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		await pendingOrders(1);
 		const leaky = Object.assign(
 			new Error(
@@ -357,18 +341,16 @@ describe("bounded order expiry", () => {
 		);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(leaky);
 		await expireOrdersBatch(h.expireDeps);
-		expect(error).toHaveBeenCalledTimes(1);
-		const logged = JSON.stringify(error.mock.calls[0]);
+		expect(h.logger.entries).toHaveLength(1);
+		const logged = JSON.stringify(h.logger.entries[0]);
 		expect(logged).toMatch(/DatabaseError/);
 		expect(logged).toMatch(/23505/);
 		expect(logged).toMatch(/duplicate key value/);
 		expect(logged).not.toMatch(/victim|example\.com|orders_pkey/);
 		expect(logged).not.toMatch(/x{200}/);
-		error.mockRestore();
 	});
 
 	test("a stop raised by the coupon release is rethrown too (review round 3 polish, P-2)", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		await pendingOrders(1);
 		const ceiling = Object.assign(new Error("tick query ceiling reached"), {
 			name: "SweepQueryCeilingError",
@@ -388,34 +370,29 @@ describe("bounded order expiry", () => {
 			}),
 		).rejects.toBe(ceiling);
 		expect(release).toHaveBeenCalledTimes(1);
-		expect(error).not.toHaveBeenCalled();
-		error.mockRestore();
+		expect(h.logger.entries).toEqual([]);
 	});
 
 	test("an email outside quotes is redacted from the log line (review round 3 polish, P-2)", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		await pendingOrders(1);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(
 			new Error("insert failed for victim.person@example.com on orders"),
 		);
 		await expireOrdersBatch(h.expireDeps);
-		const logged = JSON.stringify(error.mock.calls[0]);
+		const logged = JSON.stringify(h.logger.entries[0]);
 		expect(logged).toMatch(/insert failed for <value> on orders/);
 		expect(logged).not.toMatch(/victim|example\.com/);
-		error.mockRestore();
 	});
 
 	test("an unclosed quote is redacted to the end of the message (review round 3 polish, P-1)", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		await pendingOrders(1);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(
 			new Error('bad value "jane.doe-secret-without-closing-quote'),
 		);
 		await expireOrdersBatch(h.expireDeps);
-		const logged = JSON.stringify(error.mock.calls[0]);
+		const logged = JSON.stringify(h.logger.entries[0]);
 		expect(logged).toMatch(/bad value <value>/);
 		expect(logged).not.toMatch(/jane|secret/);
-		error.mockRestore();
 	});
 
 	test("an email cut by the 1 KB input limit does not leak its local part (final verify, F-1)", async () => {
@@ -423,35 +400,30 @@ describe("bounded order expiry", () => {
 		// message can reach the logged 160. An email straddling the 1 KB cut has lost
 		// its `@`, so the email rule cannot see it: the cut's trailing partial word is
 		// redacted instead.
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		await pendingOrders(1);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(
 			new Error(`"${"q".repeat(900)}" contact jane.doe${"z".repeat(200)}@example.com`),
 		);
 		await expireOrdersBatch(h.expireDeps);
-		const logged = JSON.stringify(error.mock.calls[0]);
+		const logged = JSON.stringify(h.logger.entries[0]);
 		expect(logged).toMatch(/<value> contact <value>/);
 		expect(logged).not.toMatch(/jane|doe|zzz|example/);
-		error.mockRestore();
 	});
 
 	test("a message under the 1 KB input limit keeps its last word (final verify, F-1)", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		await pendingOrders(1);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(
 			new Error("connection reset by peer"),
 		);
 		await expireOrdersBatch(h.expireDeps);
-		const logged = JSON.stringify(error.mock.calls[0]);
+		const logged = JSON.stringify(h.logger.entries[0]);
 		expect(logged).toMatch(/connection reset by peer/);
-		error.mockRestore();
 	});
 
 	test("a 100k-character message with no spaces is scrubbed in linear time, and redacted (review round 3 polish, P-1)", async () => {
 		// The email pattern backtracked quadratically on a long run with no space, `@`
 		// or `<>`, over the WHOLE message (100k characters took 13 s). The message is
 		// now cut to about 1 KB first and the pattern's repeats are bounded.
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		await pendingOrders(3);
 		const messages = [
 			"a".repeat(100_000),
@@ -464,12 +436,11 @@ describe("bounded order expiry", () => {
 		await expireOrdersBatch(h.expireDeps);
 		const elapsed = performance.now() - started;
 		expect(elapsed, `${elapsed.toFixed(1)} ms`).toBeLessThan(50);
-		expect(error).toHaveBeenCalledTimes(3);
-		const logged = error.mock.calls.map((call) => JSON.stringify(call));
+		expect(h.logger.entries).toHaveLength(3);
+		const logged = h.logger.entries.map((entry) => JSON.stringify(entry));
 		for (const line of logged) expect(line.length).toBeLessThan(600);
 		expect(logged[1]).not.toMatch(/victim|example\.com/);
 		expect(logged[2]).toMatch(/value <value>/);
 		expect(logged[2]).not.toMatch(/sss/);
-		error.mockRestore();
 	});
 });

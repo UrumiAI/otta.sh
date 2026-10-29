@@ -34,6 +34,7 @@ import {
 } from "@urumi.ai/otta-plugin";
 import type { APIRoute } from "astro";
 import { getEmDashEntry } from "emdash";
+import { getDb } from "emdash/runtime";
 import {
 	clearCartCookieIfBad,
 	ensureCartId,
@@ -46,6 +47,7 @@ import {
 	SERVICE_UNAVAILABLE,
 } from "../../lib/cart-actions.js";
 import { forgetCheckedOutCart } from "../../lib/cart-rotation.js";
+import { contentTableAnswers } from "../../lib/content-store.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import {
 	busyResponse,
@@ -155,6 +157,15 @@ export const POST: APIRoute = async (context) => {
 			return seeOther(context, returnTo, SERVICE_UNAVAILABLE, PRODUCT_ERROR_ID);
 		}
 		if (entry === null) {
+			// Not yet believed: em-dash's loader reports a MISSING TABLE as this
+			// same not-found (bare `return` → astro's LiveEntryNotFoundError), so
+			// a dead content store would tell the shopper the product is gone
+			// (issue #140). Ask whether the products table, and the core emdash
+			// tables the read depends on, can be read at all; if not it is the
+			// outage turn above, and the probe has logged it.
+			if (!(await contentTableAnswers("products", getDb, "add-to-cart content lookup"))) {
+				return seeOther(context, returnTo, SERVICE_UNAVAILABLE, PRODUCT_ERROR_ID);
+			}
 			return seeOther(context, returnTo, PRODUCT_NOT_FOUND, PRODUCT_ERROR_ID);
 		}
 

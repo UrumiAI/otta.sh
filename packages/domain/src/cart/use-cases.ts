@@ -14,6 +14,8 @@ import {
 	type RecordedCartMutation,
 } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
+import { describeErrorForLog } from "../ports/describe-error.js";
+import type { Logger } from "../ports/logger.js";
 import type { OrderStore } from "../ports/order-store.js";
 import { type InventoryStore, ReservationNotHeldError } from "../ports/inventory-store.js";
 import {
@@ -38,6 +40,8 @@ import {
 export const DEFAULT_HOLD_TTL_MS = 15 * 60 * 1000;
 
 export interface CartDeps {
+	/** Where this path's diagnostics go (the caller owns the sink). */
+	logger: Logger;
 	cartStore: CartStore;
 	inventoryStore: InventoryStore;
 	clock: Clock;
@@ -389,10 +393,9 @@ export async function addLine(
 		try {
 			await deps.cartStore.abandonClaim(cartId, key);
 		} catch (err) {
-			console.warn(
-				"[domain] addLine: could not retire an out-of-stock claim:",
-				err instanceof Error ? err.message : String(err),
-			);
+			deps.logger.warn("[domain] addLine: could not retire an out-of-stock claim:", {
+				error: describeErrorForLog(err),
+			});
 		}
 		return { ok: false, reason: "OUT_OF_STOCK" };
 	}
@@ -626,7 +629,7 @@ async function resolveMutationKey(
 		// The signal that the fallback is still in use, so it can be dropped once
 		// it goes quiet. Never the key (a shared-cache key is everyone's) nor the
 		// cart id (a bearer secret).
-		console.info("[domain] cart mutation resolved a pre-#609 bare key", {
+		deps.logger.info("[domain] cart mutation resolved a pre-#609 bare key", {
 			kind: bare.kind,
 			completed: bare.completed,
 		});

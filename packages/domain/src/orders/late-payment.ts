@@ -1,6 +1,7 @@
 import type { Cents, Currency } from "../money/cents.js";
 import { idempotencyKey, type IdempotencyKey, type OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import type { Logger } from "../ports/logger.js";
 import type {
 	CapturedPayment,
 	OrderEvent,
@@ -174,6 +175,8 @@ export interface LatePaymentDeps {
 	orderStore: OrderStore;
 	paymentEventStore: PaymentEventStore;
 	clock: Clock;
+	/** Forwarded to the refund. Optional (no-op when absent). */
+	logger?: Logger;
 }
 
 /** The captured money in question — a verified success, or (on a sweep resume)

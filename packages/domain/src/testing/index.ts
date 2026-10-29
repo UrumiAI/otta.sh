@@ -1,5 +1,6 @@
 // IO-free test utilities (in-memory fakes + contract suites).
 export { CountingIdGen, FixedClock } from "./deterministic.js";
+export { RecordingLogger, type LogEntry } from "./recording-logger.js";
 export {
 	InMemoryInventoryStore,
 	type InMemoryInventoryStoreOptions,

@@ -173,7 +173,6 @@ describe("the ORDER decides whether its payment carries a customer (review round
 		const failingStore = overriding(store, {
 			recordPaymentIntent: () => Promise.reject(new Error("write lost")),
 		});
-		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 		const deps = { ...h.createDeps, orderStore: failingStore, gateways: { stripe: gateway } };
 		const cartId = await digitalCart();
 		await createOrderFromCart(deps, {
@@ -182,11 +181,10 @@ describe("the ORDER decides whether its payment carries a customer (review round
 			shippingAddress: ADDRESS,
 		});
 		await createOrderFromCart(deps, cmd(cartId));
-		expect(errors).toHaveBeenCalled();
+		expect(h.logger.entries.some((e) => e.level === "error")).toBe(true);
 		// Nothing recorded, so no `customerRef` — but the yes/no is the order's.
 		expect(inputs[1]).not.toHaveProperty("customerRef");
 		expect(inputs.map((i) => i.customerRequired)).toEqual([true, true]);
-		errors.mockRestore();
 	});
 
 	test("an order created before the snapshot existed carries none: the gateway decides, as before", async () => {
@@ -220,7 +218,6 @@ describe("the ORDER decides whether its payment carries a customer (review round
 		const failingStore = overriding(store, {
 			listPaymentIntents: () => Promise.reject(new Error("read failed")),
 		});
-		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 		const replay = await createOrderFromCart(
 			{ ...h.createDeps, orderStore: failingStore, gateways: { stripe: gateway } },
 			cmd(cartId),
@@ -228,12 +225,12 @@ describe("the ORDER decides whether its payment carries a customer (review round
 		expect(replay).toEqual({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
 		// Logged like any other intent failure, and the gateway was asked nothing:
 		// guessing "none" could change the request Stripe already holds.
-		expect(errors).toHaveBeenCalledWith(
-			"[domain] createIntent failed → PAYMENT_INTENT_FAILED",
-			expect.objectContaining({ gateway: "stripe", retryable: true }),
-		);
+		expect(h.logger.entries).toContainEqual({
+			level: "error",
+			message: "[domain] createIntent failed → PAYMENT_INTENT_FAILED",
+			fields: expect.objectContaining({ gateway: "stripe", retryable: true }),
+		});
 		expect(inputs).toHaveLength(1);
-		errors.mockRestore();
 
 		// The buyer's same-key retry, once the store answers, goes through.
 		const retry = await createOrderFromCart(

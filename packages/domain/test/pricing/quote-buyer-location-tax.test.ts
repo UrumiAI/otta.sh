@@ -1,3 +1,4 @@
+import { RecordingLogger } from "../../src/testing/recording-logger.js";
 import { beforeEach, describe, expect, test } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import { idempotencyKey } from "../../src/money/ids.js";
@@ -20,6 +21,7 @@ import { InMemoryTaxRulesStore } from "../../src/testing/in-memory-tax-rules-sto
  */
 const USD = currency("USD");
 let deps: QuoteDeps;
+let logger: RecordingLogger;
 let settings: InMemorySettingsStore;
 let seq = 0;
 
@@ -29,7 +31,8 @@ beforeEach(async () => {
 	const taxRules = new InMemoryTaxRulesStore();
 	settings = new InMemorySettingsStore();
 	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
-	deps = { shippingRules, taxRules, couponStore, clock, settings };
+	logger = new RecordingLogger();
+	deps = { shippingRules, taxRules, couponStore, clock, logger, settings };
 	// The shop is in the UK (20%); buyers in Germany (19%) and the US (CA 7.25%).
 	await shippingRules.createZone({ id: "z-gb", name: "UK", regions: ["GB"] });
 	await shippingRules.createZone({ id: "z-de", name: "Germany", regions: ["DE"] });

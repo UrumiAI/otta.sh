@@ -18,6 +18,7 @@ import {
 	CountingIdGen,
 	FakePaymentGateway,
 	FixedClock,
+	RecordingLogger,
 	InMemoryCartStore,
 	InMemoryCouponStore,
 	InMemoryEntitlementStore,
@@ -49,6 +50,8 @@ export interface OrderHarness {
 	stripeGw: FakePaymentGateway;
 	/** A Stripe-id gateway that cannot refund (`refundable:false`): the manual / record-only path. */
 	manualGw: FakePaymentGateway;
+	/** Records what the create-order path logs; the same instance is `createDeps.logger`. */
+	logger: RecordingLogger;
 	createDeps: CreateOrderDeps;
 	cartDeps: CartDeps;
 	settleDeps: SettleDeps;
@@ -104,7 +107,8 @@ export function makeOrderHarness(): OrderHarness {
 	const stripeGw = new FakePaymentGateway({ id: "stripe" });
 	const manualGw = new FakePaymentGateway({ id: "stripe", refundable: false });
 
-	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock };
+	const logger = new RecordingLogger();
+	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock, logger };
 	const createDeps: CreateOrderDeps = {
 		orderStore,
 		cartStore,
@@ -114,6 +118,7 @@ export function makeOrderHarness(): OrderHarness {
 		taxRules,
 		couponStore,
 		clock,
+		logger,
 		idGen: new CountingIdGen("order"),
 		gateways: { stripe: stripeGw },
 	};
@@ -129,6 +134,7 @@ export function makeOrderHarness(): OrderHarness {
 		inventoryStore: inventory,
 		couponStore,
 		clock,
+		logger,
 	};
 
 	/** A seeded product is a SELLABLE one: published through the same publish-gate
@@ -154,6 +160,7 @@ export function makeOrderHarness(): OrderHarness {
 		couponStore,
 		stripeGw,
 		manualGw,
+		logger,
 		createDeps,
 		cartDeps,
 		settleDeps,

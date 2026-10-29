@@ -5,12 +5,14 @@ import {
 	FixedClock,
 	InMemoryCartStore,
 	InMemoryInventoryStore,
+	RecordingLogger,
 } from "@urumi.ai/otta-domain/testing";
 
 export interface FakeCartHarness extends CartStoreHarness {
 	inventory: InMemoryInventoryStore;
 	cartStore: InMemoryCartStore;
 	clock: FixedClock;
+	logger: RecordingLogger;
 }
 
 /** Wire the IO-free cart + inventory fakes + a fake Clock into a cart harness. */
@@ -32,9 +34,16 @@ export function makeFakeCartHarness(): FakeCartHarness {
 			void inventory.release(id);
 		},
 	});
-	const deps: CartDeps = { cartStore, inventoryStore: inventory, clock };
+	const logger = new RecordingLogger();
+	const deps: CartDeps = {
+		cartStore,
+		inventoryStore: inventory,
+		clock,
+		logger,
+	};
 	return {
 		deps,
+		logger,
 		inventory,
 		cartStore,
 		clock,

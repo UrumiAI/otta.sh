@@ -7,6 +7,7 @@ import {
 	InMemoryInventoryStore,
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
+	RecordingLogger,
 	latePaymentContract,
 } from "@urumi.ai/otta-domain/testing";
 
@@ -27,7 +28,7 @@ latePaymentContract(
 				paymentEventStore: new InMemoryPaymentEventStore(),
 				clock,
 			},
-			expireDeps: { orderStore, inventoryStore, couponStore, clock },
+			expireDeps: { orderStore, inventoryStore, couponStore, clock, logger: new RecordingLogger() },
 			async seedOrderWithoutAudit(row) {
 				orderStore.seedSummaryOrder(row);
 			},

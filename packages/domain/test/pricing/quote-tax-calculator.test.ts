@@ -1,3 +1,4 @@
+import { RecordingLogger } from "../../src/testing/recording-logger.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import { computeQuote, type QuoteCommand, type QuoteDeps } from "../../src/pricing/quote.js";
@@ -20,6 +21,7 @@ import { InMemoryTaxRulesStore } from "../../src/testing/in-memory-tax-rules-sto
  */
 const USD = currency("USD");
 let deps: QuoteDeps;
+let logger: RecordingLogger;
 let taxRules: InMemoryTaxRulesStore;
 let couponStore: InMemoryCouponStore;
 
@@ -28,7 +30,8 @@ beforeEach(async () => {
 	const shippingRules = new InMemoryShippingRulesStore();
 	taxRules = new InMemoryTaxRulesStore();
 	couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
-	deps = { shippingRules, taxRules, couponStore, clock };
+	logger = new RecordingLogger();
+	deps = { shippingRules, taxRules, couponStore, clock, logger };
 	await shippingRules.createZone({ id: "z-us", name: "US", regions: ["US"] });
 	await shippingRules.createMethod({ id: "m", zoneId: "z-us", name: "Flat", type: "flat_rate" });
 	await shippingRules.createRate({
@@ -224,20 +227,18 @@ describe("computeQuote → TaxCalculator", () => {
 			async () => ({ ok: true, currency: currency("EUR"), lines: [], shipping: null }) as never,
 		],
 	])("an outside calculator that %s ⇒ TAX_UNAVAILABLE", async (_name, calculate) => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const res = await computeQuote(
 			{ ...deps, taxCalculator: { id: "acme.tax", calculate } },
 			command,
 		);
 		expect(res).toEqual({ ok: false, reason: "TAX_UNAVAILABLE" });
 		// Logged by calculator id, never with the buyer's address.
-		expect(warn).toHaveBeenCalledTimes(1);
-		expect(JSON.stringify(warn.mock.calls)).toContain("acme.tax");
-		expect(JSON.stringify(warn.mock.calls)).not.toContain("10001");
+		expect(logger.entries).toHaveLength(1);
+		expect(JSON.stringify(logger.entries)).toContain("acme.tax");
+		expect(JSON.stringify(logger.entries)).not.toContain("10001");
 	});
 
 	test("a tax that is safe on its own but overflows the order total ⇒ TAX_UNAVAILABLE, not a throw", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		// One 9e14 line: its tax (8.5e15, under the 1000% cap) is a safe integer,
 		// but 9e14 + 500 shipping + 8.5e15 is past Number.MAX_SAFE_INTEGER.
 		const huge: QuoteCommand = {
@@ -252,7 +253,7 @@ describe("computeQuote → TaxCalculator", () => {
 		}));
 		const res = await computeQuote({ ...deps, taxCalculator: calc }, huge);
 		expect(res).toEqual({ ok: false, reason: "TAX_UNAVAILABLE" });
-		expect(warn).toHaveBeenCalledTimes(1);
+		expect(logger.entries).toHaveLength(1);
 	});
 
 	test.each([150_000, 2_000_000])(
@@ -282,7 +283,6 @@ describe("computeQuote → TaxCalculator", () => {
 	);
 
 	test("a calculator with an unusable id is refused before it is called", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const calc = fake();
 		const res = await computeQuote(
 			{ ...deps, taxCalculator: { ...calc, id: "bad id\n" } },
@@ -294,7 +294,6 @@ describe("computeQuote → TaxCalculator", () => {
 
 	test(`a calculator that never answers times out at ${String(DEFAULT_TAX_CALCULATOR_TIMEOUT_MS)} ms ⇒ TAX_UNAVAILABLE`, async () => {
 		expect(DEFAULT_TAX_CALCULATOR_TIMEOUT_MS).toBe(5_000);
-		vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.useFakeTimers();
 		let settled = false;
 		const pending = computeQuote(
@@ -321,7 +320,6 @@ describe("computeQuote → TaxCalculator", () => {
 	// Issue #447: the request carries an AbortSignal tied to the calculator's
 	// timeout, so a calculator doing its own IO can stop when Otta stops waiting.
 	test("an outside calculator's request carries a live signal, aborted at the timeout", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.useFakeTimers();
 		let signal: AbortSignal | undefined;
 		let abortedWith: unknown;

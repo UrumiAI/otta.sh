@@ -64,6 +64,13 @@
  * would 404 every buyer (`lib/download-attach-guard.ts`). Every other write
  * passes through.
  *
+ * THE RATE LIMIT (issues #91, #29). Right after the origin check, the
+ * anonymous writes (cart, checkout) and the sign-in requests are counted per
+ * client IP against a Cloudflare Rate Limiting binding, and answered 429 over
+ * the limit. Without the binding it lets everything through. The route list,
+ * the limits and why the site's in-process plugin calls are not counted twice
+ * live in `lib/rate-limit.ts`.
+ *
  * THE PAY PAGE'S PERMISSIONS-POLICY (issue #108). EmDash stamps
  * `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()` on
  * any response that has none, and `payment=()` keeps Google Pay (and the other
@@ -85,6 +92,7 @@ import { UPLOAD_MIN_ROLE } from "./lib/download-upload.js";
 import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { rejectCrossOrigin } from "./lib/origin-guard.js";
+import { enforceRateLimit } from "./lib/rate-limit.js";
 import { playgroundGate, withPlaygroundBanner } from "./lib/playground-gate.js";
 import { themeFor } from "./themes/registry.js";
 import { DEFAULT_THEME_ID } from "./themes/manifest.js";
@@ -143,6 +151,11 @@ async function handle(context: APIContext, next: MiddlewareNext): Promise<Respon
 	// CSRF first: a refused write never reaches its endpoint.
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
+	// Per-IP limits on the anonymous writes and the login requests (#91, #29),
+	// after CSRF so a refused forgery spends no budget. Fails open without the
+	// binding (lib/rate-limit.ts).
+	const limited = await enforceRateLimit(context, env);
+	if (limited !== null) return limited;
 	const proceed = async () => withPlaygroundBanner(await next());
 
 	const { request, url, cookies } = context;

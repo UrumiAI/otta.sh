@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
 	addLine,
 	type CartDeps,
@@ -13,6 +13,7 @@ import {
 import { currency } from "../money/cents.js";
 import { idempotencyKey, orderId as brandOrderId, sku } from "../money/ids.js";
 import type { UpsertLineInput } from "../ports/cart-store.js";
+import { RecordingLogger } from "./recording-logger.js";
 
 export interface CartStoreHarness {
 	deps: CartDeps;
@@ -364,9 +365,10 @@ export function cartStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(9);
 
 			// The fallback says when it is used, with neither the key nor the cart id.
-			const info = vi.spyOn(console, "info").mockImplementation(() => {});
+			const logger = new RecordingLogger();
+			const deps = { ...h.deps, logger };
 			const replay = await addLine(
-				h.deps,
+				deps,
 				cartA,
 				sku("SKU-1"),
 				null,
@@ -375,27 +377,23 @@ export function cartStoreContract(
 			);
 			expect(replay.ok && replay.line.lineId).toBe(legacy.lineId);
 			expect(await h.onHand("SKU-1")).toBe(9);
-			expect(info.mock.calls).toEqual([
-				["[domain] cart mutation resolved a pre-#609 bare key", { kind: "add", completed: true }],
+			expect(logger.entries).toEqual([
+				{
+					level: "info",
+					message: "[domain] cart mutation resolved a pre-#609 bare key",
+					fields: { kind: "add", completed: true },
+				},
 			]);
-			info.mockClear();
+			logger.entries.length = 0;
 
-			const other = await addLine(
-				h.deps,
-				cartB,
-				sku("SKU-1"),
-				null,
-				1,
-				idempotencyKey("pdp:legacy"),
-			);
+			const other = await addLine(deps, cartB, sku("SKU-1"), null, 1, idempotencyKey("pdp:legacy"));
 			expect(other.ok).toBe(true);
 			if (!other.ok) return;
 			expect(other.line.cartId).toBe(cartB);
 			expect(other.line.reservationId).not.toBe(legacy.reservationId);
 			expect(await h.onHand("SKU-1")).toBe(8);
 			// Another cart's bare record is not this cart's fallback: nothing logged.
-			expect(info).not.toHaveBeenCalled();
-			info.mockRestore();
+			expect(logger.entries).toEqual([]);
 		});
 
 		test("a pre-#609 add left in flight resumes on its own cart's retry, on the hold it reserved", async () => {

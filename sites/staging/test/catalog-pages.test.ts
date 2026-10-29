@@ -263,7 +263,7 @@ describe("§8 — the home hero and its degraded rule", () => {
 		// fallback is `{}`, which `storeThesis` already resolves (see store-settings.ts).
 		expect(HOME).toMatch(/let settings: StoreSettings = \{\}/);
 		// The collection's non-throwing arm is inspected too, not just awaited.
-		expect(HOME).toContain("collection.error === undefined");
+		expect(HOME).toContain("collection.error !== undefined");
 	});
 
 	test("the tape's price cell is PriceTag, not a second copy of it", () => {
@@ -621,5 +621,57 @@ describe("§10 — shopper-side copy", () => {
 			const description = product.data.description ?? "";
 			expect(description.length, `${product.slug} has no description`).toBeGreaterThan(0);
 		}
+	});
+});
+
+const frontmatter = (source: string): string => source.slice(0, source.indexOf("\n---", 3));
+
+describe("a missing content TABLE is an outage, not a missing product (issue #140)", () => {
+	// em-dash's loader folds a missing-table fault into `{ entry: null }` /
+	// `{ entries: [] }` with no `error`, so each page asks `contentTableAnswers`
+	// (behaviourally tested in content-store.test.ts) before it believes an
+	// empty answer — and ONLY then, so a page that found its content pays
+	// nothing extra.
+	test("every catalog page probes through emdash's own public db handle", () => {
+		for (const [name, source] of [
+			["PDP", PDP],
+			["PLP", PLP],
+			["home", HOME],
+		] as const) {
+			expect(source, `${name} does not import getDb`).toMatch(
+				/import \{ getDb \} from "emdash\/runtime";/,
+			);
+			expect(source, `${name} does not probe`).toMatch(
+				/contentTableAnswers\("products", getDb, "[^"]+"\)/,
+			);
+		}
+	});
+
+	test("the PDP probes only when no entry came back and nothing else already said outage", () => {
+		expect(frontmatter(PDP)).toMatch(
+			/if \(entry === null && !contentUnavailable\) \{[\s\S]{0,400}contentUnavailable = !\(await contentTableAnswers\(/,
+		);
+		// …and the probe is decided BEFORE the 404/503 split reads the flag.
+		expect(PDP.indexOf("contentTableAnswers(")).toBeLessThan(
+			PDP.indexOf("Astro.response.status = contentUnavailable ? 503 : 404;"),
+		);
+	});
+
+	test("the shop page probes an empty collection, and an unreadable table takes the outage branch", () => {
+		const head = frontmatter(PLP);
+		expect(head).toMatch(
+			/collection\.entries\.length === 0 &&\s*!\(await contentTableAnswers\("products", getDb, "[^"]+"\)\)\s*\)\s*\{[\s\S]{0,600}?\bcatalogUnavailable = true;/,
+		);
+		// Decided before the 503 is set and before the state is chosen, so the
+		// dead store never reaches "No products yet." / "Open the admin".
+		expect(head.indexOf("contentTableAnswers(")).toBeLessThan(
+			head.indexOf("if (catalogUnavailable) {"),
+		);
+	});
+
+	test("the home page drops an unreadable catalog to its degraded rule, not a zero count", () => {
+		expect(frontmatter(HOME)).toMatch(
+			/collection\.entries\.length === 0 &&\s*!\(await contentTableAnswers\("products", getDb, "[^"]+"\)\)\s*\)\s*\{[\s\S]{0,600}?\bentries = null;/,
+		);
 	});
 });
