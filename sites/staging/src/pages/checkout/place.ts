@@ -52,6 +52,7 @@ import {
 	type DraftFieldError,
 } from "../../lib/checkout-draft.js";
 import {
+	COUNTRY_PARAM,
 	checkoutPath,
 	deliveryDiffers,
 	deliveryUpdatePath,
@@ -68,6 +69,11 @@ import {
 	TAX_LOCATION_FIELD,
 } from "../../lib/checkout-location.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
+import {
+	COUPON_ERROR_ID,
+	DELIVERY_ERROR_ID,
+	placeRefusalNoticeId,
+} from "../../lib/error-notice.js";
 import { readStripePublishableKey } from "../../lib/stripe-config.js";
 import {
 	busyResponse,
@@ -276,7 +282,7 @@ async function place(context: APIContext): Promise<Response> {
 	const refuse = (
 		path: string,
 		error: string | undefined,
-		extra: { fields?: FieldErrors; coupon?: string | undefined } = {},
+		extra: { fields?: FieldErrors; coupon?: string | undefined; noticeId?: string } = {},
 	): Response => {
 		const draft = {
 			values: draftValues,
@@ -286,9 +292,22 @@ async function place(context: APIContext): Promise<Response> {
 		};
 		// A draft too big for its cookie is not written — so an OLDER one must not
 		// stay behind to render stale values under this refusal.
-		if (checkoutDraftFits(draft)) writeCheckoutDraft(context.cookies, draft);
+		const fits = checkoutDraftFits(draft);
+		if (fits) writeCheckoutDraft(context.cookies, draft);
 		else clearCheckoutDraft(context.cookies);
-		return context.redirect(path, 303);
+		// #603: a refusal lands ON the notice the review says it in — the same
+		// decision the page renders by (`checkoutNoticeId`). `path` is
+		// `checkoutPath`'s, so it carries no fragment of its own. With no error,
+		// the caller's `noticeId`, if any: an Apply lands on the coupon's notice,
+		// which renders only when the summary refuses the code.
+		const noticeId =
+			error !== undefined
+				? placeRefusalNoticeId(error, {
+						coupon: fits && extra.coupon !== undefined && isCouponFailure(error),
+						country: new URLSearchParams(path.split("?")[1] ?? "").has(COUNTRY_PARAM),
+					})
+				: extra.noticeId;
+		return context.redirect(noticeId !== undefined ? `${path}#${noticeId}` : path, 303);
 	};
 	/** A redirect whose whole point is to come back WITH what was typed —
 	 *  Update, Apply, Remove. When the typed values cannot be kept it says so
@@ -296,7 +315,7 @@ async function place(context: APIContext): Promise<Response> {
 	const refuseKeeping = (
 		build: (error: string | undefined) => string,
 		error: string | undefined,
-		extra: { fields?: FieldErrors } = {},
+		extra: { fields?: FieldErrors; noticeId?: string } = {},
 	): Response => {
 		const fits = checkoutDraftFits({
 			values: draftValues,
@@ -380,7 +399,7 @@ async function place(context: APIContext): Promise<Response> {
 		return refuseKeeping(
 			(error) => checkoutPath({ ...selection, couponCode: typedCode, error }),
 			staleToken,
-			{ fields: staleMark },
+			{ fields: staleMark, noticeId: COUPON_ERROR_ID },
 		);
 	}
 	if (
@@ -392,7 +411,7 @@ async function place(context: APIContext): Promise<Response> {
 		return refuseKeeping(
 			(error) => checkoutPath({ ...selection, couponCode: typedCode, error }),
 			staleToken,
-			{ fields: staleMark },
+			{ fields: staleMark, noticeId: COUPON_ERROR_ID },
 		);
 	}
 
@@ -443,7 +462,9 @@ async function place(context: APIContext): Promise<Response> {
 	) {
 		const token =
 			deliveryMismatch && hasRegionList(deliveryCountry) ? REGION_LIST_UPDATED : undefined;
-		return refuseKeeping((error) => deliveryUpdatePath(delivery, couponCode, error), token);
+		return refuseKeeping((error) => deliveryUpdatePath(delivery, couponCode, error), token, {
+			noticeId: DELIVERY_ERROR_ID,
+		});
 	}
 
 	// UPDATE ADDRESS — the address block's own country (a page with no delivery

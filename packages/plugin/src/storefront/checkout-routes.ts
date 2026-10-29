@@ -425,6 +425,14 @@ function without(
 export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummaryRouteInput> {
 	return (routeCtx, ctx): Promise<CheckoutSummaryRouteResult> =>
 		renderGuard(STOREFRONT_CHECKOUT_SUMMARY_ROUTE, async () => {
+			// Like the order routes' ids: a STRING that cannot be a cart id names no
+			// cart — CART_NOT_FOUND, which the site reads as a bad cookie and drops
+			// (#610). Left to the parser, it was INVALID_INPUT, or the client's throw
+			// as RENDER_FAILED. Not a string at all is a malformed call.
+			const rawCartId = routeCtx.input.cartId;
+			if (typeof rawCartId === "string" && !isIdToken(rawCartId.trim())) {
+				return { ok: false, reason: "CART_NOT_FOUND" } as const;
+			}
 			const input = parseCheckoutSummaryInput(routeCtx.input);
 			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
 

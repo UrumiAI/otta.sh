@@ -28,6 +28,7 @@
  */
 import {
 	addLine,
+	cartMutationKey,
 	createCart,
 	currency,
 	expireHolds,
@@ -146,7 +147,7 @@ describeEachDialect("cart crash seams", (ctx) => {
 		// The claim is the whole of the first step, so "died before the reserve" is
 		// exactly a claim with nothing after it.
 		const claim = await h.deps.cartStore.claimMutation({
-			key: idempotencyKey("k1"),
+			key: cartMutationKey(cartId, idempotencyKey("k1")),
 			cartId,
 			kind: "add",
 		});
@@ -155,7 +156,9 @@ describeEachDialect("cart crash seams", (ctx) => {
 		// What durably landed: an INCOMPLETE record, no line, no stock moved. The
 		// incompleteness is load-bearing — it is what tells a replayer to resume,
 		// and what scopes the sweep's dangling arm to cart-originated holds.
-		const stored = await h.deps.cartStore.recordedMutation(idempotencyKey("k1"));
+		const stored = await h.deps.cartStore.recordedMutation(
+			cartMutationKey(cartId, idempotencyKey("k1")),
+		);
 		expect(stored).toMatchObject({ cartId, kind: "add", completed: false });
 		expect(await h.onHand("SKU-1")).toBe(5);
 		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
@@ -164,7 +167,10 @@ describeEachDialect("cart crash seams", (ctx) => {
 		expect(replay.ok).toBe(true);
 		expect(await h.onHand("SKU-1")).toBe(3); // one decrement, not two
 		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(1);
-		expect((await h.deps.cartStore.recordedMutation(idempotencyKey("k1")))?.completed).toBe(true);
+		expect(
+			(await h.deps.cartStore.recordedMutation(cartMutationKey(cartId, idempotencyKey("k1"))))
+				?.completed,
+		).toBe(true);
 	});
 
 	test("(b) the reserve landed, the completion never did — the replay completes without a second decrement", async () => {
@@ -173,8 +179,9 @@ describeEachDialect("cart crash seams", (ctx) => {
 		const { h, arm, failed } = faulted(1, "instead");
 		await h.seedStock("SKU-1", 5);
 		const cartId = await createCart(h.deps, USD);
-		await h.deps.cartStore.claimMutation({ key: idempotencyKey("k1"), cartId, kind: "add" });
-		const reserved = await h.deps.inventoryStore.reserve("SKU-1", 2, idempotencyKey("k1"));
+		const k1 = cartMutationKey(cartId, idempotencyKey("k1"));
+		await h.deps.cartStore.claimMutation({ key: k1, cartId, kind: "add" });
+		const reserved = await h.deps.inventoryStore.reserve("SKU-1", 2, k1);
 		if (!reserved.ok) throw new Error("the seed reserve must succeed");
 
 		arm();
@@ -186,7 +193,7 @@ describeEachDialect("cart crash seams", (ctx) => {
 				qty: 2,
 				reservationId: reserved.reservationId,
 				expiresAt: new Date(h.clock.now().getTime() + 15 * 60 * 1000).toISOString(),
-				key: idempotencyKey("k1"),
+				key: k1,
 			}),
 		);
 		expect(failed()).toBe(1);
@@ -319,7 +326,8 @@ describeEachDialect("cart crash seams", (ctx) => {
 		});
 		const inventoryDoc = await h.inventoryDocs.get("SKU-1");
 		if (inventoryDoc === null) throw new MissingDocumentError("inventory", "SKU-1");
-		const stillLive = normalizeInventoryDoc(inventoryDoc).holds[idempotencyKey("k1")];
+		const stillLive =
+			normalizeInventoryDoc(inventoryDoc).holds[cartMutationKey(cartId, idempotencyKey("k1"))];
 		expect(stillLive?.state).toBe("held"); // the hold really does look live
 
 		h.advance(PAST_TTL_MS);
@@ -361,7 +369,10 @@ describeEachDialect("cart crash seams", (ctx) => {
 		// terminal record, not the hold's own state field.
 		const inventoryDoc = await h.inventoryDocs.get("SKU-1");
 		if (inventoryDoc === null) throw new MissingDocumentError("inventory", "SKU-1");
-		expect(normalizeInventoryDoc(inventoryDoc).holds[idempotencyKey("k1")]?.state).toBe("held");
+		expect(
+			normalizeInventoryDoc(inventoryDoc).holds[cartMutationKey(cartId, idempotencyKey("k1"))]
+				?.state,
+		).toBe("held");
 		expect(await h.inventory.stampHoldDeadline(reservationId, "2026-07-10T00:30:00.000Z")).toBe(
 			false,
 		);
@@ -439,12 +450,14 @@ describeEachDialect("cart crash seams", (ctx) => {
 		expect(await h.onHand("SKU-1")).toBe(5);
 		const doc = await h.inventoryDocs.get("SKU-1");
 		if (doc === null) throw new MissingDocumentError("inventory", "SKU-1");
-		expect(normalizeInventoryDoc(doc).holds[idempotencyKey("k1")]).toBeUndefined();
+		expect(
+			normalizeInventoryDoc(doc).holds[cartMutationKey(cartId, idempotencyKey("k1"))],
+		).toBeUndefined();
 		expect((await rawIndex.get(reservationId))?.terminalState).toBeUndefined();
 		const reserveKey = await collectionOf<ReservationKeyDoc>(
 			bound.storage,
 			RESERVATION_KEYS_COLLECTION,
-		).get(idempotencyKey("k1"));
+		).get(cartMutationKey(cartId, idempotencyKey("k1")));
 		expect(reserveKey).toMatchObject({ state: "terminal", reservationId });
 		expect((await getCart(h.deps, cartId))?.lines[0]?.reservationState).toBe("pending");
 

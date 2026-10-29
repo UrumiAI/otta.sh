@@ -57,6 +57,7 @@ import {
 	readFormBody,
 	safeReturnPath,
 } from "../../lib/otta-api.js";
+import { PRODUCT_ERROR_ID } from "../../lib/error-notice.js";
 
 export const POST: APIRoute = async (context) => {
 	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006).
@@ -94,7 +95,7 @@ export const POST: APIRoute = async (context) => {
 	// Over the cap: the plugin refuses it as QTY_TOO_LARGE anyway, so answer that
 	// here, before `ensureCartId` can mint a cart for an add that cannot succeed
 	// (QA U-6). The copy names the limit.
-	if (qty > CART_LINE_MAX_QTY) return seeOther(context, returnTo, QTY_TOO_LARGE);
+	if (qty > CART_LINE_MAX_QTY) return seeOther(context, returnTo, QTY_TOO_LARGE, PRODUCT_ERROR_ID);
 
 	const handler = routeDispatcher(context);
 
@@ -123,7 +124,7 @@ export const POST: APIRoute = async (context) => {
 			read = await getEmDashEntry("products", productId);
 		} catch (cause) {
 			console.error("[site-staging] add-to-cart content lookup threw:", cause);
-			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE, PRODUCT_ERROR_ID);
 		}
 		const { entry, error: entryError } = read;
 		// Reproduced live against a real dev instance (real astro:content live
@@ -151,10 +152,10 @@ export const POST: APIRoute = async (context) => {
 			entryError instanceof Error && entryError.name === "LiveEntryNotFoundError";
 		if (entryError !== undefined && !isNotFoundError) {
 			// A transient/DB issue is never mislabeled as "doesn't exist".
-			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE, PRODUCT_ERROR_ID);
 		}
 		if (entry === null) {
-			return seeOther(context, returnTo, PRODUCT_NOT_FOUND);
+			return seeOther(context, returnTo, PRODUCT_NOT_FOUND, PRODUCT_ERROR_ID);
 		}
 
 		// Entry exists — dispatch the SAME PDP route call `[slug].astro` makes
@@ -172,10 +173,10 @@ export const POST: APIRoute = async (context) => {
 		// fine, the store is momentarily busy — say so, not SERVICE_UNAVAILABLE.
 		if (isBusyResult(productResult)) return busyResponse(returnTo);
 		if (productResult === null || !productResult.ok) {
-			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE, PRODUCT_ERROR_ID);
 		}
 		if (!productResult.product.purchasable || productResult.product.sku !== sku) {
-			return seeOther(context, returnTo, PRODUCT_UNAVAILABLE);
+			return seeOther(context, returnTo, PRODUCT_UNAVAILABLE, PRODUCT_ERROR_ID);
 		}
 	}
 
@@ -196,7 +197,7 @@ export const POST: APIRoute = async (context) => {
 		// A busy `cart/create` (still busy after a keyed create's one retry) is the
 		// busy 503; any other failure is the ordinary SERVICE_UNAVAILABLE turn.
 		if (cart.reason === "busy") return busyResponse(returnTo);
-		return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+		return seeOther(context, returnTo, SERVICE_UNAVAILABLE, PRODUCT_ERROR_ID);
 	}
 
 	let result = await addTo(cart.cartId);
@@ -229,7 +230,7 @@ export const POST: APIRoute = async (context) => {
 		const fresh = await ensureCartId(context, handler, { replacesCartId: cart.cartId });
 		if (!fresh.ok) {
 			if (fresh.reason === "busy") return busyResponse(returnTo);
-			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE, PRODUCT_ERROR_ID);
 		}
 		result = await addTo(fresh.cartId);
 	}
@@ -245,7 +246,12 @@ export const POST: APIRoute = async (context) => {
 		// One unit refused is a sold-out item: "try a smaller quantity" would send
 		// the shopper looking for a quantity below 1 (QA2 F). More than one keeps
 		// the quantity sentence, which is true either way.
-		return seeOther(context, returnTo, token === "OUT_OF_STOCK" && qty === 1 ? "SOLD_OUT" : token);
+		return seeOther(
+			context,
+			returnTo,
+			token === "OUT_OF_STOCK" && qty === 1 ? "SOLD_OUT" : token,
+			PRODUCT_ERROR_ID,
+		);
 	}
 
 	return seeOther(context, "/cart");

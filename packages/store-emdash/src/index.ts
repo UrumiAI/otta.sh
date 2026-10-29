@@ -79,6 +79,7 @@ export { EmdashCartStore, type EmdashCartStoreOptions } from "./emdash-cart-stor
 export {
 	EmdashOrderStore,
 	type EmdashOrderStoreOptions,
+	type HoldAdoptionResult,
 	type HoldCompletionResult,
 	type OrderSkuIndexHealResult,
 } from "./emdash-order-store.js";
