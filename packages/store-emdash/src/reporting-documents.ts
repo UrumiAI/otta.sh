@@ -13,8 +13,9 @@
  * | `reporting_applied/{claim}` | one rollup event's claim — what makes a redelivered event a no-op |
  *
  * **The day is the grain, and the other two intervals are folds over it.** A week is
- * the seven day documents from its ISO Monday and a month is its own days, so nothing
- * is keyed by a week or a month and no second aggregate can disagree with the first.
+ * the seven day documents from its ISO Monday and a month is its own days. The one
+ * document keyed by a month, `reporting_monthly`, is a CACHE of those days that a
+ * reader uses only while it is provably their sum (see {@link ReportingMonthlyDoc}).
  * That is only sound because every boundary here is UTC and every coarser bucket is a
  * union of whole UTC days — which is exactly what the SQL's `date_trunc(…, AT TIME
  * ZONE 'UTC')` and `strftime(…)` computed, so the fold and the statement agree by
@@ -39,11 +40,17 @@
  * bucket), so the document has to.
  */
 import { REVENUE_COUNTING_STATES, type ReportInterval } from "@urumi.ai/otta-domain";
+import { codeUnitAsc } from "./product-commerce-documents.js";
 
 /** Collection name: the precomputed day counters. */
 export const REPORTING_DAILY_COLLECTION = "reporting_daily";
 /** Collection name: one claim per applied rollup event. */
 export const REPORTING_APPLIED_COLLECTION = "reporting_applied";
+/**
+ * Collection name: one document per UTC calendar month, the sum of that month's day
+ * documents in every currency (issue #572). See {@link ReportingMonthlyDoc}.
+ */
+export const REPORTING_MONTHLY_COLLECTION = "reporting_monthly";
 
 /** One collection as the plugin descriptor declares it. */
 export interface ReportingCollectionIndexDeclaration {
@@ -72,8 +79,16 @@ export interface ReportingCollectionIndexDeclaration {
  */
 export const REPORTING_COLLECTIONS: Readonly<Record<string, ReportingCollectionIndexDeclaration>> =
 	{
-		[REPORTING_DAILY_COLLECTION]: { indexes: ["currency", "date"] },
-		[REPORTING_APPLIED_COLLECTION]: { indexes: ["date", "orderId"] },
+		// `productsDirty` is what the rollup sweep finds a day whose product lines need
+		// building by (issue #572): `1` when an order of it entered or left the revenue
+		// set, absent on a document written before product lines existed.
+		[REPORTING_DAILY_COLLECTION]: { indexes: ["currency", "date", "productsDirty"] },
+		// `appliedAt` (issue #572): a month rebuild counts the month's claims still
+		// unstamped — events that may not have moved their day yet.
+		[REPORTING_APPLIED_COLLECTION]: { indexes: ["date", "orderId", "appliedAt"] },
+		// `month` is what a long window binds; `dirty` is what the sweep finds a month to
+		// rebuild by.
+		[REPORTING_MONTHLY_COLLECTION]: { indexes: ["month", "dirty"] },
 	};
 
 /** The revenue-counting allow-list as a set — built once from the domain constant. */
@@ -201,6 +216,31 @@ export interface ReportingDailyStoredDoc {
 	 */
 	stateCounts?: Record<string, number> | null;
 	updatedAt?: string;
+	/**
+	 * The day's top-products figures: one line per `(productId, title)` sold that day in
+	 * this currency, over the orders currently in a revenue-counting state (issue #572).
+	 * BUILT, never moved by a delta: a recompute or a product build writes it from the
+	 * day's orders, because one event can touch any number of products and a guarded
+	 * delta addresses a bounded number of fields. See {@link storedProductLines}.
+	 */
+	products?: ReportingProductLine[] | null;
+	/**
+	 * Whether {@link products} still describes the day. `0`: it does. `1`: an order of
+	 * the day has entered or left the revenue set since it was built, so a reader scans
+	 * the day's orders instead and the rollup sweep rebuilds it. ABSENT: the document
+	 * predates product lines (a store upgraded across #572), which reads exactly like
+	 * `1` and is what the sweep's backfill finds.
+	 */
+	productsDirty?: number;
+	/**
+	 * The `epoch` the {@link products} were built at. Every writer in this version that
+	 * moves `epoch` (a recompute's commit) writes the lines with it, and a product build
+	 * is guarded on the epoch it stamps — so a line set whose epoch is not the
+	 * document's was left behind by a writer that does not know about lines: a
+	 * recompute from a build older than #572 running in a rollback or mixed-version
+	 * window. Such lines are untrusted, exactly as dirty ones are.
+	 */
+	productsEpoch?: number;
 	/** The per-state counters, one field per state (current shape only). */
 	[field: StateCountField]: number | undefined;
 }
@@ -263,6 +303,7 @@ export function toStoredReportingDailyDoc(
 	doc: ReportingDailyDoc,
 	epoch: number,
 	seq: number,
+	products?: readonly ReportingProductLine[],
 ): CurrentReportingDailyDoc {
 	const stored: CurrentReportingDailyDoc = {
 		currency: doc.currency,
@@ -275,6 +316,13 @@ export function toStoredReportingDailyDoc(
 		refundedCents: doc.refundedCents,
 		updatedAt: doc.updatedAt,
 	};
+	// Lines given are lines BUILT from the day's orders (or a new, empty day): clean.
+	// None given keeps the document's product lines unknown, which reads as dirty.
+	if (products !== undefined) {
+		stored.products = [...products];
+		stored.productsDirty = 0;
+		stored.productsEpoch = epoch;
+	}
 	for (const [state, count] of Object.entries(normalizeStateCounts(doc.stateCounts))) {
 		stored[stateCountField(state)] = count;
 	}
@@ -558,4 +606,194 @@ export function addAggregate(total: number, part: number): number {
 		);
 	}
 	return sum;
+}
+
+// -- top products and the month grain (issue #572) ----------------------------------
+
+/**
+ * One product's sales in a rollup document: the `(productId, title)` group the
+ * `topProducts` report ranks, over the orders currently in a revenue-counting state.
+ * `qty` is the units sold and `cents` the gross item revenue (`quantity × unitPrice`
+ * off the frozen line snapshot), in the document's currency.
+ */
+export interface ReportingProductLine {
+	readonly productId: string;
+	readonly title: string;
+	readonly qty: number;
+	readonly cents: number;
+}
+
+/**
+ * `productsDirty` on a day whose lines the rollup sweep could not build within the
+ * most a tick could ever give it (its orders are too many to read in one): a reader
+ * scans the day's orders, the backfill stops listing it, and a delta that moves its
+ * revenue set marks it `1` again, which retries it.
+ */
+export const PRODUCTS_UNBUILDABLE = 2;
+
+/**
+ * A stored day document's product lines, or `null` when they cannot be trusted: never
+ * built (a document from before #572), dirty or unbuildable since, or built at an
+ * epoch a writer unaware of lines has since moved past (see `productsEpoch`).
+ */
+export function storedProductLines(
+	doc: ReportingDailyStoredDoc,
+): readonly ReportingProductLine[] | null {
+	return doc.productsDirty === 0 &&
+		Array.isArray(doc.products) &&
+		doc.productsEpoch !== undefined &&
+		doc.productsEpoch === doc.epoch
+		? doc.products
+		: null;
+}
+
+/**
+ * Fold product lines into a running group map, keyed by `(productId, title)`: the
+ * grouping the SQL's `GROUP BY oi.product_id, oi.title` made. The sums refuse to lose
+ * precision exactly as every other reporting sum does.
+ */
+export function addProductLine(
+	groups: Map<string, ReportingProductLine>,
+	line: ReportingProductLine,
+): void {
+	const key = `${line.productId}\u0000${line.title}`;
+	const held = groups.get(key);
+	groups.set(
+		key,
+		held === undefined
+			? { productId: line.productId, title: line.title, qty: line.qty, cents: line.cents }
+			: {
+					productId: held.productId,
+					title: held.title,
+					qty: addAggregate(held.qty, line.qty),
+					cents: addAggregate(held.cents, line.cents),
+				},
+	);
+}
+
+/**
+ * A group map as stored: sorted by product then title, so the same lines built twice
+ * are the same JSON and a rebuild can tell "unchanged" from "moved".
+ */
+export function sortedProductLines(
+	groups: ReadonlyMap<string, ReportingProductLine>,
+): ReportingProductLine[] {
+	return [...groups.values()].toSorted(compareProductLines);
+}
+
+/**
+ * The stored order of product lines, and `topProducts`' tie-break: product, then
+ * title, by plain code units — never `localeCompare`, whose ICU collation differs
+ * between runtimes and would make the same lines serialize differently (and a
+ * rebuild see a change that is not one).
+ */
+export function compareProductLines(
+	a: Pick<ReportingProductLine, "productId" | "title">,
+	b: Pick<ReportingProductLine, "productId" | "title">,
+): number {
+	return a.productId === b.productId
+		? codeUnitAsc(a.title, b.title)
+		: codeUnitAsc(a.productId, b.productId);
+}
+
+/** The `YYYY-MM` calendar month a day key falls in. */
+export function monthKeyOf(dayKey: string): string {
+	return dayKey.slice(0, 7);
+}
+
+/** The first and last UTC days of a `YYYY-MM` month. */
+export function monthDays(month: string): { first: string; last: string } {
+	const [year, mon] = month.split("-").map(Number) as [number, number];
+	const last = new Date(Date.UTC(year, mon, 0)).toISOString().slice(0, 10);
+	return { first: `${month}-01`, last };
+}
+
+/**
+ * One currency's month, summed from its day documents — the same counters a day
+ * holds, plus the month's product lines when every day of it had trustworthy ones.
+ */
+export interface ReportingMonthCurrency {
+	stateCounts: Record<string, number>;
+	revenueOrders: number;
+	revenueCents: number;
+	refundEntries: number;
+	refundedCents: number;
+	/** `null` when a day of the month had no clean product lines at build time, or the
+	 *  month sold more `(productId, title)` groups than a month document keeps
+	 *  (`maxMonthProductLines`): a reader then takes the month's days for top products. */
+	products: ReportingProductLine[] | null;
+}
+
+/** The month-document format readers accept; a document of any other is rebuilt. */
+export const REPORTING_MONTHLY_FORMAT = 1;
+
+/**
+ * `reporting_monthly/{YYYY-MM}` — a calendar month's day documents, summed, for every
+ * currency at once (issue #572; ADR-0040).
+ *
+ * **It is a CACHE of the day documents, rebuilt from them, never moved by a delta.**
+ * A long report reads one of these for each whole month it covers instead of the
+ * month's thirty-odd day documents per currency, which is what keeps "Last 365 days"
+ * inside the Workers Free query budget. The day documents stay the grain everything
+ * else is defined on.
+ *
+ * **`gen`, `dirty` and `touchedAt` are how a reader knows it is current.** Every writer
+ * of a day document "touches" the month BEFORE its day write — bumps `gen`, sets
+ * `dirty`, stamps `touchedAt` — and marks the write done AFTER it: a recompute or a
+ * product build (the sweep's writes) with a second touch, a live event with the
+ * `appliedAt` stamp its claim already gets (which spares the checkout path a call), or
+ * with a second touch when that stamp is refused because a recompute stamped the claim
+ * first. A rebuild reads `gen`, refuses while the month was touched within the settle
+ * window or while any of its claims is unstamped, reads the month's days, and commits
+ * guarded on that `gen`, clearing `dirty`:
+ *
+ * - a day write that landed before the rebuild read the days is in what it read;
+ * - a writer whose BEFORE touch comes after the rebuild read `gen` refuses its commit;
+ * - one whose touch came before, and inside the settle window, holds the rebuild off
+ *   (`touchedAt`); a live event's unstamped claim does the same however old it is;
+ * - one whose touch is OLDER than the settle window and still has not finished its day
+ *   write is a writer that died, and its write never lands: the window outlasts the
+ *   longest invocation, a Cron Trigger's 15 minutes.
+ *
+ * What this does NOT survive, and what the sweep's round-robin verifier (which rebuilds
+ * clean closed months and re-checks clean day lines) is the backstop for: a writer that
+ * stalls past the settle window and THEN writes, a live event whose claim a recompute
+ * stamped and which dies between its day write and its second touch, and writers from a
+ * build older than #572 (a rollback or mixed-version window), which never touch a month
+ * at all. See ADR-0040 and DEPLOYMENT.md.
+ *
+ * So a CLEAN document (`dirty === 0`, current `format`) is the sum of the month's day
+ * documents up to those residues, and a dirty one is never read: the reader takes that
+ * month's days instead. A touch is a single unguarded numeric delta that never
+ * contends: one more write per order event.
+ */
+export interface ReportingMonthlyDoc {
+	/** INDEXED — `YYYY-MM`. */
+	month: string;
+	/** Bumped before and after every write to one of the month's day documents. */
+	gen: number;
+	/** INDEXED — `1` until a rebuild over the current `gen` commits; then `0`. */
+	dirty: number;
+	/** The built sums by currency; `null` until the first rebuild. */
+	currencies: Record<string, ReportingMonthCurrency> | null;
+	/** The last touch: a rebuild waits for the settle window after it. Absent on a
+	 *  document no writer has touched since its first build. */
+	touchedAt?: string;
+	/** {@link REPORTING_MONTHLY_FORMAT} the sums were built in; absent until built. */
+	format?: number;
+	/** When the sums were last rebuilt. Diagnostic. */
+	builtAt: string | null;
+	updatedAt: string;
+}
+
+/** Can a reader use this month document in place of its days? */
+export function isCleanMonthlyDoc(
+	doc: ReportingMonthlyDoc,
+): doc is ReportingMonthlyDoc & { currencies: Record<string, ReportingMonthCurrency> } {
+	return (
+		doc.dirty === 0 &&
+		doc.format === REPORTING_MONTHLY_FORMAT &&
+		typeof doc.currencies === "object" &&
+		doc.currencies !== null
+	);
 }

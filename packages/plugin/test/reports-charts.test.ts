@@ -7,6 +7,8 @@ import {
 	periodChange,
 	salesChart,
 	statusChart,
+	alignedPrevious,
+	seriesGranularity,
 	timeBuckets,
 	topProductsChart,
 } from "../src/admin/reports-charts.js";
@@ -28,6 +30,9 @@ function day(
 		refundedCents: 0,
 	};
 }
+
+/** A month bucket, as the store answers a long period: on the month's 1st. */
+const month = day;
 
 /** The option's series, typed loosely — the option is raw ECharts JSON. */
 function series(options: Record<string, unknown>): Array<Record<string, unknown>> {
@@ -156,6 +161,70 @@ describe("timeBuckets: the over-time series, zero-filled and aligned to the peri
 		expect(weekly.points).toHaveLength(14);
 		expect(weekly.points[0]).toEqual({ startDay: "2026-04-30", revenueCents: 300, orders: 2 });
 		expect(weekly.points[1]).toEqual({ startDay: "2026-05-07", revenueCents: 400, orders: 1 });
+	});
+
+	test("186 days is still weekly; 187 folds into calendar months, the first from the period's first day", () => {
+		expect(seriesGranularity(186)).toBe("week");
+		expect(seriesGranularity(187)).toBe("month");
+		expect(timeBuckets(periodFromDays("2026-01-27", "2026-07-31"), [], "USD").granularity).toBe(
+			"week",
+		);
+		// The store answers such a period BY MONTH (#572): one bucket per month, on the 1st.
+		const monthly = timeBuckets(
+			periodFromDays("2026-01-26", "2026-07-31"),
+			[month("2026-01-01", 100), month("2026-05-01", 600, 2), month("2026-07-01", 400)],
+			"USD",
+		);
+		expect(monthly.granularity).toBe("month");
+		// 26 Jan, then February to July.
+		expect(monthly.points).toHaveLength(7);
+		expect(monthly.points[0]).toEqual({ startDay: "2026-01-26", revenueCents: 100, orders: 1 });
+		expect(monthly.points[4]).toEqual({ startDay: "2026-05-01", revenueCents: 600, orders: 2 });
+		expect(monthly.points[6]).toEqual({ startDay: "2026-07-01", revenueCents: 400, orders: 1 });
+	});
+
+	test("a monthly comparison is paired with its period by the END: an extra leading point folds in, a missing one starts an index in", () => {
+		// One period starts on a month's 1st (twelve whole months); its comparison starts
+		// the day before a 1st, so its first point is a one-day sliver of a month.
+		const current = timeBuckets(periodFromDays("2025-03-01", "2026-02-28"), [], "USD");
+		const longer = timeBuckets(
+			periodFromDays("2024-02-29", "2025-02-28"),
+			[month("2024-02-01", 5), month("2024-03-01", 7), month("2025-02-01", 9)],
+			"USD",
+		);
+		expect(current.points).toHaveLength(12);
+		expect(longer.points).toHaveLength(13);
+		const folded = alignedPrevious(current, longer);
+		expect(folded).toHaveLength(12);
+		// The one-day sliver of February 2024 is drawn with March 2024, against March 2025.
+		expect(folded[0]).toEqual({
+			index: 0,
+			point: { startDay: "2024-02-29", revenueCents: 12, orders: 2 },
+		});
+		expect(folded[11]).toEqual({
+			index: 11,
+			point: { startDay: "2025-02-01", revenueCents: 9, orders: 1 },
+		});
+		// The other way round: the shorter series starts one index in.
+		const shifted = alignedPrevious(longer, current);
+		expect(shifted[0]?.index).toBe(1);
+		expect(shifted.at(-1)?.index).toBe(12);
+		// Day and week series pair index for index.
+		const days = timeBuckets(periodFromDays("2026-07-10", "2026-07-12"), [], "USD");
+		expect(alignedPrevious(days, days).map((p) => p.index)).toEqual([0, 1, 2]);
+	});
+
+	test("a monthly series crosses a year boundary month by month", () => {
+		const year = timeBuckets(
+			periodFromDays("2025-10-30", "2026-10-29"),
+			[month("2025-12-01", 50), month("2026-01-01", 70)],
+			"USD",
+		);
+		expect(year.points).toHaveLength(13);
+		expect(year.points[0]?.startDay).toBe("2025-10-30");
+		expect(year.points[2]).toEqual({ startDay: "2025-12-01", revenueCents: 50, orders: 1 });
+		expect(year.points[3]).toEqual({ startDay: "2026-01-01", revenueCents: 70, orders: 1 });
+		expect(year.points[12]?.startDay).toBe("2026-10-01");
 	});
 
 	test("revenue counts only the charted currency; orders count across currencies", () => {

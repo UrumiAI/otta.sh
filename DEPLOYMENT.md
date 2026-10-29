@@ -1187,6 +1187,19 @@ the scheduled reconcile reaches a day only once it has closed. So after a rollba
 release, or a rollout that overlapped versions, treat today's report figures as provisional
 until then. Orders, stock and payments are unaffected — only the reporting rollup is.
 
+The month cache and top-products lines behind long Reports periods (#572,
+[ADR-0040](./adr/0040-reporting-month-cache-and-product-lines.md)) have the same exposure in
+another form. A Worker from before that release moves day documents without marking their month
+document or their product lines stale. So after a rollback past it, or a rollout that overlapped
+it, a long report can read a month or a day's top products that no longer match the day documents.
+A pre-#572 recompute is detected (the lines' `productsEpoch` stops matching) and that day is read
+from its orders, but a pre-#572 live event is not. The `reporting-heal` leg's verifier repairs
+these as it comes round: every built month is re-checked within hours, and every closed day's
+lines within days on a store with a year of history. Each repair logs `[otta] cron sweep
+reporting-heal ANOMALY reporting <month or day>: … was rebuilt`. Until those lines stop
+appearing, treat long-period figures (past 186 days) and top products as provisional. Short
+periods read the day documents directly and are covered by the paragraph above.
+
 The same rule covers the Stripe return scrub (PR #550). The 303 records the return in a cookie
 and the next request reads it, so in a gradual rollout the two can be served by different
 versions, and the order page can briefly show "awaiting payment" with **Complete payment** for an

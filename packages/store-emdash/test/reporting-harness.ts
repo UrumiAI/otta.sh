@@ -73,6 +73,8 @@ export interface ReportingHarnessOptions {
 	maxReportPages?: number;
 	/** Page ceiling for a recompute scan, per day. */
 	maxReconcilePages?: number;
+	/** Cap on a month document's product lines per currency. */
+	maxMonthProductLines?: number;
 	/** Observer for the drift evidence the adapter announces (a floored counter). */
 	onAnomaly?: (anomaly: ReportingAnomaly) => void;
 }
@@ -134,6 +136,7 @@ export function makeReportingHarness(
 		onCasAttempts: options.onCasAttempts,
 		maxReportPages: options.maxReportPages,
 		maxReconcilePages: options.maxReconcilePages,
+		maxMonthProductLines: options.maxMonthProductLines,
 		onAnomaly: options.onAnomaly,
 	});
 

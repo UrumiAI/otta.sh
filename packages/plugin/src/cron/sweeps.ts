@@ -183,6 +183,7 @@ import {
 	COUPONS_COLLECTION,
 	EmdashReportingStore,
 	isScanPageLimitError,
+	isStorageContentionError,
 	ORDER_SKU_INDEX_COLLECTION,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
@@ -714,9 +715,9 @@ const ORPHAN_ROW_READ_QUERIES =
  * What a leg's calls cost before its first checked unit (`entry`) and per unit
  * (`unit`), in storage/kv/egress calls. MEASURED — `cron-leg-costs.test.ts` runs
  * one real unit of each leg through the counting context against SQLite and
- * fails if any exceeds its figure here (one order expiry is 13 calls since QA2 M2,
- * 22 before: the guarded flip, the email locator, the rollup delta, the batched
- * hold release and the intent stamp); they matter only until a loop has seen a real unit, after which
+ * fails if any exceeds its figure here (one order expiry is 14 calls since #572 —
+ * 13 since QA2 M2, 22 before: the guarded flip, the email locator, the rollup delta
+ * and its month bump, the batched hold release and the intent stamp); they matter only until a loop has seen a real unit, after which
  * its gate uses the slowest observed. Without them a leg's first unit — and its
  * unchecked entry reads — would always be admitted, and on Workers Free one
  * `hold-intents` row alone is a third of the budget. `expire-holds` adds two calls
@@ -736,12 +737,13 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		"order-emails": { entry: EMAIL_AVAILABILITY_READS, unit: 4 + EMAIL_SEND_AND_RECORD_CALLS },
 		"expire-holds": { entry: 2, unit: 14 },
 		// The flip, the email locator, the rollup delta, the batched hold release and
-		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22). A bigger order
-		// costs more, and the gate learns it from the first unit it sees. So does one
-		// with a coupon applied: its `releaseByOrder` is two indexed scans (by the
-		// order's id and by its creation key, #598) plus the release — 20, measured in
+		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22), and 14 since the
+		// rollup event dirties its month document first (#572). A bigger order costs
+		// more, and the gate learns it from the first unit it sees. So does one with a
+		// coupon applied: its `releaseByOrder` is two indexed scans (by the order's id
+		// and by its creation key, #598) plus the release — 21, measured in
 		// cron-leg-costs.test.ts.
-		"expire-orders": { entry: 1, unit: 13 },
+		"expire-orders": { entry: 1, unit: 14 },
 		"hold-intents": { entry: 1, unit: 14 },
 		// entry: the two arms' first page reads; unit: one delete.
 		"prune-challenges": { entry: 2, unit: 1 },
@@ -3215,6 +3217,66 @@ async function healReportingRollups(
 		-(options.reportingBackfillDays ?? DEFAULT_REPORTING_BACKFILL_DAYS),
 	);
 	const saved = await cursors.read(REPORTING_CURSOR);
+	const refresh = parseRefreshState(await cursors.read(REPORTING_REFRESH_CURSOR));
+	// TAKING TURNS (#572 review). On the Workers Free preset this leg has about nine
+	// calls a run, and the walk, the month/lines refresh and the verifier do not fit in
+	// one. Once the walk has caught up (the closed day is already reconciled), its only
+	// job is re-checking that day, and it alternates with the verifier. While the
+	// refresh has work left (an upgrade's backfill) the refresh takes three runs in
+	// four and the fourth is that alternation's, so neither the re-check nor the
+	// verifier stops for the length of a backfill. A newly closed day is always walked.
+	const caughtUp = saved !== null && saved >= closed;
+	const maintenanceTurn = !refresh.pending || refresh.turn >= REPORTING_PENDING_TURNS - 1;
+	const mode: "walk" | "refresh" | "verify" = !caughtUp
+		? "walk"
+		: !maintenanceTurn
+			? "refresh"
+			: refresh.verifyTurn
+				? refresh.pending
+					? "verify"
+					: "refresh"
+				: "walk";
+	if (mode === "verify") {
+		const state = { ...refresh };
+		const anomalies: string[] = [];
+		const lister = new EmdashReportingStore({ storage, clock: stores.clock });
+		const repaired = await verifyReportingRollups(
+			lister,
+			() =>
+				new EmdashReportingStore({
+					storage,
+					clock: stores.clock,
+					maxReconcilePages: reconcileUnitsFor(budget.remainingQueries()),
+				}),
+			state,
+			budget,
+			dayKey(now),
+			new Date(now.getTime() - REPORTING_SETTLE_MS).toISOString(),
+			anomalies,
+		);
+		await writeRefreshState(cursors, refresh, { ...state, verifyTurn: false, turn: 0 });
+		// The refresh still has work: due again next tick.
+		return legResult(repaired, true, anomalies);
+	}
+	if (mode === "refresh") {
+		const refreshed = await refreshReportingRollups(
+			storage,
+			stores,
+			now,
+			refresh,
+			budget,
+			queryBudget,
+		);
+		await writeRefreshState(cursors, refresh, {
+			...refreshed.state,
+			pending: refreshed.incomplete,
+			// A refresh turn inside a backfill counts towards the maintenance turn; one
+			// outside it is the verifier's half of the alternation.
+			verifyTurn: refresh.pending ? refresh.verifyTurn : false,
+			turn: refresh.pending ? refresh.turn + 1 : 0,
+		});
+		return legResult(refreshed.count, refreshed.incomplete, refreshed.anomalies);
+	}
 	// `YYYY-MM-DD` compares lexicographically exactly as it compares chronologically.
 	let from = saved === null ? floor : addDays(saved, 1);
 	if (from < floor) from = floor;
@@ -3265,7 +3327,395 @@ async function healReportingRollups(
 	// One write for the walk, naming the last day FINISHED: a cut-short walk
 	// resumes at the first day it did not reach.
 	if (finished !== null) await cursors.write(REPORTING_CURSOR, finished);
-	return legResult(written, incomplete);
+	if (incomplete) return legResult(written, incomplete);
+	const refreshed = await refreshReportingRollups(
+		storage,
+		stores,
+		now,
+		refresh,
+		budget,
+		queryBudget,
+	);
+	await writeRefreshState(cursors, refresh, {
+		...refreshed.state,
+		pending: refreshed.incomplete,
+		verifyTurn: caughtUp,
+		turn: 0,
+	});
+	return legResult(written + refreshed.count, refreshed.incomplete, refreshed.anomalies);
+}
+
+/** The refresh's own cursor: the verifier's walk, and whose turn it is. */
+const REPORTING_REFRESH_CURSOR = "reporting-refresh";
+
+interface RefreshState {
+	/** The last month and day the verifier re-checked. */
+	month: string | null;
+	day: string | null;
+	/** Whether the verifier's day goes before its months this run. */
+	dayFirst: boolean;
+	/** The last refresh left work: the walk, once caught up, steps aside. */
+	pending: boolean;
+	/** The walk ran last time and has caught up: this run is the verifier's. */
+	verifyTurn: boolean;
+	/** Refresh runs since the last walk-or-verifier turn, while the refresh has work. */
+	turn: number;
+}
+
+/** While the refresh has work, one run in this many is the walk's or the verifier's. */
+const REPORTING_PENDING_TURNS = 4;
+
+/** The refresh state; a lost or garbled one starts the verifier's walk again. */
+function parseRefreshState(raw: string | null): RefreshState {
+	const fresh: RefreshState = {
+		month: null,
+		day: null,
+		dayFirst: false,
+		pending: false,
+		verifyTurn: false,
+		turn: 0,
+	};
+	if (raw === null) return fresh;
+	try {
+		const parsed = JSON.parse(raw) as Partial<Record<keyof RefreshState, unknown>>;
+		return {
+			month: typeof parsed.month === "string" ? parsed.month : null,
+			day: typeof parsed.day === "string" ? parsed.day : null,
+			dayFirst: parsed.dayFirst === true,
+			pending: parsed.pending === true,
+			verifyTurn: parsed.verifyTurn === true,
+			turn: typeof parsed.turn === "number" && parsed.turn >= 0 ? Math.floor(parsed.turn) : 0,
+		};
+	} catch {
+		return fresh;
+	}
+}
+
+/** One write, and only when something changed. */
+async function writeRefreshState(
+	cursors: SweepCursorStore,
+	before: RefreshState,
+	after: RefreshState,
+): Promise<void> {
+	if (JSON.stringify(before) === JSON.stringify(after)) return;
+	await cursors.write(REPORTING_REFRESH_CURSOR, JSON.stringify(after));
+}
+
+/** A refresh unit that ran out of budget or lost its race: the work is still there next tick. */
+function deferrable(err: unknown): boolean {
+	return isScanPageLimitError(err) || isStorageContentionError(err);
+}
+
+/** How many stale days, and stale months, one run of the refresh lists. */
+const REPORTING_REFRESH_BATCH = 10;
+
+/**
+ * How long after its last touch a month may be rebuilt, and how long a claim may sit
+ * unstamped before the refresh treats it as a crash residue. A writer touches a month
+ * before and after its day write. The longest-lived writer is a Cron Trigger
+ * invocation — this sweep's own expiry leg writes live rollup events — whose wall time
+ * Cloudflare allows up to 15 minutes; a request is far shorter. Twenty minutes is that
+ * and a margin, so a touch older than it has no write still to land. Only WHEN to
+ * rebuild or heal depends on it: the recompute itself is safe against a live event
+ * whatever the clock says.
+ */
+export const REPORTING_SETTLE_MS = 20 * 60_000;
+
+/** Clean closed months the verifier rebuilds per run, round robin, room allowing. */
+const REPORTING_VERIFY_MONTHS = 2;
+
+/**
+ * The refresh's unit costs, measured in cron-leg-costs.test.ts, which each of its
+ * loops is admitted on — sized to the unit rather than to the leg's reconcile unit,
+ * because on the Workers Free preset this leg's share left after its walk is smaller
+ * than a reconcile unit and the refresh would otherwise never run there.
+ *
+ * A one-currency day's lines rebuilt: a page of its documents, a page of its orders,
+ * the month touch before, the guarded write, the touch after.
+ */
+export const REPORTING_LINES_BUILD_CALLS = 5;
+
+/** A month rebuilt: its document, its unstamped-claim count, a page of its days, the
+ *  guarded write. A clean month that still matches its days skips the write. */
+export const REPORTING_MONTH_BUILD_CALLS = 4;
+
+/** The refresh state ({@link REPORTING_REFRESH_CURSOR}), read once and written once a run. */
+const REPORTING_VERIFY_CURSOR_CALLS = 2;
+
+/** A verifier day: the next day, then its lines' re-check — a page of its documents and
+ *  a page of its orders; a repair adds the two touches and a write per currency. */
+export const REPORTING_VERIFY_DAY_CALLS = 3;
+
+/** Room a day re-check is admitted on: itself and a two-currency repair. */
+const REPORTING_VERIFY_DAY_ROOM = REPORTING_VERIFY_DAY_CALLS + 4;
+
+/**
+ * What one full verifier run costs when it finds nothing wrong — the cursor, a page of
+ * months, {@link REPORTING_VERIFY_MONTHS} month rebuilds that write nothing, and a day
+ * re-check — measured in cron-leg-costs.test.ts. A tight tick does as much of it as fits
+ * (a month or the day, alternating which goes first), so the walk advances on every
+ * preset.
+ */
+export const REPORTING_VERIFY_CALLS =
+	REPORTING_VERIFY_CURSOR_CALLS +
+	1 +
+	REPORTING_VERIFY_MONTHS * (REPORTING_MONTH_BUILD_CALLS - 1) +
+	REPORTING_VERIFY_DAY_CALLS;
+
+/**
+ * THE MONTH GRAIN AND THE TOP-PRODUCTS LINES (issue #572; ADR-0040), after the heal's
+ * walk.
+ *
+ * A long Reports period reads a clean `reporting_monthly` document for each whole
+ * month instead of its days, and top products from the product lines the day and
+ * month documents carry instead of scanning orders. Both are BUILT, so this keeps
+ * them built:
+ *
+ * 1. CLOSED DAYS WHOSE LINES ARE STALE, NEWEST first (so the trailing year a report
+ *    reads is built before older history): dirty ones (an order of the day entered or
+ *    left the revenue set) and never-built ones. The never-built ones are the UPGRADE
+ *    BACKFILL: nothing reads them wrong in the meantime (a report scans an unbuilt day's
+ *    orders, as it always did), it only reads them dearer. Building a day dirties its
+ *    month. A day whose orders are more than this leg could EVER read in one tick is
+ *    marked unbuildable and announced, rather than heading every batch forever.
+ * 2. DIRTY MONTHS before the current one (which a long period never covers whole) that
+ *    have settled, rebuilt from their days. A month held off by a claim a crash left
+ *    unstamped gets that claim's day recomputed and its settled claims stamped; one
+ *    that is STILL held is announced and left for the next run, not retried every tick.
+ * 3. THE VERIFIER, on a run with nothing else left to do: a cache trusted forever is
+ *    only as good as every writer that ever touched its days, and some cannot be made
+ *    to (a build older than #572 during a rollback; a writer that dies at the wrong
+ *    instant). So it rebuilds {@link REPORTING_VERIFY_MONTHS} CLEAN closed months and
+ *    re-checks one closed day's lines per run, round robin from a cursor, and announces
+ *    any repair as an anomaly. At the slow cadence that re-checks every month within
+ *    hours and a year of days within days.
+ *
+ * Found work left undone keeps the leg due next tick rather than at the slow cadence:
+ * the backfill drains at the budget's pace.
+ */
+async function refreshReportingRollups(
+	storage: AdapterStorageAccess,
+	stores: InProcessCommerceStores,
+	now: Date,
+	saved: RefreshState,
+	budget: LegBudget,
+	queryBudget: number,
+): Promise<{ count: number; incomplete: boolean; anomalies: string[]; state: RefreshState }> {
+	const state = { ...saved };
+	const done = (count: number, incomplete: boolean, anomalies: string[]) => ({
+		count,
+		incomplete,
+		anomalies,
+		state,
+	});
+	const today = dayKey(now);
+	const thisMonth = today.slice(0, 7);
+	const settled = new Date(now.getTime() - REPORTING_SETTLE_MS).toISOString();
+	const lister = new EmdashReportingStore({ storage, clock: stores.clock });
+	const boundedBy = (units: number): EmdashReportingStore =>
+		new EmdashReportingStore({ storage, clock: stores.clock, maxReconcilePages: units });
+	const bounded = (): EmdashReportingStore =>
+		boundedBy(reconcileUnitsFor(budget.remainingQueries()));
+	const anomalies: string[] = [];
+	let count = 0;
+
+	// No room to even LOOK is not unfinished work: the refresh runs again at the leg's
+	// cadence. Only work found and left undone keeps the leg due next tick.
+	if (!budget.canStart(2, REPORTING_LINES_BUILD_CALLS)) {
+		return done(count, false, anomalies);
+	}
+	const gate = budget.gate(0, REPORTING_LINES_BUILD_CALLS);
+	const days = await lister.staleProductDays(today, REPORTING_REFRESH_BATCH);
+	let incomplete = days.length >= REPORTING_REFRESH_BATCH;
+	for (const day of days) {
+		if (!gate()) return done(count, true, anomalies);
+		try {
+			count += (await bounded().rebuildDayProducts(day)).written;
+		} catch (err) {
+			if (!deferrable(err)) throw err;
+			if (
+				isScanPageLimitError(err) &&
+				err.operation !== "absorbReportingClaims" &&
+				(await tooBigToBuild(lister, day, queryBudget))
+			) {
+				// It would head every batch forever: skip it, loudly. A report scans its
+				// orders, as it always did; a delta that moves its lines lists it again.
+				await lister.markProductsUnbuildable(day);
+				anomalies.push(
+					`reporting ${day}: too many orders to build its top-products lines within one` +
+						` tick's query budget (${String(queryBudget)}); reports scan that day instead.` +
+						' Raise "Background work per minute" (DEPLOYMENT.md §5)',
+				);
+				continue;
+			}
+			return done(count, true, anomalies);
+		}
+	}
+
+	if (!budget.canStart(1, REPORTING_MONTH_BUILD_CALLS)) return done(count, incomplete, anomalies);
+	const monthGate = budget.gate(0, REPORTING_MONTH_BUILD_CALLS);
+	const months = await lister.staleMonths(thisMonth, REPORTING_REFRESH_BATCH, settled);
+	if (months.length >= REPORTING_REFRESH_BATCH) incomplete = true;
+	for (const month of months) {
+		if (!monthGate()) return done(count, true, anomalies);
+		try {
+			const outcome = await bounded().buildMonth(month, { touchedBefore: settled });
+			if (outcome !== "held") {
+				if (outcome === "built" || outcome === "repaired") count++;
+				continue;
+			}
+			// Held off by an unstamped claim. A young one is an event in flight: it settles
+			// by itself, and the month is rebuilt on a later run. An old one is a crash
+			// residue: recompute its day (absorbing what the orders prove) and stamp the
+			// claims that recompute could not prove, then try once more.
+			const stuck = await lister.unstampedClaimDays(month, settled, 5);
+			if (stuck.length === 0) continue;
+			for (const day of stuck) {
+				if (!monthGate(LEG_QUERY_COSTS["reporting-heal"].unit)) {
+					return done(count, true, anomalies);
+				}
+				await bounded().reconcile({ from: `${day}T00:00:00.000Z`, to: `${day}T23:59:59.999Z` });
+				// A read and a write per claim, out of what the leg has left; the rest next run.
+				const stamping = await lister.stampSettledClaims(
+					day,
+					settled,
+					Math.floor((budget.remainingQueries() - 2) / 2),
+				);
+				if (stamping.more) incomplete = true;
+			}
+			if (!monthGate()) return done(count, true, anomalies);
+			const retried = await bounded().buildMonth(month, { touchedBefore: settled });
+			if (retried === "built" || retried === "repaired") count++;
+			else if (retried === "held") {
+				// Backed off, not retried every tick: the next run (at the cadence) looks again.
+				anomalies.push(
+					`reporting ${month}: a rollup claim stays unstamped after its day (${stuck.join(", ")})` +
+						" was recomputed; the month is read from its days until it settles",
+				);
+			}
+		} catch (err) {
+			if (!deferrable(err)) throw err;
+			return done(count, true, anomalies);
+		}
+	}
+
+	if (!incomplete) {
+		count += await verifyReportingRollups(
+			lister,
+			bounded,
+			state,
+			budget,
+			today,
+			settled,
+			anomalies,
+		);
+	}
+	return done(count, incomplete, anomalies);
+}
+
+/**
+ * Would a day's lines need more pages than this leg could ever be given in one tick?
+ * One count of its orders, asked only once a build has run out of budget.
+ */
+async function tooBigToBuild(
+	lister: EmdashReportingStore,
+	day: string,
+	queryBudget: number,
+): Promise<boolean> {
+	const share = LEG_SHARES["reporting-heal"]?.queries ?? 1;
+	const orders = await lister.dayOrderCount(day);
+	// A page of its documents and one per hundred orders.
+	const pages = 1 + Math.ceil(orders / 100);
+	return pages > reconcileUnitsFor(Math.floor(queryBudget * share));
+}
+
+/**
+ * THE VERIFIER (issue #572 review): rebuild the next {@link REPORTING_VERIFY_MONTHS}
+ * built months and re-check the next closed day's product lines, from a cursor that
+ * wraps. A rebuild of a clean month whose sums still match its days writes nothing; one
+ * that does not match is repaired (guarded on `gen`, like any rebuild) and announced. A
+ * day's lines are rebuilt from its orders the same way. Each unit is admitted only if it
+ * (and a repair) still fits, and the day and the months take turns going first, so a
+ * tick with room for one unit still advances both walks over successive runs. A unit
+ * that runs out of budget or loses a race is skipped, not retried: the cursor moves
+ * on, and the walk comes back round. Returns how many documents it repaired.
+ */
+async function verifyReportingRollups(
+	lister: EmdashReportingStore,
+	bounded: () => EmdashReportingStore,
+	next: RefreshState,
+	budget: LegBudget,
+	today: string,
+	settled: string,
+	anomalies: string[],
+): Promise<number> {
+	const monthRoom = REPORTING_MONTH_BUILD_CALLS + 1;
+	const fits = (calls: number): boolean =>
+		budget.canStart(0, calls + REPORTING_VERIFY_CURSOR_CALLS / 2);
+	if (!fits(REPORTING_VERIFY_CURSOR_CALLS / 2 + Math.min(monthRoom, REPORTING_VERIFY_DAY_ROOM))) {
+		return 0;
+	}
+	const saved = { month: next.month, day: next.day };
+	next.dayFirst = !next.dayFirst;
+	let repaired = 0;
+
+	const verifyMonths = async (): Promise<void> => {
+		if (!fits(1 + monthRoom)) return;
+		const thisMonth = today.slice(0, 7);
+		let months = await lister.monthsAfter(saved.month, thisMonth, REPORTING_VERIFY_MONTHS);
+		if (months.length === 0 && saved.month !== null) {
+			if (!fits(1 + monthRoom)) return;
+			months = await lister.monthsAfter(null, thisMonth, REPORTING_VERIFY_MONTHS);
+		}
+		for (const month of months) {
+			if (!fits(monthRoom)) return;
+			next.month = month;
+			try {
+				const outcome = await bounded().buildMonth(month, { touchedBefore: settled });
+				if (outcome === "repaired") {
+					repaired++;
+					anomalies.push(
+						`reporting ${month}: the month document disagreed with its days and was rebuilt`,
+					);
+				}
+			} catch (err) {
+				if (!deferrable(err)) throw err;
+			}
+		}
+	};
+
+	const verifyDay = async (): Promise<void> => {
+		if (!fits(REPORTING_VERIFY_DAY_ROOM)) return;
+		// Newest first, as the backfill builds days: the trailing year a report reads is
+		// the first re-checked, and the walk wraps back to yesterday.
+		let day = await lister.dayBefore(saved.day, today);
+		if (day === null && saved.day !== null) {
+			if (!fits(REPORTING_VERIFY_DAY_ROOM)) return;
+			day = await lister.dayBefore(null, today);
+		}
+		if (day === null) return;
+		next.day = day;
+		try {
+			const result = await bounded().rebuildDayProducts(day);
+			if (result.repaired > 0) {
+				repaired += result.repaired;
+				anomalies.push(
+					`reporting ${day}: top-products lines disagreed with the day's orders and were rebuilt`,
+				);
+			}
+		} catch (err) {
+			if (!deferrable(err)) throw err;
+		}
+	};
+
+	if (next.dayFirst) {
+		await verifyDay();
+		await verifyMonths();
+	} else {
+		await verifyMonths();
+		await verifyDay();
+	}
+	return repaired;
 }
 
 /**

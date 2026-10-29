@@ -10,17 +10,21 @@
  * precomputed are still computed on read:
  *
  * ```
- * revenueByPeriod  reporting_daily, paged by the `date` range, folded to day/week/month
- * ordersByStatus   reporting_daily, the same scan, folded over `stateCounts`
- * topProducts      a scan of `orders`, over the FROZEN line snapshots
+ * revenueByPeriod  reporting_daily, paged by the `date` range, folded to day/week/month;
+ *                  by month, a clean reporting_monthly document per whole month (#572)
+ * ordersByStatus   the same documents (months included), folded over `stateCounts`
+ * topProducts      the product lines those documents carry, BUILT from the orders;
+ *                  a day whose lines are dirty or unbuilt is a scan of its `orders`
  * lowStock         a scan of `inventory`, titled through the live sku claim
  * ```
  *
- * **Why those two stayed on read.** A per-product-per-day rollup would make the day
- * document grow without bound in the catalogue, and `lowStock` has no window at all —
- * it is a current-state question about stock, which is one scan of a collection that is
- * the size of the sku list. Neither is a counter, so neither gains anything from being
- * written ahead of time.
+ * **Why top products are built rather than counted.** One event can move any number of
+ * products, and a guarded delta can address only a bounded number of fields, so a
+ * day's product lines are written whole — by a recompute, or by the rollup sweep's
+ * product build — and a delta that moves an order into or out of the revenue set only
+ * marks them dirty (issue #572). `lowStock` has no window at all — it is a
+ * current-state question about stock, which is one scan of a collection that is the
+ * size of the sku list.
  *
  * **What a rollup costs, stated honestly.** Reporting becomes work on the write path:
  * every transition and every finalized refund owes a claim and a counter write, and the
@@ -52,7 +56,13 @@ import {
 	type TopProduct,
 	type TopProductsMetric,
 } from "@urumi.ai/otta-domain";
-import { CAS_RETRY, casDone, withCasRetry, type CasRetryOptions } from "./cas-retry.js";
+import {
+	CAS_RETRY,
+	casDone,
+	withCasRetry,
+	type CasRetryOptions,
+	type CasStep,
+} from "./cas-retry.js";
 import { collectionOf } from "./collection-of.js";
 import { ScanPageLimitError } from "./errors.js";
 import type { InventoryDoc } from "./inventory-documents.js";
@@ -61,11 +71,16 @@ import type { OrderDoc } from "./order-documents.js";
 import { normalizeOrderDoc, ORDERS_COLLECTION } from "./order-documents.js";
 import type { ProductCommerceDoc, SkuOwnerDoc } from "./product-commerce-documents.js";
 import {
+	codeUnitAsc,
 	PRODUCT_COMMERCE_COLLECTION,
 	SKU_OWNERS_COLLECTION,
 } from "./product-commerce-documents.js";
 import {
 	addAggregate,
+	addProductLine,
+	compareProductLines,
+	PRODUCTS_UNBUILDABLE,
+	REPORTING_MONTHLY_FORMAT,
 	bucketStartOf,
 	dayEndOf,
 	dayKeyOf,
@@ -84,15 +99,24 @@ import {
 	reportingRefundClaimId,
 	reportingTransitionClaimId,
 	isAbsorbed,
+	isCleanMonthlyDoc,
+	monthDays,
+	monthKeyOf,
+	REPORTING_MONTHLY_COLLECTION,
 	REVENUE_STATES,
+	sortedProductLines,
 	stateCountField,
+	storedProductLines,
 	storedStateCounts,
 	toStoredReportingDailyDoc,
 	type CurrentReportingDailyDoc,
 	type ReportingAppliedDoc,
 	type ReportingDailyDoc,
 	type ReportingDailyStoredDoc,
+	type ReportingMonthCurrency,
+	type ReportingMonthlyDoc,
 	type ReportingOrderEvent,
+	type ReportingProductLine,
 } from "./reporting-documents.js";
 import type {
 	NumericDelta,
@@ -173,6 +197,12 @@ export interface EmdashReportingStoreOptions {
 	 * per call. Raise this, or chunk the range, for a day bigger than that.
 	 */
 	maxReconcilePages?: number;
+	/**
+	 * The most `(productId, title)` groups a month document keeps per currency (default
+	 * {@link MAX_MONTH_PRODUCT_LINES}); past it the month's lines are `null` and top
+	 * products read that month's days.
+	 */
+	maxMonthProductLines?: number;
 	/**
 	 * Where this adapter reports evidence of DRIFT — today, a counter that a decrement
 	 * would have driven below zero.
@@ -288,9 +318,17 @@ async function queryIn<T extends object>(
 	return docs;
 }
 
+/**
+ * The default cap on a month document's product lines per currency. A line is about a
+ * hundred bytes of JSON, so a thousand keeps the row near 100 KB per currency — well
+ * inside a D1 row and cheap to parse on every long report.
+ */
+export const MAX_MONTH_PRODUCT_LINES = 1000;
+
 export class EmdashReportingStore implements ReportingStore {
 	readonly #daily: StorageCollection<ReportingDailyStoredDoc>;
 	readonly #applied: StorageCollection<ReportingAppliedDoc>;
+	readonly #monthly: StorageCollection<ReportingMonthlyDoc>;
 	readonly #orders: StorageCollection<OrderDoc>;
 	readonly #inventory: StorageCollection<InventoryDoc>;
 	readonly #products: StorageCollection<ProductCommerceDoc>;
@@ -299,9 +337,10 @@ export class EmdashReportingStore implements ReportingStore {
 	readonly #retry: CasRetryOptions;
 	readonly #maxReportPages: number;
 	readonly #maxReconcilePages: number;
+	readonly #maxMonthProductLines: number;
 	readonly #onAnomaly: (anomaly: ReportingAnomaly) => void;
-	/** The window reads in flight, by window — see {@link EmdashReportingStore.#windowDays}. */
-	readonly #windowReads = new Map<string, Promise<ReadonlyArray<Readonly<ReportingDailyDoc>>>>();
+	/** The window reads in flight, by grain and window — see {@link EmdashReportingStore.#window}. */
+	readonly #windowReads = new Map<string, Promise<readonly RollupSlice[]>>();
 
 	constructor(options: EmdashReportingStoreOptions) {
 		this.#daily = collectionOf<ReportingDailyStoredDoc>(
@@ -312,6 +351,10 @@ export class EmdashReportingStore implements ReportingStore {
 			options.storage,
 			REPORTING_APPLIED_COLLECTION,
 		);
+		this.#monthly = collectionOf<ReportingMonthlyDoc>(
+			options.storage,
+			REPORTING_MONTHLY_COLLECTION,
+		);
 		this.#orders = collectionOf<OrderDoc>(options.storage, ORDERS_COLLECTION);
 		this.#inventory = collectionOf<InventoryDoc>(options.storage, INVENTORY_COLLECTION);
 		this.#products = collectionOf<ProductCommerceDoc>(options.storage, PRODUCT_COMMERCE_COLLECTION);
@@ -319,6 +362,7 @@ export class EmdashReportingStore implements ReportingStore {
 		this.#clock = options.clock;
 		this.#maxReportPages = options.maxReportPages ?? MAX_REPORT_PAGES;
 		this.#maxReconcilePages = options.maxReconcilePages ?? MAX_RECONCILE_PAGES;
+		this.#maxMonthProductLines = options.maxMonthProductLines ?? MAX_MONTH_PRODUCT_LINES;
 		this.#onAnomaly = options.onAnomaly ?? (() => undefined);
 		this.#retry = {
 			maxAttempts: options.maxCasAttempts,
@@ -373,8 +417,9 @@ export class EmdashReportingStore implements ReportingStore {
 	 * reportable at all.
 	 *
 	 * Calling it twice is calling it once. A second delivery is refused at the claim and
-	 * moves no counter (it reads the day first, as every delivery does: four calls for a
-	 * first delivery, two for a spent one).
+	 * moves no counter (it reads the day first, as every delivery does: five calls for a
+	 * first delivery — the day, the claim, the month touch, the delta, the stamp — and two
+	 * for a spent one).
 	 */
 	async recordOrderEvent(event: ReportingOrderEvent): Promise<void> {
 		const claimId = claimIdFor(event);
@@ -409,13 +454,25 @@ export class EmdashReportingStore implements ReportingStore {
 		// exists to prevent.
 		if (!created.applied) return;
 
+		// The month's cache is dirtied BEFORE the day moves (issue #572; see
+		// `ReportingMonthlyDoc`). This event's "after" mark is the claim's own `appliedAt`
+		// stamp below: a rebuild refuses to commit while a claim of the month is unstamped.
+		await this.#touchMonth(monthKeyOf(day), now);
+
 		if (!(await this.#applyEvent(event, docId, day, claimId, snapshot, now))) return;
 
-		// The stamp is a DIAGNOSTIC and never a gate (see `ReportingAppliedDoc`): it is
-		// what makes a claim-only residue legible. A lost stamp changes no answer, so the
-		// result is not inspected — and a recompute that absorbed this claim in the
-		// meantime is exactly such a loss.
-		await this.#applied.compareAndSet(claimId, created.revision, { ...claim, appliedAt: now });
+		// The stamp is a DIAGNOSTIC for the counters (see `ReportingAppliedDoc`): it is
+		// what makes a claim-only residue legible. It is also this event's "after" mark for
+		// the month cache — and a REFUSED stamp means a recompute stamped the claim first
+		// (absorbing it) while this delta was still in flight. Only the epoch guard decides
+		// whether the delta landed, and here it did: so a month rebuild that saw the claim
+		// stamped may have read the day without it. Touch the month again, after the day
+		// write, so such a rebuild is undone (issue #572 review).
+		const stamped = await this.#applied.compareAndSet(claimId, created.revision, {
+			...claim,
+			appliedAt: now,
+		});
+		if (!stamped.applied) await this.#touchMonth(monthKeyOf(day), now);
 	}
 
 	/**
@@ -466,7 +523,9 @@ export class EmdashReportingStore implements ReportingStore {
 				const plan = planDelta(snapshot, event);
 				const written = await this.#daily.updateIf(docId, {
 					where: { ...plan.where, epoch: snapshot.epoch },
-					set: { updatedAt: now },
+					// An order entering or leaving the revenue set changes the day's top
+					// products, which no delta can move: the built lines stop describing it.
+					set: plan.movesProducts ? { updatedAt: now, productsDirty: 1 } : { updatedAt: now },
 					delta: { ...plan.delta, seq: { inc: 1 } },
 				});
 				if (written.applied) {
@@ -541,6 +600,8 @@ export class EmdashReportingStore implements ReportingStore {
 						set: {
 							stateCounts: null,
 							epoch: Math.max(tainted.epoch, knownEpoch ?? tainted.epoch) + 1,
+							// The epoch moves past any lines' `productsEpoch`: list it for a build.
+							productsDirty: 1,
 							updatedAt: now,
 						},
 					});
@@ -558,6 +619,10 @@ export class EmdashReportingStore implements ReportingStore {
 					return casDone(untainted.data);
 				}
 				const epoch = knownEpoch === null ? 0 : knownEpoch + 1;
+				// A new day's product lines are UNKNOWN, not empty, as a migrated legacy one's
+				// are: it may be created by an event on an order whose earlier events were
+				// lost (the under-count residue `reconcile` heals), and "no lines" would then
+				// read as clean. The sweep builds them once the day closes (issue #572).
 				const next = toStoredReportingDailyDoc(
 					held === null
 						? newReportingDailyDoc(event.currency, day, now)
@@ -680,47 +745,134 @@ export class EmdashReportingStore implements ReportingStore {
 					"reconcileReporting",
 				);
 				const computed = computeDay(day, orders, now);
+				const lines = productLinesByCurrency(orders);
 
-				// 3. ABSORB, before a single counter is committed.
-				const absorbed = await this.#absorbDayClaims(day, orders, budget, now);
-				// A claim moved under us — a peer created or stamped one between the read and
-				// the write — so this day's premises are stale. Re-run it.
-				if (absorbed === "retry") return CAS_RETRY;
-
-				// 4. COMMIT, each document against what was pinned in step 1.
-				let written = 0;
-				for (const currency of [...new Set([...computed.keys(), ...pinned.keys()])].toSorted()) {
-					const docId = reportingDailyDocId(currency, day);
-					// A currency the scan found that the pin did not see is a create-if-absent:
-					// `null` is a real pin, and a peer creating it first loses this commit.
-					const held = pinned.get(currency) ?? null;
-					// A day that has lost every order keeps a ZEROED document rather than being
-					// deleted: a live event racing this write needs a guard to lose to, and
-					// an all-zero document is read as no bucket at all.
-					const target = {
-						...(computed.get(currency) ?? newReportingDailyDoc(currency, day, now)),
-						updatedAt: now,
-					};
-					const exact =
-						held !== null && sameCounters(normalizeReportingDailyDoc(held.value), target);
-					// An exact document is left alone unless this attempt absorbed claims. Then
-					// the epoch is still bumped, so a delta that passed its claim check before the
-					// absorb, and has not landed yet, is refused rather than applied on top.
-					// A tainted (hybrid) document is always rewritten: its counters may agree by
-					// accident, but its nested map has to go.
-					const tainted = held !== null && isHybridReportingDailyDoc(held.value);
-					if (exact && absorbed.claims === 0 && !tainted) continue;
-					const applied = await this.#commitDay(docId, held, target);
-					// A peer moved this day after it was pinned. Re-scan: the value in hand was
-					// derived from an older snapshot of the orders.
-					if (!applied) return CAS_RETRY;
-					if (!exact || tainted) written++;
+				// 3. ABSORB, before a single counter is committed. Absorbing a live event's
+				// claim stamps it, which a month rebuild reads as "its day write is done"
+				// although its delta may still land: so from the first claim absorbed, this
+				// attempt touches the month again on its way out, however it leaves (a
+				// retry, a budget refusal, a failed commit) — see `ReportingMonthlyDoc`.
+				const month = monthKeyOf(day);
+				const progress = { absorbed: 0 };
+				let touchOnExit = false;
+				const touchNeeded = (): boolean => touchOnExit || progress.absorbed > 0;
+				let step: CasStep<{ written: number; claims: number; scanned: number }>;
+				try {
+					step = await this.#absorbAndCommit({
+						day,
+						orders,
+						computed,
+						lines,
+						pinned,
+						budget,
+						now,
+						month,
+						progress,
+						committing: () => {
+							touchOnExit = true;
+						},
+					});
+				} catch (err) {
+					if (touchNeeded()) {
+						// The attempt's own failure is the one to report: a touch that fails too is
+						// dropped, leaving the month to the verifier (see `ReportingMonthlyDoc`).
+						await this.#touchMonth(month, now).catch(() => undefined);
+					}
+					throw err;
 				}
-
-				return casDone({ written, claims: absorbed.claims, scanned: budget.scanned });
+				if (touchNeeded()) await this.#touchMonth(month, now);
+				return step;
 			},
 			this.#retry,
 		);
+	}
+
+	/** Steps 3 and 4 of a day's recompute — see {@link #reconcileDay}. */
+	async #absorbAndCommit({
+		day,
+		orders,
+		computed,
+		lines,
+		pinned,
+		budget,
+		now,
+		month,
+		progress,
+		committing,
+	}: {
+		day: string;
+		orders: OrderDoc[];
+		computed: Map<string, ReportingDailyDoc>;
+		lines: Map<string, ReportingProductLine[]>;
+		pinned: Map<string, Versioned<ReportingDailyStoredDoc> | null>;
+		budget: PageBudget;
+		now: string;
+		month: string;
+		progress: { absorbed: number };
+		committing: () => void;
+	}): Promise<CasStep<{ written: number; claims: number; scanned: number }>> {
+		const absorbed = await this.#absorbDayClaims(day, orders, budget, now, progress);
+		// A claim moved under us — a peer created or stamped one between the read and
+		// the write — so this day's premises are stale. Re-run it.
+		if (absorbed === "retry") return CAS_RETRY;
+
+		// 4. COMMIT, each document against what was pinned in step 1.
+		const commits: {
+			docId: string;
+			held: Versioned<ReportingDailyStoredDoc> | null;
+			target: ReportingDailyDoc;
+			products: ReportingProductLine[];
+			counts: boolean;
+		}[] = [];
+		for (const currency of [...new Set([...computed.keys(), ...pinned.keys()])].toSorted()) {
+			const docId = reportingDailyDocId(currency, day);
+			// A currency the scan found that the pin did not see is a create-if-absent:
+			// `null` is a real pin, and a peer creating it first loses this commit.
+			const held = pinned.get(currency) ?? null;
+			// A day that has lost every order keeps a ZEROED document rather than being
+			// deleted: a live event racing this write needs a guard to lose to, and
+			// an all-zero document is read as no bucket at all.
+			const target = {
+				...(computed.get(currency) ?? newReportingDailyDoc(currency, day, now)),
+				updatedAt: now,
+			};
+			const exact = held !== null && sameCounters(normalizeReportingDailyDoc(held.value), target);
+			// An exact document is left alone unless this attempt absorbed claims. Then
+			// the epoch is still bumped, so a delta that passed its claim check before the
+			// absorb, and has not landed yet, is refused rather than applied on top.
+			// A tainted (hybrid) document is always rewritten: its counters may agree by
+			// accident, but its nested map has to go.
+			const tainted = held !== null && isHybridReportingDailyDoc(held.value);
+			// The day's top-products lines are written with its counters, so a document
+			// whose lines are dirty, unknown or stale is rewritten too (issue #572).
+			const products = lines.get(currency) ?? [];
+			const linesCurrent = held !== null && sameLines(storedProductLines(held.value), products);
+			if (exact && absorbed.claims === 0 && !tainted && linesCurrent) continue;
+			commits.push({ docId, held, target, products, counts: !exact || tainted });
+		}
+		if (commits.length === 0) {
+			return casDone({ written: 0, claims: absorbed.claims, scanned: budget.scanned });
+		}
+
+		// The month's cache is bracketed around the day's writes (`ReportingMonthlyDoc`):
+		// a touch before, and the caller's touch on the way out after.
+		let written = 0;
+		await this.#touchMonth(month, now);
+		committing();
+		for (const commit of commits) {
+			const applied = await this.#commitDay(
+				commit.docId,
+				commit.held,
+				commit.target,
+				commit.products,
+			);
+			// A peer moved this day after it was pinned. Re-scan: the value in hand was
+			// derived from an older snapshot of the orders.
+			if (!applied) return CAS_RETRY;
+			if (commit.counts) written++;
+		}
+
+		return casDone({ written, claims: absorbed.claims, scanned: budget.scanned });
 	}
 
 	/**
@@ -742,18 +894,19 @@ export class EmdashReportingStore implements ReportingStore {
 		docId: string,
 		held: Versioned<ReportingDailyStoredDoc> | null,
 		target: ReportingDailyDoc,
+		products: readonly ReportingProductLine[],
 	): Promise<boolean> {
 		if (held === null || !hasReportingDailyGuards(held.value)) {
 			const epoch = held === null ? 1 : 1 + (held.value.epoch ?? 0);
 			const written = await this.#daily.compareAndSet(
 				docId,
 				held?.revision ?? null,
-				toStoredReportingDailyDoc(target, epoch, 0),
+				toStoredReportingDailyDoc(target, epoch, 0, products),
 			);
 			return written.applied;
 		}
 		const pinned = held.value;
-		const next = toStoredReportingDailyDoc(target, pinned.epoch + 1, pinned.seq);
+		const next = toStoredReportingDailyDoc(target, pinned.epoch + 1, pinned.seq, products);
 		for (const state of Object.keys(storedStateCounts(pinned))) {
 			const field = stateCountField(state);
 			next[field] ??= 0;
@@ -798,6 +951,7 @@ export class EmdashReportingStore implements ReportingStore {
 		orders: OrderDoc[],
 		budget: PageBudget,
 		now: string,
+		progress: { absorbed: number },
 	): Promise<{ claims: number } | "retry"> {
 		// The day's claims, as pages of ONE indexed query. A query per order would make the
 		// cost a function of the day's ORDER COUNT rather than of its size, and a day past a
@@ -823,7 +977,10 @@ export class EmdashReportingStore implements ReportingStore {
 			this.#spend(budget, "absorbReportingClaims", present.size);
 			const outcome = await this.#absorbClaim(event, claimId, now);
 			if (outcome === "retry") return "retry";
-			if (outcome === "absorbed") claims++;
+			if (outcome === "absorbed") {
+				claims++;
+				progress.absorbed++;
+			}
 		}
 		return { claims };
 	}
@@ -895,6 +1052,391 @@ export class EmdashReportingStore implements ReportingStore {
 		budget.used++;
 	}
 
+	// -- the month grain and the product lines (issue #572) ---------------------
+
+	/**
+	 * Bump a month document's `gen` and mark it dirty — the bracket every day write sits
+	 * in (see `ReportingMonthlyDoc`). One unguarded numeric delta, which never contends;
+	 * the first touch of a month creates its document, dirty and unbuilt.
+	 */
+	async #touchMonth(month: string, now: string): Promise<void> {
+		await withCasRetry<undefined>(
+			"touchReportingMonth",
+			async () => {
+				const bumped = await this.#monthly.updateIf(month, {
+					where: {},
+					set: { dirty: 1, touchedAt: now, updatedAt: now },
+					delta: { gen: { inc: 1 } },
+				});
+				if (bumped.applied) return casDone(undefined);
+				// Absent (an unconditional `updateIf` refuses nothing else): create it. A peer
+				// creating it first loses this create, and the retry bumps theirs.
+				const created = await this.#monthly.compareAndSet(month, null, {
+					month,
+					gen: 1,
+					dirty: 1,
+					currencies: null,
+					touchedAt: now,
+					builtAt: null,
+					updatedAt: now,
+				});
+				return created.applied ? casDone(undefined) : CAS_RETRY;
+			},
+			this.#retry,
+		);
+	}
+
+	/**
+	 * Build one CLOSED day's top-products lines from its orders, leaving its counters
+	 * alone (issue #572) — what the rollup sweep runs for a day whose lines are dirty
+	 * (an order of it entered or left the revenue set) or unknown (a document from
+	 * before product lines existed: the upgrade backfill).
+	 *
+	 * Returns how many documents it wrote, and how many of those had CLEAN lines that were
+	 * still wrong (`repaired`) — what the sweep's verifier announces.
+	 *
+	 * It is the recompute without the claims: pin each document's `epoch` and `seq`,
+	 * scan the day's orders, and commit the lines guarded on that pin, so a delta landing
+	 * after the pin refuses the commit and the day is scanned again. A delta that lands
+	 * after the commit and moves the revenue set dirties the lines again, in its own
+	 * statement. The commit is bracketed in the month's bumps like every day write.
+	 *
+	 * A day with a legacy or tainted document gets the full {@link reconcile} instead,
+	 * which migrates it and writes its lines with its counters. Spends the reconcile page
+	 * budget (`maxReconcilePages`).
+	 */
+	async rebuildDayProducts(
+		day: string,
+	): Promise<{ written: number; repaired: number; ordersScanned: number }> {
+		const result = await withCasRetry<
+			{ written: number; repaired: number; ordersScanned: number } | "reconcile"
+		>(
+			"buildReportingProducts",
+			async () => {
+				const budget: PageBudget = {
+					limit: this.#maxReconcilePages,
+					used: 0,
+					scanned: 0,
+					option: "maxReconcilePages",
+				};
+				const held = await this.#queryDays(day, day, budget, "buildReportingProducts");
+				if (held.some(({ data }) => !isCurrentReportingDailyDoc(data))) {
+					return casDone("reconcile");
+				}
+				const orders = await this.#scanOrders(
+					{ createdAt: { gte: dayStartOf(day), lte: dayEndOf(day) } },
+					budget,
+					"buildReportingProducts",
+				);
+				const lines = productLinesByCurrency(orders);
+				const stale = held.filter(
+					({ data }) => !sameLines(storedProductLines(data), lines.get(data.currency) ?? []),
+				);
+				// Lines that were CLEAN and still wrong are drift the verifier exists to find.
+				const repaired = stale.filter(({ data }) => storedProductLines(data) !== null).length;
+				if (stale.length === 0) {
+					return casDone({ written: 0, repaired: 0, ordersScanned: budget.scanned });
+				}
+				const now = this.#clock.now().toISOString();
+				const month = monthKeyOf(day);
+				await this.#touchMonth(month, now);
+				try {
+					for (const { id, data } of stale) {
+						const pinned = data as CurrentReportingDailyDoc;
+						const written = await this.#daily.updateIf(id, {
+							where: { epoch: pinned.epoch, seq: pinned.seq },
+							set: {
+								products: lines.get(pinned.currency) ?? [],
+								productsDirty: 0,
+								productsEpoch: pinned.epoch,
+								updatedAt: now,
+							},
+						});
+						if (!written.applied) return CAS_RETRY;
+					}
+				} finally {
+					await this.#touchMonth(month, now);
+				}
+				return casDone({ written: stale.length, repaired, ordersScanned: budget.scanned });
+			},
+			this.#retry,
+		);
+		if (result !== "reconcile") return result;
+		const healed = await this.reconcile({ from: dayStartOf(day), to: dayEndOf(day) });
+		return { written: healed.documentsWritten, repaired: 0, ordersScanned: healed.ordersScanned };
+	}
+
+	/**
+	 * Rebuild one month document from the month's day documents, clearing `dirty` —
+	 * guarded on the `gen` read before the days were, so a day write that raced the
+	 * rebuild leaves it dirty (see `ReportingMonthlyDoc`). A currency's product lines
+	 * are summed only when every one of its day documents has clean ones, and kept only
+	 * up to `maxMonthProductLines` groups; otherwise they are `null` and a reader takes
+	 * that month's days. Returns whether the month is now built (written, or already
+	 * exactly what its days say).
+	 *
+	 * It does not build while any claim of the month is unstamped (that event may not
+	 * have moved its day yet), nor — given `touchedBefore` — while the month's last touch
+	 * is at or after it: a sweep writer between its two touches may not have written its
+	 * day yet. The rollup sweep passes its settle window; a caller that knows no writer
+	 * is in flight (a test, an operator) may omit it.
+	 *
+	 * Rebuilding a CLEAN month is the verifier: if its sums still match its days nothing
+	 * is written; if they do not, they are repaired, and `"repaired"` says so.
+	 */
+	async rebuildMonth(month: string, options: { touchedBefore?: string } = {}): Promise<boolean> {
+		const outcome = await this.buildMonth(month, options);
+		return outcome === "built" || outcome === "unchanged" || outcome === "repaired";
+	}
+
+	/** {@link rebuildMonth}, saying what it found. */
+	async buildMonth(
+		month: string,
+		options: { touchedBefore?: string } = {},
+	): Promise<"built" | "unchanged" | "repaired" | "held" | "settling" | "empty"> {
+		return withCasRetry<"built" | "unchanged" | "repaired" | "held" | "settling" | "empty">(
+			"rebuildReportingMonth",
+			async () => {
+				const budget: PageBudget = {
+					limit: this.#maxReconcilePages,
+					used: 0,
+					scanned: 0,
+					option: "maxReconcilePages",
+				};
+				const pinned = await this.#monthly.getVersioned(month);
+				if (
+					options.touchedBefore !== undefined &&
+					pinned?.value.touchedAt !== undefined &&
+					pinned.value.touchedAt >= options.touchedBefore
+				) {
+					return casDone("settling");
+				}
+				const { first, last } = monthDays(month);
+				// An event between its claim and its stamp may or may not have moved its day yet,
+				// and its "before" touch may predate the pin: wait for it (see `ReportingMonthlyDoc`).
+				const inFlight = await this.#applied.count({
+					date: { gte: first, lte: last },
+					appliedAt: null,
+				});
+				if (inFlight > 0) return casDone("held");
+				const days = await this.#queryDays(first, last, budget, "rebuildReportingMonth");
+				if (pinned === null && days.length === 0) return casDone("empty");
+				// Lines marked clean but built at an epoch the document has moved past (a writer
+				// unaware of lines recomputed the day): flag them dirty, so the refresh lists the
+				// day and builds them again. Guarded on the epoch and seq just read; a lost race
+				// leaves it to the verifier.
+				for (const { id, data } of days) {
+					if (
+						isCurrentReportingDailyDoc(data) &&
+						data.productsDirty === 0 &&
+						storedProductLines(data) === null
+					) {
+						await this.#daily.updateIf(id, {
+							where: { epoch: data.epoch, seq: data.seq },
+							set: { productsDirty: 1 },
+						});
+					}
+				}
+				const currencies = capMonthLines(sumMonth(days), this.#maxMonthProductLines);
+				const now = this.#clock.now().toISOString();
+				if (pinned === null) {
+					const created = await this.#monthly.compareAndSet(month, null, {
+						month,
+						gen: 0,
+						dirty: 0,
+						currencies,
+						format: REPORTING_MONTHLY_FORMAT,
+						builtAt: now,
+						updatedAt: now,
+					});
+					return created.applied ? casDone("built") : CAS_RETRY;
+				}
+				const wasClean = isCleanMonthlyDoc(pinned.value);
+				const same =
+					wasClean && JSON.stringify(pinned.value.currencies) === JSON.stringify(currencies);
+				if (same) return casDone("unchanged");
+				const written = await this.#monthly.updateIf(month, {
+					where: { gen: pinned.value.gen },
+					set: {
+						dirty: 0,
+						currencies,
+						format: REPORTING_MONTHLY_FORMAT,
+						builtAt: now,
+						updatedAt: now,
+					},
+				});
+				if (!written.applied) return CAS_RETRY;
+				return casDone(wasClean ? "repaired" : "built");
+			},
+			this.#retry,
+		);
+	}
+
+	/**
+	 * Closed days before `beforeDay` whose product lines need building, NEWEST first —
+	 * so the trailing year a report reads is built before older history: the dirty ones,
+	 * then the never-built ones (the upgrade backfill). At most `limit`, in at most two
+	 * queries. An unbuildable day (`PRODUCTS_UNBUILDABLE`) is not listed.
+	 */
+	async staleProductDays(beforeDay: string, limit: number): Promise<string[]> {
+		const days = new Set<string>();
+		for (const dirty of [1, null]) {
+			if (days.size >= limit) break;
+			const page = await this.#daily.query({
+				where: { productsDirty: dirty, date: { lt: beforeDay } },
+				orderBy: { date: "desc" },
+				limit: Math.min(PAGE_SIZE, limit),
+			});
+			for (const { data } of page.items) {
+				if (days.size < limit) days.add(data.date);
+			}
+		}
+		return [...days].toSorted().toReversed();
+	}
+
+	/** How many orders were created on a day: one count, for sizing a build before it. */
+	async dayOrderCount(day: string): Promise<number> {
+		return this.#orders.count({ createdAt: { gte: dayStartOf(day), lte: dayEndOf(day) } });
+	}
+
+	/**
+	 * Mark a day's product lines unbuildable (`PRODUCTS_UNBUILDABLE`): the sweep could
+	 * not read its orders within the most a tick could give it. Each of the day's
+	 * documents whose lines are not clean is marked, guarded on the `epoch` and `seq`
+	 * just read, so a delta racing it wins and the day is simply listed again. Returns
+	 * how many were marked.
+	 */
+	async markProductsUnbuildable(day: string): Promise<number> {
+		const budget: PageBudget = {
+			limit: this.#maxReconcilePages,
+			used: 0,
+			scanned: 0,
+			option: "maxReconcilePages",
+		};
+		let marked = 0;
+		for (const { id, data } of await this.#queryDays(day, day, budget, "markProductsUnbuildable")) {
+			if (!isCurrentReportingDailyDoc(data) || storedProductLines(data) !== null) continue;
+			const written = await this.#daily.updateIf(id, {
+				where: { epoch: data.epoch, seq: data.seq },
+				set: { productsDirty: PRODUCTS_UNBUILDABLE },
+			});
+			if (written.applied) marked++;
+		}
+		return marked;
+	}
+
+	/**
+	 * The days of a month's claims that are still unstamped though they were claimed
+	 * before `claimedBefore` — events a crash stopped between their claim and their
+	 * stamp, which hold the month's rebuild off until a recompute of the day absorbs
+	 * them (or {@link stampSettledClaims} settles them). At most `limit` claims are
+	 * looked at: one query.
+	 */
+	async unstampedClaimDays(month: string, claimedBefore: string, limit: number): Promise<string[]> {
+		const { first, last } = monthDays(month);
+		const page = await this.#applied.query({
+			where: { date: { gte: first, lte: last }, appliedAt: null },
+			orderBy: { date: "asc" },
+			limit: Math.min(PAGE_SIZE, limit),
+		});
+		const days = new Set<string>();
+		for (const { data } of page.items) {
+			if (data.claimedAt < claimedBefore) days.add(data.date);
+		}
+		return [...days].toSorted();
+	}
+
+	/**
+	 * Stamp a day's claims that are still unstamped though they were claimed before
+	 * `claimedBefore` — to run AFTER a recompute of that day has committed. A recompute
+	 * absorbs (and so stamps) only the claims its scanned orders prove; a claim whose
+	 * transition the order no longer shows (it moved on, or the event was for a state it
+	 * never reached) is left unstamped, and would hold its month's rebuild off forever.
+	 * The day's counters are what its orders say, and an event that old is dead, so its
+	 * claim is settled: stamped, NOT absorbed (a delta that somehow still lands is guarded
+	 * on the epoch the recompute moved, and re-checks).
+	 *
+	 * BOUNDED: at most `limit` claims are looked at (one query, then a read and a write per
+	 * claim stamped), and `more` says whether the day has unstamped claims past them.
+	 */
+	async stampSettledClaims(
+		day: string,
+		claimedBefore: string,
+		limit: number,
+	): Promise<{ stamped: number; more: boolean }> {
+		const now = this.#clock.now().toISOString();
+		// ONE page, read whole before anything is written: the writes change the field the
+		// query filters on, so paging on past them could skip claims. A stamped claim drops
+		// out of the filter, so the next call (the next run) starts on what is left.
+		const page = await this.#applied.query({
+			where: { date: day, appliedAt: null },
+			limit: Math.max(1, Math.min(PAGE_SIZE, limit)),
+		});
+		let stamped = 0;
+		for (const { id, data } of page.items) {
+			if (data.claimedAt >= claimedBefore) continue;
+			const held = await this.#applied.getVersioned(id);
+			if (held === null || held.value.appliedAt !== null) continue;
+			const written = await this.#applied.compareAndSet(id, held.revision, {
+				...held.value,
+				appliedAt: now,
+			});
+			if (written.applied) stamped++;
+		}
+		return { stamped, more: page.hasMore };
+	}
+
+	/**
+	 * Dirty months before `beforeMonth` (`YYYY-MM`), newest first, at most `limit`. Given
+	 * `touchedBefore`, a month touched at or after it is left out: it is settling, and
+	 * {@link rebuildMonth} would refuse it.
+	 */
+	async staleMonths(beforeMonth: string, limit: number, touchedBefore?: string): Promise<string[]> {
+		const page = await this.#monthly.query({
+			where: { dirty: 1, month: { lt: beforeMonth } },
+			orderBy: { month: "desc" },
+			limit: Math.min(PAGE_SIZE, limit),
+		});
+		return page.items
+			.filter(
+				({ data }) =>
+					touchedBefore === undefined ||
+					data.touchedAt === undefined ||
+					data.touchedAt < touchedBefore,
+			)
+			.map(({ data }) => data.month);
+	}
+
+	/**
+	 * The verifier's round robin over built months: up to `limit` month documents after
+	 * `after` (exclusive; `null` from the start) and before `beforeMonth`, in month
+	 * order. Fewer than `limit` means the walk reached the end and wraps. One query.
+	 */
+	async monthsAfter(after: string | null, beforeMonth: string, limit: number): Promise<string[]> {
+		const page = await this.#monthly.query({
+			where: { month: after === null ? { lt: beforeMonth } : { gt: after, lt: beforeMonth } },
+			orderBy: { month: "asc" },
+			limit: Math.min(PAGE_SIZE, limit),
+		});
+		return page.items.map(({ data }) => data.month);
+	}
+
+	/**
+	 * The verifier's round robin over closed days, NEWEST first (as the backfill builds
+	 * them): the latest day before `before` (exclusive; `null` starts at `beforeDay`, also
+	 * exclusive) that has a day document, or `null` when there is none — the walk wraps.
+	 * One query.
+	 */
+	async dayBefore(before: string | null, beforeDay: string): Promise<string | null> {
+		const bound = before === null || before > beforeDay ? beforeDay : before;
+		const page = await this.#daily.query({
+			where: { date: { lt: bound } },
+			orderBy: { date: "desc" },
+			limit: 1,
+		});
+		return page.items[0]?.data.date ?? null;
+	}
+
 	// -- the read surface ------------------------------------------------------
 
 	async revenueByPeriod(range: DateRange, interval: ReportInterval): Promise<PeriodBucket[]> {
@@ -909,7 +1451,9 @@ export class EmdashReportingStore implements ReportingStore {
 				refundedCents: number;
 			}
 		>();
-		for (const doc of await this.#windowDays(range, "revenueByPeriod")) {
+		// A month bucketing can take a clean month document whole; a day or week cannot.
+		const grain = interval === "month" ? "coarse" : "day";
+		for (const doc of await this.#window(range, grain, "revenueByPeriod")) {
 			const bucketStart = bucketStartOf(doc.date, interval);
 			const key = `${bucketStart}${KEY_SEP}${doc.currency}`;
 			const group = groups.get(key) ?? {
@@ -957,7 +1501,7 @@ export class EmdashReportingStore implements ReportingStore {
 
 	async ordersByStatus(range: DateRange): Promise<StatusCount[]> {
 		const counts = new Map<string, number>();
-		for (const doc of await this.#windowDays(range, "ordersByStatus")) {
+		for (const doc of await this.#window(range, "coarse", "ordersByStatus")) {
 			for (const [state, count] of Object.entries(doc.stateCounts)) {
 				counts.set(state, (counts.get(state) ?? 0) + count);
 			}
@@ -972,61 +1516,81 @@ export class EmdashReportingStore implements ReportingStore {
 	 * Top products over the FROZEN line snapshots (never a live product join), for the
 	 * orders in the window whose current state is revenue-counting.
 	 *
-	 * Computed on read, by scanning the window's orders: a per-product-per-day rollup
-	 * would put the whole catalogue inside one day document. The group is
-	 * `(productId, title)` rather than the product alone, exactly as the SQL's `GROUP
-	 * BY oi.product_id, oi.title` was — two snapshots of the same product under
-	 * different titles are two rows, because the title is a fact about the sale.
+	 * Read from the rollups (issue #572): each day document carries its day's product
+	 * lines and each clean month document its month's, so a year is the same few reads
+	 * as its revenue and costs nothing per order. Lines are BUILT rather than moved by a
+	 * delta (see `ReportingDailyStoredDoc.products`), so a document whose lines are dirty
+	 * or were never built is not trusted: that day's orders are scanned instead, exactly
+	 * as this report always did, and a month whose lines are incomplete is taken from
+	 * its days. A store upgraded across #572 therefore reports the same products before
+	 * the sweep has built its lines as after; only the cost differs.
+	 *
+	 * The group is `(productId, title)` rather than the product alone, exactly as the
+	 * SQL's `GROUP BY oi.product_id, oi.title` was — two snapshots of the same product
+	 * under different titles are two rows, because the title is a fact about the sale.
 	 */
 	async topProducts(
 		range: DateRange,
 		metric: TopProductsMetric,
 		limit: number,
 	): Promise<TopProduct[]> {
+		const slices = await this.#window(range, "coarse", "topProducts");
 		const budget: PageBudget = {
 			limit: this.#maxReportPages,
 			used: 0,
 			scanned: 0,
 			option: "maxReportPages",
 		};
-		// The EXACT window, not the day-widened one: this report scans the orders
-		// themselves, so it can compare instants the way the statement's `BETWEEN` did.
-		const orders = await this.#scanOrders(
-			{ createdAt: { gte: range.from, lte: range.to } },
-			budget,
-			"topProducts",
-		);
-		const groups = new Map<
-			string,
-			{ productId: string; title: string; qtySold: number; revenueCents: number }
-		>();
-		for (const order of orders) {
-			if (!REVENUE_STATES.has(order.state)) continue;
-			for (const item of order.items) {
-				const key = `${item.productId}${KEY_SEP}${item.title}`;
-				const group = groups.get(key) ?? {
-					productId: item.productId,
-					title: item.title,
-					qtySold: 0,
-					revenueCents: 0,
-				};
-				group.qtySold += item.quantity;
-				group.revenueCents = addAggregate(group.revenueCents, item.quantity * item.unitPrice);
-				groups.set(key, group);
+		// A month whose lines are incomplete in any currency is taken from its days.
+		const expand = new Set<string>();
+		for (const slice of slices) {
+			if (slice.grain === "month" && slice.products === null) expand.add(monthKeyOf(slice.date));
+		}
+		const daySlices: RollupSlice[] = [];
+		for (const month of [...expand].toSorted()) {
+			const { first, last } = monthDays(month);
+			for (const { data } of await this.#queryDays(first, last, budget, "topProducts")) {
+				daySlices.push(sliceOfDay(data));
+			}
+		}
+		const trusted: RollupSlice[] = [];
+		for (const slice of slices) {
+			if (slice.grain === "month" && expand.has(monthKeyOf(slice.date))) continue;
+			(slice.grain === "day" ? daySlices : trusted).push(slice);
+		}
+		// A day with an untrusted document in ANY currency is scanned whole: the scan
+		// answers for every currency of the day, so its clean documents are not added too.
+		const scan = new Set<string>();
+		for (const slice of daySlices) if (slice.products === null) scan.add(slice.date);
+		for (const slice of daySlices) if (!scan.has(slice.date)) trusted.push(slice);
+
+		const groups = new Map<string, ReportingProductLine>();
+		for (const slice of trusted) {
+			for (const line of slice.products ?? []) addProductLine(groups, line);
+		}
+		for (const [from, to] of dayRuns([...scan])) {
+			const orders = await this.#scanOrders(
+				{ createdAt: { gte: dayStartOf(from), lte: dayEndOf(to) } },
+				budget,
+				"topProducts",
+			);
+			for (const lines of productLinesByCurrency(orders).values()) {
+				for (const line of lines) addProductLine(groups, line);
 			}
 		}
 		return [...groups.values()]
 			.toSorted((a, b) => {
-				const av = metric === "quantity" ? a.qtySold : a.revenueCents;
-				const bv = metric === "quantity" ? b.qtySold : b.revenueCents;
-				return bv === av ? a.productId.localeCompare(b.productId) : bv - av;
+				const av = metric === "quantity" ? a.qty : a.cents;
+				const bv = metric === "quantity" ? b.qty : b.cents;
+				if (bv !== av) return bv - av;
+				return compareProductLines(a, b);
 			})
 			.slice(0, limit)
 			.map((group) => ({
 				productId: group.productId,
 				titleSnapshot: group.title,
-				qtySold: group.qtySold,
-				revenueCents: cents(group.revenueCents),
+				qtySold: group.qty,
+				revenueCents: cents(group.cents),
 			}));
 	}
 
@@ -1126,13 +1690,13 @@ export class EmdashReportingStore implements ReportingStore {
 	// -- the scans -------------------------------------------------------------
 
 	/**
-	 * The day counters a window is made of — EXACTLY, whatever instants it names.
+	 * The rollup slices a window is made of — EXACTLY, whatever instants it names.
 	 *
 	 * A day document is the counters for a WHOLE day, so it can only answer for a day the
 	 * window covers whole. The interior of the window is therefore read from the
 	 * documents, and each EDGE day the window truncates (at most two, and only when the
 	 * bound is not midnight) is computed from an instant-filtered scan of that day's
-	 * orders — the same machinery `topProducts` uses, over a single day's worth of rows.
+	 * orders.
 	 *
 	 * So the window means what the statement this replaced meant: `created_at BETWEEN from
 	 * AND to`, to the instant. The cost of a ragged window is bounded and visible: two
@@ -1144,22 +1708,33 @@ export class EmdashReportingStore implements ReportingStore {
 	 * that document holds. A single report can mix the two — an exact edge beside an
 	 * interior day that is reading low until the next recompute.
 	 *
+	 * **Two grains** (issue #572). A `"day"` read returns day slices only, which is what a
+	 * day or week bucketing needs. A `"coarse"` read returns a CLEAN month document's
+	 * sums in place of the days of every calendar month the window covers whole, and day
+	 * documents for the partial months at its ends and for any month whose document is
+	 * dirty or missing — so a year is one page of months plus its two edge months, and a
+	 * month the sweep has not caught up with costs its days, never a wrong number. Every
+	 * report except a day or week bucketing reads coarse.
+	 *
 	 * **Concurrent reads of one window share one read** (issue #572). The Reports page asks
-	 * `revenueByPeriod` and `ordersByStatus` for the same window at once, and both fold the
-	 * same documents, so the second joins the read the first started rather than paging
-	 * the rollup again: one read per window instead of two, which halves the page's
-	 * rollup queries (a year over two currencies: 16 pages instead of 32). Only a read IN
-	 * FLIGHT is shared: the entry is dropped when it settles, so a later call always reads
-	 * afresh and nothing here can serve a stale window. The documents are shared too, so
-	 * they are typed read-only, and a caller must not mutate them: `Readonly` is shallow,
-	 * and a document's `stateCounts` is shared with every joiner as well.
+	 * for revenue, statuses and top products over the same window at once, and they fold
+	 * the same slices, so a later caller joins a read already in flight rather than paging
+	 * the rollup again. A coarse caller joins a day read too (day slices answer it as
+	 * well); a day caller joins only a day read. Only a read IN FLIGHT is shared: the
+	 * entry is dropped when it settles, so a later call always reads afresh and nothing
+	 * here can serve a stale window. The slices are shared too, so they are typed
+	 * read-only, and a caller must not mutate them.
 	 */
-	#windowDays(
+	#window(
 		range: DateRange,
+		grain: "day" | "coarse",
 		operation: string,
-	): Promise<ReadonlyArray<Readonly<ReportingDailyDoc>>> {
-		const key = `${range.from}${KEY_SEP}${range.to}`;
-		const inFlight = this.#windowReads.get(key);
+	): Promise<readonly RollupSlice[]> {
+		const keyOf = (g: "day" | "coarse"): string =>
+			`${g}${KEY_SEP}${range.from}${KEY_SEP}${range.to}`;
+		const inFlight =
+			this.#windowReads.get(keyOf("day")) ??
+			(grain === "coarse" ? this.#windowReads.get(keyOf("coarse")) : undefined);
 		if (inFlight !== undefined) {
 			// A budget refusal names the operation that hit it; the joiner's is its own, with
 			// the original as its cause so the stack of the scan that stopped survives.
@@ -1171,15 +1746,20 @@ export class EmdashReportingStore implements ReportingStore {
 					: err;
 			});
 		}
-		const read = this.#readWindowDays(range, operation).finally(() => {
+		const key = keyOf(grain);
+		const read = this.#readWindow(range, grain, operation).finally(() => {
 			this.#windowReads.delete(key);
 		});
 		this.#windowReads.set(key, read);
 		return read;
 	}
 
-	/** One read of a window's day counters — {@link EmdashReportingStore.#windowDays}'s body. */
-	async #readWindowDays(range: DateRange, operation: string): Promise<ReportingDailyDoc[]> {
+	/** One read of a window's slices — {@link EmdashReportingStore.#window}'s body. */
+	async #readWindow(
+		range: DateRange,
+		grain: "day" | "coarse",
+		operation: string,
+	): Promise<RollupSlice[]> {
 		if (range.to < range.from) return [];
 		const fromDay = dayKeyOf(range.from);
 		const toDay = dayKeyOf(range.to);
@@ -1188,7 +1768,7 @@ export class EmdashReportingStore implements ReportingStore {
 		const partialFrom = range.from > dayStartOf(fromDay);
 		const partialTo = range.to < dayEndOf(toDay);
 
-		const docs: ReportingDailyDoc[] = [];
+		const slices: RollupSlice[] = [];
 		const budget: PageBudget = {
 			limit: this.#maxReportPages,
 			used: 0,
@@ -1201,25 +1781,93 @@ export class EmdashReportingStore implements ReportingStore {
 				budget,
 				operation,
 			);
-			docs.push(...computeDay(edge.day, orders, edge.from).values());
+			const lines = productLinesByCurrency(orders);
+			for (const doc of computeDay(edge.day, orders, edge.from).values()) {
+				slices.push(sliceOf("day", doc.date, doc, lines.get(doc.currency) ?? []));
+			}
 		}
 
 		const wholeFrom = partialFrom ? nextDay(fromDay) : fromDay;
 		const wholeTo = partialTo ? previousDay(toDay) : toDay;
-		if (wholeTo < wholeFrom) return docs;
+		if (wholeTo < wholeFrom) return slices;
+
+		// The day runs to read: everything, or — coarse — everything but the clean months.
+		const runs: [string, string][] = [];
+		const months = grain === "coarse" ? wholeMonthsBetween(wholeFrom, wholeTo) : [];
+		if (months.length === 0) {
+			runs.push([wholeFrom, wholeTo]);
+		} else {
+			const first = monthDays(months[0]!).first;
+			const last = monthDays(months.at(-1)!).last;
+			if (wholeFrom < first) runs.push([wholeFrom, previousDay(first)]);
+			const held = await this.#queryMonths(months[0]!, months.at(-1)!, budget, operation);
+			for (const month of months) {
+				const doc = held.get(month);
+				if (doc === undefined || !isCleanMonthlyDoc(doc)) {
+					const days = monthDays(month);
+					runs.push([days.first, days.last]);
+					continue;
+				}
+				for (const [currency, sums] of Object.entries(doc.currencies).toSorted((a, b) =>
+					codeUnitAsc(a[0], b[0]),
+				)) {
+					slices.push(sliceOf("month", `${month}-01`, { currency, ...sums }, sums.products));
+				}
+			}
+			if (last < wholeTo) runs.push([nextDay(last), wholeTo]);
+		}
+		for (const [from, to] of mergeRuns(runs)) {
+			for (const { data } of await this.#queryDays(from, to, budget, operation)) {
+				slices.push(sliceOfDay(data));
+			}
+		}
+		return slices;
+	}
+
+	/** Every day document from `fromDay` to `toDay`, inclusive, in date order. */
+	async #queryDays(
+		fromDay: string,
+		toDay: string,
+		budget: PageBudget,
+		operation: string,
+	): Promise<{ id: string; data: ReportingDailyStoredDoc }[]> {
+		const docs: { id: string; data: ReportingDailyStoredDoc }[] = [];
 		let cursor: string | undefined;
-		for (let page = 0; page < this.#maxReportPages; page++) {
-			const result = await this.#daily.query({
-				where: { date: { gte: wholeFrom, lte: wholeTo } },
+		for (;;) {
+			this.#spend(budget, operation, docs.length);
+			const page = await this.#daily.query({
+				where: fromDay === toDay ? { date: fromDay } : { date: { gte: fromDay, lte: toDay } },
 				orderBy: { date: "asc" },
 				limit: PAGE_SIZE,
 				cursor,
 			});
-			for (const { data } of result.items) docs.push(normalizeReportingDailyDoc(data));
-			if (!result.hasMore || result.cursor === undefined) return docs;
-			cursor = result.cursor;
+			for (const item of page.items) docs.push({ id: item.id, data: item.data });
+			if (!page.hasMore || page.cursor === undefined) return docs;
+			cursor = page.cursor;
 		}
-		throw new ScanPageLimitError(operation, this.#maxReportPages, docs.length, "maxReportPages");
+	}
+
+	/** Every month document from `fromMonth` to `toMonth`, inclusive, by month. */
+	async #queryMonths(
+		fromMonth: string,
+		toMonth: string,
+		budget: PageBudget,
+		operation: string,
+	): Promise<Map<string, ReportingMonthlyDoc>> {
+		const docs = new Map<string, ReportingMonthlyDoc>();
+		let cursor: string | undefined;
+		for (;;) {
+			this.#spend(budget, operation, docs.size);
+			const page = await this.#monthly.query({
+				where: { month: { gte: fromMonth, lte: toMonth } },
+				orderBy: { month: "asc" },
+				limit: PAGE_SIZE,
+				cursor,
+			});
+			for (const { data } of page.items) docs.set(data.month, data);
+			if (!page.hasMore || page.cursor === undefined) return docs;
+			cursor = page.cursor;
+		}
 	}
 
 	/** The currencies a day already has a document for. */
@@ -1291,6 +1939,179 @@ function edgeWindows(
 	if (partialFrom) edges.push({ day: fromDay, from: range.from, to: dayEndOf(fromDay) });
 	if (partialTo) edges.push({ day: toDay, from: dayStartOf(toDay), to: range.to });
 	return edges;
+}
+
+/**
+ * One piece of a window, as every report folds it: a day document, a computed edge
+ * day, or a clean month document's sums for one currency (issue #572). `date` is the
+ * day, or the month's first day, so a month bucketing folds a month slice to its own
+ * month. `products` is `null` when its lines cannot be trusted (see `topProducts`).
+ */
+interface RollupSlice {
+	readonly grain: "day" | "month";
+	readonly date: string;
+	readonly currency: string;
+	readonly stateCounts: Readonly<Record<string, number>>;
+	readonly revenueOrders: number;
+	readonly revenueCents: number;
+	readonly refundEntries: number;
+	readonly refundedCents: number;
+	readonly products: readonly ReportingProductLine[] | null;
+}
+
+function sliceOf(
+	grain: "day" | "month",
+	date: string,
+	sums: Omit<ReportingMonthCurrency, "products"> & { currency: string },
+	products: readonly ReportingProductLine[] | null,
+): RollupSlice {
+	return {
+		grain,
+		date,
+		currency: sums.currency,
+		stateCounts: sums.stateCounts,
+		revenueOrders: sums.revenueOrders,
+		revenueCents: sums.revenueCents,
+		refundEntries: sums.refundEntries,
+		refundedCents: sums.refundedCents,
+		products,
+	};
+}
+
+/** A stored day document as a slice: its value, and its lines if they are clean. */
+function sliceOfDay(stored: ReportingDailyStoredDoc): RollupSlice {
+	const doc = normalizeReportingDailyDoc(stored);
+	return sliceOf("day", doc.date, doc, storedProductLines(stored));
+}
+
+/**
+ * Each currency's top-products lines over a set of orders: the orders in a
+ * revenue-counting state, grouped by `(productId, title)` off the frozen line
+ * snapshots, `quantity × unitPrice` each — what `topProducts` folded on read before
+ * #572, now what a day document's lines are built from.
+ */
+function productLinesByCurrency(orders: readonly OrderDoc[]): Map<string, ReportingProductLine[]> {
+	const byCurrency = new Map<string, Map<string, ReportingProductLine>>();
+	for (const order of orders) {
+		if (!REVENUE_STATES.has(order.state)) continue;
+		const groups = byCurrency.get(order.currency) ?? new Map<string, ReportingProductLine>();
+		byCurrency.set(order.currency, groups);
+		for (const item of order.items) {
+			addProductLine(groups, {
+				productId: item.productId,
+				title: item.title,
+				qty: item.quantity,
+				cents: addAggregate(0, item.quantity * item.unitPrice),
+			});
+		}
+	}
+	return new Map(
+		[...byCurrency].map(([currency, groups]) => [currency, sortedProductLines(groups)]),
+	);
+}
+
+/** Are these stored lines (or `null`: untrusted) exactly the lines given? */
+function sameLines(
+	held: readonly ReportingProductLine[] | null,
+	want: readonly ReportingProductLine[],
+): boolean {
+	return held !== null && JSON.stringify(held) === JSON.stringify(want);
+}
+
+/** A month's day documents summed by currency — what `rebuildMonth` stores. */
+function sumMonth(
+	days: readonly { data: ReportingDailyStoredDoc }[],
+): Record<string, ReportingMonthCurrency> {
+	const sums = new Map<
+		string,
+		ReportingMonthCurrency & { lines: Map<string, ReportingProductLine> | null }
+	>();
+	for (const { data } of days) {
+		const doc = normalizeReportingDailyDoc(data);
+		const held = sums.get(doc.currency) ?? {
+			stateCounts: {},
+			revenueOrders: 0,
+			revenueCents: 0,
+			refundEntries: 0,
+			refundedCents: 0,
+			products: null,
+			lines: new Map<string, ReportingProductLine>(),
+		};
+		for (const [state, count] of Object.entries(doc.stateCounts)) {
+			held.stateCounts[state] = (held.stateCounts[state] ?? 0) + count;
+		}
+		held.revenueOrders += doc.revenueOrders;
+		held.revenueCents = addAggregate(held.revenueCents, doc.revenueCents);
+		held.refundEntries += doc.refundEntries;
+		held.refundedCents = addAggregate(held.refundedCents, doc.refundedCents);
+		const lines = storedProductLines(data);
+		if (lines === null) held.lines = null;
+		else if (held.lines !== null) for (const line of lines) addProductLine(held.lines, line);
+		sums.set(doc.currency, held);
+	}
+	const out: Record<string, ReportingMonthCurrency> = {};
+	for (const [currency, { lines, ...sum }] of [...sums].toSorted((a, b) =>
+		codeUnitAsc(a[0], b[0]),
+	)) {
+		out[currency] = {
+			...sum,
+			stateCounts: normalizeStateCounts(sum.stateCounts),
+			products: lines === null ? null : sortedProductLines(lines),
+		};
+	}
+	return out;
+}
+
+/**
+ * A month's sums with any currency's product lines past `max` groups dropped to
+ * `null`: a month document is one row, and a catalogue that sells thousands of
+ * distinct `(productId, title)` groups in a month would make it a large one to store
+ * and to parse on every long report. A reader then takes that month's days.
+ */
+function capMonthLines(
+	currencies: Record<string, ReportingMonthCurrency>,
+	max: number,
+): Record<string, ReportingMonthCurrency> {
+	const out: Record<string, ReportingMonthCurrency> = {};
+	for (const [currency, sums] of Object.entries(currencies)) {
+		out[currency] =
+			sums.products !== null && sums.products.length > max ? { ...sums, products: null } : sums;
+	}
+	return out;
+}
+
+/** The `YYYY-MM` months whose every day lies in `[fromDay, toDay]`, in order. */
+function wholeMonthsBetween(fromDay: string, toDay: string): string[] {
+	const months: string[] = [];
+	for (let month = monthKeyOf(fromDay); ; month = nextMonth(month)) {
+		const { first, last } = monthDays(month);
+		if (last > toDay) return months;
+		if (first >= fromDay) months.push(month);
+	}
+}
+
+/** The calendar month after a `YYYY-MM` month. */
+function nextMonth(month: string): string {
+	return monthKeyOf(nextDay(monthDays(month).last));
+}
+
+/** Day runs sorted and joined where one ends the day before the next begins. */
+function mergeRuns(runs: readonly (readonly [string, string])[]): [string, string][] {
+	const merged: [string, string][] = [];
+	for (const [from, to] of runs.toSorted((a, b) => codeUnitAsc(a[0], b[0]))) {
+		const tail = merged.at(-1);
+		if (tail !== undefined && nextDay(tail[1]) >= from) {
+			if (to > tail[1]) tail[1] = to;
+		} else {
+			merged.push([from, to]);
+		}
+	}
+	return merged;
+}
+
+/** A set of days as the runs of consecutive days it is made of. */
+function dayRuns(days: readonly string[]): [string, string][] {
+	return mergeRuns(days.map((day) => [day, day] as const));
 }
 
 /** The UTC day after this one. */
@@ -1380,6 +2201,8 @@ interface DeltaPlan {
 	where: WhereClause;
 	delta: Partial<Record<keyof ReportingDailyStoredDoc, NumericDelta>>;
 	floored: FlooredCounter[];
+	/** Does the event move an order into or out of the revenue set (issue #572)? */
+	movesProducts: boolean;
 }
 
 /**
@@ -1443,7 +2266,15 @@ function planDelta(doc: CurrentReportingDailyDoc, event: ReportingOrderEvent): D
 		move("refundedCents", "refundedCents", 0, event.refundedCents);
 	}
 
-	const plan: DeltaPlan = { where: {}, delta: {}, floored: [] };
+	const plan: DeltaPlan = {
+		where: {},
+		delta: {},
+		floored: [],
+		movesProducts:
+			event.kind === "transition" &&
+			(event.fromState !== null && REVENUE_STATES.has(event.fromState)) !==
+				REVENUE_STATES.has(event.toState),
+	};
 	for (const [field, { counter, dec, inc }] of moves) {
 		const raw = doc[field];
 		const held = typeof raw === "number" ? raw : 0;
