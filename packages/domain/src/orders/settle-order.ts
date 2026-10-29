@@ -51,8 +51,9 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    `pending → paid` flip, the `provider_ref`-keyed payment record, the
  *    state-guarded `commit`, and the grant-once entitlement key — never by
  *    blind-trusting the dedupe row.
- * 2b. A duplicate whose recorded row names a **different** order is the opposite
- *    case and is TERMINAL (`RECEIPT_REBOUND` + anomaly, nothing moved): one
+ * 2b. A duplicate whose recorded row names a **different**, existing order is the
+ *    opposite case and is TERMINAL (`RECEIPT_REBOUND` + anomaly, nothing moved;
+ *    a duplicate naming a missing order already stopped at 1b): one
  *    settlement consumes one payment. This is the receipt binding:
  *    a confirmation's order id is the caller's claim, so the amount equality in
  *    step 3 is not on its own enough to stop one receipt from settling a
