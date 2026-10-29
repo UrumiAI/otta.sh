@@ -22,9 +22,18 @@ const SCRIPT = readFileSync(
 
 let urls: string[] = [];
 
+/** The prompt's markup without its `<script src>`: the test runs the file itself, and
+ *  happy-dom does not load scripts. Parsed in an inert template, so nothing fetches. */
+function renderPrompt(): void {
+	const template = document.createElement("template");
+	template.innerHTML = starPrompt();
+	for (const script of template.content.querySelectorAll("script")) script.remove();
+	document.body.replaceChildren(template.content);
+}
+
 function page(answer: () => Promise<Response> = async () => Response.json({ label: "57" })) {
 	// The script is run below as the page would; happy-dom does not fetch files.
-	document.body.innerHTML = starPrompt().replace(/<script[^>]*><\/script>/, "");
+	renderPrompt();
 	urls = [];
 	vi.stubGlobal(
 		"fetch",
@@ -140,7 +149,7 @@ describe("playground-star.js", () => {
 		let box = { height: 70, top: 674, right: 374 }; // phone width: the toolbar wraps and spans
 		vi.stubGlobal("innerWidth", 390);
 		vi.stubGlobal("innerHeight", 760);
-		document.body.innerHTML = starPrompt().replace(/<script[^>]*><\/script>/, "");
+		renderPrompt();
 		const bar = document.createElement("div");
 		bar.id = "emdash-playground-toolbar";
 		bar.getBoundingClientRect = () => box as DOMRect;
