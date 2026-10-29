@@ -434,6 +434,15 @@ export function orderStoreContract(
 			expect(await store.getByIdempotencyKey(idempotencyKey("key-never-used"))).toBeNull();
 		});
 
+		test("peekByIdempotencyKey reports the order the key minted; an unknown key is null", async () => {
+			const { store } = await makeHarness();
+			const { order } = await store.createFromCart(physicalInput());
+			const peeked = await store.peekByIdempotencyKey(idempotencyKey("key-1"));
+			expect(peeked?.state).toBe("minted");
+			expect(peeked?.order.id).toBe(order.id);
+			expect(await store.peekByIdempotencyKey(idempotencyKey("key-never-used"))).toBeNull();
+		});
+
 		test("order_items are insert-once: a re-read returns the exact price/title snapshot", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());

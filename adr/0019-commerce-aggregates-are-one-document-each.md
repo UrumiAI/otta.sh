@@ -482,7 +482,7 @@ code, not that it changed. A row with no **†** is still design. See the
 | `sku_owners` | sku | — | `sku` (declared; **not** the enforcement) |
 | **†** `coupons` | couponId | `createdAt` | — |
 | **†** `coupon_codes` | folded code | — | — |
-| **†** `coupon_redemptions` | `${couponId}:${idempotencyKey}` | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` | — |
+| **†** `coupon_redemptions` | `${couponId}:${idempotencyKey}` | `couponId`, `orderId`, `idempotencyKey` *(added for #598: `releaseByOrder` also matches an order's redemptions by its creation key)*, `createdAt`, `redemptionId`, `holdsUse` | — |
 | `coupon_customer_caps` | `${couponId}:${customerId}` | — | — |
 | **†** `customers` | customerId | `emailLower` | — |
 | **†** `customer_emails` | folded email | — | `emailLower` (declared; **not** the enforcement) |

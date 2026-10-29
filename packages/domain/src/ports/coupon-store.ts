@@ -97,8 +97,22 @@ export interface CouponStore {
 	 * one whose payment was declined and never retried (ADR-0022) — is freed
 	 * exactly like its inventory hold. Returns the number of redemptions released.
 	 * A paid/completed order never calls this, so its coupon stays consumed.
+	 *
+	 * An order's redemptions are those bound to its id OR to its creation
+	 * idempotency key (issue #598): a same-key checkout replay replays the FIRST
+	 * call's redemption, which names that call's order id, while the order row —
+	 * deduped on the same key — can persist under the second call's id. The key is
+	 * what the two share, and an order store holds at most one order per key.
+	 *
+	 * A redemption under the key is released even when the order never applied its
+	 * coupon (#598 review: a call died after redeeming, and the shopper placed again
+	 * under the same key with another coupon or none). That is coherent with the
+	 * sweeps, not a second rule: `orderHoldingRedemption` says no order holds such a
+	 * redemption, so it is dead, and the sweep would free it anyway. No OTHER order
+	 * can hold it — the key names this order alone — so the release never takes a
+	 * live use. (A coupon-less order never calls this; the sweep frees those.)
 	 */
-	releaseByOrder(orderId: OrderId): Promise<number>;
+	releaseByOrder(order: RedemptionOrderRef): Promise<number>;
 
 	/**
 	 * Reconciliation read (§5): redemptions created strictly before `cutoff` —
@@ -292,6 +306,13 @@ export type DeleteCouponResult =
 	| { ok: true }
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "in_use_by_redemptions" };
+
+/** What `CouponStore.releaseByOrder` matches an order's redemptions by — an
+ *  `Order` satisfies it. */
+export interface RedemptionOrderRef {
+	id: OrderId;
+	idempotencyKey: IdempotencyKey;
+}
 
 export interface RedeemCouponInput {
 	couponId: string;
