@@ -3553,9 +3553,11 @@ function isInvalidCursorError(err: unknown): boolean {
 
 /** Each order's adopted reservation ids on one inventory document, in order-id
  *  order (the order `stranded-holds` resumes a sku in). */
-function adoptedByOrder(doc: InventoryDoc): [string, string[]][] {
+function adoptedByOrder(doc: StrandedSkuView): [string, string[]][] {
 	const byOrder = new Map<string, string[]>();
-	for (const hold of Object.values(normalizeInventoryDoc(doc).holds)) {
+	// Every caller hands over an `inventory` document; the view only keeps its type
+	// out of the exported signature above.
+	for (const hold of Object.values(normalizeInventoryDoc(doc as InventoryDoc).holds)) {
 		if (hold.state !== "adopted" || typeof hold.orderId !== "string") continue;
 		byOrder.set(hold.orderId, [...(byOrder.get(hold.orderId) ?? []), hold.reservationId]);
 	}
@@ -3567,6 +3569,23 @@ function adoptedByOrder(doc: InventoryDoc): [string, string[]][] {
  *  `cron-leg-costs.test.ts`, which measures it. */
 export function strandedReleaseCost(holds: number): number {
 	return 3 * holds + 2;
+}
+
+/** What `releaseStrandedOnSku` reads, written structurally so this exported signature
+ *  keeps `@urumi.ai/otta-store-emdash`'s document types out of the plugin's emitted
+ *  declarations (the same rule as {@link holdIntentCost}; `bundle-imports.test.ts`). */
+interface StrandedSkuView {
+	readonly sku: string;
+}
+interface StrandedOrderView {
+	readonly state: OrderState;
+	readonly holdsPendingAt: string | null;
+}
+interface StrandedInventoryView {
+	releaseAdoptedManyReporting(
+		reservationIds: readonly string[],
+		orderId: string,
+	): Promise<readonly { readonly reservationId: string; readonly qty: number }[]>;
 }
 
 /** One sku's visit: the holds it released, and — when the budget stopped it part-way
@@ -3585,9 +3604,9 @@ export interface StrandedVisit {
  * reports it returned. Exported for `cron-leg-costs.test.ts` and the race suite.
  */
 export async function releaseStrandedOnSku(
-	doc: InventoryDoc,
-	orders: { get(id: string): Promise<OrderDoc | null> },
-	stores: Pick<InProcessCommerceStores, "inventory">,
+	doc: StrandedSkuView,
+	orders: { get(id: string): Promise<StrandedOrderView | null> },
+	stores: { readonly inventory: StrandedInventoryView },
 	gate: (unitHint?: number) => boolean = () => true,
 	skipThrough: string | null = null,
 	releaseGate: (calls: number) => boolean = () => true,
