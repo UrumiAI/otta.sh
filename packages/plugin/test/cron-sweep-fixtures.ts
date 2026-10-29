@@ -8,6 +8,7 @@ import {
 	cents,
 	currency,
 	idempotencyKey,
+	customerId as toCustomerId,
 	orderId as toOrderId,
 	productId as toProductId,
 	reservationId as toReservationId,
@@ -309,6 +310,7 @@ export async function placeOrder(
 	tag: string,
 	holdExpiresAt: Date,
 	createdAt: Date,
+	extra: { readonly appliedCouponCode?: string; readonly customerId?: string } = {},
 ): Promise<{ id: string; sku: string }> {
 	const s = adapters(storage, createdAt);
 	const sku = `ORDER-${tag}`;
@@ -346,7 +348,15 @@ export async function placeOrder(
 				reservationId: toReservationId(held.reservationId),
 			},
 		],
-		totals: { subtotal: cents(1000), total: cents(1000), currency: currency("USD") },
+		totals: {
+			subtotal: cents(1000),
+			total: cents(1000),
+			currency: currency("USD"),
+			...(extra.appliedCouponCode === undefined
+				? {}
+				: { appliedCouponCode: extra.appliedCouponCode }),
+		},
+		...(extra.customerId === undefined ? {} : { customerId: toCustomerId(extra.customerId) }),
 	});
 	return { id, sku };
 }

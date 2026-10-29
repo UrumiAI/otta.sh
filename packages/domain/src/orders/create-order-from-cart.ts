@@ -374,7 +374,9 @@ export async function createOrderFromCart(
 			methodId: command.shippingMethodId,
 			couponCode: command.couponCode,
 		}),
-		{ purpose: "order" },
+		// The key lets a same-key replay past the soft exhaustion check when its own
+		// first call holds the coupon's last use (#627); `redeem` below replays it.
+		{ purpose: "order", idempotencyKey: command.idempotencyKey },
 	);
 	if (!quote.ok) return { ok: false, reason: quote.reason };
 	const breakdown = quote.breakdown;
@@ -475,8 +477,13 @@ export async function createOrderFromCart(
 	} catch (err) {
 		// Release ONLY when no order row was ever inserted (see `orderMinted`): a
 		// throw AFTER the insert leaves the redemption with the order that carries
-		// the discounted total, healed by the TTL sweep.
-		if (redemptionId !== null && !orderMinted) await deps.couponStore.release(redemptionId);
+		// the discounted total, healed by the TTL sweep. And only a redemption THIS
+		// call wrote (as `onForeignOrder`): a replayed same-key one is the first
+		// call's, whose order may still land discounted (#627 review). If that call
+		// died too, the replayed redemption is an orphan for the sweep.
+		if (redemptionId !== null && redemptionFresh && !orderMinted) {
+			await deps.couponStore.release(redemptionId);
+		}
 		throw err;
 	}
 }

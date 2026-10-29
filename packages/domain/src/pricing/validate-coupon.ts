@@ -17,6 +17,12 @@ export interface CouponValidationContext {
 	now: string;
 	subtotalCents: Cents;
 	currency: Currency;
+	/**
+	 * The use the exhaustion check would count is this checkout's OWN (#627): a
+	 * redemption under its idempotency key already holds it. Skips that check alone;
+	 * `CouponStore.redeem` replays the held use. Absent ⇒ checked.
+	 */
+	useHeldByThisCheckout?: boolean;
 }
 
 /**
@@ -63,7 +69,11 @@ export function validateCoupon(
 	if (record.minSubtotalCents !== null && ctx.subtotalCents < record.minSubtotalCents) {
 		return { ok: false, reason: "COUPON_MIN_SUBTOTAL" };
 	}
-	if (record.maxUses !== null && record.usesCount >= record.maxUses) {
+	if (
+		ctx.useHeldByThisCheckout !== true &&
+		record.maxUses !== null &&
+		record.usesCount >= record.maxUses
+	) {
 		return { ok: false, reason: "COUPON_EXHAUSTED" };
 	}
 
