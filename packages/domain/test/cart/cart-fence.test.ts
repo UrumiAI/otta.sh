@@ -46,6 +46,39 @@ describe("cart-mutation fences (fake)", () => {
 		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(1);
 	});
 
+	test("removeLine on a hold ADOPTED between the cart read and the release is LINE_CHECKED_OUT and releases nothing (#593)", async () => {
+		const h = makeFakeCartHarness();
+		await h.seedStock("SKU-1", 5);
+		const cartId = await createCart(h.deps, USD);
+		const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+		if (!add.ok) throw new Error("add must succeed");
+		const holdId = add.line.reservationId ?? "";
+		// The race: removeLine reads the cart (the line is still `held`), and a
+		// checkout in another tab adopts that hold before the release runs.
+		const get = h.cartStore.get.bind(h.cartStore);
+		h.cartStore.get = async (id) => {
+			const read = await get(id);
+			h.cartStore.get = get;
+			const adopted = await h.inventory.adopt({
+				reservationId: holdId,
+				orderId: "ord-racing-checkout",
+				holdExpiresAt: "2026-07-10T01:00:00.000Z",
+				now: h.clock.now().toISOString(),
+			});
+			expect(adopted).toMatchObject({ ok: true });
+			return read;
+		};
+
+		const res = await removeLine(h.deps, cartId, add.line.lineId, idempotencyKey("k2"));
+		expect(res).toEqual({ ok: false, reason: "LINE_CHECKED_OUT" });
+		// The units stay the order's: still adopted, and its settle commits them.
+		expect(await h.onHand("SKU-1")).toBe(3);
+		expect(h.inventory.reservationState(holdId)).toBe("adopted");
+		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(1);
+		await h.inventory.commit(holdId);
+		expect(await h.onHand("SKU-1")).toBe(3);
+	});
+
 	test("any mutation on a checked_out cart is CART_CHECKED_OUT before touching a reservation", async () => {
 		const h = makeFakeCartHarness();
 		await h.seedStock("SKU-1", 5);

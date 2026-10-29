@@ -189,7 +189,7 @@ export async function expireOrdersBatch(
 		// `expired` as the retry, which also covers an order whose stamp is missing.
 		if (order.totals.appliedCouponCode !== null) {
 			try {
-				await deps.couponStore.releaseByOrder(order.id);
+				await deps.couponStore.releaseByOrder(order);
 			} catch (err) {
 				if (options.stopsBatch?.(err) === true) throw err;
 				logUnitFailure(`releasing the coupon of expired order ${order.id}`, err);

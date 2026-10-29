@@ -115,9 +115,9 @@ import {
 	type CreateCouponInput,
 	type DeleteCouponResult,
 	type IdGen,
-	type OrderId,
 	type RedeemCouponInput,
 	type RedeemResult,
+	type RedemptionOrderRef,
 	type UpdateCouponInput,
 	type UpdateCouponResult,
 } from "@urumi.ai/otta-domain";
@@ -488,10 +488,27 @@ export class EmdashCouponStore implements CouponStore {
 		await this.#releaseClaim(found.docId, found.doc);
 	}
 
-	async releaseByOrder(orderId: OrderId): Promise<number> {
-		const found = await this.#scanRedemptions("releaseByOrder", { orderId, holdsUse: "yes" }, {});
+	/**
+	 * Release every redemption the order holds: those naming its id, and those
+	 * claimed under its creation idempotency key (issue #598 — a same-key checkout
+	 * replay can persist the order under a different id than the redemption names).
+	 * Two indexed scans, merged by document id so a redemption matching both is
+	 * released once; `#releaseClaim` is idempotent regardless.
+	 */
+	async releaseByOrder(order: RedemptionOrderRef): Promise<number> {
+		const byId = await this.#scanRedemptions(
+			"releaseByOrder",
+			{ orderId: order.id, holdsUse: "yes" },
+			{},
+		);
+		const byKey = await this.#scanRedemptions(
+			"releaseByOrder",
+			{ idempotencyKey: order.idempotencyKey, holdsUse: "yes" },
+			{},
+		);
+		const found = new Map([...byId, ...byKey].map((entry) => [entry.docId, entry]));
 		let released = 0;
-		for (const entry of found) {
+		for (const entry of found.values()) {
 			if (await this.#releaseClaim(entry.docId, entry.doc)) released++;
 		}
 		return released;

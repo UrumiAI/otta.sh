@@ -1037,10 +1037,17 @@ function normalizeEvent(event: unknown): ConfirmationResult {
 		typeof providerRef !== "string" ||
 		typeof amount !== "number" ||
 		typeof cur !== "string" ||
-		typeof orderRef !== "string"
+		(orderRef !== undefined && typeof orderRef !== "string")
 	) {
 		return { ok: false, reason: "MALFORMED" };
 	}
+	// A well-formed intent with no (or an empty) `metadata.order_id` is not one
+	// Otta created — every intent Otta mints carries it — so it belongs to
+	// something else on a shared Stripe account (Payment Links, invoices, another
+	// plugin). UNKNOWN_EVENT, not MALFORMED (#595): the signature verified, and a
+	// 4xx makes Stripe retry it and eventually disable the endpoint. The empty
+	// case is caught here too because `toOrderId("")` throws.
+	if (orderRef === undefined || orderRef === "") return { ok: false, reason: "UNKNOWN_EVENT" };
 	return {
 		ok: true,
 		outcome: e.type === SUCCEEDED ? "succeeded" : "failed",

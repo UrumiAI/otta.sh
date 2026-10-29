@@ -77,11 +77,14 @@ export interface CouponCollectionIndexDeclaration {
  * that is never issued. There is deliberately no `active` index — the coupon
  * table has no active or soft-delete column at all.
  *
- * `coupon_redemptions` declares five fields, and every one of them is a port
+ * `coupon_redemptions` declares six fields, and every one of them is a port
  * method's only handle:
  *
  * - `couponId` — the delete guard counts the coupon's redemptions.
  * - `orderId` — `releaseByOrder` finds them by order.
+ * - `idempotencyKey` — `releaseByOrder` also finds them by the order's creation
+ *   key: a same-key checkout replay can persist the order under a different id
+ *   than its redemption names (issue #598).
  * - `createdAt` — `listRedemptionsCreatedBefore` both RANGES and ORDERS on it.
  * - `redemptionId` — `release` is given the generated id, not the document id.
  * - `holdsUse` — the text mirror that keeps a REFUSED key out of all three of
@@ -90,14 +93,20 @@ export interface CouponCollectionIndexDeclaration {
  *
  * The two counter collections are reached by document id alone and declare
  * nothing. Neither declares a unique index: uniqueness here is the claim
- * document and its create-if-absent write, never an index (no physical index
- * exists in any tier).
+ * document and its create-if-absent write, never an index.
+ *
+ * A declared field is, first, the queryable-field allow-list. EmDash 1.3.1 also
+ * materializes a physical index for it (`syncDeclaredStorageIndexes`, on the
+ * first scheduler tick after the declaration ships), but a query on a declared
+ * field works immediately either way, before that index exists. So a newly
+ * declared field — `idempotencyKey`, #598 — needs no migration, and every
+ * redemption document already carries it, so none needs a backfill.
  */
 export const COUPON_COLLECTIONS: Readonly<Record<string, CouponCollectionIndexDeclaration>> = {
 	[COUPONS_COLLECTION]: { indexes: ["createdAt"] },
 	[COUPON_CODES_COLLECTION]: {},
 	[COUPON_REDEMPTIONS_COLLECTION]: {
-		indexes: ["couponId", "orderId", "createdAt", "redemptionId", "holdsUse"],
+		indexes: ["couponId", "orderId", "idempotencyKey", "createdAt", "redemptionId", "holdsUse"],
 	},
 	[COUPON_CUSTOMER_CAPS_COLLECTION]: {},
 };

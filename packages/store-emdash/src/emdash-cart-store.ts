@@ -103,7 +103,6 @@ import {
 	pruneMutations,
 } from "./cart-documents.js";
 import { collectionOf } from "./collection-of.js";
-import { isReservationNotReleasableError } from "./errors.js";
 import {
 	type HoldEntry,
 	INVENTORY_COLLECTION,
@@ -610,24 +609,21 @@ export class EmdashCartStore implements CartStore {
 		const claim = await this.#claimExpiry(cartId, reservationId, index, now, cutoff);
 		if (claim === null) return false;
 
-		// The release is idempotent by the reservation's own state machine, so a
-		// replayer that arrives here after a crash returns the stock exactly once.
-		// A hold that is no longer releasable at all (adopted by an order, already
-		// committed) is not an error for a completion that was already claimed —
-		// the token says the expiry is owed, and the removal below still owes it.
+		// The CART-SCOPED release (#593): only a hold still `held` is freed, decided
+		// in the write that returns the units, so a hold an order adopted after the
+		// claim above keeps its stock. Idempotent by the reservation's own state, so
+		// a replayer that arrives here after a crash returns the stock exactly once.
+		// A hold that is no longer the cart's (adopted by an order, committed) is not
+		// an error for a completion that was already claimed — the token says the
+		// expiry is owed, and the removal below still owes it — so its `false` is
+		// ignored.
 		//
-		// Both tolerated conditions are recognized by TYPE, never by message: the
-		// adapter's `ReservationNotReleasableError` and the port's
-		// `ReservationNotFoundError`. That is sound precisely because the injected
-		// store is narrowed to this package's own adapter (see the options type), so
-		// the errors this `release` can raise are known rather than assumed —
-		// anything else rethrows.
+		// An unknown reservation is tolerated by TYPE, never by message: the port's
+		// `ReservationNotFoundError`. Anything else rethrows.
 		try {
-			await this.#inventory.release(reservationId);
+			await this.#inventory.releaseHeld(reservationId);
 		} catch (err) {
-			if (!isReservationNotReleasableError(err) && !(err instanceof ReservationNotFoundError)) {
-				throw err;
-			}
+			if (!(err instanceof ReservationNotFoundError)) throw err;
 		}
 
 		await this.#completeExpiry(cartId, reservationId, index.idempotencyKey);
