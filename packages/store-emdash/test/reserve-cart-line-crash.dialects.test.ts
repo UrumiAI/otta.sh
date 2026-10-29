@@ -16,6 +16,7 @@
  */
 import {
 	addLine,
+	cartMutationKey,
 	createCart,
 	currency,
 	expireHolds,
@@ -52,9 +53,11 @@ async function crashAfterReserve(
 	key: string,
 	ageMs = 0,
 ): Promise<string> {
+	// The add's own key: the request key scoped to its cart (#609).
+	const k = cartMutationKey(cartId, idempotencyKey(key));
 	h.advance(-ageMs);
-	await h.deps.cartStore.claimMutation({ key: idempotencyKey(key), cartId, kind: "add" });
-	const reserved = await h.deps.inventoryStore.reserve(stockKeeping, qty, idempotencyKey(key));
+	await h.deps.cartStore.claimMutation({ key: k, cartId, kind: "add" });
+	const reserved = await h.deps.inventoryStore.reserve(stockKeeping, qty, k);
 	h.advance(ageMs);
 	if (!reserved.ok) throw new Error("the crashed add's reserve must succeed");
 	return reserved.reservationId;

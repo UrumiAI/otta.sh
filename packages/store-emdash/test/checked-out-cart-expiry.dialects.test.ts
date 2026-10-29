@@ -26,6 +26,7 @@
  */
 import {
 	addLine,
+	cartMutationKey,
 	createCart,
 	currency,
 	expireHolds,
@@ -99,7 +100,7 @@ describeEachDialect("cart sweep over checked-out carts", (ctx) => {
 		expect(await expireHolds(h.deps)).toBe(0);
 
 		// And the order's hold is exactly where the order left it.
-		expect(await holdState(h, "k1")).toBe("adopted");
+		expect(await holdState(h, cartMutationKey(cartId, idempotencyKey("k1")))).toBe("adopted");
 		expect(await h.onHand("SKU-1")).toBe(3);
 		const cart = await h.store.get(cartId);
 		expect(cart?.state).toBe("checked_out");
@@ -133,7 +134,7 @@ describeEachDialect("cart sweep over checked-out carts", (ctx) => {
 		expect(await expireHolds(h.deps)).toBe(1);
 		expect(await h.onHand("SKU-2")).toBe(5);
 		expect(await h.onHand("SKU-1")).toBe(3);
-		expect(await holdState(h, "k1")).toBe("adopted");
+		expect(await holdState(h, cartMutationKey(cartId, idempotencyKey("k1")))).toBe("adopted");
 
 		// With B gone the cart owes nothing, and the next tick retires it.
 		expect(await listed(h)).toEqual([]);
@@ -159,7 +160,7 @@ describeEachDialect("cart sweep over checked-out carts", (ctx) => {
 		expect(await listed(h)).toEqual([crashed.reservationId]);
 		expect(await expireHolds(h.deps)).toBe(1);
 		expect(await h.onHand("SKU-1")).toBe(4); // the crashed 2 return; the adopted 1 does not
-		expect(await holdState(h, "k1")).toBe("adopted");
+		expect(await holdState(h, cartMutationKey(cartId, idempotencyKey("k1")))).toBe("adopted");
 
 		expect(await listed(h)).toEqual([]);
 		expect((await h.carts.get(cartId))?.holdExpiresAt).toBeNull();
@@ -183,7 +184,7 @@ describeEachDialect("cart sweep over checked-out carts", (ctx) => {
 		expect(await listed(h)).toEqual([]);
 		expect((await h.carts.get(cartId))?.holdExpiresAt).toBeNull();
 		expect(await h.onHand("SKU-2")).toBe(1);
-		expect(await holdState(h, "k1")).toBe("adopted");
+		expect(await holdState(h, cartMutationKey(cartId, idempotencyKey("k1")))).toBe("adopted");
 	});
 
 	test("a checked-out cart whose narrowing cannot land does not stop the tick reaping others", async () => {
@@ -227,6 +228,6 @@ describeEachDialect("cart sweep over checked-out carts", (ctx) => {
 		expect(await listed(h)).toContain(b.line.reservationId);
 		expect(await expireHolds(h.deps)).toBe(1);
 		expect(await h.onHand("SKU-2")).toBe(5);
-		expect(await holdState(h, "k1")).toBe("adopted");
+		expect(await holdState(h, cartMutationKey(done, idempotencyKey("k1")))).toBe("adopted");
 	});
 });
