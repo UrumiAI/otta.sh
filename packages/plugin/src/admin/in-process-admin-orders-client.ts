@@ -1051,8 +1051,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	/** The page and its EXACT count, under ONE filter — sharing the filter is what
 	 *  lets the count describe the page it captions.
 	 *
-	 *  The list runs FIRST and the count only after it, and a count that fails is
-	 *  logged and dropped rather than failing the page: the count is the costlier
+	 *  The two run in parallel, and a count that fails is logged and dropped
+	 *  rather than failing the page: the count is the costlier
 	 *  read (a sku search resolves every order that ever bought the sku, issue
 	 *  #601), so past a store's query budget it is the half that gives out, and a
 	 *  page of rows with no total — which the console captions page-scoped — beats
@@ -1062,11 +1062,13 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		pos: OrderListCursor | null,
 		limit: number,
 	): Promise<OrdersListResult> {
-		const result = await this.#stores.orderStore.listOrders(filter, { cursor: pos, limit });
-		const total = await this.#stores.orderStore.countOrders(filter).catch((err: unknown) => {
-			console.error("[otta] orders count failed:", err);
-			return undefined;
-		});
+		const [result, total] = await Promise.all([
+			this.#stores.orderStore.listOrders(filter, { cursor: pos, limit }),
+			this.#stores.orderStore.countOrders(filter).catch((err: unknown) => {
+				console.error("[otta] orders count failed:", err);
+				return undefined;
+			}),
+		]);
 		return {
 			orders: result.orders.map(toOrderSummaryWire),
 			nextCursor:
