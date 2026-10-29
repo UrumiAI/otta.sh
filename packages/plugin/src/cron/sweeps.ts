@@ -2565,7 +2565,9 @@ function logOutcome(outcome: Omit<SweepLegOutcome, "queries">): void {
 		}
 		return;
 	}
-	if (outcome.count > 0 || outcome.incomplete === true) {
+	// A leg waiting out a cap it already logged (prune-carts' spent day) is not news.
+	const idle = outcome.count === 0 && outcome.waitsCadence === true;
+	if (!idle && (outcome.count > 0 || outcome.incomplete === true)) {
 		console.log(
 			`[otta] cron sweep ${outcome.leg} ${String(outcome.count)}` +
 				(outcome.incomplete !== true
@@ -4688,13 +4690,15 @@ export const ABANDONED_CARTS_PER_RUN = 50;
  * What a delete writes, by DEPLOYMENT.md's index-row model: EmDash builds every
  * declared index as an expression index over the whole shared `_plugin_storage`
  * table with no `WHERE`, so every row carries an entry in each — Otta declares 46
- * (`COMMERCE_STORAGE_COLLECTIONS`) — plus the table row itself and the host's own
- * `idx_plugin_storage_list`. A deleted row is therefore about 48 rows written, and a
- * pruned cart deletes two (the cart, and its `cart_create_keys` record): about 96,
- * say 100 with other plugins' indexes. 300 carts is then about 30,000 rows written a
+ * (`COMMERCE_STORAGE_COLLECTIONS`) — plus the table row itself, the autoindex of its
+ * composite primary key, and the host's own `idx_plugin_storage_list`. A deleted row
+ * is therefore about 49 rows written, and a pruned cart deletes two (the cart, and
+ * its `cart_create_keys` record): about 98, say 100 with other plugins' indexes. 300 carts is then about 30,000 rows written a
  * day — under a third of the Free allowance, leaving the store's own traffic the
  * rest; the leg's cursor and the tick-state writes add a few thousand more on a
  * day the cap is reached. A backlog of N abandoned carts drains in N / 300 days.
+ * Overlapping ticks (each reads the count before either writes it) can pass the cap
+ * by at most one run's deletes, `ABANDONED_CARTS_PER_RUN`.
  *
  * Paid has no daily rows-written limit (writes are billed per million), so a larger
  * budget has no daily cap and drains at `ABANDONED_CARTS_PER_RUN` a cadence.
@@ -4925,6 +4929,7 @@ async function pruneAbandonedCarts(
 			? ABANDONED_CARTS_PER_RUN
 			: Math.min(ABANDONED_CARTS_PER_RUN, Math.max(0, dailyCap - deletedBefore));
 	// Today's allowance is spent: one kv read, and the leg waits its cadence.
+	// Logged once, by the run that reached the cap (below), not at every cadence after.
 	if (runLimit === 0) return { count: 0, incomplete: true, waitsCadence: true };
 	const collections = {
 		carts: collectionOf<CartDoc>(storage, CARTS_COLLECTION),
@@ -5027,6 +5032,12 @@ async function pruneAbandonedCarts(
 		throw err;
 	}
 	await savePlace();
+	if (capped && dailyCap !== null && deletedBefore + pruned >= dailyCap) {
+		console.info(
+			`[otta] cron sweep prune-carts: today's cap of ${String(dailyCap)} deletes is reached` +
+				" (Workers Free preset); it carries on after 00:00 UTC",
+		);
+	}
 	return {
 		...legResult(pruned, incomplete, anomalies),
 		...(capped ? { waitsCadence: true as const } : {}),

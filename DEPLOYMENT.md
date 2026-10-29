@@ -833,15 +833,21 @@ having lines, or by being checked out). Known residuals, left as follow-ups:
 
 **Draining a backlog writes rows.** Each declared index is an expression index over the whole
 shared `_plugin_storage` table (see "Deploying it builds one index" below), so every row carries an
-entry in each of Otta's 46 indexes, plus the table row and the host's own list index: deleting one
-row is about 48 rows written on D1, and a pruned cart deletes two (the cart and its create-key
-record), about 96, call it 100 with other plugins' indexes. That is why the Free preset caps the
+entry in each of Otta's 46 indexes, plus the table row, its composite primary key's autoindex and the
+host's own list index: deleting one row is about 49 rows written on D1, and a pruned cart deletes two
+(the cart and its create-key record), about 98, call it 100 with other plugins' indexes. That is why the Free preset caps the
 drain at 300 carts a day: about 30,000 rows written, under a third of D1 Free's 100,000 a day, which
 once spent fails every write (add-to-cart and checkout included) until the UTC reset. A store with
 N abandoned carts on its first day drains them in about N / 300 days on Free. On Workers Paid (a
 budget above 30) there is no daily cap (D1 bills rows written per million and has no daily
 ceiling): at most 50 carts a cadence, 4,800 a day, about 480,000 rows written. These figures are
-derived from the index model, not measured on D1.
+derived from the index model, not measured on D1. Overlapping ticks can pass the day's cap by at
+most one run (50 carts).
+
+The cap keys off the **Background work per minute** setting, not the plan: 30 or less counts as
+Free. So a Workers Paid store left at 30 is capped at 300 carts a day too (choose the Paid preset to
+drain faster), and a Free store set to a custom 31–50 loses the cap. A Free store that abandons more
+than 300 empty carts a day never fully catches up; the rest wait their turn, untouched.
 
 `stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
 nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv

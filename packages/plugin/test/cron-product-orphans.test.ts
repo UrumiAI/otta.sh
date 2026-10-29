@@ -66,6 +66,7 @@ import {
 } from "../src/cron/index.js";
 import {
 	AGING_TICKS,
+	LEG_PRIORITY,
 	ORPHAN_MAX_READ_FAILURES,
 	ORPHAN_STRIKES,
 	ORPHAN_TOMBSTONES_PER_DAY,
@@ -1290,8 +1291,10 @@ describe("intermittent CMS failures never tombstone a live product (seeded)", ()
 describe("scheduling and logging", () => {
 	test("never promoted: however long it waits, product-orphans does not jump the queue or the starvation guard", () => {
 		const waits = { "product-orphans": STARVING_TICKS * 10 };
-		// It keeps its own place at the back, with `prune-carts` (#39), unpromoted too, right after it.
-		expect(tickOrder(waits).slice(-2)).toEqual(["product-orphans", "prune-carts"]);
+		// It keeps its own place, with `prune-carts` (#39), unpromoted too, right after it.
+		const order = tickOrder(waits);
+		expect(order.indexOf("product-orphans")).toBe(LEG_PRIORITY.indexOf("product-orphans"));
+		expect(order[order.indexOf("product-orphans") + 1]).toBe("prune-carts");
 		expect(starvingLeg(waits)).toBeUndefined();
 		// While an ordinary leg that waited is promoted as before.
 		expect(tickOrder({ "coupon-orphans": AGING_TICKS })[0]).toBe("coupon-orphans");
