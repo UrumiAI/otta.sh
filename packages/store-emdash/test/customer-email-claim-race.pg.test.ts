@@ -19,48 +19,177 @@
  *    the only caller that expects the duplicate error — so it is the one that would
  *    expose a claim which refused without the account being reachable.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { email, DuplicateCustomerEmailError } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
+import { CUSTOMERS_COLLECTION, type StorageAccess, type StorageCollection } from "../src/index.js";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";
 import { IDENTITY_LAYOUT } from "./identity-collections.js";
 import { makeIdentityHarness, type IdentityHarness } from "./identity-harness.js";
-import { settleOne } from "./helpers/fault-injection.js";
+import { delegatingCollection, settleOne, withCollection } from "./helpers/fault-injection.js";
 
 /**
- * The hand-set attempt budget every shape here is held to — tighter than
+ * The hand-set attempt budget the registration stampede is held to — tighter than
  * `CAS_MAX_ATTEMPTS`, so raising the package ceiling cannot turn a passing shape
  * green by accident.
  *
  * The bound is a property of the claim document: an attempt is lost only when a peer
  * wrote the claim, and a claim a live account holds refuses every later caller with
- * no write at all. So the depth tracks the takeovers, not the crowd.
+ * no write at all. So the depth tracks the takeovers, not the crowd — by
+ * construction at most 2 (lose the create-if-absent to the one peer that took it,
+ * then be refused), measured at 1 at N=30.
  *
- * Measured at 1 for the registration stampede at N=30 — the first writer takes the
- * claim and every peer is then refused without contending for it — and at 8 for the
- * get-or-create shape, where the depth is not contention at all but the bounded WAIT
- * a redeemer spends re-reading until the winner's account document is readable.
+ * The get-or-create shape is NOT held to this number; see its own bounds below.
  */
 const CAS_ATTEMPT_BUDGET = 12;
+
+/**
+ * The redeemer's get-or-create re-read. It is a WAIT, not a compare-and-set
+ * contention depth: a redeemer that finds the address claimed but the account not
+ * yet readable re-runs the step until the winner's account write lands. No peer's
+ * progress is what it loses to — it is the winner's own few statements still in
+ * flight — so its attempt count is the winner's write latency divided by the
+ * redeemer's poll cycle, and nothing in the algorithm bounds that in attempts
+ * (observed at 13 under CI load, issue #636). Left to the runner's speed, a slow
+ * enough account write runs the attempt-limited wait out (#647) — so the suite does
+ * not leave it to the runner's speed: see {@link gateAccountWrite}.
+ */
+const RESOLVE_WAIT_OPERATION = "verifyChallenge.resolveCustomer";
+
+/**
+ * Empty `customers` lookups one wait attempt makes while the winner's account is
+ * unreadable: the step's `getByEmail`, the `create`'s own claim-step lookup before
+ * it is refused as a duplicate, and the re-read after that refusal. Each one finds
+ * the claim, misses its account and falls through to the indexed query.
+ */
+const LOOKUPS_PER_WAIT_ATTEMPT = 3;
+
+/** A gate that is never opened by a wait fails the loop instead of hanging it. */
+const GATE_TIMEOUT_MS = 10_000;
+
+/** Which redeemer a storage call belongs to, so a wait attempt is attributable. */
+const redeemer = new AsyncLocalStorage<number>();
+
+interface AccountWriteGate {
+	readonly storage: StorageAccess;
+	/** Re-arm for the next loop: the next account write is held again. */
+	arm(): void;
+	/** How many account writes the gate held this loop. */
+	held(): number;
+	/** Whether the held write was let go by a redeemer's retry, not by the timeout. */
+	releasedByWait(): boolean;
+}
+
+/**
+ * Hold the winner's account write until a peer is provably WAITING for it, and keep
+ * every peer from re-reading while the write is landing.
+ *
+ * This takes the runner's speed out of the get-or-create race. The write is let go
+ * the moment one redeemer starts its SECOND wait attempt (its lookups exceed
+ * {@link LOOKUPS_PER_WAIT_ATTEMPT}), so a retry is guaranteed rather than hoped for.
+ * And from release until the write has landed, the lookups are held too: a redeemer
+ * cannot spend attempts on an account that is still being written, however long the
+ * write takes — which is the #647 limit a slow runner would otherwise hit.
+ *
+ * `onCasAttempts` cannot be the release signal: it reports a step's depth when the
+ * step FINISHES, and no waiting step can finish while the account write is held.
+ */
+function gateAccountWrite(storage: StorageAccess): AccountWriteGate {
+	const raw = storage[CUSTOMERS_COLLECTION] as StorageCollection;
+	let held = 0;
+	let released = false;
+	let byWait = false;
+	let open: (() => void) | undefined;
+	let gate = Promise.resolve();
+	let landed = Promise.resolve();
+	const lookups = new Map<number, number>();
+	const release = (fromWait: boolean): void => {
+		if (released) return;
+		released = true;
+		byWait = fromWait;
+		open?.();
+	};
+	const collection = delegatingCollection(raw, {
+		compareAndSet(id, expectedRevision, data) {
+			// The create-if-absent of an account document; only the winner reaches one.
+			if (expectedRevision !== null || held > 0) {
+				return raw.compareAndSet(id, expectedRevision, data);
+			}
+			held++;
+			const timer = setTimeout(() => release(false), GATE_TIMEOUT_MS);
+			const written = gate.then(() => raw.compareAndSet(id, expectedRevision, data));
+			landed = written.then(
+				() => clearTimeout(timer),
+				() => clearTimeout(timer),
+			);
+			return written;
+		},
+		async query(options) {
+			if (released) await landed;
+			const result = await raw.query(options);
+			const who = redeemer.getStore();
+			if (held > 0 && !released && who !== undefined && result.items.length === 0) {
+				const seen = (lookups.get(who) ?? 0) + 1;
+				lookups.set(who, seen);
+				if (seen > LOOKUPS_PER_WAIT_ATTEMPT) release(true);
+			}
+			return result;
+		},
+	});
+	return {
+		storage: withCollection(storage, CUSTOMERS_COLLECTION, collection),
+		arm() {
+			held = 0;
+			released = false;
+			byWait = false;
+			lookups.clear();
+			landed = Promise.resolve();
+			gate = new Promise<void>((resolve) => {
+				open = resolve;
+			});
+		},
+		held: () => held,
+		releasedByWait: () => byWait,
+	};
+}
 
 interface Fixture {
 	harness: IdentityHarness;
 	maxAttempts(): number;
+	maxAttemptsFor(operation: string): number;
+	/** The deepest attempt count over every operation except the ones named. */
+	maxAttemptsExcept(...operations: string[]): number;
 	reset(): Promise<void>;
 	close(): Promise<void>;
 }
 
-async function fresh(poolMax: number, cap?: number): Promise<Fixture> {
-	const db = await makePgStorage(IDENTITY_LAYOUT, poolMax);
+/** The deepest attempt count among the given per-operation maxima. */
+function deepestOf(operations: Iterable<[string, number]>): number {
 	let deepest = 0;
+	for (const [, attempts] of operations) deepest = Math.max(deepest, attempts);
+	return deepest;
+}
+
+async function fresh(
+	poolMax: number,
+	cap?: number,
+	wrap?: (storage: StorageAccess) => StorageAccess,
+): Promise<Fixture> {
+	const db = await makePgStorage(IDENTITY_LAYOUT, poolMax);
+	const perOperation = new Map<string, number>();
 	const harness = makeIdentityHarness(db.storage, {
 		maxActiveChallenges: cap,
-		onCasAttempts: (_operation, attempts) => {
-			deepest = Math.max(deepest, attempts);
+		storageForStore: wrap?.(db.storage),
+		onCasAttempts: (operation, attempts) => {
+			perOperation.set(operation, Math.max(perOperation.get(operation) ?? 0, attempts));
 		},
 	});
 	return {
 		harness,
-		maxAttempts: () => deepest,
+		maxAttempts: () => deepestOf(perOperation),
+		maxAttemptsFor: (operation) => perOperation.get(operation) ?? 0,
+		maxAttemptsExcept: (...operations) =>
+			deepestOf([...perOperation].filter(([operation]) => !operations.includes(operation))),
 		reset: () => db.reset(),
 		close: () => db.close(),
 	};
@@ -105,10 +234,16 @@ describe.skipIf(!PG_ENABLED)("customer email claim [postgres]", () => {
 		const N = 12;
 		const LOOPS = 8;
 		const EMAIL = email("getorcreate@example.com");
-		const fx = await fresh(N + 4, N);
+		let gate: AccountWriteGate | undefined;
+		const fx = await fresh(N + 4, N, (storage) => {
+			gate = gateAccountWrite(storage);
+			return gate.storage;
+		});
+		if (gate === undefined) throw new Error("the gate was not installed");
 		try {
 			for (let loop = 0; loop < LOOPS; loop++) {
 				await fx.reset();
+				gate.arm();
 				const issued = [];
 				for (let i = 0; i < N; i++) {
 					const result = await fx.harness.verifier.issueChallenge(EMAIL);
@@ -116,13 +251,24 @@ describe.skipIf(!PG_ENABLED)("customer email claim [postgres]", () => {
 					issued.push(result);
 				}
 				const verified = await Promise.all(
-					issued.map((challenge) =>
-						settleOne(fx.harness.verifier.verifyChallenge(challenge.challengeId, challenge.token)),
+					issued.map((challenge, i) =>
+						redeemer.run(i, () =>
+							settleOne(
+								fx.harness.verifier.verifyChallenge(challenge.challengeId, challenge.token),
+							),
+						),
 					),
+				);
+				// One account write, held until a peer was waiting for it.
+				expect(gate.held(), `loop ${String(loop)}: account writes held`).toBe(1);
+				expect(gate.releasedByWait(), `loop ${String(loop)}: released by a waiting peer`).toBe(
+					true,
 				);
 				const ids = new Set<string>();
 				for (const result of verified) {
-					expect(result, `loop ${String(loop)}`).toMatchObject({ ok: true });
+					// A StorageContentionError here is the attempt-limited wait running out
+					// (#647) — the gate is meant to make that impossible in this shape.
+					expect(result, `loop ${String(loop)}: redeem (see #647)`).toMatchObject({ ok: true });
 					const answer = result as { ok: true; customerId: string };
 					ids.add(answer.customerId);
 				}
@@ -131,7 +277,16 @@ describe.skipIf(!PG_ENABLED)("customer email claim [postgres]", () => {
 				expect(await fx.harness.customers.count(), `loop ${String(loop)}: documents`).toBe(1);
 				expect(await fx.harness.emailClaims.count(), `loop ${String(loop)}: claims`).toBe(1);
 			}
-			expect(fx.maxAttempts()).toBeLessThanOrEqual(CAS_ATTEMPT_BUDGET);
+			// The contention in this shape is the N slot releases on ONE throttle document:
+			// a release loses only when a peer's release committed, and each peer commits
+			// exactly once, so no release loses more than N - 1 times. Every other
+			// compare-and-set here is on a document no peer writes, or is refused after one
+			// loss. Measured at 5–7 at N=12.
+			expect(fx.maxAttemptsExcept(RESOLVE_WAIT_OPERATION)).toBeLessThanOrEqual(N);
+			// Both depths were actually recorded — a broken observer cannot pass at 0 — and
+			// the gate guaranteed at least one redeemer waited and retried.
+			expect(fx.maxAttemptsFor("releaseChallengeSlot")).toBeGreaterThanOrEqual(1);
+			expect(fx.maxAttemptsFor(RESOLVE_WAIT_OPERATION)).toBeGreaterThanOrEqual(2);
 		} finally {
 			await fx.close();
 		}
