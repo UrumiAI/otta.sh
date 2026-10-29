@@ -2963,7 +2963,22 @@ async function finishRestockOwed(
  * 26) — the re-read plus about one per id, since the per-id seven already over-covers
  * the adopt itself.
  */
-export function holdIntentCost(item: { data: OrderDoc }): number {
+/** What {@link holdIntentCost} reads of an order document: structural, so the
+ *  export does not put a store-emdash type in the plugin's declarations. */
+interface HoldIntentCostView {
+	readonly holdsAdopted?: HoldIntentCostIntent | null;
+	readonly holdsCommitted?: HoldIntentCostIntent | null;
+	readonly holdsReleased?: HoldIntentCostIntent | null;
+	readonly cancellation?: {
+		readonly restockPending?: { readonly lineIds: readonly unknown[] } | null;
+	} | null;
+}
+interface HoldIntentCostIntent {
+	readonly reservationIds: readonly unknown[];
+	readonly completedAt: string | null;
+}
+
+export function holdIntentCost(item: { data: HoldIntentCostView }): number {
 	let calls = 3;
 	for (const intent of [
 		item.data.holdsAdopted,
