@@ -172,6 +172,7 @@ import type {
 	UpsertProductVariantInput,
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
+import { CONSOLE_LOGGER } from "../logging/console-logger.js";
 import { LOGIN_LINK_TTL_MS, loginLinkUrl } from "../storefront/login-link.js";
 import { buyerRefHint } from "./buyer-ref-hint.js";
 import { emailMatchesBuyer, resumeDeviceThrottleKey, resumeThrottleKey } from "./resume-proof.js";
@@ -324,6 +325,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
 			clock: this.#stores.clock,
+			logger: CONSOLE_LOGGER,
 			// Bounds the LINE, which a re-add merges into — `requireQty` only sees
 			// each request's own qty (issue #608).
 			maxLineQty: CART_LINE_MAX_QTY,
@@ -339,6 +341,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			...(options.taxCalculator !== undefined ? { taxCalculator: options.taxCalculator } : {}),
 			settings: this.#stores.settingsStore,
 			clock: this.#stores.clock,
+			// The composition root owns the sink: the domain's diagnostics (payment-intent
+			// failures with their provider status / code) reach the same stderr as before.
+			logger: CONSOLE_LOGGER,
 			idGen: this.#stores.idGen,
 			// Whatever the composition root could wire, and nothing more. `stripe` is
 			// wired by `payments/stripe-wiring.ts`. A method with no gateway
@@ -1301,6 +1306,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				taxRules: this.#stores.taxRules,
 				couponStore: this.#stores.couponStore,
 				clock: this.#stores.clock,
+				logger: CONSOLE_LOGGER,
 				...(this.#taxCalculator !== undefined ? { taxCalculator: this.#taxCalculator } : {}),
 				settings: this.#stores.settingsStore,
 			},
@@ -1619,7 +1625,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			return { ok: true, cancelled: false, orderId: cart.orderId };
 		}
 		const res = await cancelOrder(
-			{ orderStore: this.#stores.orderStore },
+			{ orderStore: this.#stores.orderStore, logger: CONSOLE_LOGGER },
 			{
 				orderId,
 				reason: "customer_request",
@@ -1657,7 +1663,12 @@ export class InProcessCommerceClient implements CommerceClient {
 		const remainingMs = () => ABANDON_WITHDRAW_BUDGET_MS - (Date.now() - startedAt);
 		try {
 			await cancelDueIntents(
-				{ orderStore: this.#stores.orderStore, clock: this.#stores.clock, gateways: resolve },
+				{
+					orderStore: this.#stores.orderStore,
+					clock: this.#stores.clock,
+					gateways: resolve,
+					logger: CONSOLE_LOGGER,
+				},
 				{ due: [orderId], limit: 1, canStartCancel: () => remainingMs() >= ABANDON_CANCEL_CALL_MS },
 			);
 		} catch (err) {

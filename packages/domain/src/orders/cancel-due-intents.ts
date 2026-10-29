@@ -1,5 +1,6 @@
 import { idempotencyKey, type OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import { NOOP_LOGGER, type Logger } from "../ports/logger.js";
 import type {
 	OrderStore,
 	PaymentIntentCancelOutcome,
@@ -20,6 +21,10 @@ function backoffMs(attempts: number): number {
 }
 
 export interface CancelDueIntentsDeps {
+	/** Where this path's diagnostics go. Optional (no-op when absent) so the many
+	 *  narrow construction sites of the cancel/refund family need not wire it; every
+	 *  production composition root does. */
+	logger?: Logger;
 	orderStore: OrderStore;
 	clock: Clock;
 	/** Resolved PER ORDER and only once something is due: a quiet tick reads no
@@ -205,7 +210,7 @@ async function settleIntent(
 			idempotencyKey: cancelKey(intent.intentId, attempts),
 		});
 	} catch (err) {
-		console.error(
+		(deps.logger ?? NOOP_LOGGER).error(
 			`[domain] cancelling payment intent ${intent.intentId} of order ${orderId} threw`,
 			{ error: err instanceof Error ? err.message : String(err) },
 		);
@@ -230,7 +235,7 @@ async function settleIntent(
 	// over a flag already there — that one is somebody else's anomaly to resolve —
 	// including one written during the cancel call: `order` was read before it, so
 	// the write is a compare-and-set on "still unflagged" (issue #364).
-	console.error(
+	(deps.logger ?? NOOP_LOGGER).error(
 		`[domain] gave up cancelling payment intent ${intent.intentId} of order ${orderId} (${res.reason}, ${String(attempts)} attempt(s)); a late payment on it will be refunded at settle`,
 	);
 	await resolve("failed", attempts);
@@ -241,7 +246,7 @@ async function settleIntent(
 			{ expectedFlag: null },
 		);
 		if (!written) {
-			console.warn(
+			(deps.logger ?? NOOP_LOGGER).warn(
 				`[domain] order ${orderId}: intent-withdrawal flag not written for ${intent.intentId} — another reconciliation flag was raised meanwhile and is kept`,
 			);
 		}

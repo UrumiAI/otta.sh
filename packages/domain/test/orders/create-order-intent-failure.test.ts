@@ -9,7 +9,7 @@ import {
 	type PaymentIntentHandle,
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
 const USD = currency("USD");
@@ -145,15 +145,22 @@ describe("createOrderFromCart — a live createIntent failure (PAYMENT_INTENT_FA
 	});
 
 	test("the mapped failure is LOGGED with providerStatus/providerCode — those fields are never write-only", async () => {
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const cartId = await cart();
 		gw.failWith = intentError(false);
 		await createOrderFromCart(h.createDeps, cmd(cartId));
-		expect(error).toHaveBeenCalled();
-		const logged = error.mock.calls.map((c) => JSON.stringify(c)).join(" ");
-		expect(logged).toContain("503");
-		expect(logged).toContain("api_error");
-		error.mockRestore();
+		expect(h.logger.entries).toEqual([
+			{
+				level: "error",
+				message: "[domain] createIntent failed → PAYMENT_INTENT_FAILED",
+				fields: expect.objectContaining({
+					gateway: "stripe",
+					retryable: false,
+					providerStatus: 503,
+					providerCode: "api_error",
+					inFlight: false,
+				}),
+			},
+		]);
 	});
 
 	test("the coupon redemption is NOT released on PAYMENT_INTENT_FAILED — the inserted order owns it", async () => {

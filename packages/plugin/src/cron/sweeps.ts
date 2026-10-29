@@ -216,6 +216,7 @@ import {
 	resolvePaymentGateways,
 	type PaymentGateways,
 } from "../payments/resolve-payment-gateways.js";
+import { CONSOLE_LOGGER } from "../logging/console-logger.js";
 import type { StripeGatewayOptions } from "../payments/stripe-wiring.js";
 import { deriveDeleteIdempotencyKey } from "../sync/derive-idempotency-key.js";
 import { PRODUCTS_COLLECTION } from "../sync/hooks.js";
@@ -1631,6 +1632,7 @@ export async function runCommerceSweeps(
 							cartStore: stores.cartStore,
 							inventoryStore: stores.inventory,
 							clock: stores.clock,
+							logger: CONSOLE_LOGGER,
 							ttlMs: settings.holdTtlMinutes * 60_000,
 						},
 						now,
@@ -1748,6 +1750,7 @@ export async function runCommerceSweeps(
 						inventoryStore: stores.inventory,
 						couponStore,
 						clock: stores.clock,
+						logger: CONSOLE_LOGGER,
 					},
 					now,
 					{
@@ -1843,6 +1846,7 @@ export async function runCommerceSweeps(
 						orderStore: stores.orderStore,
 						paymentEventStore: stores.paymentEventStore,
 						clock: { now: () => now },
+						logger: CONSOLE_LOGGER,
 						gateways: sweepGateways(ctx, options, lateRefundStripeOptions(legBudget)),
 					},
 					{ limit, shouldContinue: () => gate(), due: await lateRefundsDueIds() },
@@ -1894,6 +1898,7 @@ export async function runCommerceSweeps(
 					{
 						orderStore: stores.orderStore,
 						clock: { now: () => now },
+						logger: CONSOLE_LOGGER,
 						// A withdrawal is RECORDED, whatever the ceiling says (QA3 N2).
 						gateways: recordingCancels(
 							sweepGateways(ctx, options, { requestTimeoutMs: INTENT_CANCEL_CALL_MS }),
@@ -3071,7 +3076,7 @@ async function finishRestockOwed(
 ): Promise<{ finished: boolean; anomalies: string[] }> {
 	try {
 		const res = await finishCancellationRestock(
-			{ orderStore: stores.orderStore, inventoryStore: stores.inventory },
+			{ orderStore: stores.orderStore, inventoryStore: stores.inventory, logger: CONSOLE_LOGGER },
 			orderId,
 		);
 		const anomalies: string[] = [];

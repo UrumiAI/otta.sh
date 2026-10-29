@@ -53,6 +53,7 @@ import { settleOrder, type SettleDeps, type SettleResult } from "@urumi.ai/otta-
 import { StripePaymentGateway } from "@urumi.ai/otta-payments-stripe";
 import { isRetryableStorageBusy } from "@urumi.ai/otta-store-emdash";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
+import { CONSOLE_LOGGER } from "../logging/console-logger.js";
 import { edgeTokenGate } from "../edge-token.js";
 import {
 	sendOrderEmailsNow,
@@ -336,6 +337,7 @@ export function createStripeWebhookSettleHandler(
 			paymentEventStore: stores.paymentEventStore,
 			inventoryStore: stores.inventory,
 			clock: stores.clock,
+			logger: CONSOLE_LOGGER,
 		};
 		let settled: SettleResult;
 		try {
