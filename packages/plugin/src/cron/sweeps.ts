@@ -351,6 +351,30 @@ export const EMAIL_SEND_AND_RECORD_CALLS =
 const CANCEL_CALL_AND_RECORD_CALLS = 6;
 const CANCEL_RECORD_CALLS = 4;
 
+/**
+ * What one expired order's coupon release costs (`releaseByOrder`, #621): its two
+ * indexed scans (by the order's id and by its creation key, #598), the per-customer
+ * slot, the redemption's guarded delete and the decrement — MEASURED at 7 in
+ * `cron-leg-costs.test.ts`, on the dearer shape (found by key, a slot to free).
+ *
+ * `expire-orders` STARTS a release only when the tick can still make this many
+ * calls. The release is two documents with no transaction: the guarded delete is the
+ * once-only claim of the decrement that follows it. Refused before the delete, the
+ * redemption still holds its use and `coupon-orphans` frees it (its `expired` arm);
+ * refused BETWEEN the two, the redemption is gone, nothing is left for any sweep to
+ * find, and `usesCount` stays one high for good. So a release the tick cannot finish
+ * is not begun: the order stays expired, its redemption intact, and the coupon sweep
+ * releases it — idempotently, so the use comes back exactly once either way.
+ *
+ * Not added to `LEG_QUERY_COSTS["expire-orders"]`: that is the first-unit estimate
+ * for the common coupon-less order, and raising it would cost every Free tick room it
+ * mostly does not need (see the cost test). A release is checked when it is reached.
+ * The residual is an order holding MORE than one redemption (a same-key replay that
+ * claimed twice), whose release costs more than this; the ceiling can still land in
+ * its second one.
+ */
+export const COUPON_RELEASE_CALLS = 7;
+
 /** The legs with a per-tick batch, and which batch. */
 const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
 	"expire-holds": "expiry",
@@ -1643,7 +1667,12 @@ export async function runCommerceSweeps(
 					{
 						orderStore: stores.orderStore,
 						inventoryStore: stores.inventory,
-						couponStore: stores.couponStore,
+						// #621: a coupon release is begun only when all of it fits.
+						couponStore: wholeReleasesOnly(stores.couponStore, () => {
+							if (budget.headroom() >= COUPON_RELEASE_CALLS) return;
+							legBudget.stopped = true;
+							throw new SweepQueryCeilingError(budget.ceiling(), "expire-orders");
+						}),
 						clock: stores.clock,
 					},
 					now,
@@ -2117,6 +2146,27 @@ function logTick(
 				? `; stopped at the ceiling: ${stoppedAtCeiling.join(", ")}`
 				: ""),
 	);
+}
+
+/**
+ * `store` with `releaseByOrder` preceded by `beforeRelease`, which throws to refuse
+ * it before any call is made (see `COUPON_RELEASE_CALLS`). Every other member is the
+ * store's own.
+ */
+function wholeReleasesOnly<S extends object>(store: S, beforeRelease: () => void): S {
+	return new Proxy(store, {
+		get(target, prop) {
+			const value: unknown = Reflect.get(target, prop, target);
+			if (typeof value !== "function") return value;
+			if (prop === "releaseByOrder") {
+				return async (...args: unknown[]) => {
+					beforeRelease();
+					return await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+				};
+			}
+			return (value as (...a: unknown[]) => unknown).bind(target);
+		},
+	});
 }
 
 /**
@@ -3168,7 +3218,9 @@ function addDays(day: string, delta: number): string {
  * orphan. An expired order owes its coupon back by policy (expiry releases it), so
  * releasing here is completing owed work, and `release` is idempotent, so the
  * normal case (already released by `expireOrders`) finds no redemption holding a use.
- * A declined-and-abandoned order ends on exactly this path (ADR-0022).
+ * A declined-and-abandoned order ends on exactly this path (ADR-0022). So does an
+ * expiry whose release the tick could not afford: the sweep refuses it BEFORE it
+ * begins (`COUPON_RELEASE_CALLS`, #621), so the redemption is still here to free.
  *
  * A redemption is judged only once its order has LEFT `pending`: one whose order is
  * still pending past its hold (the expiry has not reached it yet) stops the walk,

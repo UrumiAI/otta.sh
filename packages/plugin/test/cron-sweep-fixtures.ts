@@ -309,6 +309,7 @@ export async function placeOrder(
 	tag: string,
 	holdExpiresAt: Date,
 	createdAt: Date,
+	appliedCouponCode?: string,
 ): Promise<{ id: string; sku: string }> {
 	const s = adapters(storage, createdAt);
 	const sku = `ORDER-${tag}`;
@@ -346,7 +347,12 @@ export async function placeOrder(
 				reservationId: toReservationId(held.reservationId),
 			},
 		],
-		totals: { subtotal: cents(1000), total: cents(1000), currency: currency("USD") },
+		totals: {
+			subtotal: cents(1000),
+			total: cents(1000),
+			currency: currency("USD"),
+			...(appliedCouponCode === undefined ? {} : { appliedCouponCode }),
+		},
 	});
 	return { id, sku };
 }
