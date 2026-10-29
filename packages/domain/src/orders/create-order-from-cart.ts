@@ -203,7 +203,7 @@ export async function createOrderFromCart(
 		// and this replay (qty adjusted on the same hold) is adopted as edited for an
 		// order that snapshotted the old lines.
 		const finished = await finishCheckout(deps, already, already.cartId, async () => {
-			await deps.couponStore.releaseByOrder(already.id);
+			await deps.couponStore.releaseByOrder(already);
 		});
 		if (finished.outcome === "left") return leftCheckoutWindow(finished.order, gateway);
 		if (finished.outcome === "lost") return { ok: false, reason: "RESERVATION_LOST" };
@@ -813,7 +813,7 @@ const RELEASES_COUPON: ReadonlySet<Order["state"]> = new Set(["expired", "failed
  * flip and its coupon release — nothing else ever looks at that order again.
  */
 async function healCouponOf(deps: CreateOrderDeps, order: Order): Promise<void> {
-	if (RELEASES_COUPON.has(order.state)) await deps.couponStore.releaseByOrder(order.id);
+	if (RELEASES_COUPON.has(order.state)) await deps.couponStore.releaseByOrder(order);
 }
 
 /** `expireOrders`' release, verbatim: order-scoped, a no-op for any hold this

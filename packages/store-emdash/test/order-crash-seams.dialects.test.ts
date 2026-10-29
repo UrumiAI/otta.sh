@@ -207,6 +207,54 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect((await keys.get(KEY))?.state).toBe("terminal");
 	});
 
+	// #598 review: the sweeps read a key through `peekByIdempotencyKey`, never through
+	// the healing `getByIdempotencyKey` — a sweep that completed this claim would
+	// conjure an order for a checkout that crashed, which the expiry would then mail
+	// a "Checkout expired" notice about.
+	test("peekByIdempotencyKey reports a claim whose order never landed WITHOUT completing it", async () => {
+		const clean = await seed([{ sku: "SKU-1", product: "p1" }]);
+		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
+		const keys = collectionOf<OrderKeyDoc>(bound.storage, ORDER_KEYS_COLLECTION);
+		const index = collectionOf<OrderSkuIndexDoc>(bound.storage, ORDER_SKU_INDEX_COLLECTION);
+
+		const crashing = failCall(orders, isClaimWrite, { mode: "instead" });
+		const crashed = makeOrderHarness(bound.storage, {
+			share: clean.shared,
+			storageForOrders: withCollection(bound.storage, ORDERS_COLLECTION, crashing.collection),
+		});
+		const cartId = await clean.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		await expectCrash(
+			createOrderFromCart(crashed.createDeps, {
+				cartId,
+				idempotencyKey: KEY,
+				buyerRef: "buyer@example.com",
+				paymentMethod: "stripe",
+			}),
+		);
+		const claim = await keys.get(KEY);
+		if (claim === null || claim.state !== "claimed") {
+			throw new Error("the crashed create must leave a CLAIMED key");
+		}
+
+		const peeked = await clean.store.peekByIdempotencyKey(KEY);
+		expect(peeked?.state).toBe("claimed");
+		expect(peeked?.order.id).toBe(claim.orderId);
+		expect(peeked?.order.lines[0]?.sku).toBe("SKU-1");
+		// Nothing was written: no order, no by-sku pointer, and the key is still a claim.
+		expect(await orders.get(claim.orderId)).toBeNull();
+		expect(await index.get(orderSkuIndexId("sku-1", claim.orderId))).toBeNull();
+		expect((await keys.get(KEY))?.state).toBe("claimed");
+
+		// Once a replay finishes it, the same peek reports the durable order.
+		const healed = await clean.store.getByIdempotencyKey(KEY);
+		expect(healed?.id).toBe(claim.orderId);
+		const after = await clean.store.peekByIdempotencyKey(KEY);
+		expect(after?.state).toBe("minted");
+		expect(after?.order.id).toBe(claim.orderId);
+	});
+
 	test("an order document whose key was never promoted is healed by the next read, and never minted twice", async () => {
 		const clean = await seed([{ sku: "SKU-1", product: "p1" }]);
 		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
@@ -235,6 +283,12 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect(claim.state).toBe("claimed"); // still a claim…
 		const orderId = claim.orderId;
 		expect((await orders.get(orderId))?.state).toBe("pending"); // …over a real order
+
+		// A peek is a pure read: it reports the real order as minted and heals nothing.
+		const peek = await clean.store.peekByIdempotencyKey(KEY);
+		expect(peek?.state).toBe("minted");
+		expect(peek?.order.id).toBe(orderId);
+		expect((await keys.get(KEY))?.state).toBe("claimed");
 
 		// The heal path is an ordinary read.
 		const healed = await clean.store.getByIdempotencyKey(KEY);

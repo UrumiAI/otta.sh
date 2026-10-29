@@ -30,6 +30,7 @@ import {
 	retryLatePaymentRefunds,
 	settleOrder,
 	dispatchOrderEmails,
+	orderHoldingRedemption,
 	type EmailSender,
 	type PaymentGateway,
 } from "@urumi.ai/otta-domain";
@@ -161,7 +162,12 @@ async function cost(body: () => Promise<unknown>): Promise<number> {
 }
 
 /** A pending order over `lines` adopted reservations, one SKU each. */
-async function placeOrder(suffix: string, holdExpiresAt: string, lines = 1) {
+async function placeOrder(
+	suffix: string,
+	holdExpiresAt: string,
+	lines = 1,
+	appliedCouponCode?: string,
+) {
 	const s = counted();
 	const skus: string[] = [];
 	const held: string[] = [];
@@ -210,9 +216,38 @@ async function placeOrder(suffix: string, holdExpiresAt: string, lines = 1) {
 			subtotal: cents(1000 * lines),
 			total: cents(1000 * lines),
 			currency: currency("USD"),
+			...(appliedCouponCode !== undefined ? { appliedCouponCode } : {}),
 		},
 	});
 	return { id, sku: skus[0] ?? "", skus, reservationId: held[0] ?? "" };
+}
+
+/** What the two coupon cases measured (#598 review) — pinned, so a change that moves
+ *  them shows up here and in `LEG_QUERY_COSTS` together. */
+const COUPON_ORPHAN_WORST_UNIT = 10;
+const EXPIRY_WITH_COUPON_UNIT = 20;
+
+/** A live percentage coupon for a cost case; returns its id. */
+async function costCoupon(
+	s: ReturnType<typeof counted>,
+	id: string,
+	code: string,
+): Promise<string> {
+	await s.couponStore.create({
+		id,
+		code,
+		type: "percentage",
+		amountCents: null,
+		rateBps: 1000,
+		capCents: null,
+		currency: currency("USD"),
+		minSubtotalCents: cents(0),
+		startsAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
+		expiresAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+		maxUses: 10,
+		maxUsesPerCustomer: 1,
+	});
+	return id;
 }
 
 /** The calls the expiry use-case makes for the given (already listed) orders. */
@@ -259,6 +294,38 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		const placed = await placeOrder("expire", new Date(Date.now() - 30 * MINUTE_MS).toISOString());
 		const used = await expiryUnitCost([placed.id]);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["expire-orders"].unit);
+	});
+
+	// #598: an order with a coupon applied releases it through `releaseByOrder`, which
+	// now runs TWO indexed scans (by the order's id, and by its creation key) before
+	// releasing what they found. Here the redemption sits under the key with another
+	// order id — the same-key replay shape — so the key scan is the one that finds it.
+	test("expire-orders: one order's expiry unit with its coupon released by key", async () => {
+		const s = counted();
+		const couponId = await costCoupon(s, "coupon-cost-expire", "COSTEXPIRE");
+		const placed = await placeOrder(
+			"expire-coupon",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+			1,
+			"COSTEXPIRE",
+		);
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(`${placed.id}-never-persisted`),
+			idempotencyKey: idempotencyKey("create-expire-coupon"),
+			customerId: toCustomerId("cust-cost-expire"),
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		if (!claimed.ok) throw new Error("redeem failed");
+		const used = await expiryUnitCost([placed.id]);
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(0);
+		// ABOVE the leg's first-unit estimate, deliberately: that estimate is the common
+		// one-line, coupon-less unit, and the gate learns a dearer unit from the first
+		// one it sees, as it does for a many-line order (see `LEG_QUERY_COSTS`). Raising
+		// it to this would move `expire-orders` behind the starvation guard on Free
+		// (the preset case below).
+		expect(used).toBe(EXPIRY_WITH_COUPON_UNIT);
+		expect(used).toBeGreaterThan(LEG_QUERY_COSTS["expire-orders"].unit);
 	});
 
 	// QA2 M2: one order expiry was 22 calls on a 30-call Workers Free tick, so a
@@ -408,23 +475,9 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["order-sku-index"].unit);
 	});
 
-	test("coupon-orphans: one judged redemption and its release", async () => {
+	test("coupon-orphans: one judged redemption and its release — no order by id or key", async () => {
 		const s = counted();
-		const couponId = "coupon-cost";
-		await s.couponStore.create({
-			id: couponId,
-			code: "COSTSWEEP",
-			type: "percentage",
-			amountCents: null,
-			rateBps: 1000,
-			capCents: null,
-			currency: currency("USD"),
-			minSubtotalCents: cents(0),
-			startsAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
-			expiresAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
-			maxUses: 10,
-			maxUsesPerCustomer: 1,
-		});
+		const couponId = await costCoupon(s, "coupon-cost", "COSTSWEEP");
 		const claimed = await s.couponStore.redeem({
 			couponId,
 			orderId: toOrderId("order-cost-never-written"),
@@ -433,10 +486,51 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
 		});
 		if (!claimed.ok) throw new Error("redeem failed");
+		const redemption = {
+			orderId: toOrderId("order-cost-never-written"),
+			idempotencyKey: idempotencyKey("redeem-cost"),
+			couponId,
+		};
 		const used = await cost(async () => {
-			await s.orderStore.getById(toOrderId("order-cost-never-written"));
+			expect(await orderHoldingRedemption(s, redemption)).toBeNull();
 			await s.couponStore.release(claimed.redemptionId);
 		});
+		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["coupon-orphans"].unit);
+	});
+
+	// #598 review: the WORST lookup — no order under the redemption's id, a
+	// three-SKU order under its key that applied the coupon. The miss by id, the key
+	// peek (the key, then its order — never the healing resolve, whose by-sku
+	// re-assert would cost a write per SKU), the coupon read that confirms the code,
+	// and the release.
+	test("coupon-orphans: the worst unit — the order found by key under another id, and a release", async () => {
+		const s = counted();
+		const couponId = await costCoupon(s, "coupon-cost-bykey", "COSTBYKEY");
+		const placed = await placeOrder(
+			"orphan-bykey",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+			3,
+			"COSTBYKEY",
+		);
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(`${placed.id}-never-persisted`),
+			idempotencyKey: idempotencyKey("create-orphan-bykey"),
+			customerId: toCustomerId("cust-cost-bykey"),
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		if (!claimed.ok) throw new Error("redeem failed");
+		const redemption = {
+			orderId: toOrderId(`${placed.id}-never-persisted`),
+			idempotencyKey: idempotencyKey("create-orphan-bykey"),
+			couponId,
+		};
+		const used = await cost(async () => {
+			const holder = await orderHoldingRedemption(s, redemption);
+			expect(holder?.order.id).toBe(placed.id);
+			await s.couponStore.release(claimed.redemptionId);
+		});
+		expect(used).toBe(COUPON_ORPHAN_WORST_UNIT);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["coupon-orphans"].unit);
 	});
 
