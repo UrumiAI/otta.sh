@@ -147,12 +147,15 @@ in-process leniency.
     `astro build` refuses to run with it set. **Never expose such a dev server publicly:** with
     the published webhook secret anyone can mark orders paid, and EmDash's dev-bypass signs
     anyone in as admin. Bind it to loopback.
-  - **`EMDASH_ENCRYPTION_KEY` in `sites/staging/.env`** (gitignored) for any `astro dev` where
-    payment keys are saved in Settings — they are stored encrypted (ADR-0037), and without a
-    key every save is refused. Use a dev-only key (`npx emdash secrets generate`); a shell
-    `export` does not reach the dev Worker. The Playwright stack sets a throwaway one itself.
-    A local `astro build` copies `.env` values, including this key, into the gitignored
-    `dist/server/.dev.vars`; never ship or upload that file. Never set
+  - **`EMDASH_ENCRYPTION_KEY` in `sites/staging/.dev.vars`** (preferred) or
+    `sites/staging/.env` (both gitignored) for any `astro dev` where payment keys are saved in
+    Settings — they are stored encrypted (ADR-0037), and without a key every save is refused.
+    Use a dev-only key (`npx emdash secrets generate`); a shell `export` does not reach the dev
+    Worker. `.dev.vars` is preferred because Astro never reads it into a build, while `.env`
+    values can be inlined into the bundle (#584). The Playwright stack sets a throwaway key
+    itself, but only when there is no `.dev.vars`: move it aside, or put the e2e key in it, for
+    `pnpm test:e2e`. The Cloudflare Vite plugin copies `.dev.vars` (or `.env`) into
+    `dist/server/.dev.vars`; the build deletes that copy (DEPLOYMENT.md §3). Never set
     `CLOUDFLARE_INCLUDE_PROCESS_ENV` outside the Playwright dev server: in a build it copies
     the whole shell environment into that file.
 - **oxfmt** formatting — **tabs**, run regularly.

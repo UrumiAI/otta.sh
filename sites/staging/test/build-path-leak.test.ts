@@ -8,6 +8,9 @@
  *
  * Shell variables leaked the same way: Astro inlined `_` (the pnpm binary's path)
  * and other variables into server chunks (see src/lib/build-path-scrub.ts).
+ * Issue #584: so did SECRETS exported in the build shell. emdash's OAuth routes
+ * name `GITHUB_CLIENT_SECRET` & co. next to a bare `import.meta.env`, so their
+ * values were written in plain text into `_provider_*.mjs` and `callback_*.mjs`.
  *
  * Three layers: the scrub and env strip themselves, the configs that wire them,
  * and a scan of the real `dist/`. The scan needs a build; CI runs `pnpm -r build` before
@@ -29,8 +32,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	BUILD_PATH_SCRUB_INTEGRATION,
+	BUILD_SECRET_ENV_KEYS,
 	buildPathScrub,
+	dropBuildSecretEnv,
 	dropShellPathEnv,
+	findInlinedSecretsInDir,
+	findLeakedSecretValuesInDir,
+	MIN_SEARCHED_SECRET_LENGTH,
+	inlinedEnvKeys,
+	isBuildSecretEnvKey,
 	SHELL_PATH_ENV_KEYS,
 	scrubBuildPaths,
 	scrubBuildPathsInDir,
@@ -150,10 +160,89 @@ describe("dropShellPathEnv", () => {
 	});
 });
 
-/** Runs the scrub integration's `astro:config:setup` hook for `command`. */
-function runConfigSetup(command: string): void {
-	const hook = buildPathScrub("/r").hooks["astro:config:setup"] as (o: { command: string }) => void;
-	hook({ command });
+interface HookRun {
+	warnings: string[];
+	/** The error `astro:build:done` threw, as text, or undefined. */
+	failure?: string;
+}
+
+/**
+ * Runs one integration instance through a build's hooks in Astro's order:
+ * `astro:config:setup` (project root `projectRoot` and optional `vite.envDir`,
+ * which decide where Astro's `.env` lookup happens), the Vite plugin it injects
+ * (`configResolved` with `mode`, default "production"), `astro:config:done`
+ * (server and client output dirs) and, when `serverDir` is given,
+ * `astro:build:done`.
+ */
+async function runHooks(
+	command: string,
+	{
+		projectRoot = "/nonexistent-otta-root",
+		envDir,
+		mode = "production",
+		serverDir,
+		clientDir = "/nonexistent-otta-client",
+	}: {
+		projectRoot?: string;
+		envDir?: string;
+		mode?: string;
+		serverDir?: string;
+		clientDir?: string;
+	} = {},
+): Promise<HookRun> {
+	const run: HookRun = { warnings: [] };
+	const logger = {
+		info: () => {},
+		warn: (message: string) => {
+			run.warnings.push(message);
+		},
+	};
+	const plugins: { configResolved?: (c: { mode: string }) => void }[] = [];
+	const integration = buildPathScrub("/r");
+	const hook = (name: string) =>
+		integration.hooks[name as "astro:config:setup"] as (o: unknown) => unknown;
+	await hook("astro:config:setup")({
+		command,
+		logger,
+		config: {
+			root: pathToFileURL(`${projectRoot}/`),
+			vite: envDir === undefined ? {} : { envDir },
+		},
+		updateConfig: (update: { vite?: { plugins?: typeof plugins } }) => {
+			plugins.push(...(update.vite?.plugins ?? []));
+		},
+	});
+	for (const plugin of plugins) plugin.configResolved?.({ mode });
+	if (serverDir === undefined) return run;
+	await hook("astro:config:done")({
+		config: {
+			build: {
+				server: pathToFileURL(`${serverDir}/`),
+				client: pathToFileURL(`${clientDir}/`),
+			},
+		},
+	});
+	try {
+		await hook("astro:build:done")({ logger });
+	} catch (error) {
+		run.failure = String(error);
+	}
+	return run;
+}
+
+/** A server chunk with Astro's inlined env object around `body`. */
+function withInlinedEnv(body: string): string {
+	return `x(Object.assign({\n\t"SSR": true\n}, {\n${body}\n}));`;
+}
+
+/** A fresh temp dir, removed after `use`. */
+async function withTempDir(use: (dir: string) => Promise<void> | void): Promise<void> {
+	const dir = mkdtempSync(path.join(tmpdir(), "otta-584-"));
+	try {
+		await use(dir);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 describe("astro config wiring", () => {
@@ -180,32 +269,203 @@ describe("astro config wiring", () => {
 		]);
 	});
 
-	describe("astro:config:setup drops the shell's path variables for a build only", () => {
-		// The hook deletes every key in the list, so every one is put back.
-		const saved = Object.fromEntries(SHELL_PATH_ENV_KEYS.map((key) => [key, process.env[key]]));
+	describe("astro:config:setup drops the shell's path variables and secrets for a build only", () => {
+		// The hook deletes the path variables AND every secret-shaped variable the
+		// test process has, so the whole environment is put back.
+		const saved = { ...process.env };
 		afterEach(() => {
-			for (const [key, value] of Object.entries(saved)) {
-				if (value === undefined) delete process.env[key];
-				else process.env[key] = value;
-			}
+			for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+			Object.assign(process.env, saved);
 		});
 
-		test("build: removed before Astro reads the env", () => {
+		test("build: removed before Astro reads the env", async () => {
 			process.env._ = "/home/x/.bin/pnpm";
 			process.env.EDITOR = "/home/x/vim";
-			runConfigSetup("build");
+			await runHooks("build");
 			expect(process.env._).toBeUndefined();
 			expect(process.env.EDITOR).toBeUndefined();
 		});
 
-		test("dev: untouched (open-in-editor still reads EDITOR)", () => {
+		test("build: the build shell's secrets are removed before Astro reads the env (#584)", async () => {
+			process.env.GITHUB_CLIENT_SECRET = "OTTA_TEST_MARKER";
+			process.env.EMDASH_ENCRYPTION_KEY = "OTTA_TEST_MARKER";
+			const { warnings } = await runHooks("build");
+			expect(process.env.GITHUB_CLIENT_SECRET).toBeUndefined();
+			expect(process.env.EMDASH_ENCRYPTION_KEY).toBeUndefined();
+			// The warning names the variables and never prints a value.
+			expect(warnings.join("\n")).toContain("GITHUB_CLIENT_SECRET");
+			expect(warnings.join("\n")).not.toContain("OTTA_TEST_MARKER");
+		});
+
+		test("dev: untouched (open-in-editor still reads EDITOR)", async () => {
 			process.env._ = "/home/x/.bin/pnpm";
 			process.env.EDITOR = "/home/x/vim";
-			runConfigSetup("dev");
+			process.env.GITHUB_CLIENT_SECRET = "OTTA_TEST_MARKER";
+			await runHooks("dev");
+			expect(process.env.GITHUB_CLIENT_SECRET).toBe("OTTA_TEST_MARKER");
 			expect(process.env._).toBe("/home/x/.bin/pnpm");
 			expect(process.env.EDITOR).toBe("/home/x/vim");
 		});
 	});
+});
+
+describe("astro:build:done fails the build on a leaked secret (#584)", () => {
+	const saved = { ...process.env };
+	afterEach(() => {
+		for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+		Object.assign(process.env, saved);
+	});
+
+	const MARKER = "OTTA_TEST_MARKER_584_VALUE";
+
+	test("Astro's inlined env object: throws naming chunk + key, never the value, and deletes the bundle", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			writeFileSync(
+				path.join(server, "callback_X.mjs"),
+				withInlinedEnv(`\tGITHUB_CLIENT_SECRET: "x"`),
+			);
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("callback_X.mjs: GITHUB_CLIENT_SECRET");
+			expect(existsSync(server), "a leaked bundle must not survive to be deployed").toBe(false);
+		}));
+
+	test("a dotted `import.meta.env.KEY` define (a plain literal, no env object) from the shell", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			// What Astro's `import.meta.env.GITHUB_CLIENT_SECRET` define leaves behind.
+			writeFileSync(
+				path.join(server, "chunk.mjs"),
+				`const secret = "${MARKER}";\nexport { secret };`,
+			);
+			const client = path.join(dir, "client");
+			mkdirSync(client);
+			writeFileSync(path.join(client, "index.html"), "<p>clean</p>");
+			process.env.GITHUB_CLIENT_SECRET = MARKER;
+			const { failure } = await runHooks("build", { serverDir: server, clientDir: client });
+			expect(failure).toContain("chunk.mjs: GITHUB_CLIENT_SECRET");
+			expect(failure).not.toContain(MARKER);
+			expect(existsSync(server)).toBe(false);
+			// A server-only leak leaves the (clean) client output alone.
+			expect(existsSync(client)).toBe(true);
+		}));
+
+	test("a value from the project's .env file (never in process.env), JSON-escaped in the chunk", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "dist", "server");
+			mkdirSync(server, { recursive: true });
+			const value = `${MARKER}"quoted\\slash`;
+			writeFileSync(path.join(dir, ".env"), `STRIPE_SECRET_KEY='${value}'\n`);
+			writeFileSync(path.join(server, "chunk.mjs"), `const k = ${JSON.stringify(value)};`);
+			const { failure } = await runHooks("build", { projectRoot: dir, serverDir: server });
+			expect(failure).toContain("chunk.mjs: STRIPE_SECRET_KEY");
+			expect(failure).not.toContain(MARKER);
+		}));
+
+	test.each([
+		[".env.production.local", "production"],
+		[".env.staging", "staging"],
+	])(
+		"a value only in %s (mode %s) fails the build: the mode reaches the .env lookup",
+		(file, mode) =>
+			withTempDir(async (dir) => {
+				const server = path.join(dir, "dist", "server");
+				mkdirSync(server, { recursive: true });
+				writeFileSync(path.join(dir, file), `GITHUB_CLIENT_SECRET=${MARKER}\n`);
+				writeFileSync(path.join(server, "chunk.mjs"), `const s = "${MARKER}";`);
+				const { failure } = await runHooks("build", { projectRoot: dir, mode, serverDir: server });
+				expect(failure).toContain("chunk.mjs: GITHUB_CLIENT_SECRET");
+				expect(existsSync(server)).toBe(false);
+			}),
+	);
+
+	test("a value in the .env under `vite.envDir` (not the project root) fails the build", () =>
+		withTempDir(async (dir) => {
+			const envDir = path.join(dir, "env-files");
+			const server = path.join(dir, "dist", "server");
+			mkdirSync(envDir);
+			mkdirSync(server, { recursive: true });
+			writeFileSync(path.join(envDir, ".env"), `STRIPE_SECRET_KEY=${MARKER}\n`);
+			writeFileSync(path.join(server, "chunk.mjs"), `const s = "${MARKER}";`);
+			const { failure } = await runHooks("build", { projectRoot: dir, envDir, serverDir: server });
+			expect(failure).toContain("chunk.mjs: STRIPE_SECRET_KEY");
+		}));
+
+	test("a common short value under a secret name does not fail, even where the bundle has it", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "dist", "server");
+			mkdirSync(server, { recursive: true });
+			// A clean bundle really contains "postgres", "password" and "changeme".
+			writeFileSync(path.join(dir, ".env"), "DB_PASSWORD=password\nSMTP_PASS=changeme\n");
+			writeFileSync(
+				path.join(server, "chunk.mjs"),
+				`const kinds = ["postgres", "password", "changeme"];`,
+			);
+			process.env.POSTGRES_PASSWORD = "postgres";
+			const { failure } = await runHooks("build", { projectRoot: dir, serverDir: server });
+			expect(failure).toBeUndefined();
+			expect(existsSync(path.join(server, "chunk.mjs"))).toBe(true);
+		}));
+
+	test("a value in the CLIENT output (a prerendered page) fails the build and deletes both outputs", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "dist", "server");
+			const client = path.join(dir, "dist", "client");
+			mkdirSync(server, { recursive: true });
+			mkdirSync(path.join(client, "about"), { recursive: true });
+			writeFileSync(path.join(server, "entry.mjs"), "export {};");
+			writeFileSync(path.join(client, "about", "index.html"), `<p>${MARKER}</p>`);
+			process.env.GITHUB_CLIENT_SECRET = MARKER;
+			const { failure } = await runHooks("build", { serverDir: server, clientDir: client });
+			expect(failure).toContain(`client/${path.join("about", "index.html")}: GITHUB_CLIENT_SECRET`);
+			expect(failure).not.toContain(MARKER);
+			expect(existsSync(server)).toBe(false);
+			expect(existsSync(client)).toBe(false);
+		}));
+
+	test("deletes dist/server/.dev.vars, the plaintext copy of the local dev secrets", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			writeFileSync(path.join(server, ".dev.vars"), `EMDASH_ENCRYPTION_KEY=${MARKER}\n`);
+			writeFileSync(path.join(server, "entry.mjs"), "export {};");
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toBeUndefined();
+			expect(existsSync(path.join(server, ".dev.vars"))).toBe(false);
+			expect(existsSync(path.join(server, "entry.mjs"))).toBe(true);
+		}));
+
+	test("passes a server bundle with no secret in it", () =>
+		withTempDir(async (dir) => {
+			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(`\tCI: "1"`));
+			process.env.GITHUB_CLIENT_SECRET = MARKER;
+			const { failure } = await runHooks("build", { serverDir: dir });
+			expect(failure).toBeUndefined();
+			expect(existsSync(path.join(dir, "ok.mjs"))).toBe(true);
+		}));
+});
+
+describe("findLeakedSecretValuesInDir", () => {
+	test("finds raw and JSON-escaped values in any file, by key; skips values under 16 chars", () =>
+		withTempDir((dir) => {
+			mkdirSync(path.join(dir, "chunks"));
+			const escaped = 'abc"def\\ghi-long';
+			writeFileSync(path.join(dir, "chunks", "a.mjs"), "x = 'raw-secret-value-1';");
+			writeFileSync(path.join(dir, "b.json"), JSON.stringify({ v: escaped }));
+			writeFileSync(path.join(dir, "c.mjs"), "short x=123456789012345");
+			const secrets = new Map([
+				["RAW_SECRET", "raw-secret-value-1"],
+				["ESCAPED_TOKEN", escaped],
+				["SHORT_SECRET", "123456789012345"],
+			]);
+			expect(MIN_SEARCHED_SECRET_LENGTH).toBe(16);
+			expect(findLeakedSecretValuesInDir(dir, secrets).toSorted()).toEqual([
+				"b.json: ESCAPED_TOKEN",
+				`${path.join("chunks", "a.mjs")}: RAW_SECRET`,
+			]);
+		}));
 });
 
 describe("scrubBuildPathsInDir", () => {
@@ -267,25 +527,116 @@ function leakNeedles(): string[] {
 	return [...new Set(needles)];
 }
 
-/**
- * Astro inlines private env into a server module that uses a bare
- * `import.meta.env` as `Object.assign({ …, "SSR": true }, { KEY: "value", … })`.
- * Returns the keys of every such inlined object in `code`.
- */
-function inlinedEnvKeys(code: string): string[] {
-	const keys: string[] = [];
-	for (const match of code.matchAll(/"SSR": (?:true|false)\s*\}, (\{[^{}]*\})\)/g)) {
-		for (const key of match[1]?.matchAll(/(?:^|[{,\s])"?([A-Za-z_$][\w$]*)"?\s*:/g) ?? []) {
-			if (key[1] !== undefined) keys.push(key[1]);
-		}
-	}
-	return keys;
-}
-
 describe("inlinedEnvKeys", () => {
 	test("reads the keys of Astro's inlined env object", () => {
 		const code = `(Object.assign({\n\t"BASE_URL": "/",\n\t"SSR": true\n}, {\n\tCI: "true",\n\t_: "/home/runner/pnpm"\n})?.PROD)`;
 		expect(inlinedEnvKeys(code)).toEqual(["CI", "_"]);
+	});
+
+	test("reads every key when a value contains braces, quotes or commas", () => {
+		const code = `Object.assign({\n\t"SSR": true\n}, {\n\tA: "x}{,\\"y: 1",\n\tGITHUB_CLIENT_SECRET: "s"\n})`;
+		expect(inlinedEnvKeys(code)).toEqual(["A", "GITHUB_CLIENT_SECRET"]);
+	});
+});
+
+describe("isBuildSecretEnvKey", () => {
+	test.each([...BUILD_SECRET_ENV_KEYS])("names %s a secret", (key) => {
+		expect(isBuildSecretEnvKey(key)).toBe(true);
+	});
+
+	test.each([
+		"EMDASH_OAUTH_GITHUB_CLIENT_SECRET",
+		"GITHUB_CLIENT_SECRET",
+		"EMDASH_OAUTH_GOOGLE_CLIENT_SECRET",
+		"GOOGLE_CLIENT_SECRET",
+		"STRIPE_SECRET_KEY",
+		"STRIPE_WEBHOOK_SECRET",
+		"EMDASH_AUTH_SECRET",
+		"EMDASH_ENCRYPTION_KEY",
+		"AUTH_SECRET",
+		"EMDASH_PREVIEW_SECRET",
+		"EMDASH_IP_SALT",
+	])("lists %s explicitly (issue #584)", (key) => {
+		expect(BUILD_SECRET_ENV_KEYS).toContain(key);
+	});
+
+	test.each([
+		"SOME_FUTURE_SECRET",
+		"ACME_API_TOKEN",
+		"DB_PASSWORD",
+		"VENDOR_API_KEY",
+		"AWS_SECRET_ACCESS_KEY",
+		"SIGNING_PRIVATE_KEY",
+		"vendor_secret",
+		"LICENSE_KEY",
+		"KEY",
+		"SMTP_PASS",
+		"SENTRY_DSN",
+		"PG_CONNECTION_STRING",
+		"POSTGRES_URL",
+		"PREVIEW_SECRET",
+	])("names %s a secret by its shape", (key) => {
+		expect(isBuildSecretEnvKey(key)).toBe(true);
+	});
+
+	test.each([
+		"CI",
+		"NODE_ENV",
+		"PATH",
+		"HOME",
+		"OTTA_EXTRA_ALLOWED_HOSTS",
+		"GITHUB_CLIENT_ID",
+		"EMDASH_SITE_URL",
+		"PUBLIC_STRIPE_TOKEN",
+		"TOKENIZER_MODE",
+		"KEYBOARD",
+		"TURNSTILE_SITE_KEY",
+		"EMDASH_TURNSTILE_SITE_KEY",
+		"STRIPE_PUBLISHABLE_KEY",
+		"STRIPE_PUBLIC_KEY",
+		"PUBLIC_API_KEY",
+		"PASSTHROUGH",
+	])("leaves %s alone", (key) => {
+		expect(isBuildSecretEnvKey(key)).toBe(false);
+	});
+});
+
+describe("dropBuildSecretEnv", () => {
+	test("removes the secrets, keeps everything else, and returns the names it removed", () => {
+		const env: NodeJS.ProcessEnv = {
+			GITHUB_CLIENT_SECRET: "x",
+			EMDASH_ENCRYPTION_KEY: "x",
+			ACME_API_TOKEN: "x",
+			GITHUB_CLIENT_ID: "public",
+			CI: "true",
+			PATH: "/usr/bin",
+		};
+		expect(dropBuildSecretEnv(env).toSorted()).toEqual([
+			"ACME_API_TOKEN",
+			"EMDASH_ENCRYPTION_KEY",
+			"GITHUB_CLIENT_SECRET",
+		]);
+		expect(env).toEqual({ GITHUB_CLIENT_ID: "public", CI: "true", PATH: "/usr/bin" });
+	});
+});
+
+describe("findInlinedSecretsInDir", () => {
+	test("reports each server chunk that carries an inlined secret, by key name only", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "otta-secret-"));
+		try {
+			mkdirSync(path.join(dir, "chunks"));
+			writeFileSync(
+				path.join(dir, "chunks", "callback_X.mjs"),
+				withInlinedEnv(`\tGITHUB_CLIENT_SECRET: "MARKER",\n\tCI: "true"`),
+			);
+			writeFileSync(path.join(dir, "chunks", "clean.mjs"), withInlinedEnv(`\tCI: "true"`));
+			writeFileSync(path.join(dir, "notes.txt"), withInlinedEnv(`\tSTRIPE_SECRET_KEY: "MARKER"`));
+			const found = findInlinedSecretsInDir(dir);
+			expect(found).toEqual([`${path.join("chunks", "callback_X.mjs")}: GITHUB_CLIENT_SECRET`]);
+			expect(found.join("\n")).not.toContain("MARKER");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -319,5 +670,10 @@ describe.runIf(existsSync(dist) || process.env.CI !== undefined)("the built site
 			}
 		}
 		expect(inlined, rebuildHint).toEqual([]);
+	});
+
+	test("inlines no secret into a server chunk (#584)", () => {
+		expect(existsSync(dist), "no sites/staging/dist — run `pnpm -r build` first").toBe(true);
+		expect(findInlinedSecretsInDir(path.join(dist, "server")), rebuildHint).toEqual([]);
 	});
 });
