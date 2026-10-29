@@ -43,8 +43,8 @@
 import type { APIContext } from "astro";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 
-/** Methods that never reach the guard. */
-const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
+/** Methods that never reach the guard (the rate limiter reuses the set). */
+export const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /**
  * Storefront routes (Astro route patterns) a cross-origin write may reach.
