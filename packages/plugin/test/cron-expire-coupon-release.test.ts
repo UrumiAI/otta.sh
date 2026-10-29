@@ -265,7 +265,7 @@ describe("an expiry's coupon release cut off by the query ceiling (#621)", () =>
 });
 
 describe("a same-key replay's redemption, older than its order's hold (#621)", () => {
-	test("waits at the still-pending order instead of judging it live, and frees the coupon once the order expires", async () => {
+	test("skips the still-pending order without passing it, frees the orphans behind it, and frees its coupon once the order expires", async () => {
 		const { storage } = await makeSqliteStorage(commerceStorageLayout());
 		// The replay's order: created a few minutes ago, its hold still running. The
 		// redemption keeps the FIRST attempt's `createdAt`, two hours back — old enough
@@ -304,6 +304,15 @@ describe("a same-key replay's redemption, older than its order's hold (#621)", (
 			createdAt: new Date(NOW.getTime() - 2 * HOUR_MS).toISOString(),
 		});
 		expect(redeemed.ok).toBe(true);
+		// Behind it in the walk, a true orphan: a claim whose order never became durable.
+		// One live checkout must not hold it up.
+		const orphan = await coupons.redeem({
+			couponId: "coupon-replay",
+			orderId: toOrderId("order-never-persisted"),
+			idempotencyKey: idempotencyKey("create-never-persisted"),
+			createdAt: new Date(NOW.getTime() - HOUR_MS).toISOString(),
+		});
+		expect(orphan.ok).toBe(true);
 		const ctx = sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: PAID });
 		const cursors = memoryCursors();
 		const sweep = async (at: Date) =>
@@ -314,13 +323,15 @@ describe("a same-key replay's redemption, older than its order's hold (#621)", (
 			});
 		const usesCount = async () => (await coupons.findById("coupon-replay"))?.usesCount;
 
-		// Inside the hold: the walk stops at the pending order, judging nothing.
+		// Inside the hold: the replay's redemption is skipped, not judged live, and the
+		// orphan behind it is freed.
+		expect(await usesCount()).toBe(2);
 		const inHold = await sweep(NOW);
-		expect(leg(inHold, "coupon-orphans")).toMatchObject({ ok: true, count: 0, incomplete: true });
+		expect(leg(inHold, "coupon-orphans")).toMatchObject({ ok: true, count: 1 });
 		expect(await usesCount()).toBe(1);
 
-		// The hold lapses and the order expires; the coupon sweep, still before it,
-		// frees the use — once.
+		// The hold lapses and the order expires; the coupon sweep, its cursor still
+		// before that redemption, frees the use on its next run — once.
 		await sweep(new Date(NOW.getTime() + 11 * MINUTE_MS));
 		expect((await adapters(storage).orderStore.getById(toOrderId(placed.id)))?.state).toBe(
 			"expired",

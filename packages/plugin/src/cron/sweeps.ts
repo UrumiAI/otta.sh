@@ -3263,9 +3263,10 @@ function addDays(day: string, delta: number): string {
  * begins (`COUPON_RELEASE_CALLS`, #621), so the redemption is still here to free.
  *
  * A redemption is judged only once its order has LEFT `pending`: one whose order is
- * still pending — inside its hold or past it — stops the walk, and the cursor stays
- * before it until the order is paid or `expire-orders` has flipped it (#621: a
- * same-key replay's order has a hold younger than its redemption). It used to
+ * still pending past its hold (the expiry has not reached it yet) stops the walk,
+ * and the cursor stays before it until `expire-orders` has flipped it. One whose
+ * order is still INSIDE its hold (#621: a same-key replay's order has a hold younger
+ * than its redemption) is skipped without the cursor passing it. It used to
  * rely instead on `expire-orders` having run to the end in the same tick, and
  * deferred itself otherwise — which under an expiry backlog on the Workers Free
  * preset meant never (QA saw it deferred 180 ticks in a row, QA2 M2). The grace
@@ -3332,6 +3333,8 @@ async function releaseOrphanedRedemptions(
 		budget,
 	);
 	let released = 0;
+	/** The oldest redemption skipped for an order still inside its hold. */
+	let heldBack: string | undefined;
 	const walked = await walkWindow(window, budget, "coupon-orphans", async (item) => {
 		// By id, then by idempotency key (#598): a same-key checkout replay can persist
 		// the order under another id than its redemption names, and that order holds it
@@ -3349,14 +3352,21 @@ async function releaseOrphanedRedemptions(
 		}
 		const order = holder?.durable === true ? holder.order : null;
 		// A PENDING order cannot be judged: it may yet become `expired`, which this leg
-		// would then owe a release. Wait for it — the walk stops here, the cursor stays
-		// before it. Not only once its hold has lapsed (#621): a same-key replay (#598)
-		// keeps the redemption's first `createdAt` but gives the order a fresh hold, so
-		// the redemption can be old enough to judge while its order is well inside
-		// that hold. Ruled live then, it fell behind the cursor for good, and an expiry
-		// whose release was then skipped or cut left nothing to free it. The wait is
-		// bounded by the hold (the checkout window, `DEFAULT_CHECKOUT_TTL_MS`).
-		if (order !== null && order.state === "pending") return "stop";
+		// would then owe a release.
+		if (order !== null && order.state === "pending") {
+			// Its hold lapsed: the expiry is about to reach it. Wait — the walk stops
+			// here, the cursor stays before it.
+			if (order.holdExpiresAt <= nowIso) return "stop";
+			// Still inside its hold (#621): a same-key replay (#598) keeps the
+			// redemption's first `createdAt` but gives the order a fresh hold, so the
+			// redemption can be old enough to judge while its order is not due. Ruled
+			// live, it fell behind the cursor for good, and an expiry whose release was
+			// then skipped or cut left nothing to free it. It is SKIPPED instead — the
+			// walk goes on to the rows after it, so one live checkout never blocks the
+			// rest — and the cursor is held before it, so a later run sees it again.
+			heldBack ??= item.data.createdAt;
+			return;
+		}
 		// No holder (or a lapsed claim) is an orphan; an EXPIRED order is owed its
 		// coupon back and may have lost the release to a crash (see above). Every other
 		// state keeps it.
@@ -3366,7 +3376,15 @@ async function releaseOrphanedRedemptions(
 	});
 	// Only past what was JUDGED: a row the budget left unread or unvisited must still
 	// be ahead of the cursor on the next tick.
-	const next = nextCursorAfterWalk(walked.handled, walked.incomplete, from);
+	let next = nextCursorAfterWalk(walked.handled, walked.incomplete, from);
+	// Never past a redemption skipped for its order's hold: 1 ms before it (the bound
+	// is `gt`), so the next run reads it again. Bounded by that hold — the checkout
+	// window — after which the order is paid, expired, or the walk stops at it. Until
+	// then each run re-reads from there; a page full of rows behind it waits as long.
+	if (heldBack !== undefined) {
+		const before = new Date(Date.parse(heldBack) - 1).toISOString();
+		if (next === null || next > before) next = before;
+	}
 	if (next !== null && next !== from) await cursors.write(COUPON_CURSOR, next);
 	return legResult(released, walked.incomplete);
 }
