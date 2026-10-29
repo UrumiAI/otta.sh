@@ -52,6 +52,8 @@ import { createInProcessCommerceStores } from "../src/commerce/in-process-commer
 import {
 	CONTENT_MISS_QUERIES,
 	CONTENT_READ_QUERIES,
+	COUPON_RELEASE_CALLS,
+	GUEST_COUPON_RELEASE_CALLS,
 	LATE_REFUND_ESCALATION_UNIT,
 	LEG_QUERY_COSTS,
 	legReserveQueries,
@@ -362,6 +364,59 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		// (the preset case below).
 		expect(used).toBe(EXPIRY_WITH_COUPON_UNIT);
 		expect(used).toBeGreaterThan(LEG_QUERY_COSTS["expire-orders"].unit);
+	});
+
+	// #621: the sweep starts an expired order's coupon release only when the tick can
+	// still afford all of it (`COUPON_RELEASE_CALLS`), so the ceiling never lands
+	// between the redemption's delete and the decrement. Measured on the dearer shape
+	// above: found by key, with a per-customer slot to free.
+	test("expire-orders: an expired order's coupon release alone fits COUPON_RELEASE_CALLS", async () => {
+		const s = counted();
+		const couponId = await costCoupon(s, "coupon-cost-release", "COSTRELEASE");
+		const placed = await placeOrder(
+			"release-coupon",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+			1,
+			"COSTRELEASE",
+		);
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(`${placed.id}-never-persisted`),
+			idempotencyKey: idempotencyKey("create-release-coupon"),
+			customerId: toCustomerId("cust-cost-release"),
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		if (!claimed.ok) throw new Error("redeem failed");
+		const order = await s.orderStore.getById(toOrderId(placed.id));
+		if (order === null) throw new Error("no order");
+		const used = await cost(() => s.couponStore.releaseByOrder(order));
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(0);
+		expect(used).toBe(COUPON_RELEASE_CALLS);
+	});
+
+	// A guest redemption has no per-customer slot to free: two calls fewer.
+	test("expire-orders: a guest order's coupon release alone fits GUEST_COUPON_RELEASE_CALLS", async () => {
+		const s = counted();
+		const couponId = await costCoupon(s, "coupon-cost-guest", "COSTGUEST");
+		const placed = await placeOrder(
+			"release-guest",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+			1,
+			"COSTGUEST",
+		);
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(placed.id),
+			idempotencyKey: idempotencyKey("create-release-guest"),
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		if (!claimed.ok) throw new Error("redeem failed");
+		const order = await s.orderStore.getById(toOrderId(placed.id));
+		if (order === null) throw new Error("no order");
+		expect(order.customerId).toBeNull();
+		const used = await cost(() => s.couponStore.releaseByOrder(order));
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(0);
+		expect(used).toBe(GUEST_COUPON_RELEASE_CALLS);
 	});
 
 	// QA2 M2: one order expiry was 22 calls on a 30-call Workers Free tick, so a

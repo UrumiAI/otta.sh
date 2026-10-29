@@ -215,6 +215,7 @@ import type { ContentReadAccess, PluginContext } from "../types.js";
 import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
 import {
 	isSweepQueryCeilingError,
+	MAX_COMMIT_WINDOW,
 	SweepQueryCeilingError,
 	type LegBudget,
 	type LegShare,
@@ -350,6 +351,48 @@ export const EMAIL_SEND_AND_RECORD_CALLS =
 	2 + EMAIL_SENDER_BUILD_READS + 1 + EMAIL_SENT_RECORD_WRITES + EMAIL_RECORD_CALLS;
 const CANCEL_CALL_AND_RECORD_CALLS = 6;
 const CANCEL_RECORD_CALLS = 4;
+
+/**
+ * What one expired order's coupon release costs (`releaseByOrder`, #621), with no
+ * contention: its two indexed scans (by the order's id and by its creation key,
+ * #598), the redemption's guarded delete (a read and the delete) and the decrement —
+ * 5 for a GUEST redemption — plus the per-customer slot (a read and a write) for one
+ * bound to a customer: 7. Both MEASURED in `cron-leg-costs.test.ts`.
+ *
+ * WHY IT IS CHECKED. The release is two documents with no transaction: the guarded
+ * delete is the once-only claim of the decrement that follows it. Refused before the
+ * delete, the redemption still holds its use and `coupon-orphans` frees it (its
+ * `expired` arm); refused BETWEEN the two, the redemption is gone, nothing is left
+ * for any sweep to find, and `usesCount` stays one high for good. So:
+ *
+ *  - a release the tick cannot afford is NOT BEGUN. `expire-orders` skips it — the
+ *    order is expired and counted, its redemption intact — and ends its batch there
+ *    as not drained; the coupon sweep releases it, idempotently, so the use comes
+ *    back exactly once either way. The figure is chosen from the ORDER: a guest
+ *    order (`customerId` null) needs 5, any other 7. A guest order linked to an
+ *    account later is asked for 7 though its redemption costs 5 (the safe way).
+ *  - a release that has begun is FINISHED: it runs inside the tick's commit window
+ *    (`allowCommit`, `MAX_COMMIT_WINDOW` calls past the ceiling), because once the
+ *    delete lands the decrement records an action already taken — the window's
+ *    meaning (QA3 N2). That absorbs what contention adds after the check: a
+ *    per-customer slot write that loses its compare-and-set retries for two calls
+ *    (two retries fit), as does a redemption still `bumping` whose settling is short.
+ *
+ * WHAT IS STILL OPEN, said plainly: a release costing more than its figure plus the
+ * window can still be cut between the delete and the decrement — three or more slot
+ * retries, a `bumping` redemption whose settling (the coupon read, the lease wait or
+ * takeover, the re-read) runs long, a legacy document the store heals on read (the
+ * Postgres path), or an order holding MORE than one redemption (a same-key replay
+ * that claimed twice). Closing those needs the store to tell the sweep when its
+ * delete has landed, or a recount (#619).
+ *
+ * Not added to `LEG_QUERY_COSTS["expire-orders"]`: that is the first-unit estimate
+ * for the common coupon-less order, and raising it would cost every Free tick room it
+ * mostly does not need (see the cost test). A release is checked when it is reached.
+ */
+export const COUPON_RELEASE_CALLS = 7;
+/** {@link COUPON_RELEASE_CALLS} for a guest redemption: no per-customer slot. */
+export const GUEST_COUPON_RELEASE_CALLS = 5;
 
 /** The legs with a per-tick batch, and which batch. */
 const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
@@ -1639,17 +1682,25 @@ export async function runCommerceSweeps(
 			async (legBudget) => {
 				const limit = batchLeft("expire-orders", expiryLimit);
 				if (limit === 0) return { count: 0 };
+				// #621: a coupon release is begun only when all of it fits, and once begun
+				// it is finished (see `COUPON_RELEASE_CALLS`). One skipped ends the batch.
+				let releaseSkipped = false;
+				const gate = legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit);
+				const couponStore = wholeReleasesOnly(stores.couponStore, budget, () => {
+					releaseSkipped = true;
+					legBudget.stopped = true;
+				});
 				const result = await expireOrdersBatch(
 					{
 						orderStore: stores.orderStore,
 						inventoryStore: stores.inventory,
-						couponStore: stores.couponStore,
+						couponStore,
 						clock: stores.clock,
 					},
 					now,
 					{
 						limit,
-						shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
+						shouldContinue: () => !releaseSkipped && gate(),
 						due: await expirableIds(),
 						backoff: expiryBackoff,
 						// The tick's query ceiling ends the leg; it is not one order failing.
@@ -1690,7 +1741,11 @@ export async function runCommerceSweeps(
 							"'expiring order' lines above)",
 					);
 				}
-				return batchOutcome(result, (count) => noteUnits("expire-orders", count, legBudget));
+				return batchOutcome(
+					result,
+					(count) => noteUnits("expire-orders", count, legBudget),
+					releaseSkipped,
+				);
 			},
 			{ isDue: async () => (await expirableIds()).length > 0, cheapDueCheck: true },
 		);
@@ -2117,6 +2172,41 @@ function logTick(
 				? `; stopped at the ceiling: ${stoppedAtCeiling.join(", ")}`
 				: ""),
 	);
+}
+
+/**
+ * `store` with `releaseByOrder` guarded as `COUPON_RELEASE_CALLS` describes: skipped
+ * (answering 0, no call made, `onSkip` told) when the tick cannot afford the order's
+ * release, and otherwise run inside the commit window, closed again when it returns.
+ * Every other member is the store's own.
+ */
+function wholeReleasesOnly<S extends object>(store: S, budget: TickBudget, onSkip: () => void): S {
+	return new Proxy(store, {
+		get(target, prop) {
+			const value: unknown = Reflect.get(target, prop, target);
+			if (typeof value !== "function") return value;
+			if (prop === "releaseByOrder") {
+				return async (order: { readonly customerId?: string | null }, ...rest: unknown[]) => {
+					const needed =
+						order.customerId === null ? GUEST_COUPON_RELEASE_CALLS : COUPON_RELEASE_CALLS;
+					if (budget.headroom() < needed) {
+						onSkip();
+						return 0;
+					}
+					budget.allowCommit(MAX_COMMIT_WINDOW);
+					try {
+						return await (value as (...a: unknown[]) => Promise<unknown>).apply(target, [
+							order,
+							...rest,
+						]);
+					} finally {
+						budget.endCommit();
+					}
+				};
+			}
+			return (value as (...a: unknown[]) => unknown).bind(target);
+		},
+	});
 }
 
 /**
@@ -3168,11 +3258,15 @@ function addDays(day: string, delta: number): string {
  * orphan. An expired order owes its coupon back by policy (expiry releases it), so
  * releasing here is completing owed work, and `release` is idempotent, so the
  * normal case (already released by `expireOrders`) finds no redemption holding a use.
- * A declined-and-abandoned order ends on exactly this path (ADR-0022).
+ * A declined-and-abandoned order ends on exactly this path (ADR-0022). So does an
+ * expiry whose release the tick could not afford: the sweep skips it BEFORE it
+ * begins (`COUPON_RELEASE_CALLS`, #621), so the redemption is still here to free.
  *
  * A redemption is judged only once its order has LEFT `pending`: one whose order is
  * still pending past its hold (the expiry has not reached it yet) stops the walk,
- * and the cursor stays before it until `expire-orders` has flipped it. It used to
+ * and the cursor stays before it until `expire-orders` has flipped it. One whose
+ * order is still INSIDE its hold (#621: a same-key replay's order has a hold younger
+ * than its redemption) is skipped without the cursor passing it. It used to
  * rely instead on `expire-orders` having run to the end in the same tick, and
  * deferred itself otherwise — which under an expiry backlog on the Workers Free
  * preset meant never (QA saw it deferred 180 ticks in a row, QA2 M2). The grace
@@ -3239,6 +3333,8 @@ async function releaseOrphanedRedemptions(
 		budget,
 	);
 	let released = 0;
+	/** The oldest redemption skipped for an order still inside its hold. */
+	let heldBack: string | undefined;
 	const walked = await walkWindow(window, budget, "coupon-orphans", async (item) => {
 		// By id, then by idempotency key (#598): a same-key checkout replay can persist
 		// the order under another id than its redemption names, and that order holds it
@@ -3255,11 +3351,21 @@ async function releaseOrphanedRedemptions(
 			return "stop";
 		}
 		const order = holder?.durable === true ? holder.order : null;
-		// An order the expiry has not reached yet (pending, its hold already lapsed)
-		// cannot be judged: it is about to become `expired`, which this leg would then
-		// owe a release. Wait for it — the walk stops here, the cursor stays before it.
-		if (order !== null && order.state === "pending" && order.holdExpiresAt <= nowIso) {
-			return "stop";
+		// A PENDING order cannot be judged: it may yet become `expired`, which this leg
+		// would then owe a release.
+		if (order !== null && order.state === "pending") {
+			// Its hold lapsed: the expiry is about to reach it. Wait — the walk stops
+			// here, the cursor stays before it.
+			if (order.holdExpiresAt <= nowIso) return "stop";
+			// Still inside its hold (#621): a same-key replay (#598) keeps the
+			// redemption's first `createdAt` but gives the order a fresh hold, so the
+			// redemption can be old enough to judge while its order is not due. Ruled
+			// live, it fell behind the cursor for good, and an expiry whose release was
+			// then skipped or cut left nothing to free it. It is SKIPPED instead — the
+			// walk goes on to the rows after it, so one live checkout never blocks the
+			// rest — and the cursor is held before it, so a later run sees it again.
+			heldBack ??= item.data.createdAt;
+			return;
 		}
 		// No holder (or a lapsed claim) is an orphan; an EXPIRED order is owed its
 		// coupon back and may have lost the release to a crash (see above). Every other
@@ -3270,7 +3376,15 @@ async function releaseOrphanedRedemptions(
 	});
 	// Only past what was JUDGED: a row the budget left unread or unvisited must still
 	// be ahead of the cursor on the next tick.
-	const next = nextCursorAfterWalk(walked.handled, walked.incomplete, from);
+	let next = nextCursorAfterWalk(walked.handled, walked.incomplete, from);
+	// Never past a redemption skipped for its order's hold: 1 ms before it (the bound
+	// is `gt`), so the next run reads it again. Bounded by that hold — the checkout
+	// window — after which the order is paid, expired, or the walk stops at it. Until
+	// then each run re-reads from there; a page full of rows behind it waits as long.
+	if (heldBack !== undefined) {
+		const before = new Date(Date.parse(heldBack) - 1).toISOString();
+		if (next === null || next > before) next = before;
+	}
 	if (next !== null && next !== from) await cursors.write(COUPON_CURSOR, next);
 	return legResult(released, walked.incomplete);
 }
