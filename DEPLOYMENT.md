@@ -801,12 +801,15 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all thirteen sweep legs: they share a store composition
-and a clock, and splitting them would only put thirteen rows in contention on the same documents. The
-six scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
-`coupon-recount`, `product-orphans`) and the sign-in challenge prune run at most every fifteen
-minutes inside that task (housekeeping: the scans read a page budget of a collection per run); a
-scan cut short by the budget carries on next tick until its pass is done. `coupon-recount` sets a
+hook when it comes due. One task drives all fourteen sweep legs: they share a store composition
+and a clock, and splitting them would only put fourteen rows in contention on the same documents. The
+seven scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`coupon-recount`, `stranded-holds`, `product-orphans`) and the sign-in challenge prune run at most
+every fifteen minutes inside that task (housekeeping: the scans read a page budget of a collection
+per run); a scan cut short by the budget carries on next tick until its pass is done.
+`stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
+nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
+read a run from then on. Deleting that key starts it again. `coupon-recount` sets a
 coupon's use count back to the uses its redemptions hold when the two disagree (a release cut
 between its delete and its decrement leaves it one high); it corrects only on a second look, at
 least ten minutes after the first (each run rechecks the coupons it saw drift before walking on),
@@ -1198,9 +1201,17 @@ page. No second charge is made. A reload after the cut-over shows the right stat
 **Stock stranded under a cancelled order (#599).** Before this fix, the cron sweep's recovery of
 a crashed checkout could adopt a hold for an order that an admin cancelled (or that expired) at
 the same moment. The units then stayed off sale for good, because nothing releases an adopted
-hold of a terminal order. The fix stops **new** cases. It does **not** return units already
-stranded on a live store; that heal is tracked in #631. To see whether a store is affected, run
-this **read-only** query (D1 / SQLite):
+hold of a terminal order. The fix stops **new** cases. Units already stranded on a live store are
+returned by the `stranded-holds` sweep leg (#631), with no operator step: it walks the
+inventory and releases each hold still `adopted` by an `expired`, `cancelled` or `failed` order
+that owes no other hold work. Each release logs one line naming the sku, the order and the units
+it returned: `[otta] cron sweep: released 1 hold(s), 2 unit(s) of SKU-42, still adopted by
+cancelled order … (#631)`. A run the tick's budget cuts short carries on the next minute, so a
+pass over a large inventory takes as many minutes as it needs, not fifteen-minute steps. Once a
+whole pass finds nothing, the leg records that the repair is done and stops reading the inventory
+(see §5).
+
+**Before deploying this release**, run this **read-only** query (D1 / SQLite) and keep its output:
 
 ```bash
 wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "SELECT inv.id AS sku, h.value ->> '$.reservationId' AS reservation_id, h.value ->> '$.qty' AS qty, h.value ->> '$.orderId' AS order_id, o.data ->> '$.state' AS order_state FROM _plugin_storage inv, json_each(inv.data, '$.holds') h JOIN _plugin_storage o ON o.plugin_id = 'otta' AND o.collection = 'orders' AND o.id = h.value ->> '$.orderId' WHERE inv.plugin_id = 'otta' AND inv.collection = 'inventory' AND h.value ->> '$.state' = 'adopted' AND o.data ->> '$.state' IN ('expired', 'cancelled', 'failed')"
@@ -1208,9 +1219,14 @@ wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc
 
 Each row is one hold still `adopted` by an order that no longer claims it; `qty` is the units it
 keeps off sale. No rows means nothing is stranded. If there are rows, **do not** correct the
-counts with a manual stock adjustment: those units come back on their own when the #631 heal
-releases the hold, and an adjustment made now would count them twice and let the store oversell.
-Do not edit `_plugin_storage` rows by hand either. Note the affected SKUs and wait for #631.
+counts with a manual stock adjustment now: those units come back on their own when
+`stranded-holds` releases the hold, and an adjustment would count them twice and let the store
+oversell. Do not edit `_plugin_storage` rows by hand either.
+
+**If you already corrected stock by hand** for some of those skus (before this release), the
+leg's release adds those units a second time. Keep the query's output, and as each release line
+for one of those skus appears in the log, take back the quantity you added by hand (up to the
+units the line names) with a stock adjustment on that sku. Skus you never adjusted need nothing.
 
 **Upgrading the EmDash host (0.38 → 1.0.1).** The host runs its own schema migrations on the
 **first request** after the deploy, with no separate step: EmDash 1.0.1 adds

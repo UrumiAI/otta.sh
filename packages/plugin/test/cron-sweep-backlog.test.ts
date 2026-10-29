@@ -72,6 +72,7 @@ import {
 	placePaidOrderOwingCommit,
 	recordingSender,
 	seedLapsedHolds,
+	strandOrder,
 	sweepContext,
 	type CallCounter,
 } from "./cron-sweep-fixtures.js";
@@ -289,6 +290,19 @@ async function seedEveryLeg(): Promise<void> {
 	const drift = await couponDocs.getVersioned("coupon-drift");
 	if (drift === null) throw new Error("no drift coupon");
 	await couponDocs.compareAndSet("coupon-drift", drift.revision, { ...drift.value, usesCount: 2 });
+	// stranded-holds (#631): three cancelled orders whose holds stayed adopted.
+	for (let i = 0; i < 3; i++) {
+		const placed = await placeOrder(
+			storage,
+			`stranded-${String(i)}`,
+			new Date(START.getTime() + DAY_MS),
+			// At START, a second apart: rows sharing one instant are not the case here, and
+			// a closed day's rollup heal (the midnight straddle below) is not this leg's
+			// backlog to add to.
+			new Date(START.getTime() + i * 1000),
+		);
+		await strandOrder(storage, placed.id, "cancelled", START);
+	}
 
 	// product-orphans: three products deleted in the CMS whose afterDelete was lost.
 	for (const id of ORPHANED_PRODUCTS) {
@@ -389,6 +403,11 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 		"reporting-heal": claims.items.every((claim) => claim.data.absorbedAt !== null),
 		"coupon-orphans": (await coupons.findById("coupon-orphan"))?.usesCount === 0,
 		"coupon-recount": (await coupons.findById("coupon-drift"))?.usesCount === 0,
+		"stranded-holds": (
+			await Promise.all(
+				[0, 1, 2].map((i) => s.inventory.getOnHand(toSku(`ORDER-stranded-${String(i)}`))),
+			)
+		).every((onHand) => onHand === 10),
 		"product-orphans": (
 			await Promise.all(
 				ORPHANED_PRODUCTS.map((id) =>
@@ -544,6 +563,7 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			"reporting-heal",
 			"coupon-orphans",
 			"coupon-recount",
+			"stranded-holds",
 			"product-orphans",
 		];
 		for (const moneyLeg of ["expire-orders", "hold-intents", "late-refunds"] as const) {

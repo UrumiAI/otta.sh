@@ -86,6 +86,7 @@ export {
 export {
 	EmdashInventoryStore,
 	type EmdashInventoryStoreOptions,
+	type ReleasedHold,
 } from "./emdash-inventory-store.js";
 export type { HoldDeadlineStamper } from "./hold-deadline-stamper.js";
 export { uuidIdGen } from "./id-gen.js";
