@@ -485,6 +485,7 @@ describe("createOrderFromCart", () => {
 			listVariants: (id) => base.listVariants(id),
 			updateVariantFields: (input, key, expected) => base.updateVariantFields(input, key, expected),
 			deactivateVariant: (id, variantKey, key, t) => base.deactivateVariant(id, variantKey, key, t),
+			applyVariantSync: (input) => base.applyVariantSync(input),
 		};
 
 		const res = await createOrderFromCart({ ...h.createDeps, productCommerce: spy }, cmd(cartId));

@@ -652,6 +652,8 @@ export type {
 	ProductVariant,
 	ProductVariantSummary,
 	ProductVariantUpdateResult,
+	ApplyVariantSyncInput,
+	VariantSyncDeclare,
 	RestoreProductCommerceOptions,
 	UpdateProductCommerceFieldsInput,
 	UpdateProductVariantFieldsInput,
@@ -671,6 +673,7 @@ export {
 } from "./product-commerce/errors.js";
 export {
 	activateProductCommerce,
+	applyProductVariantSync,
 	deactivateProductCommerce,
 	deactivateProductVariant,
 	getProductCommerce,

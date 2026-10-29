@@ -4,6 +4,7 @@ import type { Clock } from "../ports/clock.js";
 import { NO_TITLE, resolveTitleWrite } from "../product-commerce/title-write.js";
 import { upsertChangesOwnedFields } from "../product-commerce/upsert-owned-fields.js";
 import type {
+	ApplyVariantSyncInput,
 	ProductCommerce,
 	ProductCommerceStore,
 	ProductCommerceUpdateResult,
@@ -940,6 +941,45 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			contentUpdatedAt,
 			updatedAt: this.#clock.now(),
 		});
+	}
+
+	/** One save's whole repeater projection (port doc, #602). The fake has no
+	 *  revision to contend for, so it is LITERALLY the definition the port states:
+	 *  the declares in order through `upsertVariant`, then `deactivateVariant` for
+	 *  every key still live and not declared — after validating the whole batch,
+	 *  so a bad entry writes nothing. */
+	async applyVariantSync(input: ApplyVariantSyncInput): Promise<void> {
+		if (typeof input.productId !== "string" || input.productId.length === 0) {
+			throw new MissingProductIdError();
+		}
+		for (const declare of input.declares) {
+			if (typeof declare.variantKey !== "string" || declare.variantKey.length === 0) {
+				throw new MissingVariantKeyError();
+			}
+		}
+		for (const declare of input.declares) {
+			await this.upsertVariant(
+				{
+					productId: input.productId,
+					variantKey: declare.variantKey,
+					...(declare.title !== undefined ? { title: declare.title } : {}),
+					contentUpdatedAt: input.contentUpdatedAt,
+				},
+				declare.key,
+			);
+		}
+		if (input.orphanKey === null) return;
+		const declared = new Set(input.declares.map((declare) => declare.variantKey));
+		for (const variant of this.#variants.values()) {
+			if (variant.productId !== input.productId) continue;
+			if (declared.has(variant.variantKey) || variant.orphanedAt !== null) continue;
+			await this.deactivateVariant(
+				input.productId,
+				variant.variantKey,
+				input.orphanKey(variant.variantKey),
+				input.contentUpdatedAt,
+			);
+		}
 	}
 
 	/**

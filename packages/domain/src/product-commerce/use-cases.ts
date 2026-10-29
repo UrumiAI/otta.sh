@@ -1,6 +1,7 @@
 import type { IdempotencyKey, ProductId } from "../money/ids.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 import type {
+	ApplyVariantSyncInput,
 	ProductCommerce,
 	ProductCommerceStore,
 	ProductCommerceUpdateResult,
@@ -418,4 +419,15 @@ export async function deactivateProductVariant(
 	contentUpdatedAt: string,
 ): Promise<void> {
 	return store.deactivateVariant(productId, variantKey, key, contentUpdatedAt);
+}
+
+/** One CMS save's whole repeater projection in one write (port doc on
+ *  `ProductCommerceStore.applyVariantSync`, issue #602): a thin pass-through,
+ *  for the same reason `upsertProductVariant` is one — the channel carries no
+ *  sku, so there is nothing to seed and no second port to compose. */
+export async function applyProductVariantSync(
+	store: ProductCommerceStore,
+	input: ApplyVariantSyncInput,
+): Promise<void> {
+	return store.applyVariantSync(input);
 }
