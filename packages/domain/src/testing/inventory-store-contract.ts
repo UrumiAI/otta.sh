@@ -1098,7 +1098,10 @@ export function inventoryStoreContract(
 		});
 
 		// The port allows `commit` on a hold that was never adopted (#617): once it is
-		// committed, the cart may not free it — whichever path committed it.
+		// committed, the cart may not free it — whichever path committed it. This is
+		// the NON-racing path and passed before #617 too; the race itself (a commit
+		// that wins the terminal state after releaseHeld returned the units) needs
+		// fault injection and is covered by store-emdash's inventory-crash-seams (e2).
 		test("releaseHeld after a commit of a still-HELD hold: false, no units back", async () => {
 			const h = await makeStore();
 			await h.seed("SKU-A", 10);
