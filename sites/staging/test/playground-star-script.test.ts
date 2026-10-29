@@ -58,7 +58,8 @@ function run(): void {
 			add(type, listener, options);
 		});
 	});
-	new Function(SCRIPT)();
+	// `type="module"` scripts run in strict mode.
+	new Function(`"use strict";\n${SCRIPT}`)();
 	for (const spy of spies) spy.mockRestore();
 }
 

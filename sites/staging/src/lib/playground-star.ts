@@ -26,7 +26,12 @@ export async function starsResponse(fetchImpl: typeof fetch = fetch): Promise<Re
 	const stars = await githubStars(fetchImpl);
 	return Response.json(
 		{ stars, label: stars === null ? null : formatStars(stars) },
-		{ headers: { "cache-control": `public, max-age=${stars === null ? 60 : 600}` } },
+		{
+			headers: {
+				"cache-control": `public, max-age=${stars === null ? 60 : 600}`,
+				"x-content-type-options": "nosniff",
+			},
+		},
 	);
 }
 

@@ -113,6 +113,6 @@ describe("withPlaygroundBanner", () => {
 		const body = await (await withPlaygroundBanner(html())).text();
 		expect(body).toContain("otta-playground-note");
 		expect(body.split('src="/scripts/playground-star.js"')).toHaveLength(2);
-		expect(body.split("<script")).toHaveLength(2);
+		expect(body.toLowerCase().split("<script")).toHaveLength(2);
 	});
 });

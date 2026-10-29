@@ -41,6 +41,7 @@ describe("starsResponse", () => {
 		const response = await starsResponse(fetchImpl);
 		expect(await response.json()).toEqual({ stars: 1249, label: "1.2k" });
 		expect(response.headers.get("cache-control")).toBe("public, max-age=600");
+		expect(response.headers.get("x-content-type-options")).toBe("nosniff");
 		const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
 		expect(url).toBe("https://api.github.com/repos/UrumiAI/otta.sh");
 		expect(init.cf).toEqual({
@@ -65,10 +66,13 @@ describe("starsResponse", () => {
 		const response = await starsResponse(fetchImpl);
 		expect(await response.json()).toEqual({ stars: null, label: null });
 		expect(response.headers.get("cache-control")).toBe("public, max-age=60");
+		expect(response.headers.get("x-content-type-options")).toBe("nosniff");
 	});
 });
 
 const URL_ATTRIBUTES = new Set(["href", "src", "xlink:href", "action", "formaction"]);
+/** The playground itself (relative links resolve here) and the repo on GitHub. */
+const CHROME_ORIGINS = new Set(["https://try.otta.sh", "https://github.com"]);
 
 describe("injectBanner with the star prompt", () => {
 	const page = "<html><body><p>Hi</p></body></html>";
@@ -135,6 +139,8 @@ describe("injectBanner with the star prompt", () => {
 				// An allowlist, not a list of bad schemes: every link and source resolves to https.
 				const url = new URL(el.getAttribute(attr)!, "https://try.otta.sh/");
 				expect(url.protocol, `${el.tagName} ${attr}`).toBe("https:");
+				// A third-party or protocol-relative ("//evil.example") link fails here.
+				expect(CHROME_ORIGINS.has(url.origin), `${el.tagName} ${attr} ${url.origin}`).toBe(true);
 			}
 		}
 	});
