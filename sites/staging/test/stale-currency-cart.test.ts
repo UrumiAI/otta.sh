@@ -136,21 +136,21 @@ describe("POST /cart/switch-currency", () => {
 	test("a vanished cart drops the cookie, so the next add starts a fresh cart", async () => {
 		const { context, cookieOps } = makeContext({ ok: false, reason: "CART_NOT_FOUND" });
 		const response = await SWITCH_POST(context);
-		expect(response.headers.get("location")).toBe("/cart?error=CART_NOT_FOUND");
+		expect(response.headers.get("location")).toBe("/cart?error=CART_NOT_FOUND#cart-error");
 		expect(cookieOps).toContainEqual({ op: "delete", name: "otta_cart" });
 	});
 
 	test("a cart checked out meanwhile keeps its cookie and is told so on /cart", async () => {
 		const { context, cookieOps } = makeContext({ ok: false, reason: "CART_CHECKED_OUT" });
 		const response = await SWITCH_POST(context);
-		expect(response.headers.get("location")).toBe("/cart?error=CART_CHECKED_OUT");
+		expect(response.headers.get("location")).toBe("/cart?error=CART_CHECKED_OUT#cart-error");
 		expect(cookieOps).toEqual([]);
 	});
 
 	test("a failed dispatch changes nothing and says the service is unavailable", async () => {
 		const { context, cookieOps } = makeContext(null);
 		const response = await SWITCH_POST(context);
-		expect(response.headers.get("location")).toBe("/cart?error=SERVICE_UNAVAILABLE");
+		expect(response.headers.get("location")).toBe("/cart?error=SERVICE_UNAVAILABLE#cart-error");
 		expect(cookieOps).toEqual([]);
 	});
 

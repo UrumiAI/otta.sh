@@ -37,9 +37,8 @@ export class ReservationIdCollisionError extends Error {
  * released.
  *
  * It replaces a bare `Error` on that path. The condition is a real one a caller
- * may want to classify — the cart expiry swallows it, because a hold an order
- * already committed is not the cart's to return — and an untyped error forces
- * that caller to match on a message. The message is unchanged from the bare error
+ * may want to classify — a hold an order already committed is not the cart's to
+ * return — and an untyped error forces that caller to match on a message. The message is unchanged from the bare error
  * it replaces, so nothing reading the text has to change.
  *
  * It is an ADAPTER error rather than the domain's `ReservationNotHeldError`: that

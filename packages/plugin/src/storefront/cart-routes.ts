@@ -307,8 +307,9 @@ function isPositiveInt(value: unknown): value is number {
  * A positive integer OVER the shopper-facing cap: the route's own typed
  * QTY_TOO_LARGE, checked here rather than left to the client's `requireQty`
  * throw, which renderGuard would log and answer as RENDER_FAILED — "Something
- * went wrong" for a shopper who typed a big number (QA U-6). The cap is per
- * REQUEST: an add that takes an existing line past it is not refused here.
+ * went wrong" for a shopper who typed a big number (QA U-6). This checks the
+ * REQUEST: an add that takes an existing line past the cap is refused by the
+ * domain instead, as `reason: "QTY_TOO_LARGE"` (issue #608).
  */
 function isOverCartQtyCap(value: number): boolean {
 	return value > CART_LINE_MAX_QTY;

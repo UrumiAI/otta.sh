@@ -99,7 +99,7 @@ describe("encrypted payment keys under workerd (ADR-0037)", () => {
 		expect("error" in ticked ? ticked.error : undefined).toBeUndefined();
 
 		const signed = await delivery("ord-encrypted");
-		// Past the token gate AND the HMAC: 404 is the domain's own answer for an
+		// Past the token gate AND the HMAC: ORDER_NOT_FOUND is the domain's own answer for an
 		// order that was never seeded, which neither gate could produce.
 		expect(
 			resultOf(
@@ -107,7 +107,7 @@ describe("encrypted payment keys under workerd (ADR-0037)", () => {
 					headers: { "X-Otta-Wh-Token": EDGE_TOKEN },
 				}),
 			) as SettleResponse,
-		).toMatchObject({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+		).toMatchObject({ ok: false, status: 200, reason: "ORDER_NOT_FOUND" });
 		expect(
 			resultOf(await sandbox.invokeRoute("webhooks/stripe/settle", signed)) as SettleResponse,
 		).toMatchObject({ ok: false, status: 401, reason: "UNAUTHORIZED" });

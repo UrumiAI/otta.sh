@@ -12,6 +12,7 @@ import type { Clock } from "../ports/clock.js";
 import type {
 	ExpiredOrder,
 	OrderExpiryListOptions,
+	OrderKeyPeek,
 	ReleaseEmailClaimOptions,
 } from "../ports/order-store.js";
 import type { IdGen } from "../ports/id-gen.js";
@@ -228,6 +229,12 @@ export class InMemoryOrderStore implements OrderStore {
 		if (orderId === undefined) return null;
 		const stored = this.#orders.get(orderId);
 		return stored === undefined ? null : this.#clone(stored.order);
+	}
+
+	/** No claim step here, so a key is either minted or unknown. */
+	async peekByIdempotencyKey(key: IdempotencyKey): Promise<OrderKeyPeek | null> {
+		const order = await this.getByIdempotencyKey(key);
+		return order === null ? null : { state: "minted", order };
 	}
 
 	async markPaid(orderId: OrderId, providerRef?: string): Promise<boolean> {

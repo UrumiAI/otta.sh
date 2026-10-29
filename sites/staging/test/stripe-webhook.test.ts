@@ -214,6 +214,126 @@ describe("POST /webhooks/stripe — the raw bytes reach the plugin unchanged", (
 	});
 });
 
+/**
+ * A request whose body is a stream with NO Content-Length — a chunked upload —
+ * that would keep producing `chunk`-sized pieces until `total` bytes. `pulled`
+ * counts what the endpoint actually drew out of it, and `cancelled` records
+ * that it stopped drawing.
+ */
+/** The byte a streamed body carries at offset `p` — not periodic in any power of
+ *  two, so a chunk joined at the wrong offset or out of order changes the bytes. */
+function streamedByteAt(p: number): number {
+	return (p + Math.floor(p / 251)) & 0xff;
+}
+
+function streamedContext(
+	handler: unknown,
+	total: number,
+	chunk = 16 * 1024,
+): { context: APIContext; pulled: () => number; cancelled: () => boolean } {
+	let pulled = 0;
+	let cancelled = false;
+	const body = new ReadableStream<Uint8Array>({
+		pull(controller) {
+			if (pulled >= total) {
+				controller.close();
+				return;
+			}
+			const size = Math.min(chunk, total - pulled);
+			const piece = new Uint8Array(size);
+			for (let i = 0; i < size; i++) piece[i] = streamedByteAt(pulled + i);
+			pulled += size;
+			controller.enqueue(piece);
+		},
+		cancel() {
+			cancelled = true;
+		},
+	});
+	const url = new URL("/webhooks/stripe", SITE);
+	const request = new Request(url, {
+		method: "POST",
+		headers: { "content-type": "application/json", "stripe-signature": SIGNATURE },
+		body,
+		duplex: "half",
+	} as RequestInit);
+	const context = {
+		request,
+		url,
+		locals: { emdash: { handlePublicPluginApiRoute: handler } },
+	} as unknown as APIContext;
+	return { context, pulled: () => pulled, cancelled: () => cancelled };
+}
+
+describe("POST /webhooks/stripe — the body is capped BEFORE it is buffered (#605)", () => {
+	// Any non-empty signature gets a request this far, and the route is exempt
+	// from the origin guard, so this cap is the only thing between an anonymous
+	// caller and an isolate-sized buffer.
+	test("a declared Content-Length over the cap is a 413 — the body is never read, nothing is dispatched", async () => {
+		const { handler, calls } = makeDispatcher(OK);
+		const body = new Uint8Array(600 * 1024).fill(0x41);
+		const url = new URL("/webhooks/stripe", SITE);
+		const request = new Request(url, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"stripe-signature": "x",
+				"content-length": String(body.byteLength),
+			},
+			body,
+		});
+
+		const response = await POST({
+			request,
+			url,
+			locals: { emdash: { handlePublicPluginApiRoute: handler } },
+		} as unknown as APIContext);
+
+		expect(response.status).toBe(413);
+		expect(calls).toHaveLength(0);
+		expect(request.bodyUsed).toBe(false);
+	});
+
+	test("a streamed body with no Content-Length is cut off once past the cap — 413, nothing dispatched", async () => {
+		const { handler, calls } = makeDispatcher(OK);
+		// 64 MiB on offer; the endpoint must stop long before taking it all.
+		const { context, pulled, cancelled } = streamedContext(handler, 64 * 1024 * 1024);
+		expect(context.request.headers.get("content-length")).toBeNull();
+
+		const response = await POST(context);
+
+		expect(response.status).toBe(413);
+		expect(calls).toHaveLength(0);
+		expect(pulled()).toBeLessThan(1024 * 1024);
+		expect(cancelled()).toBe(true);
+	});
+
+	test("a streamed body under the cap is read in full and dispatched", async () => {
+		const { handler, calls } = makeDispatcher(OK);
+		const { context } = streamedContext(handler, 100 * 1024);
+
+		const response = await POST(context);
+
+		expect(response.status).toBe(200);
+		expect(calls).toHaveLength(1);
+		const expected = Uint8Array.from({ length: 100 * 1024 }, (_, p) => streamedByteAt(p));
+		expect(calls[0]!.input["rawBodyBase64"]).toBe(Buffer.from(expected).toString("base64"));
+	});
+
+	test("every byte value, across several base64 chunk boundaries, round-trips exactly", async () => {
+		// 200 KiB of every byte value 0x00–0xff in turn: far past any chunk size an
+		// encoder would pick, and full of bytes that are not ASCII or valid UTF-8.
+		const binary = new Uint8Array(200 * 1024);
+		for (let i = 0; i < binary.length; i++) binary[i] = (i * 7 + (i >> 8)) & 0xff;
+		const { handler, calls } = makeDispatcher(OK);
+
+		await POST(makeContext(handler, { body: binary }));
+
+		expect(calls).toHaveLength(1);
+		const sent = calls[0]!.input["rawBodyBase64"] as string;
+		expect(sent).toBe(Buffer.from(binary).toString("base64"));
+	});
+});
+
 describe("POST /webhooks/stripe — the edge token", () => {
 	test("provisioned ⇒ attached as X-Otta-Wh-Token, byte-identical", async () => {
 		setToken("otta_edge_value");
@@ -325,10 +445,10 @@ describe("POST /webhooks/stripe — the plugin's status is replayed, never swall
 		expect(await response.json()).toMatchObject({ reason: "AMOUNT_MISMATCH" });
 	});
 
-	test("ORDER_NOT_FOUND ⇒ 404", async () => {
-		const { handler } = makeDispatcher({ ok: false, status: 404, reason: "ORDER_NOT_FOUND" });
+	test("ORDER_NOT_FOUND ⇒ 200, so a shared Stripe account's foreign event is not retried (#595)", async () => {
+		const { handler } = makeDispatcher({ ok: false, status: 200, reason: "ORDER_NOT_FOUND" });
 
-		expect((await POST(makeContext(handler))).status).toBe(404);
+		expect((await POST(makeContext(handler))).status).toBe(200);
 	});
 
 	test("NOT_CONFIGURED ⇒ 503, so Stripe RETRIES an unprovisioned deploy rather than dropping the event", async () => {

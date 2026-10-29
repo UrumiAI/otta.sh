@@ -306,6 +306,78 @@ export function cartStoreContract(
 			expect(cart?.lines[0]?.reservationId).toBe(first.line.reservationId);
 		});
 
+		// ── the per-line quantity cap (issue #608) ───────────────────────────
+		// `maxLineQty` bounds the LINE, not the request: a re-add merges into the
+		// existing line, so the sum is what the cap is checked against. Checking
+		// only each add's own qty let two capped adds build a line twice the cap.
+
+		test("a re-add that would take the line past maxLineQty is QTY_TOO_LARGE; the line and its hold stay put", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 20_000);
+			const deps: CartDeps = { ...h.deps, maxLineQty: 10_000 };
+			const cartId = await createCart(deps, USD);
+			const first = await addLine(deps, cartId, sku("SKU-1"), null, 10_000, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			const again = await addLine(deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
+			expect(again).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+			// Refused before the claim: nothing in the ledger under the key.
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k2"))).toBeNull();
+			expect(await h.onHand("SKU-1")).toBe(10_000);
+			const cart = await getCart(deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(10_000);
+			expect(cart?.lines[0]?.reservationId).toBe(first.line.reservationId);
+		});
+
+		test("a re-add of a digital sku past maxLineQty is QTY_TOO_LARGE too", async () => {
+			const h = await makeHarness();
+			const deps: CartDeps = { ...h.deps, maxLineQty: 10_000 };
+			const cartId = await createCart(deps, USD);
+			const add = (qty: number, key: string) =>
+				addLine(deps, cartId, sku("EBOOK-1"), null, qty, idempotencyKey(key), "digital");
+			if (!(await add(10_000, "k1")).ok) throw new Error("seed add must succeed");
+
+			expect(await add(10_000, "k2")).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k2"))).toBeNull();
+			expect((await getCart(deps, cartId))?.lines[0]?.qty).toBe(10_000);
+		});
+
+		test("a re-add that lands exactly on maxLineQty is allowed", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 20_000);
+			const deps: CartDeps = { ...h.deps, maxLineQty: 10_000 };
+			const cartId = await createCart(deps, USD);
+			const first = await addLine(deps, cartId, sku("SKU-1"), null, 9_999, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			const again = await addLine(deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
+			expect(again.ok && again.line.qty).toBe(10_000);
+			expect(await h.onHand("SKU-1")).toBe(10_000);
+		});
+
+		test("a first add, or an adjust, past maxLineQty is QTY_TOO_LARGE and moves no stock", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 20_000);
+			const deps: CartDeps = { ...h.deps, maxLineQty: 10_000 };
+			const cartId = await createCart(deps, USD);
+			expect(await addLine(deps, cartId, sku("SKU-1"), null, 10_001, idempotencyKey("k1"))).toEqual(
+				{ ok: false, reason: "QTY_TOO_LARGE" },
+			);
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k1"))).toBeNull();
+			expect((await getCart(deps, cartId))?.lines).toHaveLength(0);
+			expect(await h.onHand("SKU-1")).toBe(20_000);
+
+			const add = await addLine(deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k2"));
+			if (!add.ok) throw new Error("seed add must succeed");
+			expect(await updateLine(deps, cartId, add.line.lineId, 10_001, idempotencyKey("k3"))).toEqual(
+				{ ok: false, reason: "QTY_TOO_LARGE" },
+			);
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k3"))).toBeNull();
+			expect((await getCart(deps, cartId))?.lines[0]?.qty).toBe(2);
+			expect(await h.onHand("SKU-1")).toBe(19_998);
+		});
+
 		test("re-adding a digital sku adds to its line and reserves nothing", async () => {
 			const h = await makeHarness();
 			const cartId = await createCart(h.deps, USD);

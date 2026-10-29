@@ -590,6 +590,7 @@ describeEachDialect("order flow", (ctx) => {
 			createFromCart: (i) => h.store.createFromCart(i),
 			getById: (id) => h.store.getById(id),
 			getByIdempotencyKey: (k) => h.store.getByIdempotencyKey(k),
+			peekByIdempotencyKey: (k) => h.store.peekByIdempotencyKey(k),
 			markPaid: async (id) => {
 				await expireOrders(h.expireDeps);
 				return h.store.markPaid(id);

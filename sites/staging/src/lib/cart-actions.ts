@@ -58,19 +58,31 @@ const BAD_CART_COOKIE_TOKENS: ReadonlySet<string> = new Set([
  *  purchasable. Rejected BEFORE the plugin's add-line route is ever called. */
 export const PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND";
 
-/** A quantity over the plugin's `CART_LINE_MAX_QTY` — the plugin's own typed
- *  refusal, which `/cart/add` and `/cart/update` also give before dispatch (so an
- *  over-cap add never mints a cart). Its copy names the limit. */
+/** A cart line over the plugin's `CART_LINE_MAX_QTY` — the plugin's own typed
+ *  refusal, for a request over the cap and for an add that would merge its line
+ *  past it (#608). `/cart/add` and `/cart/update` also give it before dispatch for
+ *  an over-cap request (so one never mints a cart). Its copy names the limit. */
 export const QTY_TOO_LARGE = "QTY_TOO_LARGE";
 export const PRODUCT_UNAVAILABLE = "PRODUCT_UNAVAILABLE";
 
 /** 303 See Other — the POST-redirect-GET turn. The target is normalized to a
  *  same-site path first ({@link sameSitePath}; `/` if it is not one), so a
- *  dot-segment path that resolves to `//host` can never become the Location. */
-export function seeOther(context: APIContext, path: string, error?: string): Response {
+ *  dot-segment path that resolves to `//host` can never become the Location.
+ *
+ *  `noticeId` is the id of the element the target page renders `error` in
+ *  (`lib/error-notice.ts`, #603): beside an error the Location ends with it as
+ *  the fragment, so the page comes back scrolled to the refusal. Any fragment
+ *  `path` carried is dropped by the normalization, so there is never two. */
+export function seeOther(
+	context: APIContext,
+	path: string,
+	error?: string,
+	noticeId?: string,
+): Response {
 	const url = new URL(sameSitePath(path), context.url);
 	if (error !== undefined) url.searchParams.set("error", error);
-	return context.redirect(url.pathname + url.search, 303);
+	const fragment = error !== undefined && noticeId !== undefined ? `#${noticeId}` : "";
+	return context.redirect(url.pathname + url.search + fragment, 303);
 }
 
 /**

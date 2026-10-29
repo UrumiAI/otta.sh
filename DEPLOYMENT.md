@@ -432,6 +432,13 @@ order of appearance in a deployment's life:
 > for so Stripe's retry behaviour stays correct. It holds no Stripe secret and verifies no
 > signature itself.
 >
+> **The Stripe account may be shared with other software** (#595). A verified
+> `payment_intent.*` event Otta did not create — no `metadata.order_id`, or one naming no order
+> in this store — is answered 200 with reason `UNKNOWN_EVENT` or `ORDER_NOT_FOUND`, so the
+> endpoint stays healthy; the second kind is logged at info level and leaves one small
+> `payment_events` row, which is never pruned. Foreign events also keep Settings' "last
+> verified delivery" fresh: it proves the signing secret, not that Otta's own payments arrive.
+>
 > **The trust anchor is the Stripe HMAC**, verified unconditionally inside the plugin route
 > against `settings:stripeWebhookSecret` — never switchable off by any token. A webhook is
 > always unauthenticated, and an anonymous request only ever reaches the host's *public*
@@ -1117,7 +1124,10 @@ page. No second charge is made. A reload after the cut-over shows the right stat
 to 0.38 afterwards does not roll the database back. **Before deploying, take a D1 backup** —
 note a Time Travel bookmark (`wrangler d1 time-travel info <database>`) or export the database
 (`wrangler d1 export <database> --remote --output=<file>.sql`) — so a failed upgrade can be
-restored with `wrangler d1 time-travel restore <database> --bookmark=<bookmark>`. The same holds
+restored with `wrangler d1 time-travel restore <database> --bookmark=<bookmark>`. After a
+restore, check Stripe for payments made since the bookmark: a payment for an order the restore
+removed is acknowledged as `ORDER_NOT_FOUND` and is not refunded automatically — refund it from
+the Stripe dashboard. The same holds
 for any later host release that adds migrations (`sites/staging/test/host-pin.test.ts` pins the
 reviewed tip, so a new one fails CI first).
 

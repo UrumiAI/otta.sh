@@ -43,6 +43,9 @@ export interface CartDeps {
 	clock: Clock;
 	/** Hold TTL in ms; defaults to {@link DEFAULT_HOLD_TTL_MS}. */
 	ttlMs?: number;
+	/** The most one line may hold; unset = uncapped. Checked against the line's
+	 *  RESULTING qty, so a re-add that merges past it is refused (issue #608). */
+	maxLineQty?: number;
 }
 
 /** Typed cart-mutation failures (never status-code-as-logic; §6). */
@@ -52,11 +55,17 @@ export type CartFailure =
 	| "LINE_NOT_FOUND"
 	| "LINE_CHECKED_OUT"
 	| "HOLD_EXPIRED"
-	| "OUT_OF_STOCK";
+	| "OUT_OF_STOCK"
+	/** The line would hold more than `CartDeps.maxLineQty`. */
+	| "QTY_TOO_LARGE";
 
 export type AddLineResult = { ok: true; line: CartLine } | { ok: false; reason: CartFailure };
 export type UpdateLineResult = { ok: true; line: CartLine } | { ok: false; reason: CartFailure };
 export type RemoveLineResult = { ok: true } | { ok: false; reason: CartFailure };
+
+function overLineCap(deps: CartDeps, qty: number): boolean {
+	return deps.maxLineQty !== undefined && qty > deps.maxLineQty;
+}
 
 function ttl(deps: CartDeps): number {
 	return deps.ttlMs ?? DEFAULT_HOLD_TTL_MS;
@@ -315,6 +324,7 @@ export async function getCart(deps: CartDeps, cartId: string): Promise<Cart | nu
  * add's `idempotencyKey`, so stock moves by delta on the line's OWN hold. A
  * fresh `reserve` here would be attached over the line's current reservation
  * and orphan it until the TTL sweep — locking stock no cart line accounts for.
+ * That merged qty is what `maxLineQty` bounds: past it, `QTY_TOO_LARGE`.
  */
 export async function addLine(
 	deps: CartDeps,
@@ -339,6 +349,8 @@ export async function addLine(
 	if (existing !== undefined && recorded?.kind !== "add") {
 		return updateLine(deps, cartId, existing.lineId, existing.qty + qty, key);
 	}
+	// Refused before the claim, like a guard failure: nothing written, no stock moved.
+	if (overLineCap(deps, qty)) return { ok: false, reason: "QTY_TOO_LARGE" };
 
 	const claim = await deps.cartStore.claimMutation({ key, cartId, kind: "add" });
 	if (!claim.claimed && claim.recorded.completed) return replayLine(deps, cartId, claim.recorded);
@@ -427,6 +439,9 @@ export async function updateLine(
 
 	const line = guard.cart.lines.find((l) => l.lineId === lineId);
 	if (line === undefined) return { ok: false, reason: "LINE_NOT_FOUND" };
+	// The cap is on the line's resulting qty — this is also where a re-add's
+	// merged sum lands (`addLine`), so neither path can build a line past it.
+	if (overLineCap(deps, newQty)) return { ok: false, reason: "QTY_TOO_LARGE" };
 
 	// Digital line (Phase 4 §6): no reservation ever existed — adjust the qty
 	// directly, moving no inventory. Distinguished from a checked-out physical
@@ -479,9 +494,12 @@ export async function updateLine(
  * Remove a line: claim the key, release the (held) reservation, then drop the
  * line and complete the claim. Double-remove is a no-op; a replay of a remove
  * that crashed after `release` but before the line delete finds the reservation
- * `released` and COMPLETES the removal (never a spurious `LINE_CHECKED_OUT`).
+ * `released` and COMPLETES the removal (never a spurious `LINE_CHECKED_OUT`) —
+ * as does one that crashed inside `releaseHeld`, after the units came back and
+ * before the terminal state was recorded (the line reads `pending`).
  * Fenced: a hold that is `committed`/`adopted` (a Phase-4 order owns it) is
- * `LINE_CHECKED_OUT` and never released.
+ * `LINE_CHECKED_OUT` and never released — including one a checkout adopts
+ * between the cart read and the release (#593).
  */
 export async function removeLine(
 	deps: CartDeps,
@@ -501,10 +519,20 @@ export async function removeLine(
 	if (line.reservationId !== null) {
 		// `held` → release it; `released` → a crashed/expired remove already freed
 		// the stock, so the removal is completable; anything else (committed /
-		// adopted / …) is no longer the cart's to touch.
-		if (line.reservationState === "held") {
+		// adopted / …) is no longer the cart's to touch. `pending` goes through
+		// `releaseHeld` too: an adapter that returns the units before it records
+		// `released` reads a remove that crashed between the two as `pending`, and
+		// `releaseHeld` finishes that write (true) — while a reserve that never
+		// applied stays `false`, i.e. LINE_CHECKED_OUT, as before.
+		if (line.reservationState === "held" || line.reservationState === "pending") {
 			await deps.cartStore.claimMutation({ key, cartId, kind: "remove", lineId });
-			await deps.inventoryStore.release(line.reservationId);
+			// The cart-scoped release (#593): `held` above is a snapshot, and a
+			// checkout may adopt the hold before this runs. `releaseHeld` decides in
+			// the write that returns the units, so an adopted hold is refused, never
+			// freed, and the call answers as if the read had seen it adopted.
+			if (!(await deps.inventoryStore.releaseHeld(line.reservationId))) {
+				return { ok: false, reason: "LINE_CHECKED_OUT" };
+			}
 		} else if (line.reservationState !== "released") {
 			return { ok: false, reason: "LINE_CHECKED_OUT" };
 		}

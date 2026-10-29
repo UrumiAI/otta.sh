@@ -13,6 +13,7 @@ import type {
 	DeleteCouponResult,
 	RedeemCouponInput,
 	RedeemResult,
+	RedemptionOrderRef,
 	UpdateCouponInput,
 	UpdateCouponResult,
 } from "../ports/coupon-store.js";
@@ -222,10 +223,10 @@ export class InMemoryCouponStore implements CouponStore {
 		if (coupon !== undefined && coupon.usesCount > 0) coupon.usesCount -= 1;
 	}
 
-	async releaseByOrder(orderId: string): Promise<number> {
+	async releaseByOrder(order: RedemptionOrderRef): Promise<number> {
 		let released = 0;
 		for (const [id, row] of this.#redemptions) {
-			if (row.orderId !== orderId) continue;
+			if (row.orderId !== order.id && row.idempotencyKey !== order.idempotencyKey) continue;
 			this.#redemptions.delete(id);
 			const coupon = this.#coupons.get(row.couponId);
 			if (coupon !== undefined && coupon.usesCount > 0) coupon.usesCount -= 1;
