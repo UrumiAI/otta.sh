@@ -1322,6 +1322,8 @@ unauthenticated, cached per colo for an hour (ten minutes after an error).
 GitHub's per-IP rate limit on shared Cloudflare egress is the usual reason the
 count is missing; the prompt then reads "Star", and the log shows
 `[otta-playground] github stars: HTTP 403`.
+This script is playground-only chrome the middleware injects, outside the storefront's
+client-JS fence on the terms in [ADR-0040](./adr/0040-playground-chrome-is-outside-the-client-js-fence.md).
 
 ```bash
 pnpm --filter @urumi.ai/otta-site-staging build:playground

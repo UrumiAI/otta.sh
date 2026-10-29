@@ -21,6 +21,7 @@ const SCRIPT = readFileSync(
 );
 
 let urls: string[] = [];
+let listeners: Array<[EventTarget, string, EventListenerOrEventListenerObject]> = [];
 
 /** The prompt's markup without its `<script src>`: the test runs the file itself, and
  *  happy-dom does not load scripts. Parsed in an inert template, so nothing fetches. */
@@ -42,9 +43,26 @@ function page(answer: () => Promise<Response> = async () => Response.json({ labe
 			return answer();
 		}),
 	);
-	new Function(SCRIPT)();
+	run();
 	return document.querySelector<HTMLElement>(".otta-star")!;
 }
+
+/** Runs the script as a page load would. It adds document and window listeners that a
+ *  real navigation discards; they are recorded here and removed after the test, so a
+ *  previous test's instance cannot answer an event meant for this one. */
+function run(): void {
+	for (const target of [document, window]) {
+		const add = target.addEventListener.bind(target);
+		vi.spyOn(target, "addEventListener").mockImplementation((type, listener, options) => {
+			listeners.push([target, type, listener]);
+			add(type, listener, options);
+		});
+	}
+	new Function(SCRIPT)();
+	vi.restoreAllMocks();
+}
+
+const consume = (event: Event): void => event.preventDefault();
 
 const settle = async (): Promise<void> => {
 	for (let i = 0; i < 5; i += 1) await Promise.resolve();
@@ -57,10 +75,22 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	for (const [target, type, listener] of listeners) target.removeEventListener(type, listener);
+	listeners = [];
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	document.body.innerHTML = "";
 });
+
+const escape = (target: Element): KeyboardEvent => {
+	const event = new KeyboardEvent("keydown", {
+		key: "Escape",
+		bubbles: true,
+		cancelable: true,
+	});
+	target.dispatchEvent(event);
+	return event;
+};
 
 describe("playground-star.js", () => {
 	test("opens the card after a moment on the first page of a session", () => {
@@ -92,14 +122,6 @@ describe("playground-star.js", () => {
 		expect(root.dataset.state).toBe("pill");
 	});
 
-	test("Escape anywhere on the page dismisses the open card", () => {
-		const root = page();
-		vi.advanceTimersByTime(1800);
-		document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-		expect(root.dataset.state).toBe("pill");
-		expect(localStorage.getItem("otta-star:dismissed")).toBe("1");
-	});
-
 	test("an Escape meant for another dialog leaves the card alone", () => {
 		const root = page();
 		const dialog = document.createElement("div");
@@ -113,6 +135,60 @@ describe("playground-star.js", () => {
 		);
 		expect(root.dataset.state).toBe("card");
 		expect(localStorage.getItem("otta-star:dismissed")).toBeNull();
+	});
+
+	test.each([
+		["an input", '<input type="text" />', "input"],
+		["a textarea", "<textarea></textarea>", "textarea"],
+		["a select", "<select><option>a</option></select>", "select"],
+		["an editable region", '<div contenteditable="true"><p>text</p></div>', "p"],
+		["a listbox", '<ul role="listbox"><li role="option">a</li></ul>', "li"],
+		["a menu", '<div role="menu"><button role="menuitem">a</button></div>', "button"],
+	])("an Escape typed in %s leaves the card alone", (_, markup, inner) => {
+		const root = page();
+		const host = document.createElement("div");
+		host.innerHTML = markup;
+		document.body.append(host);
+		vi.advanceTimersByTime(1800);
+		escape(host.querySelector(inner)!);
+		expect(root.dataset.state).toBe("card");
+		expect(localStorage.getItem("otta-star:dismissed")).toBeNull();
+	});
+
+	test("an earlier page's handlers are gone: a prompt whose script never ran stays put", () => {
+		// The dialog test above left a card open; its document listener must not answer here.
+		renderPrompt();
+		escape(document.body);
+		expect(localStorage.getItem("otta-star:dismissed")).toBeNull();
+	});
+
+	test("an Escape another handler already consumed leaves the card alone", () => {
+		const root = page();
+		vi.advanceTimersByTime(1800);
+		document.body.addEventListener("keydown", consume);
+		escape(document.body);
+		document.body.removeEventListener("keydown", consume);
+		expect(root.dataset.state).toBe("card");
+		expect(localStorage.getItem("otta-star:dismissed")).toBeNull();
+	});
+
+	test("contenteditable=false is not an editor", () => {
+		const root = page();
+		const host = document.createElement("div");
+		host.innerHTML = '<div contenteditable="false"><span>x</span></div>';
+		document.body.append(host);
+		vi.advanceTimersByTime(1800);
+		escape(host.querySelector("span")!);
+		expect(root.dataset.state).toBe("pill");
+	});
+
+	// After the tests that leave a card open: a stale instance would answer this Escape too.
+	test("Escape anywhere on the page dismisses the open card", () => {
+		const root = page();
+		vi.advanceTimersByTime(1800);
+		document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(root.dataset.state).toBe("pill");
+		expect(localStorage.getItem("otta-star:dismissed")).toBe("1");
 	});
 
 	test("right-click on the star link does not dismiss, middle-click does", () => {
@@ -158,7 +234,7 @@ describe("playground-star.js", () => {
 			"fetch",
 			vi.fn(async () => Response.json({ label: null })),
 		);
-		new Function(SCRIPT)();
+		run();
 		const root = document.querySelector<HTMLElement>(".otta-star")!;
 		expect(root.style.bottom).toBe("98px");
 		box = { height: 38, top: 706, right: 895 }; // desktop: centred, clear of the corner

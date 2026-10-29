@@ -7,6 +7,8 @@ const root = document.querySelector(".otta-star");
 const DISMISSED = "otta-star:dismissed";
 const SEEN = "otta-star:seen";
 const COUNT = "otta-star:count";
+const OWN_ESCAPE =
+	'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="listbox"], [role="menu"]';
 const NO_COUNT = "-"; // remembered too, so a rate-limited count is not asked for on every page
 
 function read(storage, key) {
@@ -84,9 +86,14 @@ if (root) {
 	root.addEventListener("auxclick", onActivate);
 	document.addEventListener("keydown", (event) => {
 		if (event.key !== "Escape" || root.dataset.state !== "card" || event.defaultPrevented) return;
-		// An Escape meant for an admin dialog or menu is not a no to the prompt.
-		const owner = document.activeElement?.closest('[role="dialog"], [aria-modal="true"]');
-		if (owner && !root.contains(owner)) return;
+		// An Escape meant for an admin dialog or menu is not a no to the prompt, nor is one
+		// that closes a select, clears a field or dismisses the editor's slash menu.
+		for (const from of [event.target, document.activeElement]) {
+			if (!(from instanceof Element)) continue;
+			if (from.closest(OWN_ESCAPE)) return;
+			const owner = from.closest('[role="dialog"], [aria-modal="true"]');
+			if (owner && !root.contains(owner)) return;
+		}
 		done();
 	});
 	if (read("localStorage", DISMISSED) !== "1" && read("sessionStorage", SEEN) !== "1") {

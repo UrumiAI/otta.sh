@@ -1,6 +1,6 @@
 /**
  * The one sentence the playground adds to every HTML page, and the GitHub
- * star prompt beside it (`playground-star.ts`).
+ * star prompt (`playground-star.ts`), which goes at the end of the body.
  *
  * The sentence is specific about what this sandbox is and what it is not:
  * Otta is installed and the sample products can be bought as far as the
@@ -24,13 +24,19 @@ export async function injectPlaygroundBanner(response: Response): Promise<Respon
 
 export function injectBanner(html: string): string {
 	if (html.includes(MARKER)) return html;
-	const chrome = BANNER + starPrompt();
 	const opened = /<body[^>]*>/i.exec(html);
-	if (opened !== null && opened.index !== undefined) {
-		const at = opened.index + opened[0].length;
-		return html.slice(0, at) + chrome + html.slice(at);
-	}
-	return chrome + html;
+	const withNote =
+		opened === null
+			? BANNER + html
+			: html.slice(0, opened.index + opened[0].length) +
+				BANNER +
+				html.slice(opened.index + opened[0].length);
+	// The prompt is fixed-position, so it goes last: opening the body with it would put its
+	// links ahead of the theme's skip link in the tab order.
+	const closed = withNote.toLowerCase().lastIndexOf("</body");
+	return closed === -1
+		? withNote + starPrompt()
+		: withNote.slice(0, closed) + starPrompt() + withNote.slice(closed);
 }
 
 export function playgroundInterstitial(refreshPath: string): Response {

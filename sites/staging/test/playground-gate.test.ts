@@ -11,6 +11,15 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+function starsRequest(method: string): APIContext {
+	const url = new URL("https://try.otta.sh/_otta/stars");
+	return {
+		request: new Request(url, { method, headers: { accept: "application/json" } }),
+		url,
+		locals: { user: { id: "u1", email: "a@b.c", name: null, role: 50 } },
+	} as unknown as APIContext;
+}
+
 function consoleFetch(user: unknown): APIContext {
 	const url = new URL("https://try.otta.sh/_emdash/api/plugins/otta/admin");
 	return {
@@ -46,5 +55,39 @@ describe("playgroundGate on the admin console's fetch", () => {
 		const context = consoleFetch(user);
 		expect(await playgroundGate(context)).toBeNull();
 		expect(context.locals.user).toBe(user);
+	});
+});
+
+const github = () =>
+	vi.fn(async () => Response.json({ stargazers_count: 1249 })) as unknown as typeof fetch;
+
+describe("playgroundGate on /_otta/stars", () => {
+	test("answers the count on the playground build, GET and HEAD", async () => {
+		vi.stubGlobal("__OTTA_PLAYGROUND__", true);
+		const fetchImpl = github();
+		vi.stubGlobal("fetch", fetchImpl);
+		const got = await playgroundGate(starsRequest("GET"));
+		expect(got?.status).toBe(200);
+		expect(await got?.json()).toEqual({ stars: 1249, label: "1.2k" });
+		expect((await playgroundGate(starsRequest("HEAD")))?.status).toBe(200);
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+	});
+
+	test("is not there on the storefront build, and never calls GitHub", async () => {
+		vi.stubGlobal("__OTTA_PLAYGROUND__", false);
+		const fetchImpl = github();
+		vi.stubGlobal("fetch", fetchImpl);
+		expect(await playgroundGate(starsRequest("GET"))).toBeNull();
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	test("lets other methods fall through", async () => {
+		vi.stubGlobal("__OTTA_PLAYGROUND__", true);
+		const fetchImpl = github();
+		vi.stubGlobal("fetch", fetchImpl);
+		for (const method of ["POST", "PUT", "DELETE"]) {
+			expect(await playgroundGate(starsRequest(method))).toBeNull();
+		}
+		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 });

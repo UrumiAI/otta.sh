@@ -1,3 +1,4 @@
+import { Window } from "happy-dom";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { injectBanner } from "../src/lib/playground-banner.js";
 import { REPO_URL, formatStars, starPrompt, starsResponse } from "../src/lib/playground-star.js";
@@ -68,10 +69,49 @@ describe("starsResponse", () => {
 });
 
 describe("injectBanner with the star prompt", () => {
-	test("adds the prompt once, after the note", () => {
-		const once = injectBanner("<html><body><p>Hi</p></body></html>");
+	const page = "<html><body><p>Hi</p></body></html>";
+
+	test("adds the prompt once, at the end of the body, after the note", () => {
+		const once = injectBanner(page);
 		expect(once.indexOf("otta-playground-note")).toBeLessThan(once.indexOf('class="otta-star"'));
+		expect(once.indexOf("<p>Hi</p>")).toBeLessThan(once.indexOf('class="otta-star"'));
+		expect(once.indexOf("</aside>")).toBeLessThan(once.indexOf("</body>"));
+		expect(once.endsWith("</body></html>")).toBe(true);
 		expect(injectBanner(once)).toBe(once);
 		expect(once.match(/class="otta-star"/g)).toHaveLength(1);
+	});
+
+	test("the prompt follows the page's own first stop, so a skip link keeps tab order one", () => {
+		const once = injectBanner(
+			'<html><body><a href="#main">Skip</a><main id="main"></main></body></html>',
+		);
+		expect(once.indexOf('href="#main"')).toBeLessThan(once.indexOf('class="otta-star"'));
+	});
+
+	test("finds a differently cased closing body tag", () => {
+		const once = injectBanner("<HTML><BODY><p>Hi</p></BODY></HTML>");
+		expect(once.indexOf('class="otta-star"')).toBeLessThan(once.indexOf("</BODY>"));
+		expect(once.indexOf("<p>Hi</p>")).toBeLessThan(once.indexOf('class="otta-star"'));
+	});
+
+	test("without a closing body tag the prompt goes last", () => {
+		const once = injectBanner("<body><p>Hi</p>");
+		expect(once.endsWith(starPrompt())).toBe(true);
+		expect(once.indexOf("otta-playground-note")).toBeLessThan(once.indexOf("<p>Hi</p>"));
+		expect(injectBanner("<p>Hi</p>").endsWith(starPrompt())).toBe(true);
+	});
+
+	// ADR-0040: the playground chrome is the one middleware-injected script, and the
+	// client-JS fence cannot see it, so this is where a second one would be caught.
+	test("injects exactly one script, the star prompt's own", () => {
+		const chrome = injectBanner(page);
+		expect(chrome.toLowerCase().split("<script")).toHaveLength(2);
+		const doc = new Window().document;
+		doc.body.innerHTML = chrome;
+		const scripts = [...doc.querySelectorAll("script")];
+		expect(scripts).toHaveLength(1);
+		expect(scripts[0]!.getAttribute("src")).toBe("/scripts/playground-star.js");
+		expect(scripts[0]!.getAttribute("type")).toBe("module");
+		expect(scripts[0]!.textContent).toBe("");
 	});
 });

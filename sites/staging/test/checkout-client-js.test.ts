@@ -110,6 +110,10 @@ function componentClosure(entry: string): string[] {
  * A named allowlist rather than a predicate, so that widening it is a diff
  * someone has to write and defend. Each entry is `page → component`, relative
  * to `src/pages` and by basename.
+ *
+ * It walks `.astro` imports, so it cannot see script that middleware injects. The
+ * playground build's star prompt is that case, and is bound by ADR-0040 and the
+ * script-count test in `playground-star.test.ts`.
  */
 const PERMITTED_CLIENT_JS: ReadonlyArray<readonly [string, string]> = [
 	// The theme spec (§6) postdates ADR-0012 and makes the hold countdown a
