@@ -11,6 +11,7 @@ import {
 	addLine,
 	currency,
 	idempotencyKey,
+	NOOP_LOGGER,
 	orderId as toOrderId,
 	sku as toSku,
 } from "@urumi.ai/otta-domain";
@@ -408,7 +409,12 @@ describe("prune-carts (#39)", () => {
 				if (!added) {
 					added = true;
 					const add = await addLine(
-						{ cartStore: s.cartStore, inventoryStore: s.inventory, clock: s.clock },
+						{
+							cartStore: s.cartStore,
+							inventoryStore: s.inventory,
+							clock: s.clock,
+							logger: NOOP_LOGGER,
+						},
 						id,
 						toSku("SKU-RACE"),
 						null,
@@ -443,7 +449,7 @@ describe("prune-carts (#39)", () => {
 		await tick(await onlyPruneCartsDue());
 		expect(await carts().get(id)).toBeNull();
 		const add = await addLine(
-			{ cartStore: s.cartStore, inventoryStore: s.inventory, clock: s.clock },
+			{ cartStore: s.cartStore, inventoryStore: s.inventory, clock: s.clock, logger: NOOP_LOGGER },
 			id,
 			toSku("SKU-LATE"),
 			null,
