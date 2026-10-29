@@ -11,6 +11,7 @@
  */
 import {
 	addLine,
+	cartMutationKey,
 	createCart,
 	currency,
 	expireHolds,
@@ -79,7 +80,11 @@ describeEachDialect("hold expiry", (ctx) => {
 
 		const doc = await h.carts.get(cartId);
 		expect(doc?.holdExpiresAt).toBeNull();
-		expect(doc?.mutations["k1"]).toMatchObject({ kind: "add", completed: false, abandoned: true });
+		expect(doc?.mutations[cartMutationKey(cartId, idempotencyKey("k1"))]).toMatchObject({
+			kind: "add",
+			completed: false,
+			abandoned: true,
+		});
 
 		h.advance(PAST_TTL_MS);
 		const listed = await h.carts.query({
@@ -143,7 +148,9 @@ describeEachDialect("hold expiry", (ctx) => {
 		expect(await h.onHand("SKU-1")).toBe(2); // 5 − 3: the hold is intact
 		// Asserted POSITIVELY, as the SQL version's `state === "held"` was: an absent
 		// terminal state alone would also be satisfied by a hold that vanished.
-		expect(await liveHoldState(h, "SKU-1", "k1")).toBe("held");
+		expect(await liveHoldState(h, "SKU-1", cartMutationKey(cartId, idempotencyKey("k1")))).toBe(
+			"held",
+		);
 		expect((await reservations().get(reservationId))?.terminalState).toBeUndefined();
 		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(1);
 	});

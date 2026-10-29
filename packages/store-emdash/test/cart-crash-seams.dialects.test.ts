@@ -28,6 +28,7 @@
  */
 import {
 	addLine,
+	cartMutationKey,
 	createCart,
 	currency,
 	expireHolds,
@@ -319,7 +320,8 @@ describeEachDialect("cart crash seams", (ctx) => {
 		});
 		const inventoryDoc = await h.inventoryDocs.get("SKU-1");
 		if (inventoryDoc === null) throw new MissingDocumentError("inventory", "SKU-1");
-		const stillLive = normalizeInventoryDoc(inventoryDoc).holds[idempotencyKey("k1")];
+		const stillLive =
+			normalizeInventoryDoc(inventoryDoc).holds[cartMutationKey(cartId, idempotencyKey("k1"))];
 		expect(stillLive?.state).toBe("held"); // the hold really does look live
 
 		h.advance(PAST_TTL_MS);
@@ -361,7 +363,10 @@ describeEachDialect("cart crash seams", (ctx) => {
 		// terminal record, not the hold's own state field.
 		const inventoryDoc = await h.inventoryDocs.get("SKU-1");
 		if (inventoryDoc === null) throw new MissingDocumentError("inventory", "SKU-1");
-		expect(normalizeInventoryDoc(inventoryDoc).holds[idempotencyKey("k1")]?.state).toBe("held");
+		expect(
+			normalizeInventoryDoc(inventoryDoc).holds[cartMutationKey(cartId, idempotencyKey("k1"))]
+				?.state,
+		).toBe("held");
 		expect(await h.inventory.stampHoldDeadline(reservationId, "2026-07-10T00:30:00.000Z")).toBe(
 			false,
 		);
@@ -439,12 +444,14 @@ describeEachDialect("cart crash seams", (ctx) => {
 		expect(await h.onHand("SKU-1")).toBe(5);
 		const doc = await h.inventoryDocs.get("SKU-1");
 		if (doc === null) throw new MissingDocumentError("inventory", "SKU-1");
-		expect(normalizeInventoryDoc(doc).holds[idempotencyKey("k1")]).toBeUndefined();
+		expect(
+			normalizeInventoryDoc(doc).holds[cartMutationKey(cartId, idempotencyKey("k1"))],
+		).toBeUndefined();
 		expect((await rawIndex.get(reservationId))?.terminalState).toBeUndefined();
 		const reserveKey = await collectionOf<ReservationKeyDoc>(
 			bound.storage,
 			RESERVATION_KEYS_COLLECTION,
-		).get(idempotencyKey("k1"));
+		).get(cartMutationKey(cartId, idempotencyKey("k1")));
 		expect(reserveKey).toMatchObject({ state: "terminal", reservationId });
 		expect((await getCart(h.deps, cartId))?.lines[0]?.reservationState).toBe("pending");
 

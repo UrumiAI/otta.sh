@@ -315,6 +315,10 @@ export async function getCart(deps: CartDeps, cartId: string): Promise<Cart | nu
  * add's `idempotencyKey`, so stock moves by delta on the line's OWN hold. A
  * fresh `reserve` here would be attached over the line's current reservation
  * and orphan it until the TTL sweep — locking stock no cart line accounts for.
+ *
+ * `requestKey` is scoped to the cart before it reaches the ledger or the
+ * inventory port ({@link cartMutationKey}), as it is for update and remove: the
+ * same key on another cart is another command (#609).
  */
 export async function addLine(
 	deps: CartDeps,
@@ -322,10 +326,10 @@ export async function addLine(
 	sku: Sku,
 	productId: string | null,
 	qty: number,
-	key: IdempotencyKey,
+	requestKey: IdempotencyKey,
 	fulfillmentKind: FulfillmentKind = "physical",
 ): Promise<AddLineResult> {
-	const recorded = await deps.cartStore.recordedMutation(key);
+	const { key, recorded } = await resolveMutationKey(deps, cartId, requestKey);
 	if (recorded !== null && recorded.completed) return replayLine(deps, cartId, recorded);
 
 	const guard = await guardActiveCart(deps, cartId);
@@ -337,7 +341,7 @@ export async function addLine(
 	// choreography it started (its hold is ledger-scoped, so the sweep can reap it).
 	const existing = guard.cart.lines.find((l) => l.sku === sku);
 	if (existing !== undefined && recorded?.kind !== "add") {
-		return updateLine(deps, cartId, existing.lineId, existing.qty + qty, key);
+		return updateLine(deps, cartId, existing.lineId, existing.qty + qty, requestKey);
 	}
 
 	const claim = await deps.cartStore.claimMutation({ key, cartId, kind: "add" });
@@ -417,9 +421,9 @@ export async function updateLine(
 	cartId: string,
 	lineId: string,
 	newQty: number,
-	key: IdempotencyKey,
+	requestKey: IdempotencyKey,
 ): Promise<UpdateLineResult> {
-	const recorded = await deps.cartStore.recordedMutation(key);
+	const { key, recorded } = await resolveMutationKey(deps, cartId, requestKey);
 	if (recorded !== null && recorded.completed) return replayLine(deps, cartId, recorded);
 
 	const guard = await guardActiveCart(deps, cartId);
@@ -490,9 +494,9 @@ export async function removeLine(
 	deps: CartDeps,
 	cartId: string,
 	lineId: string,
-	key: IdempotencyKey,
+	requestKey: IdempotencyKey,
 ): Promise<RemoveLineResult> {
-	const recorded = await deps.cartStore.recordedMutation(key);
+	const { key, recorded } = await resolveMutationKey(deps, cartId, requestKey);
 	if (recorded !== null && recorded.completed) return { ok: true };
 
 	const guard = await guardActiveCart(deps, cartId);
@@ -563,6 +567,48 @@ export async function expireHoldsBatch(
 		if (won) reclaimed++;
 	}
 	return { count: reclaimed, drained: true };
+}
+
+/**
+ * The key a cart mutation runs under, in the ledger AND at the inventory port:
+ * the caller's key scoped to its cart, `cart:<cartId>:<requestKey>` (#609).
+ *
+ * A caller's key only names one command within one cart. The no-JS product page
+ * posts the key it rendered, and a shared cache serves that page to every
+ * visitor (ADR-0039), so two carts can send the same key. Unscoped, the second
+ * cart's add replayed the first cart's line (`LINE_NOT_FOUND`), or — while the
+ * first add was still in flight — resumed it and attached the first cart's hold
+ * to its own line: two carts on one hold. Scoped, they are two commands, each
+ * with its own claim and its own reservation. The reserve key is the ledger key,
+ * so the sweep's ledger-scoped fallback for a crashed add still finds the hold.
+ */
+export function cartMutationKey(cartId: string, requestKey: IdempotencyKey): IdempotencyKey {
+	return brandIdempotencyKey(`cart:${cartId}:${requestKey}`);
+}
+
+/**
+ * The key a mutation of `cartId` runs under, and that key's ledger record.
+ *
+ * The scoped key ({@link cartMutationKey}) first. Failing that, the BARE key — a
+ * release before #609 recorded and reserved under it — but only when its record
+ * is THIS cart's: a same-cart retry of a mutation that was in flight, or done,
+ * across the deploy then resumes or replays it under the key it started with,
+ * on the hold it reserved. Another cart's bare record is someone else's command
+ * and is ignored. A bare record is never written any more, so the fallback only
+ * ever finds records older than this release; it costs a fresh mutation one
+ * extra ledger read.
+ */
+async function resolveMutationKey(
+	deps: CartDeps,
+	cartId: string,
+	requestKey: IdempotencyKey,
+): Promise<{ key: IdempotencyKey; recorded: RecordedCartMutation | null }> {
+	const scoped = cartMutationKey(cartId, requestKey);
+	const recorded = await deps.cartStore.recordedMutation(scoped);
+	if (recorded !== null) return { key: scoped, recorded };
+	const bare = await deps.cartStore.recordedMutation(requestKey);
+	if (bare !== null && bare.cartId === cartId) return { key: requestKey, recorded: bare };
+	return { key: scoped, recorded: null };
 }
 
 type ActiveCartGuard = { ok: true; cart: Cart } | { ok: false; reason: CartFailure };

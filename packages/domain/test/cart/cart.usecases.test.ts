@@ -1,4 +1,10 @@
-import { addLine, createCart, removeLine, updateLine } from "@urumi.ai/otta-domain";
+import {
+	addLine,
+	cartMutationKey,
+	createCart,
+	removeLine,
+	updateLine,
+} from "@urumi.ai/otta-domain";
 import { currency, idempotencyKey, sku } from "@urumi.ai/otta-domain";
 import { describe, expect, test, vi } from "vitest";
 import { makeFakeCartHarness } from "./fake-harness.js";
@@ -44,7 +50,7 @@ describe("cart use-cases (fake)", () => {
 
 		expect(oos).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
 		expect(ok.ok).toBe(true);
-		expect(retired).toEqual([[cartId, "k-oos"]]);
+		expect(retired).toEqual([[cartId, cartMutationKey(cartId, idempotencyKey("k-oos"))]]);
 	});
 
 	test("retiring the claim is BEST-EFFORT: if it throws, the add still answers OUT_OF_STOCK", async () => {
