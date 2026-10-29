@@ -2,6 +2,9 @@
 # dist/, .env*, node_modules/)
 .astro/
 .wrangler/
+# Local Worker secrets for `astro dev` (DEPLOYMENT.md §3); never committed.
+.dev.vars
+.dev.vars.*
 worker-configuration.d.ts
 
 # Account-specific deploy config (real Worker name / D1 id / R2 bucket) —
