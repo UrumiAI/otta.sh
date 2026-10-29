@@ -336,6 +336,31 @@ order of appearance in a deployment's life:
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
 | Email provider (from-address, SPF, DKIM, its own key) | an **EmDash email provider plugin**, selected in EmDash Settings > Email — not otta | optional | when wiring real email |
 
+> **Never put a secret in the build environment.** Set every secret only as a Worker secret
+> (`wrangler secret put`) or in admin Settings. Do not export it in the shell or CI job that
+> runs `pnpm build`. Astro reads the build's whole environment, `.env` files included, and
+> writes the value of any variable whose **name** appears in a server module that uses
+> `import.meta.env` into the worker bundle in plain text (issue #584). emdash's OAuth routes
+> name `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET`, `MICROSOFT_CLIENT_SECRET` and their
+> `EMDASH_OAUTH_*` forms, so a build that had one of those set shipped it. The build guards
+> against this in two ways (`sites/staging/src/lib/build-path-scrub.ts`):
+>
+> - it **removes** secrets from its own `process.env` before Astro reads it, and warns with
+>   their names (never the values). A secret is any variable on the list there (emdash's
+>   `EMDASH_AUTH_SECRET`, `AUTH_SECRET`, `EMDASH_ENCRYPTION_KEY`, `EMDASH_PREVIEW_SECRET`,
+>   `EMDASH_IP_SALT`, the OAuth and Turnstile secrets, storage and database credentials;
+>   Otta's `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `OTTA_WH_TOKEN`; deploy tokens such
+>   as `CLOUDFLARE_API_TOKEN`), and any variable whose name contains `SECRET`, `TOKEN`,
+>   `PASSWORD`, `SALT`, `CREDENTIAL`, `API_KEY`, `ACCESS_KEY` or `PRIVATE_KEY`. `PUBLIC_*`
+>   variables are left alone;
+> - it **fails the build** if a secret was inlined anyway, for example from a `.env` file,
+>   which that first step cannot reach. Remove the variable from the build environment and
+>   the `.env` file, then build again. Do not deploy a `dist/` from a failed build.
+>
+> The removal does not change the deployed site: emdash reads these from the Worker's env
+> first, which is where they belong. A dev `.env` that holds only `EMDASH_ENCRYPTION_KEY`
+> (below) builds: no server module names that key today, and the build fails if one ever does.
+
 - **`EMDASH_ENCRYPTION_KEY`** — **required.** Generate with `npx emdash secrets generate`;
   never committed, never echoed into logs; **back it up in a password manager**. EmDash
   encrypts plugin settings declared `secret` with it (AES-GCM), and Otta declares three: the

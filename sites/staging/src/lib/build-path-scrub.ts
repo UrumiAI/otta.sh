@@ -58,8 +58,22 @@
  * own path variables ({@link SHELL_PATH_ENV_KEYS}) from `process.env` in
  * `astro:config:setup`, which runs before Astro reads the env. It does this for
  * `build` only, so `astro dev` keeps `EDITOR`/`VISUAL` for open-in-editor.
+ *
+ * THE THIRD LEAK: SECRETS IN THE BUILD SHELL (issue #584). The same heuristic
+ * inlines a secret's VALUE when its name appears in such a module. emdash's
+ * OAuth routes call `getOAuthConfig(cfEnv ?? import.meta.env)` and name
+ * `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET`, `MICROSOFT_CLIENT_SECRET` and
+ * their `EMDASH_OAUTH_*` forms, so a build whose shell exported one wrote it in
+ * plain text into `_provider_*.mjs` and `callback_*.mjs`. Removing the values
+ * loses nothing: those routes read the Worker's env first, where secrets belong
+ * (`wrangler secret put`). Two layers:
+ *  - `astro:config:setup` drops every secret ({@link isBuildSecretEnvKey}) from
+ *    `process.env` for a build, and warns with the NAMES it dropped;
+ *  - `astro:build:done` FAILS the build if a secret was inlined anyway. That
+ *    catches what the strip cannot reach: Astro also loads `.env` files
+ *    (`sites/staging/.env`), whose values are never in `process.env`.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -89,6 +103,109 @@ export const SHELL_PATH_ENV_KEYS = ["_", "PWD", "OLDPWD", "NODE", "EDITOR", "VIS
 /** Removes {@link SHELL_PATH_ENV_KEYS} from `env` in place. */
 export function dropShellPathEnv(env: NodeJS.ProcessEnv): void {
 	for (const key of SHELL_PATH_ENV_KEYS) delete env[key];
+}
+
+/**
+ * Secrets that must never be in a build's environment. emdash's own names
+ * (auth, encryption, preview, IP salt, OAuth, Turnstile, storage and database
+ * credentials, its CLI token), Otta's (the Stripe pair, the webhook edge token)
+ * and the deploy credentials a CI job typically exports. A name that is not
+ * listed is still caught by its shape ({@link isBuildSecretEnvKey}).
+ */
+export const BUILD_SECRET_ENV_KEYS = [
+	"EMDASH_AUTH_SECRET",
+	"AUTH_SECRET",
+	"EMDASH_ENCRYPTION_KEY",
+	"EMDASH_PREVIEW_SECRET",
+	"EMDASH_IP_SALT",
+	"EMDASH_OAUTH_GITHUB_CLIENT_SECRET",
+	"GITHUB_CLIENT_SECRET",
+	"EMDASH_OAUTH_GOOGLE_CLIENT_SECRET",
+	"GOOGLE_CLIENT_SECRET",
+	"EMDASH_OAUTH_MICROSOFT_CLIENT_SECRET",
+	"MICROSOFT_CLIENT_SECRET",
+	"EMDASH_TURNSTILE_SECRET_KEY",
+	"TURNSTILE_SECRET_KEY",
+	"EMDASH_TOKEN",
+	"TURSO_AUTH_TOKEN",
+	"R2_ACCESS_KEY_ID",
+	"R2_SECRET_ACCESS_KEY",
+	"S3_ACCESS_KEY_ID",
+	"S3_SECRET_ACCESS_KEY",
+	// Connection strings: they usually carry a password.
+	"DATABASE_URL",
+	"REDIS_URL",
+	"STRIPE_SECRET_KEY",
+	"STRIPE_WEBHOOK_SECRET",
+	"OTTA_WH_TOKEN",
+	"CLOUDFLARE_API_TOKEN",
+	"GITHUB_TOKEN",
+	"NPM_TOKEN",
+] as const;
+
+const LISTED_SECRET_ENV_KEYS: ReadonlySet<string> = new Set(BUILD_SECRET_ENV_KEYS);
+
+/**
+ * A secret-shaped name: an `_`-delimited word such as `SECRET`, `TOKEN`,
+ * `PASSWORD` or `SALT`, or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`.
+ */
+const SECRET_SHAPED_ENV_KEY =
+	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_KEY)(?:_|$)/i;
+
+/**
+ * Whether `key` names a secret: listed in {@link BUILD_SECRET_ENV_KEYS}, or
+ * secret-shaped. `PUBLIC_*` is exempt: that prefix is Astro's own promise that a
+ * value is public, and Astro ships it to the browser by design.
+ */
+export function isBuildSecretEnvKey(key: string): boolean {
+	if (key.startsWith("PUBLIC_")) return false;
+	return LISTED_SECRET_ENV_KEYS.has(key) || SECRET_SHAPED_ENV_KEY.test(key);
+}
+
+/** Removes every secret ({@link isBuildSecretEnvKey}) from `env` in place; returns their names. */
+export function dropBuildSecretEnv(env: NodeJS.ProcessEnv): string[] {
+	const dropped = Object.keys(env).filter(isBuildSecretEnvKey);
+	for (const key of dropped) delete env[key];
+	return dropped;
+}
+
+/**
+ * Astro inlines private env into a server module that uses a bare
+ * `import.meta.env` as `Object.assign({ …, "SSR": true }, { KEY: "value", … })`.
+ * Returns the keys of every such inlined object in `code`. Every value is a JSON
+ * string, so the object is read string by string: a brace or comma inside a
+ * value cannot end it early.
+ */
+export function inlinedEnvKeys(code: string): string[] {
+	const str = String.raw`"(?:[^"\\]|\\.)*"`;
+	const prop = String.raw`"?([A-Za-z_$][\w$]*)"?\s*:\s*${str}`;
+	const object = new RegExp(
+		String.raw`"SSR": (?:true|false)\s*\}, \{((?:\s*"?[A-Za-z_$][\w$]*"?\s*:\s*${str}\s*,?)*)\s*\}\)`,
+		"g",
+	);
+	const keys: string[] = [];
+	for (const match of code.matchAll(object)) {
+		for (const key of match[1]?.matchAll(new RegExp(prop, "g")) ?? []) {
+			if (key[1] !== undefined) keys.push(key[1]);
+		}
+	}
+	return keys;
+}
+
+/**
+ * Every `<file>: <KEY>` for a secret inlined into a `.mjs`/`.js` file under
+ * `dir`, the file relative to `dir`. Names only: a value is never returned.
+ */
+export function findInlinedSecretsInDir(dir: string): string[] {
+	const found: string[] = [];
+	for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+		if (!entry.isFile() || !/\.m?js$/.test(entry.name)) continue;
+		const file = path.join(entry.parentPath, entry.name);
+		for (const key of inlinedEnvKeys(readFileSync(file, "utf8"))) {
+			if (isBuildSecretEnvKey(key)) found.push(`${path.relative(dir, file)}: ${key}`);
+		}
+	}
+	return found;
 }
 
 function escapeRegExp(text: string): string {
@@ -133,14 +250,33 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 	return {
 		name: BUILD_PATH_SCRUB_INTEGRATION,
 		hooks: {
-			"astro:config:setup": ({ command }) => {
-				if (command === "build") dropShellPathEnv(process.env);
+			"astro:config:setup": ({ command, logger }) => {
+				if (command !== "build") return;
+				dropShellPathEnv(process.env);
+				const dropped = dropBuildSecretEnv(process.env);
+				if (dropped.length > 0) {
+					logger.warn(
+						`ignored ${dropped.length} secret(s) set in the build environment, so none can be ` +
+							`inlined into the worker: ${dropped.toSorted().join(", ")}. Set secrets as Worker ` +
+							`secrets (\`wrangler secret put\`), never in the build shell (DEPLOYMENT.md §3).`,
+					);
+				}
 			},
 			"astro:config:done": ({ config }) => {
 				serverDir = config.build.server;
 			},
 			"astro:build:done": async ({ logger }) => {
 				if (serverDir === undefined || !existsSync(serverDir)) return;
+				const secrets = findInlinedSecretsInDir(fileURLToPath(serverDir));
+				if (secrets.length > 0) {
+					throw new Error(
+						`a secret was inlined into the worker bundle (issue #584):\n  ${secrets.join("\n  ")}\n` +
+							`Astro inlines a variable from the build's env or a .env file whenever its name ` +
+							`appears next to \`import.meta.env\`. Remove it from the build environment and any ` +
+							`.env file, set it as a Worker secret (\`wrangler secret put\`), and build again. ` +
+							`Do not deploy this dist/.`,
+					);
+				}
 				const changed = await scrubBuildPathsInDir(fileURLToPath(serverDir), root);
 				logger.info(`removed the workspace root from ${changed} server file(s)`);
 			},
