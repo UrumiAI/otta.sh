@@ -336,6 +336,60 @@ order of appearance in a deployment's life:
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
 | Email provider (from-address, SPF, DKIM, its own key) | an **EmDash email provider plugin**, selected in EmDash Settings > Email — not otta | optional | when wiring real email |
 
+> **Never put a secret in the build environment.** Set every secret only as a Worker secret
+> (`wrangler secret put`) or in admin Settings. Do not export it in the shell or CI job that
+> runs `pnpm build`, and keep it out of `sites/staging/.env`. Astro reads the build's whole
+> environment, `.env` files included. It writes the value of any variable whose **name**
+> appears in a server module that uses `import.meta.env`, or that a module reads as
+> `import.meta.env.KEY`, into the worker bundle in plain text (issue #584). emdash's OAuth
+> routes name `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET`, `MICROSOFT_CLIENT_SECRET` and
+> their `EMDASH_OAUTH_*` forms, so a build that had one of those set shipped it. The build
+> guards against this (`sites/staging/src/lib/build-path-scrub.ts`):
+>
+> - it **removes** secrets from its own `process.env` before Astro reads it, and warns with
+>   their names (never the values). A secret is any variable on the list there (emdash's
+>   `EMDASH_AUTH_SECRET`, `AUTH_SECRET`, `EMDASH_ENCRYPTION_KEY`, `EMDASH_PREVIEW_SECRET`,
+>   `EMDASH_IP_SALT`, the OAuth and Turnstile secrets, storage and database credentials;
+>   Otta's `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `OTTA_WH_TOKEN`; deploy tokens such
+>   as `CLOUDFLARE_API_TOKEN`), any variable whose name contains `SECRET`, `TOKEN`,
+>   `PASSWORD`, `SALT`, `CREDENTIAL`, `API_KEY`, `ACCESS_KEY` or `PRIVATE_KEY`, and any that
+>   ends in `_KEY`, `_PASS` or `_DSN`. `PUBLIC_*`, `*_SITE_KEY`, `*_PUBLISHABLE_KEY` and
+>   `*_PUBLIC_KEY` are left alone. A build that needs Cloudflare remote bindings must
+>   authenticate with `wrangler login`, not a `CLOUDFLARE_API_TOKEN` in the build env, because
+>   the build drops that token;
+> - it **deletes `dist/server/.dev.vars`**, the plaintext copy of your local `.dev.vars` (or
+>   `.env`) that the Cloudflare Vite plugin writes there. `wrangler deploy` never uploads it,
+>   but any copy of `dist/` would carry it. A built `dist/` run with `astro preview` therefore
+>   has no local vars;
+> - it **fails the build, and deletes `dist/server`**, if a secret's value (16 characters or
+>   more) is in the bundle anyway, for example from a `.env` file, which the first step cannot
+>   reach. It also searches `dist/client`, where prerendered pages land, and a hit there deletes
+>   `dist/client` too. Remove the variable from the build environment and the `.env` file, then
+>   build again.
+>
+> For `astro dev`, keep local secrets in `sites/staging/.dev.vars` (gitignored). The dev
+> Worker reads it, and Astro never does, so nothing in it can reach a bundle. A
+> `sites/staging/.dev.vars` also replaces the env that the e2e stack injects (its throwaway
+> `EMDASH_ENCRYPTION_KEY` arrives through `CLOUDFLARE_INCLUDE_PROCESS_ENV`, which wrangler
+> ignores when `.dev.vars` exists), so move it aside, or put the e2e key in it, for
+> `pnpm test:e2e`. A dev `.env`
+> that holds only `EMDASH_ENCRYPTION_KEY` still builds: no server module names that key today,
+> and the build fails if one ever does.
+>
+> The removal does not change the deployed site. Under `@astrojs/cloudflare`, emdash reads its
+> env only from the Worker (`virtual:emdash/env` re-exports `env` from `cloudflare:workers`,
+> which is always defined), so the build-time `import.meta.env` fallback was never used.
+>
+> **If you deployed a build that had one of these set**, treat the secret as exposed:
+>
+> 1. Rotate it at its provider (for an OAuth client secret: GitHub, Google or Microsoft;
+>    for a Stripe key: the Stripe dashboard).
+> 2. Put the new value in place: `wrangler secret put <NAME> --config wrangler.local.jsonc`
+>    for a Worker secret, or admin Settings for a Stripe key.
+> 3. Delete the old `dist/` and any copy of it (CI artifacts, caches, tarballs).
+> 4. Remember that Cloudflare keeps earlier Worker versions, and their bundles hold the old
+>    value in plain text. Rotation is what makes those copies harmless.
+
 - **`EMDASH_ENCRYPTION_KEY`** — **required.** Generate with `npx emdash secrets generate`;
   never committed, never echoed into logs; **back it up in a password manager**. EmDash
   encrypts plugin settings declared `secret` with it (AES-GCM), and Otta declares three: the
@@ -350,10 +404,11 @@ order of appearance in a deployment's life:
     Otta's Store settings page shows "saved, but not valid" until it is entered again there.
   - **Where it is read:** EmDash reads it from `process.env`. On Workers that is the Worker
     secret (`nodejs_compat` populates `process.env`). **Local development (`astro dev`):**
-    put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.env` (gitignored; generate a
-    separate dev key). Exporting it in the shell does **not** work: the dev Worker runs in
-    workerd, which does not inherit the shell environment. (A `.dev.vars` file would also be
-    read, but it is not gitignored in this repo — use `.env`.) The Playwright stack and CI's
+    put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.dev.vars` or `sites/staging/.env`
+    (both gitignored; generate a separate dev key). `.dev.vars` is the safer choice because
+    Astro never reads it into a build (above). When it exists, the dev Worker reads it instead
+    of `.env`. Exporting the key in the shell does **not** work: the dev Worker runs in
+    workerd, which does not inherit the shell environment. The Playwright stack and CI's
     e2e job use a throwaway test key (`playwright.config.ts`).
   - **Missing:** saving any of those three keys fails, and a key already saved encrypted
     cannot be read. Payments then refuse as "not configured", the webhook route answers
