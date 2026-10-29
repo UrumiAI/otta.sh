@@ -1313,6 +1313,11 @@ storage adapter loads that from `/playground-media/playground-v1-<filename>`
 on the Worker's asset binding. See `CREDITS.txt` in that directory.
 The marketing site's "Try in Playground" link is
 `https://try.otta.sh/playground`.
+Each page also carries a small GitHub star prompt (`src/lib/playground-star.ts`):
+a card in the corner that collapses to a pill once dismissed. The star count
+is fetched by the Worker from `api.github.com` and cached for an hour, because
+the admin's CSP keeps the browser on `connect-src 'self'`; if GitHub does not
+answer within 1.5 s the prompt shows without a count.
 
 ```bash
 pnpm --filter @urumi.ai/otta-site-staging build:playground

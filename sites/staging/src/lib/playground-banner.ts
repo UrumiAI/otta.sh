@@ -6,6 +6,8 @@
  * card payments are not connected. It does not mention pay-per-crawl, MCP
  * or x402 — none of those ship.
  */
+import { githubStars, starPrompt } from "./playground-star.js";
+
 const MARKER = "otta-playground-note";
 
 const BANNER = `<div class="${MARKER}" role="note"><p><strong>Otta playground.</strong> This is your own copy of the store for about an hour: EmDash, with the Otta commerce plugin installed, and the sample products priced and in stock. Card payments are not connected, so checkout will not charge a card. <a href="/products">Shop</a> · <a href="/_emdash/admin">Admin</a></p></div><style>.${MARKER}{position:sticky;top:0;z-index:10000;background:#14120b;color:#f4f0e6;font:14px/1.45 ui-sans-serif,system-ui,sans-serif;padding:10px 16px}html{scroll-padding-top:8rem}.otta-playground-note p{margin:0}.otta-playground-note a{color:#ffd59a}</style>`;
@@ -15,18 +17,19 @@ export async function injectPlaygroundBanner(response: Response): Promise<Respon
 	if (!type.includes("text/html")) return response;
 	const html = await response.text();
 	if (html.includes(MARKER)) return new Response(html, response);
-	const injected = injectBanner(html);
+	const injected = injectBanner(html, await githubStars());
 	return new Response(injected, response);
 }
 
-export function injectBanner(html: string): string {
+export function injectBanner(html: string, stars: number | null = null): string {
 	if (html.includes(MARKER)) return html;
+	const chrome = BANNER + starPrompt(stars);
 	const opened = /<body[^>]*>/i.exec(html);
 	if (opened !== null && opened.index !== undefined) {
 		const at = opened.index + opened[0].length;
-		return html.slice(0, at) + BANNER + html.slice(at);
+		return html.slice(0, at) + chrome + html.slice(at);
 	}
-	return BANNER + html;
+	return chrome + html;
 }
 
 export function playgroundInterstitial(refreshPath: string): Response {
