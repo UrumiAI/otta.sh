@@ -1509,7 +1509,7 @@ Per-shape depth and contention, as the suite reports them per case:
 | two concurrent crowds of 20 on two addresses, cap 3 each | 3 | 0 |
 | a consume freeing one slot against a crowd of 20 (10 loops) | 2 | 0 |
 | 30 concurrent registrations of one address (15 loops) | 1 | 0 |
-| 12 concurrent redeems of one address, get-or-create (8 loops) | 8 | 0 |
+| 12 concurrent redeems of one address, get-or-create (8 loops) | 7 (slot releases); the wait is separate, below | 0 |
 | 24 concurrent grants of one entitlement key (12 loops) | 2 | 0 |
 | 16 concurrent grants for one scope, distinct keys (10 loops) | 2 | 0 |
 | 16 concurrent settings updates on one key (10 loops) | 3 | 0 |
@@ -1531,12 +1531,16 @@ the shipping/tax rules shape, which is why the settings budget is asserted at
 The identity races (`login-challenge-race.pg.test.ts`,
 `customer-email-claim-race.pg.test.ts`) are worth reading as a pair. The
 registration stampede measures **1**: the first writer takes the claim and every peer is
-then refused by reading it, so nothing contends. The get-or-create measures **8**, and
-that depth is not contention at all — it is the bounded WAIT a redeemer spends re-reading
-until the winner's account document is readable, because the claim refuses a second
-registration from the moment it is taken, which is a moment before the account behind it
-exists. It is measured at N=12 and grows with how long the winner takes, not with the
-crowd.
+then refused by reading it, so nothing contends. The get-or-create has two depths, and
+the suite asserts them separately. Its contention is the N slot releases on one throttle
+document: a release loses only to a peer's committed release, and each peer commits once,
+so the depth is at most N (measured 5–7 at N=12). Its deepest step, though, is not
+contention at all — it is the WAIT a redeemer spends re-reading until the winner's account
+document is readable, because the claim refuses a second registration from the moment it
+is taken, which is a moment before the account behind it exists. That depth grows with how
+long the winner's write takes, not with the crowd (measured 1–2 locally, 13 on a loaded CI
+runner, 22 with the winner's write delayed 400 ms), so nothing bounds it in attempts and it
+is asserted only against `CAS_MAX_ATTEMPTS`.
 
 `restock-concurrency.pg.test.ts` reports its depth and contention count **per case**
 rather than per file, so a ceiling is attributed to the shape that produced it by

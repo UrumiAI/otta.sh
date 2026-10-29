@@ -21,46 +21,72 @@
  */
 import { email, DuplicateCustomerEmailError } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
+import { CAS_MAX_ATTEMPTS } from "../src/index.js";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";
 import { IDENTITY_LAYOUT } from "./identity-collections.js";
 import { makeIdentityHarness, type IdentityHarness } from "./identity-harness.js";
 import { settleOne } from "./helpers/fault-injection.js";
 
 /**
- * The hand-set attempt budget every shape here is held to — tighter than
+ * The hand-set attempt budget the registration stampede is held to — tighter than
  * `CAS_MAX_ATTEMPTS`, so raising the package ceiling cannot turn a passing shape
  * green by accident.
  *
  * The bound is a property of the claim document: an attempt is lost only when a peer
  * wrote the claim, and a claim a live account holds refuses every later caller with
- * no write at all. So the depth tracks the takeovers, not the crowd.
+ * no write at all. So the depth tracks the takeovers, not the crowd — by
+ * construction at most 2 (lose the create-if-absent to the one peer that took it,
+ * then be refused), measured at 1 at N=30.
  *
- * Measured at 1 for the registration stampede at N=30 — the first writer takes the
- * claim and every peer is then refused without contending for it — and at 8 for the
- * get-or-create shape, where the depth is not contention at all but the bounded WAIT
- * a redeemer spends re-reading until the winner's account document is readable.
+ * The get-or-create shape is NOT held to this number; see its own bounds below.
  */
 const CAS_ATTEMPT_BUDGET = 12;
+
+/**
+ * The redeemer's get-or-create re-read. It is a WAIT, not a compare-and-set
+ * contention depth: a redeemer that finds the address claimed but the account not
+ * yet readable re-runs the step until the winner's account write lands. No peer's
+ * progress is what it loses to — it is the winner's own few statements still in
+ * flight — so its attempt count is the winner's write latency divided by the
+ * redeemer's poll cycle, and nothing in the algorithm bounds that in attempts.
+ * Under CI load it was observed at 13 (issue #636). Its real guarantee is that the
+ * wait never exhausts `CAS_MAX_ATTEMPTS` — which would surface as a retryable
+ * contention error instead of an `ok` redeem — and that is what is asserted.
+ */
+const RESOLVE_WAIT_OPERATION = "verifyChallenge.resolveCustomer";
 
 interface Fixture {
 	harness: IdentityHarness;
 	maxAttempts(): number;
+	maxAttemptsFor(operation: string): number;
+	/** The deepest attempt count over every operation except the ones named. */
+	maxAttemptsExcept(...operations: string[]): number;
 	reset(): Promise<void>;
 	close(): Promise<void>;
 }
 
+/** The deepest attempt count among the given per-operation maxima. */
+function deepestOf(operations: Iterable<[string, number]>): number {
+	let deepest = 0;
+	for (const [, attempts] of operations) deepest = Math.max(deepest, attempts);
+	return deepest;
+}
+
 async function fresh(poolMax: number, cap?: number): Promise<Fixture> {
 	const db = await makePgStorage(IDENTITY_LAYOUT, poolMax);
-	let deepest = 0;
+	const perOperation = new Map<string, number>();
 	const harness = makeIdentityHarness(db.storage, {
 		maxActiveChallenges: cap,
-		onCasAttempts: (_operation, attempts) => {
-			deepest = Math.max(deepest, attempts);
+		onCasAttempts: (operation, attempts) => {
+			perOperation.set(operation, Math.max(perOperation.get(operation) ?? 0, attempts));
 		},
 	});
 	return {
 		harness,
-		maxAttempts: () => deepest,
+		maxAttempts: () => deepestOf(perOperation),
+		maxAttemptsFor: (operation) => perOperation.get(operation) ?? 0,
+		maxAttemptsExcept: (...operations) =>
+			deepestOf([...perOperation].filter(([operation]) => !operations.includes(operation))),
 		reset: () => db.reset(),
 		close: () => db.close(),
 	};
@@ -131,7 +157,14 @@ describe.skipIf(!PG_ENABLED)("customer email claim [postgres]", () => {
 				expect(await fx.harness.customers.count(), `loop ${String(loop)}: documents`).toBe(1);
 				expect(await fx.harness.emailClaims.count(), `loop ${String(loop)}: claims`).toBe(1);
 			}
-			expect(fx.maxAttempts()).toBeLessThanOrEqual(CAS_ATTEMPT_BUDGET);
+			// The contention in this shape is the N slot releases on ONE throttle document:
+			// a release loses only when a peer's release committed, and each peer commits
+			// exactly once, so no release loses more than N - 1 times. Every other
+			// compare-and-set here is on a document no peer writes, or is refused after one
+			// loss. Measured at 5–7 at N=12.
+			expect(fx.maxAttemptsExcept(RESOLVE_WAIT_OPERATION)).toBeLessThanOrEqual(N);
+			// The wait is bounded only by the package ceiling (see RESOLVE_WAIT_OPERATION).
+			expect(fx.maxAttemptsFor(RESOLVE_WAIT_OPERATION)).toBeLessThan(CAS_MAX_ATTEMPTS);
 		} finally {
 			await fx.close();
 		}
