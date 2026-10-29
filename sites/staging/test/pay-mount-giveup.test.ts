@@ -66,14 +66,17 @@ function render(): void {
 			<div class="mount">
 				<div id="payment-element" data-client-secret="pi_1_secret_2" data-publishable-key="pk_test_x" data-return-url="/orders/o1"></div>
 			</div>
-			<p id="payment-error" class="pay-error" role="alert" hidden></p>
+			<div id="payment-error" class="pay-error-region" role="alert" tabindex="-1">
+				<p id="payment-error-text" class="pay-error" hidden></p>
+			</div>
 			<button id="payment-submit" type="submit">Pay</button>
 		</form>`;
 	new Function(INLINE ?? "")();
 }
 
 const wrapper = (): HTMLElement => document.querySelector<HTMLElement>(".mount")!;
-const errorBox = (): HTMLElement => document.getElementById("payment-error")!;
+/** The refusal's text, inside the always-present alert region (#604). */
+const errorBox = (): HTMLElement => document.getElementById("payment-error-text")!;
 const submit = (): HTMLButtonElement =>
 	document.getElementById("payment-submit") as HTMLButtonElement;
 
@@ -107,25 +110,28 @@ test("with scripting off, the form is not drawn above the notice (#556)", () => 
 });
 
 describe("a give-up hides the bordered mount box (#146)", () => {
-	test("Stripe.js did not load", () => {
+	test("Stripe.js did not load", async () => {
 		render();
+		await settle();
 		expect(errorBox().hidden).toBe(false);
 		expect(errorBox().textContent).toMatch(/couldn't load our payment provider/);
 		expect(submit().disabled).toBe(true);
 		expect(wrapper().hidden).toBe(true);
 	});
 
-	test("Stripe() threw on the key", () => {
+	test("Stripe() threw on the key", async () => {
 		stubStripe({ constructorThrows: true });
 		render();
+		await settle();
 		expect(errorBox().textContent).toMatch(/couldn't reach our payment provider/);
 		expect(submit().disabled).toBe(true);
 		expect(wrapper().hidden).toBe(true);
 	});
 
-	test("the Payment Element could not be mounted, themed or untuned", () => {
+	test("the Payment Element could not be mounted, themed or untuned", async () => {
 		stubStripe({ mountThrows: true });
 		render();
+		await settle();
 		expect(errorBox().textContent).toMatch(/offline test mode/);
 		expect(submit().disabled).toBe(true);
 		expect(document.getElementById("payment-element")!.textContent).toBe("");

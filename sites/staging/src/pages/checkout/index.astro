@@ -45,6 +45,7 @@
  */
 import {
 	CART_COOKIE_NAME,
+	CART_COOKIE_PATH,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	type CheckoutSummaryRouteResult,
 } from "@urumi.ai/otta-plugin";
@@ -54,7 +55,7 @@ import RegionPicker from "../../components/RegionPicker.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { checkoutEmailNote, signedInEmail } from "../../lib/account.js";
 import { keepPrivate } from "../../lib/no-store.js";
-import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
+import { checkoutDropsCartCookie, checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import { resumeHref } from "../../lib/checkout-resume.js";
 import { lockedOtherEmailNotice, reviewErrorToken } from "../../lib/checkout-review.js";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
@@ -128,6 +129,9 @@ const result =
 				Astro.url,
 			)
 		: null;
+
+/* A cookie naming no cart is dropped on the way to /cart (#610). */
+if (checkoutDropsCartCookie(result)) Astro.cookies.delete(CART_COOKIE_NAME, { path: CART_COOKIE_PATH });
 
 /* A BUSY summary (already retried once) deliberately takes the same 303 to
    /cart?error=BUSY as every other non-renderable state, NOT a 503 here: /checkout

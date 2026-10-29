@@ -180,8 +180,11 @@ export function parseCheckoutSummaryInput(input: {
 	shippingMethodId?: unknown;
 	destination?: unknown;
 }): CheckoutSummaryParsedInput | null {
+	// An id token, as the client's `requireIdToken` bounds it — else that THROWS,
+	// and a tampered cart cookie is RENDER_FAILED (#610). The route answers a
+	// string that cannot be a cart id CART_NOT_FOUND before this is reached.
 	const cartId = nonEmptyString(input.cartId);
-	if (cartId === null) return null;
+	if (cartId === null || !isIdToken(cartId)) return null;
 	const selection = parseCheckoutSelection(input);
 	if (selection === null) return null;
 	const destination = parseDestination(input.destination);
@@ -257,6 +260,8 @@ export function parseCheckoutPlaceInput(input: {
 	// NEVER invents one (a fresh key per attempt mints a second order).
 	const idempotencyKey = nonEmptyString(input.idempotencyKey);
 	if (cartId === null || buyerRef === null || idempotencyKey === null) return null;
+	// The cart id is an id token, as on the summary (#610).
+	if (!isIdToken(cartId)) return null;
 	const selection = parseCheckoutSelection(input);
 	if (selection === null) return null;
 

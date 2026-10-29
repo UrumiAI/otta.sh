@@ -23,7 +23,13 @@
  * for the null write's `upsertLine`. Without that check, a run where the park
  * never fired would pass while proving nothing.
  */
-import { createCart, currency, DEFAULT_HOLD_TTL_MS, idempotencyKey } from "@urumi.ai/otta-domain";
+import {
+	cartMutationKey,
+	createCart,
+	currency,
+	DEFAULT_HOLD_TTL_MS,
+	idempotencyKey,
+} from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import { CARTS_COLLECTION, collectionOf, type CartDoc, type StorageAccess } from "../src/index.js";
 import { CART_LAYOUT } from "./cart-collections.js";
@@ -35,7 +41,8 @@ const USD = currency("USD");
 
 /** A first add's two setup steps, in the use-case's order: claim, then reserve. */
 async function claimAndReserve(h: CartHarness, cartId: string, name: string, key: string) {
-	const k = idempotencyKey(key);
+	// The add's own key: the request key scoped to its cart (#609).
+	const k = cartMutationKey(cartId, idempotencyKey(key));
 	await h.deps.cartStore.claimMutation({ key: k, cartId, kind: "add" });
 	const reserved = await h.deps.inventoryStore.reserve(name, 1, k);
 	if (!reserved.ok) throw new Error("the seed reserve must succeed");

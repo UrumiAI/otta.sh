@@ -128,11 +128,12 @@ export const BUYER_REF_MAX = 320;
  * The ceiling on an idempotency key that becomes (part of) a DOCUMENT ID — see
  * {@link requireDocumentIdempotencyKey} for which writes those are. A document id
  * is at most 1,024 characters (the host's `assertStorageKey`), and some ids
- * prefix the key — `adjust:<key>` when a cart line's quantity changes,
- * `<couponId>:<key>` on a coupon redemption, with a coupon id of up to 200 — so a
- * key near 1,024 throws there (a 1,018-character key already does, on a quantity
- * update). Half the id ceiling leaves every such prefix room. No earlier bound
- * existed to reuse: the wire only ever demanded a non-empty header.
+ * prefix the key. A cart mutation runs under `cart:<cartId>:<key>` (#609), and a
+ * quantity change prefixes that again, `adjust:cart:<cartId>:<key>`; a coupon
+ * redemption is `<couponId>:<key>`, with a coupon id of up to 200. The longest is
+ * the quantity change: 7 + 5 + a cart id of at most 200 + 1 + 512 = 725 ≤ 1,024,
+ * so a key at this ceiling still fits every such id. No earlier bound existed to
+ * reuse: the wire only ever demanded a non-empty header.
  *
  * What those writes' callers send is far below it: a `crypto.randomUUID()` from
  * the site's cart forms (36 characters), `checkout:<cartId>`, and the admin
@@ -330,8 +331,10 @@ export function isDocumentIdempotencyKey(value: string): boolean {
  * The key of a write that makes it (part of) a DOCUMENT ID: {@link
  * requireIdempotencyKey}'s rule plus the {@link IDEMPOTENCY_KEY_MAX} ceiling.
  * The writes on THIS client whose key becomes a document id:
- *  - the cart mutations (add, adjust, remove): `cart_mutation_index/{key}`,
- *    `reservation_keys/{key}`, and `adjust:{key}` in the movement collection;
+ *  - the cart mutations (add, adjust, remove), whose key the domain scopes to
+ *    the cart first (`cart:{cartId}:{key}`, #609): `cart_mutation_index/cart:{cartId}:{key}`,
+ *    `reservation_keys/cart:{cartId}:{key}`, and `adjust:cart:{cartId}:{key}` in the
+ *    movement collection;
  *  - the order create: `order_keys/{key}`, and `{couponId}:{key}` when a coupon
  *    is redeemed;
  *  - the settings update: `settings_mutations/{key}`.
