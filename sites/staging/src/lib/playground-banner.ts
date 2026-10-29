@@ -33,8 +33,9 @@ export function injectBanner(html: string): string {
 				html.slice(opened.index + opened[0].length);
 	// The prompt is fixed-position, so it goes last: opening the body with it would put its
 	// links ahead of the theme's skip link in the tab order.
-	const closed = withNote.toLowerCase().lastIndexOf("</body");
-	return closed === -1
+	// Found on the original string: lowercasing can change its length ("İ"), and with it the cut.
+	const closed = [...withNote.matchAll(/<\/body\s*>/gi)].at(-1)?.index;
+	return closed === undefined
 		? withNote + starPrompt()
 		: withNote.slice(0, closed) + starPrompt() + withNote.slice(closed);
 }

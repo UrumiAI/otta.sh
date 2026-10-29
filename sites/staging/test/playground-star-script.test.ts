@@ -51,15 +51,21 @@ function page(answer: () => Promise<Response> = async () => Response.json({ labe
  *  real navigation discards; they are recorded here and removed after the test, so a
  *  previous test's instance cannot answer an event meant for this one. */
 function run(): void {
-	for (const target of [document, window]) {
+	const spies = [document, window].map((target) => {
 		const add = target.addEventListener.bind(target);
-		vi.spyOn(target, "addEventListener").mockImplementation((type, listener, options) => {
+		return vi.spyOn(target, "addEventListener").mockImplementation((type, listener, options) => {
 			listeners.push([target, type, listener]);
 			add(type, listener, options);
 		});
-	}
+	});
 	new Function(SCRIPT)();
-	vi.restoreAllMocks();
+	for (const spy of spies) spy.mockRestore();
+}
+
+/** What leaving a page does to its listeners. */
+function leavePage(): void {
+	for (const [target, type, listener] of listeners) target.removeEventListener(type, listener);
+	listeners = [];
 }
 
 const consume = (event: Event): void => event.preventDefault();
@@ -75,8 +81,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	for (const [target, type, listener] of listeners) target.removeEventListener(type, listener);
-	listeners = [];
+	leavePage();
 	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	document.body.innerHTML = "";
@@ -143,6 +148,7 @@ describe("playground-star.js", () => {
 		["a select", "<select><option>a</option></select>", "select"],
 		["an editable region", '<div contenteditable="true"><p>text</p></div>', "p"],
 		["a listbox", '<ul role="listbox"><li role="option">a</li></ul>', "li"],
+		["a combobox", '<div role="combobox" tabindex="0"><span>a</span></div>', "span"],
 		["a menu", '<div role="menu"><button role="menuitem">a</button></div>', "button"],
 	])("an Escape typed in %s leaves the card alone", (_, markup, inner) => {
 		const root = page();
@@ -155,11 +161,24 @@ describe("playground-star.js", () => {
 		expect(localStorage.getItem("otta-star:dismissed")).toBeNull();
 	});
 
-	test("an earlier page's handlers are gone: a prompt whose script never ran stays put", () => {
-		// The dialog test above left a card open; its document listener must not answer here.
-		renderPrompt();
+	test("an earlier page's handlers are gone: its open card does not answer this page's Escape", () => {
+		page();
+		vi.advanceTimersByTime(1800); // the earlier page's card is open
+		leavePage();
+		renderPrompt(); // the next page, whose script has not run
 		escape(document.body);
 		expect(localStorage.getItem("otta-star:dismissed")).toBeNull();
+	});
+
+	test("a focused field keeps its Escape even when the event is sent to the body", () => {
+		const root = page();
+		const input = document.createElement("input");
+		document.body.append(input);
+		vi.advanceTimersByTime(1800);
+		input.focus();
+		expect(document.activeElement).toBe(input);
+		escape(document.body);
+		expect(root.dataset.state).toBe("card");
 	});
 
 	test("an Escape another handler already consumed leaves the card alone", () => {
@@ -182,7 +201,6 @@ describe("playground-star.js", () => {
 		expect(root.dataset.state).toBe("pill");
 	});
 
-	// After the tests that leave a card open: a stale instance would answer this Escape too.
 	test("Escape anywhere on the page dismisses the open card", () => {
 		const root = page();
 		vi.advanceTimersByTime(1800);

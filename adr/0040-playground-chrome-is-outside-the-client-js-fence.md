@@ -29,13 +29,16 @@ the next reader finds script on a checkout page that the ADRs say has none.
    is not a page's client JS and is not on the allowlist. It is bound by the conditions below.
 2. **Conditions.** All of these hold today, and a change to any one needs a new ADR:
    - **Playground build only.** `withPlaygroundBanner` and `playgroundGate` return the response
-     untouched unless `__OTTA_PLAYGROUND__` is true. `astro.config.ts` defines it `false`, and
-     `playground-gate.test.ts` pins that the `/_otta/stars` route answers only when it is true.
-     (The script file sits in `public/` and so ships with both builds, but no storefront page
-     references it.)
+     untouched unless `__OTTA_PLAYGROUND__` is true. `astro.config.ts` defines it `false`.
+     `playground-gate.test.ts` pins that, with the flag off, `withPlaygroundBanner` returns the
+     same response with no `otta-star` and no `<script`, and that `/_otta/stars` answers only
+     with the flag on. (The script file sits in `public/` and so ships with both builds, but no
+     storefront page references it.)
    - **One script, ours.** The injected chrome carries exactly one `<script>`, external and
      first-party (`/scripts/playground-star.js`). `playground-star.test.ts` counts script tags
-     in the injected output and checks that one's `src`.
+     in the injected output, checks that one's `src`, and checks that no element has an `on*`
+     attribute or a `javascript:` value. `playground-gate.test.ts` counts them again through
+     `withPlaygroundBanner`.
    - **Same origin only.** The script's only network call is `fetch("/_otta/stars")`. The
      Worker, not the browser, asks `api.github.com`, with fixed headers and none of the
      visitor's cookies. The prompt links to github.com as a plain `target="_blank"` anchor.
@@ -43,8 +46,9 @@ the next reader finds script on a checkout page that the ADRs say has none.
      (ADR-0034 decision 5).
    - **No order data.** The script reads and writes only its own `.otta-star` element, the
      `otta-star:*` storage keys and the position of EmDash's playground toolbar. Its document
-     keydown listener looks at `event.key` and the target's element type or role, never at a field's value.
-     Nothing on `/cart`, `/checkout` or `/checkout/pay` is read.
+     keydown listener reads `event.key`, `defaultPrevented`, and the tag, role and editability
+     of the event's path and the focused element, never a value. Nothing on `/cart`,
+     `/checkout` or `/checkout/pay` is read.
    - **No behaviour, no mutation.** It changes no form, no request and no route, and the
      page works unchanged without it. Every mutation stays a `<form method="POST">` → 303.
 3. **Why it is safe to leave outside.** The playground has no real buyers and no connected
@@ -61,5 +65,5 @@ the next reader finds script on a checkout page that the ADRs say has none.
   script-count test in `playground-star.test.ts` is its stand-in for the injected chrome.
 - Adding a second script, a third-party origin, or reading form data in the chrome is a new
   ADR, not an edit to the star prompt.
-- A storefront build that injected this chrome would break ADR-0012; the gate tests exist so
-  that is a red test.
+- A storefront build that injected this chrome would break ADR-0012. The `withPlaygroundBanner`
+  test with the flag off is what makes that a red test.

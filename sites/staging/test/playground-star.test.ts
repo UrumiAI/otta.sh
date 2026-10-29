@@ -1,5 +1,5 @@
 import { Window } from "happy-dom";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { injectBanner } from "../src/lib/playground-banner.js";
 import { REPO_URL, formatStars, starPrompt, starsResponse } from "../src/lib/playground-star.js";
 
@@ -94,6 +94,17 @@ describe("injectBanner with the star prompt", () => {
 		expect(once.indexOf("<p>Hi</p>")).toBeLessThan(once.indexOf('class="otta-star"'));
 	});
 
+	test("a lowercase-expanding character before </body> does not shift the cut", () => {
+		// "İ".toLowerCase() is two code units, so an index taken from the lowercased
+		// page lands too far right in the original.
+		const once = injectBanner("<html><body><p>İstanbul İzmir</p></body></html>");
+		expect(once.endsWith(`${starPrompt()}</body></html>`)).toBe(true);
+		expect(once).toContain("<p>İstanbul İzmir</p>");
+		expect(injectBanner("<body><p>a</p></bodyx></body>").endsWith(`${starPrompt()}</body>`)).toBe(
+			true,
+		);
+	});
+
 	test("without a closing body tag the prompt goes last", () => {
 		const once = injectBanner("<body><p>Hi</p>");
 		expect(once.endsWith(starPrompt())).toBe(true);
@@ -106,12 +117,20 @@ describe("injectBanner with the star prompt", () => {
 	test("injects exactly one script, the star prompt's own", () => {
 		const chrome = injectBanner(page);
 		expect(chrome.toLowerCase().split("<script")).toHaveLength(2);
-		const doc = new Window().document;
+		const window = new Window();
+		onTestFinished(() => window.happyDOM.close());
+		const doc = window.document;
 		doc.body.innerHTML = chrome;
 		const scripts = [...doc.querySelectorAll("script")];
 		expect(scripts).toHaveLength(1);
 		expect(scripts[0]!.getAttribute("src")).toBe("/scripts/playground-star.js");
 		expect(scripts[0]!.getAttribute("type")).toBe("module");
 		expect(scripts[0]!.textContent).toBe("");
+		for (const el of doc.querySelectorAll("*")) {
+			for (const attr of el.getAttributeNames()) {
+				expect(attr.startsWith("on"), `${el.tagName} ${attr}`).toBe(false);
+				expect(el.getAttribute(attr)!.trim().toLowerCase().startsWith("javascript:")).toBe(false);
+			}
+		}
 	});
 });

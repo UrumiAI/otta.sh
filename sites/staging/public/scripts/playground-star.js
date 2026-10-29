@@ -7,8 +7,7 @@ const root = document.querySelector(".otta-star");
 const DISMISSED = "otta-star:dismissed";
 const SEEN = "otta-star:seen";
 const COUNT = "otta-star:count";
-const OWN_ESCAPE =
-	'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="listbox"], [role="menu"]';
+const OWN_ESCAPE = 'input, textarea, select, [role="listbox"], [role="menu"], [role="combobox"]';
 const NO_COUNT = "-"; // remembered too, so a rate-limited count is not asked for on every page
 
 function read(storage, key) {
@@ -88,9 +87,11 @@ if (root) {
 		if (event.key !== "Escape" || root.dataset.state !== "card" || event.defaultPrevented) return;
 		// An Escape meant for an admin dialog or menu is not a no to the prompt, nor is one
 		// that closes a select, clears a field or dismisses the editor's slash menu.
-		for (const from of [event.target, document.activeElement]) {
+		// composedPath() sees through shadow roots, where event.target is retargeted.
+		const path = event.composedPath().filter((node) => node instanceof Element);
+		for (const from of [...path, document.activeElement]) {
 			if (!(from instanceof Element)) continue;
-			if (from.closest(OWN_ESCAPE)) return;
+			if (from.isContentEditable || from.matches(OWN_ESCAPE)) return;
 			const owner = from.closest('[role="dialog"], [aria-modal="true"]');
 			if (owner && !root.contains(owner)) return;
 		}

@@ -5,7 +5,7 @@
  */
 import type { APIContext } from "astro";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { playgroundGate } from "../src/lib/playground-gate.js";
+import { playgroundGate, withPlaygroundBanner } from "../src/lib/playground-gate.js";
 
 afterEach(() => {
 	vi.unstubAllGlobals();
@@ -89,5 +89,30 @@ describe("playgroundGate on /_otta/stars", () => {
 			expect(await playgroundGate(starsRequest(method))).toBeNull();
 		}
 		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+});
+
+const html = () =>
+	new Response("<html><body><p>Hi</p></body></html>", {
+		headers: { "content-type": "text/html; charset=utf-8" },
+	});
+
+describe("withPlaygroundBanner", () => {
+	test("hands the storefront build's response back untouched", async () => {
+		vi.stubGlobal("__OTTA_PLAYGROUND__", false);
+		const response = html();
+		expect(await withPlaygroundBanner(response)).toBe(response);
+		const body = await response.text();
+		expect(body).toBe("<html><body><p>Hi</p></body></html>");
+		expect(body).not.toContain("otta-star");
+		expect(body).not.toContain("<script");
+	});
+
+	test("adds the note and exactly one script on the playground build", async () => {
+		vi.stubGlobal("__OTTA_PLAYGROUND__", true);
+		const body = await (await withPlaygroundBanner(html())).text();
+		expect(body).toContain("otta-playground-note");
+		expect(body.split('src="/scripts/playground-star.js"')).toHaveLength(2);
+		expect(body.split("<script")).toHaveLength(2);
 	});
 });
