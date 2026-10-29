@@ -44,6 +44,15 @@ describe("parseCheckoutSummaryInput", () => {
 			expect(parseCheckoutSummaryInput({ cartId })).toBeNull();
 		},
 	);
+
+	// #610: the client bounds the cart id as an id token by THROWING — a string the
+	// store could never have minted is rejected here, not left to RENDER_FAILED.
+	test.each([["a b"], ["tab\there"], ["cärt"], ["x".repeat(201)]])(
+		"rejects a cartId that is not an id token (%#)",
+		(cartId) => {
+			expect(parseCheckoutSummaryInput({ cartId })).toBeNull();
+		},
+	);
 });
 
 describe("parseCheckoutPlaceInput", () => {
@@ -125,6 +134,16 @@ describe("parseCheckoutPlaceInput", () => {
 	test.each([[undefined], [""], [null], [42]])("rejects a cartId of %p", (cartId) => {
 		expect(parseCheckoutPlaceInput({ cartId, buyerRef: "a@b.co", idempotencyKey: "k" })).toBeNull();
 	});
+
+	// #610: as the summary — never left to the client's `requireIdToken` throw.
+	test.each([["a b"], ["tab\there"], ["cärt"], ["x".repeat(201)]])(
+		"rejects a cartId that is not an id token (%#)",
+		(cartId) => {
+			expect(
+				parseCheckoutPlaceInput({ cartId, buyerRef: "a@b.co", idempotencyKey: "k" }),
+			).toBeNull();
+		},
+	);
 
 	test.each([[undefined], [""], [null], [42]])(
 		"rejects an idempotencyKey of %p — the route never invents one",

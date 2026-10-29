@@ -1,7 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
 	addLine,
 	type CartDeps,
+	cartMutationKey,
 	createCart,
 	DEFAULT_HOLD_TTL_MS,
 	expireHolds,
@@ -11,6 +12,7 @@ import {
 } from "../cart/use-cases.js";
 import { currency } from "../money/cents.js";
 import { idempotencyKey, orderId as brandOrderId, sku } from "../money/ids.js";
+import type { UpsertLineInput } from "../ports/cart-store.js";
 
 export interface CartStoreHarness {
 	deps: CartDeps;
@@ -27,15 +29,20 @@ export interface CartStoreContractOptions {
 const USD = currency("USD");
 const PAST_TTL_MS = 16 * 60 * 1000; // > the 15-minute default hold TTL
 
-/** One first-add's store writes, in the use-case's order: claim, reserve, upsert. */
+/**
+ * One first-add's store writes, in the use-case's order: claim, reserve, upsert —
+ * under the request key scoped to its cart (#609), as `addLine` writes them.
+ * `bare` writes them under the unscoped key instead, as a release before #609 did.
+ */
 async function firstAddWrite(
 	h: CartStoreHarness,
 	cartId: string,
 	name: string,
 	productId: string | null,
 	key: string,
+	{ bare = false }: { bare?: boolean } = {},
 ) {
-	const k = idempotencyKey(key);
+	const k = bare ? idempotencyKey(key) : cartMutationKey(cartId, idempotencyKey(key));
 	await h.deps.cartStore.claimMutation({ key: k, cartId, kind: "add" });
 	const reserved = await h.deps.inventoryStore.reserve(name, 1, k);
 	if (!reserved.ok) throw new Error("seed reserve must succeed");
@@ -49,6 +56,28 @@ async function firstAddWrite(
 		expiresAt,
 		key: k,
 	});
+}
+
+/**
+ * `deps` whose cart store dies on `cartId`'s line write: an add on that cart
+ * claims and reserves, then throws before the line lands — an add still in
+ * flight, or one that crashed, as every other caller sees it.
+ */
+function crashBeforeLineWrite(deps: CartDeps, cartId: string): CartDeps {
+	const store = deps.cartStore;
+	const cartStore = new Proxy(store, {
+		get(target, prop) {
+			if (prop === "upsertLine") {
+				return async (input: UpsertLineInput) => {
+					if (input.cartId === cartId) throw new Error("crash before the line write");
+					return target.upsertLine(input);
+				};
+			}
+			const value: unknown = Reflect.get(target, prop, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	return { ...deps, cartStore };
 }
 
 /**
@@ -176,7 +205,9 @@ export function cartStoreContract(
 			expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
 			// The probe that catches an adapter whose abandonClaim does nothing: the
 			// claim reads back RETIRED — still not completed, so replays resume.
-			expect(await h.deps.cartStore.recordedMutation(idempotencyKey("k1"))).toMatchObject({
+			expect(
+				await h.deps.cartStore.recordedMutation(cartMutationKey(cartId, idempotencyKey("k1"))),
+			).toMatchObject({
 				kind: "add",
 				completed: false,
 				abandoned: true,
@@ -202,7 +233,9 @@ export function cartStoreContract(
 			if (!replay.ok) return;
 			expect(replay.line.lineId).toBe(first.line.lineId);
 			expect(await h.onHand("SKU-1")).toBe(3);
-			const recorded = await h.deps.cartStore.recordedMutation(idempotencyKey("k1"));
+			const recorded = await h.deps.cartStore.recordedMutation(
+				cartMutationKey(cartId, idempotencyKey("k1")),
+			);
 			expect(recorded?.completed).toBe(true);
 			expect(recorded?.abandoned).not.toBe(true);
 		});
@@ -230,6 +263,163 @@ export function cartStoreContract(
 			expect(replay.line.lineId).toBe(first.line.lineId);
 			expect(replay.line.reservationId).toBe(first.line.reservationId);
 			expect(await h.onHand("SKU-1")).toBe(3);
+		});
+
+		// ── one key, two carts (issue #609) ──────────────────────────────────
+		// A mutation key is only unique within its cart. The no-JS product page
+		// posts the key it rendered, and a shared cache serves that page, key and
+		// all, to every visitor (ADR-0039). Another cart's mutation under the same
+		// key is a different command: it is never a replay of it, and never a
+		// resumption that could hand it the first cart's hold.
+
+		test("two carts adding the same sku under the same key each get their own line and hold", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartA = await createCart(h.deps, USD);
+			const cartB = await createCart(h.deps, USD);
+			const key = idempotencyKey("pdp:shared-render");
+			const a = await addLine(h.deps, cartA, sku("SKU-1"), null, 2, key);
+			const b = await addLine(h.deps, cartB, sku("SKU-1"), null, 3, key);
+			expect(a.ok && b.ok).toBe(true);
+			if (!a.ok || !b.ok) return;
+			expect(b.line.cartId).toBe(cartB);
+			expect(b.line.qty).toBe(3);
+			expect(b.line.reservationId).not.toBe(a.line.reservationId);
+			expect(await h.onHand("SKU-1")).toBe(5);
+
+			// Each cart's own same-key replay is still a replay: no further stock.
+			const replayA = await addLine(h.deps, cartA, sku("SKU-1"), null, 2, key);
+			const replayB = await addLine(h.deps, cartB, sku("SKU-1"), null, 3, key);
+			expect(replayA.ok && replayA.line.lineId).toBe(a.line.lineId);
+			expect(replayB.ok && replayB.line.lineId).toBe(b.line.lineId);
+			expect(await h.onHand("SKU-1")).toBe(5);
+		});
+
+		test("an add still in flight on one cart is never resumed by another cart's same-key add", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartA = await createCart(h.deps, USD);
+			const cartB = await createCart(h.deps, USD);
+			const key = idempotencyKey("pdp:shared-render");
+
+			// A claims and reserves, then dies before its line write lands.
+			await expect(
+				addLine(crashBeforeLineWrite(h.deps, cartA), cartA, sku("SKU-1"), null, 2, key),
+			).rejects.toThrow(/crash/);
+			expect(await h.onHand("SKU-1")).toBe(8);
+
+			const b = await addLine(h.deps, cartB, sku("SKU-1"), null, 3, key);
+			expect(b.ok).toBe(true);
+			if (!b.ok) return;
+			expect(b.line.qty).toBe(3);
+			// B reserved for itself: A's hold is still A's, on top of B's.
+			expect(await h.onHand("SKU-1")).toBe(5);
+
+			// A's own retry resumes A's hold, which B never took.
+			const a = await addLine(h.deps, cartA, sku("SKU-1"), null, 2, key);
+			expect(a.ok).toBe(true);
+			if (!a.ok) return;
+			expect(a.line.cartId).toBe(cartA);
+			expect(a.line.reservationId).not.toBe(b.line.reservationId);
+			expect(await h.onHand("SKU-1")).toBe(5);
+			expect((await getCart(h.deps, cartA))?.lines.map((l) => l.qty)).toEqual([2]);
+			expect((await getCart(h.deps, cartB))?.lines.map((l) => l.qty)).toEqual([3]);
+		});
+
+		test("the same key updates and removes on its own cart, whatever another cart did with it", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartA = await createCart(h.deps, USD);
+			const cartB = await createCart(h.deps, USD);
+			const a = await addLine(h.deps, cartA, sku("SKU-1"), null, 1, idempotencyKey("ka"));
+			const b = await addLine(h.deps, cartB, sku("SKU-1"), null, 1, idempotencyKey("kb"));
+			if (!a.ok || !b.ok) throw new Error("seed adds must succeed");
+
+			const up = idempotencyKey("k-update");
+			expect((await updateLine(h.deps, cartA, a.line.lineId, 3, up)).ok).toBe(true);
+			const upB = await updateLine(h.deps, cartB, b.line.lineId, 4, up);
+			expect(upB.ok && upB.line.qty).toBe(4);
+			expect(await h.onHand("SKU-1")).toBe(3);
+
+			const rm = idempotencyKey("k-remove");
+			expect(await removeLine(h.deps, cartA, a.line.lineId, rm)).toEqual({ ok: true });
+			expect(await removeLine(h.deps, cartB, b.line.lineId, rm)).toEqual({ ok: true });
+			expect((await getCart(h.deps, cartB))?.lines).toHaveLength(0);
+			expect(await h.onHand("SKU-1")).toBe(10);
+		});
+
+		// ── records written before #609 scoped the key ─────────────────────
+		// A release that predates the scoping recorded a mutation under the bare
+		// key, and its reserve used the bare key too. A same-cart retry of such a
+		// mutation, arriving after the deploy, must still find it.
+
+		test("a pre-#609 completed add, replayed on its own cart, replays; on another cart it is a new add", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartA = await createCart(h.deps, USD);
+			const cartB = await createCart(h.deps, USD);
+			const legacy = await firstAddWrite(h, cartA, "SKU-1", null, "pdp:legacy", {
+				bare: true,
+			});
+			expect(await h.onHand("SKU-1")).toBe(9);
+
+			// The fallback says when it is used, with neither the key nor the cart id.
+			const info = vi.spyOn(console, "info").mockImplementation(() => {});
+			const replay = await addLine(
+				h.deps,
+				cartA,
+				sku("SKU-1"),
+				null,
+				1,
+				idempotencyKey("pdp:legacy"),
+			);
+			expect(replay.ok && replay.line.lineId).toBe(legacy.lineId);
+			expect(await h.onHand("SKU-1")).toBe(9);
+			expect(info.mock.calls).toEqual([
+				["[domain] cart mutation resolved a pre-#609 bare key", { kind: "add", completed: true }],
+			]);
+			info.mockClear();
+
+			const other = await addLine(
+				h.deps,
+				cartB,
+				sku("SKU-1"),
+				null,
+				1,
+				idempotencyKey("pdp:legacy"),
+			);
+			expect(other.ok).toBe(true);
+			if (!other.ok) return;
+			expect(other.line.cartId).toBe(cartB);
+			expect(other.line.reservationId).not.toBe(legacy.reservationId);
+			expect(await h.onHand("SKU-1")).toBe(8);
+			// Another cart's bare record is not this cart's fallback: nothing logged.
+			expect(info).not.toHaveBeenCalled();
+			info.mockRestore();
+		});
+
+		test("a pre-#609 add left in flight resumes on its own cart's retry, on the hold it reserved", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartA = await createCart(h.deps, USD);
+			const cartB = await createCart(h.deps, USD);
+			const key = idempotencyKey("pdp:legacy-in-flight");
+			// The old release's writes, cut off before the line write.
+			await h.deps.cartStore.claimMutation({ key, cartId: cartA, kind: "add" });
+			const reserved = await h.deps.inventoryStore.reserve("SKU-1", 2, key);
+			if (!reserved.ok) throw new Error("seed reserve must succeed");
+
+			const b = await addLine(h.deps, cartB, sku("SKU-1"), null, 3, key);
+			expect(b.ok).toBe(true);
+			if (!b.ok) return;
+			expect(b.line.reservationId).not.toBe(reserved.reservationId);
+			expect(await h.onHand("SKU-1")).toBe(5);
+
+			const a = await addLine(h.deps, cartA, sku("SKU-1"), null, 2, key);
+			expect(a.ok).toBe(true);
+			if (!a.ok) return;
+			expect(a.line.reservationId).toBe(reserved.reservationId);
+			expect(await h.onHand("SKU-1")).toBe(5);
 		});
 
 		// ── re-adding a sku that is already in the cart ─────────────────────
@@ -304,6 +494,78 @@ export function cartStoreContract(
 			expect(cart?.lines).toHaveLength(1);
 			expect(cart?.lines[0]?.qty).toBe(2);
 			expect(cart?.lines[0]?.reservationId).toBe(first.line.reservationId);
+		});
+
+		// ── the per-line quantity cap (issue #608) ───────────────────────────
+		// `maxLineQty` bounds the LINE, not the request: a re-add merges into the
+		// existing line, so the sum is what the cap is checked against. Checking
+		// only each add's own qty let two capped adds build a line twice the cap.
+
+		test("a re-add that would take the line past maxLineQty is QTY_TOO_LARGE; the line and its hold stay put", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 20_000);
+			const deps: CartDeps = { ...h.deps, maxLineQty: 10_000 };
+			const cartId = await createCart(deps, USD);
+			const first = await addLine(deps, cartId, sku("SKU-1"), null, 10_000, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			const again = await addLine(deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
+			expect(again).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+			// Refused before the claim: nothing in the ledger under the key.
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k2"))).toBeNull();
+			expect(await h.onHand("SKU-1")).toBe(10_000);
+			const cart = await getCart(deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(10_000);
+			expect(cart?.lines[0]?.reservationId).toBe(first.line.reservationId);
+		});
+
+		test("a re-add of a digital sku past maxLineQty is QTY_TOO_LARGE too", async () => {
+			const h = await makeHarness();
+			const deps: CartDeps = { ...h.deps, maxLineQty: 10_000 };
+			const cartId = await createCart(deps, USD);
+			const add = (qty: number, key: string) =>
+				addLine(deps, cartId, sku("EBOOK-1"), null, qty, idempotencyKey(key), "digital");
+			if (!(await add(10_000, "k1")).ok) throw new Error("seed add must succeed");
+
+			expect(await add(10_000, "k2")).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k2"))).toBeNull();
+			expect((await getCart(deps, cartId))?.lines[0]?.qty).toBe(10_000);
+		});
+
+		test("a re-add that lands exactly on maxLineQty is allowed", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 20_000);
+			const deps: CartDeps = { ...h.deps, maxLineQty: 10_000 };
+			const cartId = await createCart(deps, USD);
+			const first = await addLine(deps, cartId, sku("SKU-1"), null, 9_999, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			const again = await addLine(deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
+			expect(again.ok && again.line.qty).toBe(10_000);
+			expect(await h.onHand("SKU-1")).toBe(10_000);
+		});
+
+		test("a first add, or an adjust, past maxLineQty is QTY_TOO_LARGE and moves no stock", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 20_000);
+			const deps: CartDeps = { ...h.deps, maxLineQty: 10_000 };
+			const cartId = await createCart(deps, USD);
+			expect(await addLine(deps, cartId, sku("SKU-1"), null, 10_001, idempotencyKey("k1"))).toEqual(
+				{ ok: false, reason: "QTY_TOO_LARGE" },
+			);
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k1"))).toBeNull();
+			expect((await getCart(deps, cartId))?.lines).toHaveLength(0);
+			expect(await h.onHand("SKU-1")).toBe(20_000);
+
+			const add = await addLine(deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k2"));
+			if (!add.ok) throw new Error("seed add must succeed");
+			expect(await updateLine(deps, cartId, add.line.lineId, 10_001, idempotencyKey("k3"))).toEqual(
+				{ ok: false, reason: "QTY_TOO_LARGE" },
+			);
+			expect(await deps.cartStore.recordedMutation(idempotencyKey("k3"))).toBeNull();
+			expect((await getCart(deps, cartId))?.lines[0]?.qty).toBe(2);
+			expect(await h.onHand("SKU-1")).toBe(19_998);
 		});
 
 		test("re-adding a digital sku adds to its line and reserves nothing", async () => {

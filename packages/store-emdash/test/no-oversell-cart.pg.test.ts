@@ -24,6 +24,7 @@
  */
 import {
 	addLine,
+	cartMutationKey,
 	createCart,
 	currency,
 	getCart,
@@ -211,7 +212,7 @@ describe.skipIf(!PG_ENABLED)("no oversell through a cart [postgres]", () => {
 
 		const doc = await inventory.get(stockKeeping);
 		if (doc === null) throw new Error("missing inventory document");
-		const hold = normalizeInventoryDoc(doc).holds[idempotencyKey("kAdd")];
+		const hold = normalizeInventoryDoc(doc).holds[cartMutationKey(cartId, idempotencyKey("kAdd"))];
 		if (hold === undefined) throw new Error("missing hold");
 		const cart = await getCart(h.deps, cartId);
 		const line = cart?.lines[0];

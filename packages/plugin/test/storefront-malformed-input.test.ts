@@ -35,7 +35,11 @@ import {
 	createCartLineUpdateRouteHandler,
 	createCartReadRouteHandler,
 } from "../src/storefront/cart-routes.js";
-import { createOrderRouteHandler } from "../src/storefront/checkout-routes.js";
+import {
+	createCheckoutPlaceRouteHandler,
+	createCheckoutSummaryRouteHandler,
+	createOrderRouteHandler,
+} from "../src/storefront/checkout-routes.js";
 import type { RouteHandler } from "../src/types.js";
 import {
 	makeInProcessCommerce,
@@ -147,6 +151,46 @@ describe("storefront/cart/lines — a quantity over the 10,000 cap is QTY_TOO_LA
 				idempotencyKey: "k-update",
 			}),
 		).toEqual({ ok: false, error: "QTY_TOO_LARGE" });
+	});
+
+	// Issue #608: the cap is per LINE. Each add below is within it on its own,
+	// but the second would merge the line to 10,001 — refused by the domain with
+	// the same token, never RENDER_FAILED, and the line keeps its 10,000.
+	test("add: a re-add that would take the line past 10,000 is QTY_TOO_LARGE", async () => {
+		const PRODUCT_ID = "01JB7Z9QK3W8N5V2X4R6T0Y1MQ";
+		const SKU = "OTTA-BULK";
+		const commerce = harness.stores.productCommerce;
+		await commerce.upsert(
+			{
+				productId: toProductId(PRODUCT_ID),
+				sku: toSku(SKU),
+				price: { amount: cents(100), currency: currency("USD") },
+				title: "Bulk",
+			},
+			idempotencyKey("seed-bulk"),
+		);
+		await harness.stores.inventory.seedOnHand(toSku(SKU), 20_000);
+		await commerce.activate(
+			toProductId(PRODUCT_ID),
+			idempotencyKey("pub-bulk"),
+			"2026-01-01T00:00:00.000Z",
+		);
+		const { cartId } = await harness.client.createCart();
+		const add = (qty: number, key: string) =>
+			invoke(createCartLineAddRouteHandler(), {
+				cartId,
+				sku: SKU,
+				productId: PRODUCT_ID,
+				qty,
+				idempotencyKey: key,
+			});
+
+		expect(await add(10_000, "k-add-1")).toMatchObject({ ok: true, line: { qty: 10_000 } });
+		expect(await add(1, "k-add-2")).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+		expect(await invoke(createCartReadRouteHandler(), { cartId })).toMatchObject({
+			ok: true,
+			cart: { lines: [{ qty: 10_000 }] },
+		});
 	});
 });
 
@@ -546,4 +590,62 @@ describe("storefront/cart/lines — the idempotency key is bounded and storable"
 			}),
 		).toMatchObject({ ok: true, line: { sku: SKU, qty: 2 } });
 	});
+});
+
+/**
+ * Issue #610: the checkout summary and place routes checked the cart id for
+ * "non-empty" only, so a tampered cart cookie threw out of the client's
+ * `requireIdToken` as RENDER_FAILED — "Something went wrong", an error log, and
+ * a token the site does not read as a bad cookie. The summary answers what the
+ * cart routes' read and the order routes answer for an id that cannot exist —
+ * no such cart — and the place, a write, answers INVALID_INPUT like the cart's
+ * write routes.
+ */
+describe("storefront/checkout — a cart id the store could never have minted", () => {
+	const MALFORMED_CART_IDS: Array<[string, string]> = [
+		["whitespace", "a b"],
+		["a control character", "tab\there"],
+		["non-ASCII", "cärt"],
+		["over 200 characters", "x".repeat(201)],
+		["nothing in it", ""],
+		["only whitespace", "   "],
+	];
+
+	test.each(MALFORMED_CART_IDS)(
+		"summary: a cartId with %s is CART_NOT_FOUND",
+		async (_label, cartId) => {
+			expect(await invoke(createCheckoutSummaryRouteHandler(), { cartId })).toEqual({
+				ok: false,
+				reason: "CART_NOT_FOUND",
+			});
+		},
+	);
+
+	test("summary: a cartId that is not a string at all is still INVALID_INPUT", async () => {
+		expect(await invoke(createCheckoutSummaryRouteHandler(), { cartId: 42 })).toEqual({
+			ok: false,
+			error: "INVALID_INPUT",
+		});
+	});
+
+	test("summary: a minted cartId is still quoted (no regression)", async () => {
+		const { cartId } = await harness.client.createCart();
+		expect(await invoke(createCheckoutSummaryRouteHandler(), { cartId })).toEqual({
+			ok: false,
+			reason: "CART_EMPTY",
+		});
+	});
+
+	test.each(MALFORMED_CART_IDS)(
+		"place: a cartId with %s is INVALID_INPUT",
+		async (_label, cartId) => {
+			expect(
+				await invoke(createCheckoutPlaceRouteHandler(), {
+					cartId,
+					buyerRef: "buyer@example.com",
+					idempotencyKey: `checkout:${cartId}`,
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		},
+	);
 });

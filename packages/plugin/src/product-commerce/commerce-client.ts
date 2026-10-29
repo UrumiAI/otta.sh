@@ -1087,6 +1087,10 @@ export type CartFailureReason =
 	| "CART_CHECKED_OUT"
 	| "LINE_CHECKED_OUT"
 	| "HOLD_EXPIRED"
+	// A re-add that would merge its line past the per-line cap (issue #608). The
+	// same token the cart routes answer, as `error`, for a request over the cap
+	// on its own.
+	| "QTY_TOO_LARGE"
 	// A route-level (not domain-`CartFailure`) reject: the add's `sku` and
 	// `productId` disagree with the trusted catalog (issue #80 review). The
 	// service returns it as a 409 typed envelope; `#cartResult` normalizes it

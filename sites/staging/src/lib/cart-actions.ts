@@ -58,9 +58,10 @@ const BAD_CART_COOKIE_TOKENS: ReadonlySet<string> = new Set([
  *  purchasable. Rejected BEFORE the plugin's add-line route is ever called. */
 export const PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND";
 
-/** A quantity over the plugin's `CART_LINE_MAX_QTY` — the plugin's own typed
- *  refusal, which `/cart/add` and `/cart/update` also give before dispatch (so an
- *  over-cap add never mints a cart). Its copy names the limit. */
+/** A cart line over the plugin's `CART_LINE_MAX_QTY` — the plugin's own typed
+ *  refusal, for a request over the cap and for an add that would merge its line
+ *  past it (#608). `/cart/add` and `/cart/update` also give it before dispatch for
+ *  an over-cap request (so one never mints a cart). Its copy names the limit. */
 export const QTY_TOO_LARGE = "QTY_TOO_LARGE";
 export const PRODUCT_UNAVAILABLE = "PRODUCT_UNAVAILABLE";
 
