@@ -18,11 +18,29 @@
  * found," which the real dependency never produces). See `LiveEntryNotFoundError`
  * below and add.ts's inline comment for the full trace.
  */
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import {
+	afterAll,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	onTestFinished,
+	test,
+	vi,
+} from "vitest";
 import type { APIContext } from "astro";
 
-const { getEmDashEntry } = vi.hoisted(() => ({ getEmDashEntry: vi.fn() }));
+const { getEmDashEntry, getDb } = vi.hoisted(() => ({ getEmDashEntry: vi.fn(), getDb: vi.fn() }));
 vi.mock("emdash", () => ({ getEmDashEntry }));
+/* The not-found path asks the content store whether its products table can be
+   read at all (issue #140) — through `emdash/runtime`'s `getDb`, handed a REAL
+   SQLite database here: one with an `ec_products` table (a live store whose row
+   is genuinely absent) or one without (a dead store). */
+vi.mock("emdash/runtime", () => ({ getDb }));
+
+import Database from "better-sqlite3";
+import { runMigrations } from "emdash/db";
+import { Kysely, sql, SqliteDialect } from "kysely";
 
 import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@urumi.ai/otta-plugin";
 import { POST } from "../src/pages/cart/add.js";
@@ -133,8 +151,32 @@ const VALID_PRODUCT_RESULT = {
 	},
 };
 
+/** A content store as SQLite: the host's real schema (its own migrations), with
+ *  the products content table or without it. */
+async function contentStore(withProductsTable: boolean): Promise<Kysely<unknown>> {
+	const db = new Kysely<unknown>({
+		dialect: new SqliteDialect({ database: new Database(":memory:") }),
+	});
+	await runMigrations(db as Parameters<typeof runMigrations>[0]);
+	if (withProductsTable) {
+		await sql`CREATE TABLE ec_products (id TEXT PRIMARY KEY, slug TEXT)`.execute(db);
+	}
+	return db;
+}
+
+/** The live store every test probes by default, built once for the file. */
+let live: Kysely<unknown>;
+beforeAll(async () => {
+	live = await contentStore(true);
+});
+afterAll(async () => {
+	await live?.destroy();
+});
+
 beforeEach(() => {
 	getEmDashEntry.mockReset();
+	getDb.mockReset();
+	getDb.mockResolvedValue(live);
 });
 
 describe("POST /cart/add — productId pre-check (item 3)", () => {
@@ -169,6 +211,53 @@ describe("POST /cart/add — productId pre-check (item 3)", () => {
 
 		expect(response.headers.get("location")).toContain("error=PRODUCT_NOT_FOUND");
 		expect(calls.some((c) => c.route === STOREFRONT_CART_LINE_ADD_ROUTE)).toBe(false);
+	});
+
+	test("a DEAD content store (products table gone) redirects with SERVICE_UNAVAILABLE, not PRODUCT_NOT_FOUND — the loader reports a missing table as not-found (issue #140)", async () => {
+		// What the loader + astro actually hand back for a missing table: the
+		// same LiveEntryNotFoundError a genuinely absent row gets.
+		getEmDashEntry.mockResolvedValue({
+			entry: null,
+			error: new LiveEntryNotFoundError("_emdash", "prod-1"),
+		});
+		const dead = await contentStore(false);
+		getDb.mockResolvedValue(dead);
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		onTestFinished(async () => {
+			error.mockRestore();
+			await dead.destroy();
+		});
+		const { handler, calls } = makeHandler({});
+		const context = makeContext(
+			{ sku: "SKU-1", productId: "prod-1", idempotencyKey: "idem-dead" },
+			handler,
+		);
+
+		const response = await POST(context);
+
+		expect(response.status).toBe(303);
+		const location = response.headers.get("location")!;
+		expect(location).toContain("error=SERVICE_UNAVAILABLE");
+		expect(location).not.toContain("PRODUCT_NOT_FOUND");
+		expect(calls.some((c) => c.route === STOREFRONT_CART_LINE_ADD_ROUTE)).toBe(false);
+		// The operator is told; the shopper only gets the turn.
+		expect(String(error.mock.calls[0]?.[0])).toContain("ec_products");
+	});
+
+	test("a product that WAS found never probes the content store", async () => {
+		getEmDashEntry.mockResolvedValue({
+			entry: { data: { id: "prod-1", slug: "bamboo-water-bottle", title: "Bamboo Water Bottle" } },
+			error: undefined,
+		});
+		const { handler } = makeHandler({ productResult: VALID_PRODUCT_RESULT });
+		const context = makeContext(
+			{ sku: "SKU-1", productId: "prod-1", idempotencyKey: "idem-found" },
+			handler,
+		);
+
+		await POST(context);
+
+		expect(getDb).not.toHaveBeenCalled();
 	});
 
 	test("a productId that resolves but whose live sku disagrees with the submitted sku redirects with PRODUCT_UNAVAILABLE, and the add-line route is never called", async () => {
