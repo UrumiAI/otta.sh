@@ -23,6 +23,7 @@ import {
 	reservationId as toReservationId,
 	sku as toSku,
 	money,
+	cancelOrder,
 	escalateStaleLateRefunds,
 	expireOrdersBatch,
 	cancelDueIntents,
@@ -59,6 +60,7 @@ import {
 	PRODUCT_ORPHAN_DELETE_CALLS,
 	SWEEP_LEGS,
 	EMAIL_SEND_AND_RECORD_CALLS,
+	holdIntentCost,
 	TICK_OVERHEAD_QUERIES,
 	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
@@ -81,6 +83,9 @@ const DAY_MS = 24 * HOUR_MS;
 
 let storage: StorageAccess;
 const counter = { calls: 0 };
+/** Run (uncounted) just before a counted call — how a case lands a peer's write in
+ *  the middle of the unit it measures. */
+let beforeCall: ((collection: string, method: string) => Promise<void>) | null = null;
 
 beforeAll(async () => {
 	({ storage } = await makeSqliteStorage(commerceStorageLayout()));
@@ -113,6 +118,34 @@ function counted() {
 			},
 		},
 		storage: wrapped,
+	} as unknown as PluginContext;
+	return createInProcessCommerceStores(ctx);
+}
+
+/** The sweep's composition over the RAW store — a peer whose calls are not counted. */
+function uncounted() {
+	const kv = new Map<string, unknown>();
+	const ctx = {
+		http: {
+			fetch() {
+				throw new Error("no egress in a cost measurement");
+			},
+		},
+		kv: {
+			async get(key: string) {
+				return kv.get(key) ?? null;
+			},
+			async set(key: string, value: unknown) {
+				kv.set(key, value);
+			},
+			async delete(key: string) {
+				return kv.delete(key);
+			},
+			async list() {
+				return [];
+			},
+		},
+		storage,
 	} as unknown as PluginContext;
 	return createInProcessCommerceStores(ctx);
 }
@@ -167,6 +200,7 @@ async function placeOrder(
 	holdExpiresAt: string,
 	lines = 1,
 	appliedCouponCode?: string,
+	adopt = true,
 ) {
 	const s = counted();
 	const skus: string[] = [];
@@ -188,12 +222,14 @@ async function placeOrder(
 		held.push(reserved.reservationId);
 	}
 	const id = `order-${suffix}`;
-	await s.inventory.adoptMany({
-		reservationIds: held,
-		orderId: toOrderId(id),
-		holdExpiresAt,
-		now: new Date(Date.now() - HOUR_MS).toISOString(),
-	});
+	if (adopt) {
+		await s.inventory.adoptMany({
+			reservationIds: held,
+			orderId: toOrderId(id),
+			holdExpiresAt,
+			now: new Date(Date.now() - HOUR_MS).toISOString(),
+		});
+	}
 	await s.orderStore.createFromCart({
 		orderId: toOrderId(id),
 		cartId: `cart-${suffix}`,
@@ -219,7 +255,7 @@ async function placeOrder(
 			...(appliedCouponCode !== undefined ? { appliedCouponCode } : {}),
 		},
 	});
-	return { id, sku: skus[0] ?? "", skus, reservationId: held[0] ?? "" };
+	return { id, sku: skus[0] ?? "", skus, reservationId: held[0] ?? "", reservationIds: held };
 }
 
 /** What the two coupon cases measured (#598 review) — pinned, so a change that moves
@@ -459,6 +495,71 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		});
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["hold-intents"].unit);
 	});
+
+	/**
+	 * The adoption completer's race path (issue #599): the order read pending, a
+	 * cancel lands before the adopt, and the completer re-reads and releases what it
+	 * just adopted — the costliest way through it. Measured at one and at three lines,
+	 * against the per-row estimate the gate admits the row on.
+	 */
+	for (const lines of [1, 3]) {
+		test(`hold-intents: an adoption a cancel overtakes, re-read and released (${String(lines)} line${lines === 1 ? "" : "s"})`, async () => {
+			const holdExpiresAt = new Date(Date.now() + DAY_MS).toISOString();
+			const suffix = `race-${String(lines)}`;
+			const placed = await placeOrder(suffix, holdExpiresAt, lines, undefined, false);
+			const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
+			const before = await orders.getVersioned(placed.id);
+			const pendingSince = new Date(Date.now() - HOUR_MS).toISOString();
+			await orders.compareAndSet(placed.id, before!.revision, {
+				...before!.value,
+				holdsPendingAt: pendingSince,
+				holdsAdopted: {
+					reservationIds: placed.reservationIds,
+					holdExpiresAt,
+					recordedAt: pendingSince,
+					completedAt: null,
+				},
+			});
+			const row = await orders.get(placed.id);
+			const s = counted();
+			const peer = uncounted();
+			const id = toOrderId(placed.id);
+			let cancelled = false;
+			beforeCall = async (collection, method) => {
+				if (cancelled || collection !== INVENTORY_COLLECTION || method !== "compareAndSet") return;
+				cancelled = true;
+				const res = await cancelOrder(
+					{ orderStore: peer.orderStore },
+					{
+						orderId: id,
+						reason: "customer_request",
+						cancelledBy: "ops",
+						idempotencyKey: idempotencyKey(`cx-${suffix}`),
+					},
+				);
+				if (!(res.ok && res.cancelled)) throw new Error("the peer cancel must land");
+			};
+			let releasedFor: string | null = null;
+			const used = await cost(async () => {
+				try {
+					releasedFor = (await s.orderStore.completeHoldAdoption(id)).releasedFor;
+				} finally {
+					beforeCall = null;
+				}
+				await s.orderStore.completeHoldCommit(id);
+				await s.orderStore.completeHoldRelease(id);
+			});
+			// The premise: this really was the race path.
+			expect(releasedFor).toBe("cancelled");
+			for (const sku of placed.skus) {
+				expect(
+					(await collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION).get(sku))?.onHand,
+				).toBe(10);
+			}
+			expect(used).toBeLessThanOrEqual(holdIntentCost({ data: row! }));
+			if (lines === 1) expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["hold-intents"].unit);
+		});
+	}
 
 	test("order-sku-index: one order's pointer, found already healed", async () => {
 		const placed = await placeOrder("index", new Date(Date.now() + DAY_MS).toISOString());
@@ -910,6 +1011,13 @@ function wrappedStorage(): StorageAccess {
 				const value: unknown = Reflect.get(target, prop, receiver);
 				if (typeof value !== "function") return value;
 				return (...args: unknown[]) => {
+					const hook = beforeCall;
+					if (hook !== null) {
+						return hook(name, String(prop)).then(() => {
+							counter.calls++;
+							return (value as (...a: unknown[]) => unknown).apply(target, args);
+						});
+					}
 					counter.calls++;
 					return (value as (...a: unknown[]) => unknown).apply(target, args);
 				};

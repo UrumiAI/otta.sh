@@ -4,8 +4,8 @@
  * Every case here parks or fails ONE real write and then reads the documents back,
  * so what a replay heals is the state the store really leaves behind rather than a
  * state a mock was told to report. The seams are exactly the windows the document
- * model has, and there are twelve of them (sixteen cases — four seams are opened from
- * two sides each):
+ * model has, and there are twelve of them (seventeen cases — four seams are opened from
+ * two sides each, and seam 12 from three):
  *
  * 1. **The key claim landed, the order document did not.** The one window creation
  *    has. Any replayer finishes it from the payload the claim carries — including
@@ -75,6 +75,7 @@ import {
 	OUTBOX_KEYS_COLLECTION,
 	REFUND_KEYS_COLLECTION,
 	RESERVATION_INDEX_COLLECTION,
+	RESERVATION_KEYS_COLLECTION,
 	type InventoryDoc,
 	type OrderDoc,
 	type OrderKeyDoc,
@@ -128,6 +129,9 @@ function reservationIdsOf(order: Order): string[] {
 		return line.reservationId;
 	});
 }
+
+/** Matches every write a fault wrapper intercepts. */
+const anyWrite = (): boolean => true;
 
 /** Await a call that MUST fail with the injected crash, and nothing else. */
 async function expectCrash(call: Promise<unknown>): Promise<void> {
@@ -374,13 +378,14 @@ describeEachDialect("order crash seams", (ctx) => {
 		// The completion is idempotent per id: the two already-adopted holds are
 		// re-adopted as a no-op and the third catches up.
 		const done = await clean.store.completeHoldAdoption(orderId as never);
-		expect(done).toEqual({ completed: true, lost: [] });
+		expect(done).toEqual({ completed: true, lost: [], releasedFor: null });
 		expect(await statesNow()).toEqual(["adopted", "adopted", "adopted"]);
 		expect((await orders.get(orderId))?.holdsAdopted?.completedAt).not.toBeNull();
 		// Running it again is a no-op — the intent is complete, nothing is owed.
 		expect(await clean.store.completeHoldAdoption(orderId as never)).toEqual({
 			completed: false,
 			lost: [],
+			releasedFor: null,
 		});
 	});
 
@@ -443,7 +448,8 @@ describeEachDialect("order crash seams", (ctx) => {
 
 		// The adoption proceeds — and must not strand the units under a dead order.
 		gate.release();
-		expect(await completing).toEqual({ completed: true, lost: [] });
+		// …and says so, so the sweep can log the race it just healed.
+		expect(await completing).toEqual({ completed: true, lost: [], releasedFor: "cancelled" });
 		expect(await clean.reservationState(reservationId)).toBe("released");
 		expect(await clean.onHand("SKU-R")).toBe(5);
 		expect((await clean.orders.get(orderId))?.holdsAdopted?.completedAt).not.toBeNull();
@@ -451,16 +457,19 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect(await clean.store.completeHoldAdoption(orderId)).toEqual({
 			completed: false,
 			lost: [],
+			releasedFor: null,
 		});
 		await clean.inventory.releaseAdoptedMany([reservationId], orderId);
 		expect(await clean.onHand("SKU-R")).toBe(5);
 	});
 
-	test("a recovery adoption that crashes between its adopt and its release is healed by the next sweep", async () => {
+	test("a recovery adoption whose release crashes at the inventory prune, after its index write, is healed by the next sweep", async () => {
 		const { clean, inventory, orderId, reservationId } = await crashBeforeAdopt();
 
-		// Gate the adoption write as above, and crash the release that follows it: the
-		// first inventory update after the gate is the adopt, the second the release.
+		// Gate the adoption write as above, and crash the release that follows it at
+		// its INVENTORY write: the first inventory update after the gate is the adopt,
+		// the second the release's prune — by then its terminal index record has
+		// landed, so this is a release torn part-way, not one that never started.
 		const crashing = failCall(inventory, nthUpdateWrite(2), { mode: "instead" });
 		const gate = parkCall(crashing.collection, isUpdateWrite);
 		const sweeper = makeOrderHarness(bound.storage, {
@@ -487,6 +496,7 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect(await clean.store.completeHoldAdoption(orderId)).toEqual({
 			completed: true,
 			lost: [],
+			releasedFor: null,
 		});
 		expect(await clean.reservationState(reservationId)).toBe("released");
 		expect(await clean.onHand("SKU-R")).toBe(5);
@@ -500,6 +510,61 @@ describeEachDialect("order crash seams", (ctx) => {
 			lost: [],
 		});
 		expect(await clean.onHand("SKU-R")).toBe(5);
+	});
+
+	test("a recovery adoption that crashes between its adopt and its release is healed by the next sweep", async () => {
+		const { clean, inventory, orderId, reservationId } = await crashBeforeAdopt();
+
+		// Gate the adoption write, and crash the release BEFORE any of its writes lands:
+		// a release writes the reservation key, then the index, then the inventory
+		// prune, so failing the first write to either of the first two kills it whole.
+		const gate = parkCall(inventory, isUpdateWrite);
+		const keys = failCall(collectionOf(bound.storage, RESERVATION_KEYS_COLLECTION), anyWrite, {
+			mode: "instead",
+		});
+		const index = failCall(collectionOf(bound.storage, RESERVATION_INDEX_COLLECTION), anyWrite, {
+			mode: "instead",
+		});
+		const sweeper = makeOrderHarness(bound.storage, {
+			share: clean.shared,
+			storageForInventory: withCollection(
+				withCollection(
+					withCollection(bound.storage, INVENTORY_COLLECTION, gate.collection),
+					RESERVATION_KEYS_COLLECTION,
+					keys.collection,
+				),
+				RESERVATION_INDEX_COLLECTION,
+				index.collection,
+			),
+		});
+		const completing = sweeper.store.completeHoldAdoption(orderId);
+		await gate.arrived;
+		await cancel(clean, orderId);
+		gate.release();
+		await expectCrash(completing);
+		expect(keys.failed() + index.failed()).toBe(1);
+
+		// The seam, read off storage: the adopt landed and nothing of the release did —
+		// the cancelled order's hold is ADOPTED, its units are off sale, and the
+		// adoption intent is still OUTSTANDING.
+		expect((await clean.orders.get(orderId))?.state).toBe("cancelled");
+		expect(await clean.reservationState(reservationId)).toBe("adopted");
+		expect(await clean.onHand("SKU-R")).toBe(3);
+		const torn = await clean.orders.get(orderId);
+		expect(torn?.holdsAdopted?.completedAt).toBeNull();
+		expect(torn?.holdsPendingAt).not.toBeNull();
+
+		// The next sweep reads the order cancelled and releases what is adopted by it.
+		expect(await clean.store.completeHoldAdoption(orderId)).toEqual({
+			completed: true,
+			lost: [],
+			releasedFor: null,
+		});
+		expect(await clean.reservationState(reservationId)).toBe("released");
+		expect(await clean.onHand("SKU-R")).toBe(5);
+		const healed = await clean.orders.get(orderId);
+		expect(healed?.holdsAdopted?.completedAt).not.toBeNull();
+		expect(healed?.holdsPendingAt).toBeNull();
 	});
 
 	test("a partial commit is completed by the SINGULAR commit per id, including one already committed", async () => {
@@ -596,6 +661,7 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect(await h.store.completeHoldAdoption(res.order.id)).toEqual({
 			completed: true,
 			lost: [],
+			releasedFor: null,
 		});
 		expect((await orders.get(res.order.id))?.holdsPendingAt).toBeNull();
 	});
@@ -638,6 +704,7 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect(await h.store.completeHoldAdoption(res.order.id)).toEqual({
 			completed: true,
 			lost: [],
+			releasedFor: null,
 		});
 		expect((await orders.get(res.order.id))?.holdsAdopted?.completedAt).not.toBeNull();
 		for (const { sku } of skus) expect(await h.onHand(sku)).toBe(4);
@@ -806,6 +873,7 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect(await clean.store.completeHoldAdoption(res.order.id)).toEqual({
 			completed: true,
 			lost: [],
+			releasedFor: null,
 		});
 		const closed = await orders.get(res.order.id);
 		expect(closed?.holdsAdopted?.completedAt).not.toBeNull();

@@ -2839,8 +2839,17 @@ async function completeHoldIntents(
 		"hold-intents",
 		async (item) => {
 			const id = toOrderId(item.data.orderId);
+			const adoption = await stores.orderStore.completeHoldAdoption(id);
+			// Issue #599: a cancel or expiry landed between this adoption's read and its
+			// adopt, and the completer released the holds it had just claimed for the
+			// dead order. Healed, not an anomaly — but worth a line in the log.
+			if (adoption.releasedFor !== null) {
+				console.warn(
+					`[otta] cron sweep: released holds adopted for ${adoption.releasedFor} order ${item.data.orderId} (#599)`,
+				);
+			}
 			const attempts = [
-				{ kind: "adopt" as const, result: await stores.orderStore.completeHoldAdoption(id) },
+				{ kind: "adopt" as const, result: adoption },
 				{ kind: "commit" as const, result: await stores.orderStore.completeHoldCommit(id) },
 				{ kind: "release" as const, result: await stores.orderStore.completeHoldRelease(id) },
 			];
@@ -2946,8 +2955,15 @@ async function finishRestockOwed(
  * restock per line (about six: the key claim, the stock row, the ledger). A ten-line
  * order owes far more than the one-line unit `LEG_QUERY_COSTS` measures, and the
  * gate must know before it starts the row, not after (QA2 M2).
+ *
+ * An outstanding ADOPTION is costed on its worst path (issue #599): a cancel or expiry
+ * lands under the adopt, so the completer re-reads the order and releases what it
+ * just adopted. Measured in `cron-leg-costs.test.ts` at one and three lines, that
+ * path runs `n + 1` calls past the settle-shaped estimate (14 against 12, 30 against
+ * 26) — the re-read plus about one per id, since the per-id seven already over-covers
+ * the adopt itself.
  */
-function holdIntentCost(item: { data: OrderDoc }): number {
+export function holdIntentCost(item: { data: OrderDoc }): number {
 	let calls = 3;
 	for (const intent of [
 		item.data.holdsAdopted,
@@ -2956,6 +2972,7 @@ function holdIntentCost(item: { data: OrderDoc }): number {
 	]) {
 		if (intent === undefined || intent === null || intent.completedAt !== null) continue;
 		calls += 7 * intent.reservationIds.length + 2;
+		if (intent === item.data.holdsAdopted) calls += intent.reservationIds.length + 1;
 	}
 	const restock = item.data.cancellation?.restockPending ?? null;
 	if (restock !== null) calls += 6 * restock.lineIds.length + 4;

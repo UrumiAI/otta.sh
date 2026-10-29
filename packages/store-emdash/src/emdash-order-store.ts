@@ -360,6 +360,20 @@ export interface HoldCompletionResult {
 }
 
 /**
+ * The outcome of {@link EmdashOrderStore.completeHoldAdoption}: a completion, plus the
+ * one thing only the adoption completer can observe (issue #599).
+ */
+export interface HoldAdoptionResult extends HoldCompletionResult {
+	/**
+	 * The state the order was found in when the re-read AFTER this call's own adopt
+	 * saw it leave `pending` — a cancel or expiry that landed in between — so this
+	 * call released the holds it had just adopted. `null` on every other path
+	 * (including a later sweep's release on an order already seen terminal).
+	 */
+	releasedFor: OrderState | null;
+}
+
+/**
  * The outcome of {@link EmdashOrderStore.healOrderSkuIndex}: how many pointers this call
  * wrote, and every pointer it found held by a DIFFERENT order (left untouched).
  */
@@ -972,13 +986,14 @@ export class EmdashOrderStore implements OrderStore {
 	 * each a `RESERVATION_LOST` for the caller, never swallowed here — and is empty
 	 * once the order has left `pending`, whose own transition decided those holds.
 	 */
-	async completeHoldAdoption(orderId: OrderId): Promise<HoldCompletionResult> {
+	async completeHoldAdoption(orderId: OrderId): Promise<HoldAdoptionResult> {
 		const doc = await this.#orders.get(orderId);
 		const intent = doc === null ? null : (doc.holdsAdopted ?? null);
 		if (doc === null || !isOutstanding(intent) || intent === null) {
-			return { completed: false, lost: [] };
+			return { completed: false, lost: [], releasedFor: null };
 		}
 		let lost: string[] = [];
+		let releasedFor: OrderState | null = null;
 		let state = doc.state;
 		if (state === "pending" && intent.reservationIds.length > 0) {
 			const result = await this.#inventory.adoptMany({
@@ -990,12 +1005,13 @@ export class EmdashOrderStore implements OrderStore {
 			lost = result.lost;
 			state = (await this.#orders.get(orderId))?.state ?? state;
 			if (state !== "pending") lost = [];
+			if (RELEASES_ADOPTED_HOLDS.has(state)) releasedFor = state;
 		}
 		if (RELEASES_ADOPTED_HOLDS.has(state)) {
 			await this.#inventory.releaseAdoptedMany(intent.reservationIds, orderId);
 		}
 		await this.#stampIntent(orderId, "holdsAdopted");
-		return { completed: true, lost };
+		return { completed: true, lost, releasedFor };
 	}
 
 	/**
