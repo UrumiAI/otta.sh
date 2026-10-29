@@ -692,8 +692,8 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		"coupon-orphans": { entry: 2, unit: 10 },
 		// entry: the cursor read and the first inventory page. unit: one order holding
 		// a sku — its read (1), and for a dead order the release of its one hold there
-		// (`strandedReleaseCost(1)`, 5) — 6, measured. Each part is gated on its own
-		// size, and a release of more holds on its own count.
+		// (`strandedReleaseCost(1)`, 5) — 6, measured. A release of more holds is gated
+		// at `strandedReleaseCost(n)` on its own fresh gate.
 		"stranded-holds": { entry: 2, unit: 6 },
 		// entry: the state read, the one page of rows, and the circuit breaker's CMS list
 		// (`CONTENT_LIST_QUERIES`). unit: one row's reads at worst — two misses and then a
@@ -3352,10 +3352,13 @@ async function releaseOrphanedRedemptions(
  *
  * DISCOVERY. `inventory` declares no index, so the leg pages the collection in
  * the host's own order (`createdAt`, then id) and judges each document in hand.
- * The UNIT is one order holding a sku: one order read, and for a dead order the
- * release (`strandedReleaseCost`). Each is gated on its own size, after the page
- * read, so a sku held by many orders (a hot sku with live checkouts, or several
- * stranded ones) is worked through over ticks rather than refused whole forever.
+ * The UNIT is one order holding a sku: its read (one call, on a gate made after
+ * the page read) and, for a dead order, the release (`strandedReleaseCost(n)`, on
+ * a fresh gate made after the read). A fresh gate admits its first unit whatever
+ * its size (clamped to what the leg has left; the ceiling, not a refusal, stops an
+ * oversized one, and its guarded writes persist). The cursor remembers the last
+ * order judged, so a sku held by many orders (a hot sku with live checkouts, or
+ * several stranded ones) is worked through over ticks rather than refused forever.
  *
  * THE CURSOR. Nothing on an inventory document says "stranded", so the walk is a
  * ROTATION: the host's page cursor, the last sku finished on that page, and the
@@ -3422,7 +3425,14 @@ async function releaseStrandedHolds(
 				const skipThrough = place.partial?.sku === item.id ? place.partial.order : null;
 				let visit: StrandedVisit;
 				try {
-					visit = await releaseStrandedOnSku(item.data, orders, stores, gate, skipThrough);
+					visit = await releaseStrandedOnSku(
+						item.data,
+						orders,
+						stores,
+						gate,
+						skipThrough,
+						(calls) => budget.gate(0, calls)(calls),
+					);
 				} catch (err) {
 					if (isSweepQueryCeilingError(err)) throw err;
 					console.error(
@@ -3568,10 +3578,11 @@ export interface StrandedVisit {
 
 /**
  * `stranded-holds`' work on one inventory document: for each order holding it, in
- * order-id order and after `skipThrough`, read the order (gated at one call) and,
- * when it is dead and owes no hold work, release its holds on this sku (gated at
- * their cost). Counts only the holds the store reports it returned. Exported for
- * `cron-leg-costs.test.ts` and the race suite.
+ * order-id order and after `skipThrough`, read the order (on `gate`, one call) and,
+ * when it is dead and owes no hold work, release its holds on this sku (on
+ * `releaseGate`, a fresh gate per release, so its first and only check always
+ * admits it, clamped to what the leg has left). Counts only the holds the store
+ * reports it returned. Exported for `cron-leg-costs.test.ts` and the race suite.
  */
 export async function releaseStrandedOnSku(
 	doc: InventoryDoc,
@@ -3579,6 +3590,7 @@ export async function releaseStrandedOnSku(
 	stores: Pick<InProcessCommerceStores, "inventory">,
 	gate: (unitHint?: number) => boolean = () => true,
 	skipThrough: string | null = null,
+	releaseGate: (calls: number) => boolean = () => true,
 ): Promise<StrandedVisit> {
 	let released = 0;
 	let judged: string | null = null;
@@ -3593,7 +3605,10 @@ export async function releaseStrandedOnSku(
 			RELEASES_ADOPTED_HOLDS.has(order.state) &&
 			order.holdsPendingAt === null
 		) {
-			if (!gate(strandedReleaseCost(reservationIds.length))) {
+			// On a FRESH gate, made after the read. On the read's gate the release was a
+			// later check, whose clamp the read had already eaten into: a release costing
+			// at least what the leg had left was refused on every tick (#648 review).
+			if (!releaseGate(strandedReleaseCost(reservationIds.length))) {
 				return { released, stoppedAfter: judged };
 			}
 			const returned = await stores.inventory.releaseAdoptedManyReporting(reservationIds, orderId);

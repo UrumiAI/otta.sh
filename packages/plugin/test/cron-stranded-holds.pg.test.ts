@@ -142,14 +142,15 @@ describe.skipIf(!PG)("stranded-holds against a racing settle [postgres]", () => 
 		// commit runs to the end: its write then finds the commit's.
 		let commitDone!: () => void;
 		const committed = new Promise<void>((resolve) => (commitDone = resolve));
-		const leg = createInProcessCommerceStores(
-			sweepContext(parkFirst(storage, RESERVATION_INDEX_COLLECTION, "compareAndSet", committed)),
-		);
+		const parked = parkFirst(storage, RESERVATION_INDEX_COLLECTION, "compareAndSet", committed);
+		const leg = createInProcessCommerceStores(sweepContext(parked.storage));
 		const releasing = releaseStrandedOnSku(
 			doc,
 			collectionOf<OrderDoc>(storage, ORDERS_COLLECTION),
 			leg,
 		);
+		// The release has read the index live and is waiting at its terminal write.
+		await parked.arrived;
 		await stores().inventory.commit(reservationId);
 		commitDone();
 		expect(await releasing).toEqual({ released: 0 });
@@ -167,17 +168,14 @@ describe.skipIf(!PG)("stranded-holds against a racing settle [postgres]", () => 
 		if (doc === null) throw new Error("the placed sku must exist");
 		let releaseDone!: () => void;
 		const releasedFirst = new Promise<void>((resolve) => (releaseDone = resolve));
-		const committer = createInProcessCommerceStores(
-			sweepContext(
-				parkFirst(storage, RESERVATION_INDEX_COLLECTION, "compareAndSet", releasedFirst),
-			),
-		);
+		const parked = parkFirst(storage, RESERVATION_INDEX_COLLECTION, "compareAndSet", releasedFirst);
+		const committer = createInProcessCommerceStores(sweepContext(parked.storage));
 		const committing = committer.inventory.commit(reservationId).then(
 			() => "committed",
 			(err: unknown) => (err instanceof Error ? err.name : "error"),
 		);
-		// Let the commit read the hold live before the release runs.
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		// The commit has read the hold live and is waiting at its terminal write.
+		await parked.arrived;
 		const visit = await releaseStrandedOnSku(
 			doc,
 			collectionOf<OrderDoc>(storage, ORDERS_COLLECTION),
@@ -220,17 +218,20 @@ describe.skipIf(!PG)("stranded-holds against a racing settle [postgres]", () => 
 });
 
 /** `base`, with the FIRST `method` call on `collection` held until `until` settles —
- *  how a case fixes which of two racers writes first. */
+ *  how a case fixes which of two racers writes first. `arrived` resolves when that
+ *  call is parked, so the case knows the racer is really waiting there. */
 function parkFirst(
 	base: StorageAccess,
 	collection: string,
 	method: string,
 	until: Promise<void>,
-): StorageAccess {
+): { storage: StorageAccess; arrived: Promise<void> } {
 	const target = base[collection];
 	if (target === undefined) throw new Error(`no ${collection} collection`);
 	let parked = false;
-	return {
+	let arrive!: () => void;
+	const arrived = new Promise<void>((resolve) => (arrive = resolve));
+	const storage: StorageAccess = {
 		...base,
 		[collection]: new Proxy(target, {
 			get(t, prop, receiver) {
@@ -239,6 +240,7 @@ function parkFirst(
 				return async (...args: unknown[]) => {
 					if (!parked) {
 						parked = true;
+						arrive();
 						await until;
 					}
 					return (value as (...a: unknown[]) => Promise<unknown>).apply(t, args);
@@ -246,4 +248,5 @@ function parkFirst(
 			},
 		}),
 	};
+	return { storage, arrived };
 }

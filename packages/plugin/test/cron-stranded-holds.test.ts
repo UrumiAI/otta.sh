@@ -308,19 +308,27 @@ describe("stranded-holds: units adopted by a dead order go back on sale (#631)",
 
 describe("stranded-holds on the Workers Free preset (queryBudget 30)", () => {
 	/** A pending order adopting one unit of `sku` (seeded with ten on first use). */
-	async function placeOnSku(sku: string, tag: string, createdAt: Date): Promise<string> {
+	async function placeOnSku(sku: string, tag: string, createdAt: Date, holds = 1): Promise<string> {
 		const s = adapters(storage, createdAt);
 		const holdExpiresAt = new Date(NOW.getTime() + DAY_MS);
 		await s.inventory.seedOnHand(toSku(sku), 10);
-		const held = await s.inventory.reserve(toSku(sku), 1, idempotencyKey(`res-${tag}`));
-		if (!held.ok) throw new Error(`could not reserve: ${held.reason}`);
-		await s.inventory.stampHoldDeadline(
-			held.reservationId,
-			new Date(holdExpiresAt.getTime() + DAY_MS).toISOString(),
-		);
+		const reservationIds: string[] = [];
+		for (let h = 0; h < holds; h++) {
+			const held = await s.inventory.reserve(
+				toSku(sku),
+				1,
+				idempotencyKey(`res-${tag}-${String(h)}`),
+			);
+			if (!held.ok) throw new Error(`could not reserve: ${held.reason}`);
+			await s.inventory.stampHoldDeadline(
+				held.reservationId,
+				new Date(holdExpiresAt.getTime() + DAY_MS).toISOString(),
+			);
+			reservationIds.push(held.reservationId);
+		}
 		const id = `order-${tag}`;
 		await s.inventory.adoptMany({
-			reservationIds: [held.reservationId],
+			reservationIds,
 			orderId: toOrderId(id),
 			holdExpiresAt: holdExpiresAt.toISOString(),
 			now: createdAt.toISOString(),
@@ -333,19 +341,21 @@ describe("stranded-holds on the Workers Free preset (queryBudget 30)", () => {
 			holdExpiresAt: holdExpiresAt.toISOString(),
 			buyerRef: `buyer-${tag}@example.test`,
 			paymentMethod: "stripe",
-			lines: [
-				{
-					productId: toProductId(`prod-${tag}`),
-					sku: toSku(sku),
-					title: "Free Widget",
-					unitPrice: cents(1000),
-					currency: currency("USD"),
-					quantity: 1,
-					fulfillmentKind: "physical",
-					reservationId: toReservationId(held.reservationId),
-				},
-			],
-			totals: { subtotal: cents(1000), total: cents(1000), currency: currency("USD") },
+			lines: reservationIds.map((reservationId, h) => ({
+				productId: toProductId(`prod-${tag}-${String(h)}`),
+				sku: toSku(sku),
+				title: "Free Widget",
+				unitPrice: cents(1000),
+				currency: currency("USD"),
+				quantity: 1,
+				fulfillmentKind: "physical" as const,
+				reservationId: toReservationId(reservationId),
+			})),
+			totals: {
+				subtotal: cents(1000 * holds),
+				total: cents(1000 * holds),
+				currency: currency("USD"),
+			},
 		});
 		return id;
 	}
@@ -389,6 +399,56 @@ describe("stranded-holds on the Workers Free preset (queryBudget 30)", () => {
 		expect(await freeTicks(12)).toBe(5);
 		expect(await onHand("AAA-HOT")).toBe(10);
 		expect(await onHand("ZZZ-LATER")).toBe(10);
+	});
+
+	test("on a busy tick, an order holding two units of one sku is released, and a later sku heals too", async () => {
+		// The release (3n+2 = 8 calls) used to be checked on the read's gate, after the
+		// read had eaten into that gate's clamp: with less than that left it was refused
+		// on every tick, the second pass included, and the walk never passed the sku.
+		// A leg ahead of it spends 12 calls a tick here, as a busy store's would.
+		const two = await placeOnSku("AAA-PAIR", "pair", new Date(NOW.getTime() - HOUR_MS), 2);
+		await strandOrder(storage, two, "cancelled", NOW);
+		const later = await placeOnSku(
+			"ZZZ-AFTER-PAIR",
+			"after-pair",
+			new Date(NOW.getTime() - HOUR_MS + 60_000),
+		);
+		await strandOrder(storage, later, "cancelled", NOW);
+
+		const cursors = memoryCursors();
+		let released = 0;
+		for (let t = 0; t < 8; t++) {
+			await cursors.write(
+				"state",
+				JSON.stringify({
+					lastRun: Object.fromEntries(
+						MAINTENANCE_LEGS.filter(
+							(leg) => leg !== "stranded-holds" && leg !== "prune-challenges",
+						).map((leg) => [leg, NOW.toISOString()]),
+					),
+				}),
+			);
+			const leg = strandedLeg(
+				await runCommerceSweeps(sweepContext(storage), SWEEP_TASK_NAME, {
+					cursors,
+					emailSender: recordingSender([]),
+					now: NOW,
+					queryBudget: 30,
+					legBodies: {
+						"prune-challenges": async (ctx) => {
+							for (let c = 0; c < 12; c++) await ctx.kv.get("busy");
+							return 1;
+						},
+					},
+				}),
+			);
+			expect(leg.ok, leg.error).toBe(true);
+			released += leg.count;
+		}
+		expect(released).toBe(3);
+		expect(await onHand("AAA-PAIR")).toBe(10);
+		expect(await heldStates("AAA-PAIR")).toEqual([]);
+		expect(await onHand("ZZZ-AFTER-PAIR")).toBe(10);
 	});
 
 	test("a hot sku held by many live checkouts does not stall the walk", async () => {
