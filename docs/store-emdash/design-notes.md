@@ -1539,8 +1539,10 @@ contention at all — it is the WAIT a redeemer spends re-reading until the winn
 document is readable, because the claim refuses a second registration from the moment it
 is taken, which is a moment before the account behind it exists. That depth grows with how
 long the winner's write takes, not with the crowd (measured 1–2 locally, 13 on a loaded CI
-runner, 22 with the winner's write delayed 400 ms), so nothing bounds it in attempts and it
-is asserted only against `CAS_MAX_ATTEMPTS`.
+runner, 22–24 with the winner's write delayed 400 ms), so nothing bounds it in attempts and it
+is not left to the runner: the suite holds the winner's account write until a peer has
+retried, and keeps the peers from re-reading while it lands, so it asserts one account and
+a retry rather than a depth.
 
 `restock-concurrency.pg.test.ts` reports its depth and contention count **per case**
 rather than per file, so a ceiling is attributed to the shape that produced it by
@@ -1884,7 +1886,9 @@ a moment before the account behind it is readable, so a single re-read after the
 duplicate could find nothing and report a duplicate for an address the caller was
 logging into. Its re-read is therefore **inside** the bounded retry, and only an
 exhausted budget is reported — as the typed retryable contention failure, never as a
-duplicate (measured depth 8 at N=12, which is the wait, not contention).
+duplicate. That wait is the step's deepest depth, and it tracks how long the winner's
+account write takes, not contention (see the per-shape measurements above; the race suite
+holds that write behind a gate so the depth does not depend on the runner's speed).
 
 ### The claim is the fast path; the email lookup heals
 
@@ -1939,7 +1943,7 @@ residue back before proving what a later caller sees:
 | consume committed, release lost | a held slot for a spent challenge | the replay is `CONSUMED`; the window resets at the expiry |
 | an address update that loses its revision to a concurrent delete | none | the retry re-checks ownership and answers the miss rather than resurrecting the address |
 | a registrant parked past its lease, overtaken by a peer | none | its own re-assertion refuses before any account write: one account owns the address, and it is the peer's |
-| consume committed and slot released, then `#resolveCustomer` exhausts its budget | a spent challenge with no account resolved | the caller sees the typed retryable failure and the link cannot be replayed (`CONSUMED`) — one lost login, never a second redemption. Not enumerated in the suite: it needs a contention storm on a document only one caller writes |
+| consume committed and slot released, then `#resolveCustomer` exhausts its budget | a spent challenge with no account resolved | the caller sees the typed retryable failure and the link cannot be replayed (`CONSUMED`) — one lost login, never a second redemption. Not enumerated in the suite: it needs the winner's account write to outlast the attempt-limited wait (24 jittered attempts, roughly 0.5 s), not contention — measured exhausting at a 600 ms write, and succeeding only on its last attempt at 400 ms ([#647](https://github.com/UrumiAI/otta.sh/issues/647)) |
 
 ### What the identity tier does NOT carry
 
