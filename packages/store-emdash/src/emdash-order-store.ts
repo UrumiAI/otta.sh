@@ -27,6 +27,8 @@
  * The window is "claim written, order document not yet created", and it is
  * HEALED rather than tolerated — `createFromCart` and `getByIdempotencyKey` both
  * complete a `claimed` key they find, which is why the payload is carried at all.
+ * `peekByIdempotencyKey` is the one key read that does NOT: a sweep reads through
+ * it, and must never conjure an order for a checkout that crashed (#598 review).
  *
  * **Snapshot immutability is structural, not a discipline.** {@link OrderDoc.items}
  * is `readonly OrderItemDoc[]` with every element field `readonly`, and it is
@@ -135,6 +137,7 @@ import {
 	type Currency,
 	type CustomerId,
 	type OrderExpiryListOptions,
+	type OrderKeyPeek,
 	type ExpiredOrder,
 	type ReleaseEmailClaimOptions,
 	type FinalizeRefundInput,
@@ -454,6 +457,26 @@ export class EmdashOrderStore implements OrderStore {
 
 	async getByIdempotencyKey(key: IdempotencyKey): Promise<Order | null> {
 		return this.#resolveKey(key);
+	}
+
+	/**
+	 * `#resolveKey` without its writes (#598 review): a `claimed` key is reported
+	 * with the order its payload carries, NOT completed, and a terminal key's order
+	 * is read without re-asserting its by-sku pointers. Two reads at most — the key,
+	 * then (terminal) its order — and nothing else.
+	 */
+	async peekByIdempotencyKey(key: IdempotencyKey): Promise<OrderKeyPeek | null> {
+		const claim = await this.#keys.get(key);
+		if (claim === null) return null;
+		if (claim.state === "claimed") {
+			// A create that crashed after its order write but before promoting the key
+			// left a real order behind the claim: report it as minted, without healing.
+			const written = await this.#orders.get(claim.orderId);
+			if (written !== null) return { state: "minted", order: toOrder(normalizeOrderDoc(written)) };
+			return { state: "claimed", order: toOrder(normalizeOrderDoc(claim.doc)) };
+		}
+		const doc = await this.#orders.get(claim.orderId);
+		return doc === null ? null : { state: "minted", order: toOrder(normalizeOrderDoc(doc)) };
 	}
 
 	// -- the guarded transitions ----------------------------------------------

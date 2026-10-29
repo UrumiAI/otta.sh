@@ -57,22 +57,29 @@ function makeContext(
 
 const OVER = String(CART_LINE_MAX_QTY + 1);
 
-describe.each<[string, APIRoute, Record<string, string>, string]>([
+describe.each<[string, APIRoute, Record<string, string>, string, string]>([
 	[
 		"/cart/add",
 		CART_ADD_POST,
 		{ sku: "OTTA-TEE", idempotencyKey: "k-1", returnTo: "/products/otta-tee" },
 		"/products/otta-tee",
+		"product-error",
 	],
-	["/cart/update", CART_UPDATE_POST, { lineId: "line-1", idempotencyKey: "k-1" }, "/cart"],
-])("POST %s", (_pathname, post, base, backTo) => {
+	[
+		"/cart/update",
+		CART_UPDATE_POST,
+		{ lineId: "line-1", idempotencyKey: "k-1" },
+		"/cart",
+		"cart-error",
+	],
+])("POST %s", (_pathname, post, base, backTo, noticeId) => {
 	test(`qty ${OVER} is refused as QTY_TOO_LARGE back to ${backTo}, with no dispatch`, async () => {
 		const { context, dispatched } = makeContext(_pathname, { ...base, qty: OVER });
 
 		const response = await post(context);
 
 		expect(response.status).toBe(303);
-		expect(response.headers.get("location")).toBe(`${backTo}?error=QTY_TOO_LARGE`);
+		expect(response.headers.get("location")).toBe(`${backTo}?error=QTY_TOO_LARGE#${noticeId}`);
 		expect(dispatched).toEqual([]);
 	});
 
@@ -89,13 +96,13 @@ describe.each<[string, APIRoute, Record<string, string>, string]>([
 });
 
 describe("the copy", () => {
-	test("QTY_TOO_LARGE names the plugin's OWN limit, per request — not the generic fallback", () => {
+	test("QTY_TOO_LARGE names the plugin's OWN per-line limit — not the generic fallback", () => {
 		const message = cartErrorMessage("QTY_TOO_LARGE");
 		// Built from the constant, so the copy cannot drift from the cap.
 		expect(message).toContain(CART_LINE_MAX_QTY.toLocaleString("en-US"));
-		// The cap is per request — an add can still take a line past it — so the
-		// copy must not claim a cart-wide maximum.
-		expect(message).toMatch(/at a time/i);
+		// The cap bounds one cart LINE (#608), so the copy says so: true for a
+		// request over the cap and for an add onto a line already near it.
+		expect(message).toMatch(/of one item in your cart/i);
 		expect(message).not.toBe(cartErrorMessage("SOME_UNMAPPED_TOKEN"));
 	});
 
@@ -116,7 +123,7 @@ describe("the copy", () => {
 
 		const response = await CART_UPDATE_POST(context);
 
-		expect(response.headers.get("location")).toBe("/cart?error=QTY_TOO_LARGE");
+		expect(response.headers.get("location")).toBe("/cart?error=QTY_TOO_LARGE#cart-error");
 	});
 
 	test("OUT_OF_STOCK is about the QUANTITY, so it stays true beside an 'In stock' badge", () => {
