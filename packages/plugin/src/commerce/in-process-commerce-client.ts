@@ -49,6 +49,7 @@
 import {
 	activateProductCommerce,
 	addLine,
+	applyProductVariantSync,
 	cancelDueIntents,
 	cancelOrder,
 	cents,
@@ -131,6 +132,7 @@ import {
 } from "@urumi.ai/otta-domain";
 import type {
 	AbandonCartOrderResult,
+	ApplyVariantSyncInput,
 	AddressWire,
 	AccountOrderAddressWire,
 	AccountOrderWire,
@@ -544,6 +546,39 @@ export class InProcessCommerceClient implements CommerceClient {
 			toIdempotencyKey(idempotencyKey),
 		);
 		return serializeVariant(row);
+	}
+
+	/**
+	 * One save's whole repeater projection in one store write (#602). Validated
+	 * exactly as the per-row routes validate each row — the whole batch before
+	 * anything is written — and each orphan key as the store asks for it.
+	 */
+	async applyProductVariantSync(productId: string, input: ApplyVariantSyncInput): Promise<void> {
+		requireProductId(productId);
+		requireWatermark("contentUpdatedAt", input.contentUpdatedAt);
+		for (const declare of input.declares) {
+			requireVariantKey(declare.variantKey);
+			requireIdempotencyKey(declare.idempotencyKey);
+			if (declare.title !== undefined) requireTitle(declare.title);
+		}
+		const orphanIdempotencyKey = input.orphanIdempotencyKey;
+		await applyProductVariantSync(this.#stores.productCommerce, {
+			productId: toProductId(productId),
+			contentUpdatedAt: input.contentUpdatedAt,
+			declares: input.declares.map((declare) => ({
+				variantKey: declare.variantKey,
+				...(declare.title !== undefined ? { title: declare.title } : {}),
+				key: toIdempotencyKey(declare.idempotencyKey),
+			})),
+			orphanKey:
+				orphanIdempotencyKey === null
+					? null
+					: (variantKey) => {
+							const key = orphanIdempotencyKey(variantKey);
+							requireIdempotencyKey(key);
+							return toIdempotencyKey(key);
+						},
+		});
 	}
 
 	/**

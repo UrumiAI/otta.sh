@@ -1304,6 +1304,75 @@ export interface ProductCommerceStore {
 		key: IdempotencyKey,
 		contentUpdatedAt: string,
 	): Promise<void>;
+
+	/**
+	 * ONE CMS SAVE's whole repeater projection, in ONE write (issue #602): every
+	 * declare of the save, then the orphan of every variant the save stopped
+	 * declaring, applied to the product as a single atomic change.
+	 *
+	 * THE OUTCOME IS DEFINED BY THE TWO SINGLE-ROW TRANSITIONS, and nothing else.
+	 * It is exactly the outcome of:
+	 *  1. `upsertVariant({productId, variantKey, title, contentUpdatedAt}, key)`
+	 *     for each entry of `declares`, IN ORDER; then
+	 *  2. when `orphanKey` is non-null, `deactivateVariant(productId, k,
+	 *     orphanKey(k), contentUpdatedAt)` for every key `k` that is LIVE once the
+	 *     declares have applied and that `declares` does not name.
+	 * Every guard of both methods holds per row unchanged — the replay key, the
+	 * watermark, the strictly-newer resurrect, the sku and price revalidation on
+	 * the way back in, the sku claim released by an orphan. The batch changes the
+	 * COST, not the rules: a sync of N sizes was N read-modify-writes of the same
+	 * product plus a stock-joined list, and is now one.
+	 *
+	 * THE DROP SET IS COMPUTED FROM THE SAME READ THE WRITE COMMITS AGAINST. A
+	 * caller that listed the live keys first and then orphaned them would leave a
+	 * window in which a peer's declare lands unseen; here a lost compare-and-set
+	 * re-reads, re-applies the declares and recomputes the drop set from the
+	 * winner's document, so a concurrent write between the read and the write is
+	 * retried and never lost.
+	 *
+	 * `orphanKey: null` WITHHOLDS THE DROP PHASE ENTIRELY — the caller's statement
+	 * that this save says nothing about which sizes are gone (a repeater whose
+	 * rows all failed to parse). It is not "orphan nothing because nothing was
+	 * dropped"; it is "do not ask".
+	 *
+	 * `orphanKey` is a FUNCTION of the key because the drop set is not known to
+	 * the caller until the store has read the product: each orphan still carries
+	 * its own replay key, in the declare's disjoint key-space, exactly as the
+	 * single-row transition requires.
+	 *
+	 * Rejects a missing/empty `productId` with `MissingProductIdError`, and any
+	 * declare with a missing/empty `variantKey` with `MissingVariantKeyError`,
+	 * BEFORE anything is written — the batch applies whole or not at all. An
+	 * unknown product with no declares is a no-op (nothing to declare, nothing
+	 * live to drop); with declares, the product is created as a shell exactly as
+	 * `upsertVariant` creates it.
+	 */
+	applyVariantSync(input: ApplyVariantSyncInput): Promise<void>;
+}
+
+/** One declare of an {@link ApplyVariantSyncInput}: the single-row
+ *  `UpsertProductVariantInput` minus the fields the batch carries once. */
+export interface VariantSyncDeclare {
+	variantKey: string;
+	/** `undefined` PRESERVES the stored name, `null` CLEARS it — see
+	 *  `UpsertProductVariantInput.title`. */
+	title?: string | null;
+	/** This declare's own replay key — per row, as `upsertVariant` takes it. */
+	key: IdempotencyKey;
+}
+
+/** `ProductCommerceStore.applyVariantSync`'s input: one CMS save's declares and
+ *  its drop instruction, under that save's one watermark. */
+export interface ApplyVariantSyncInput {
+	productId: ProductId;
+	/** The save's content `updatedAt` — the ONE watermark both transitions are
+	 *  ordered by (see `ProductVariant.contentUpdatedAt`). Required: the orphan
+	 *  transition cannot be ordered without it. */
+	contentUpdatedAt: string;
+	declares: readonly VariantSyncDeclare[];
+	/** The replay key for orphaning `variantKey`, or `null` to withhold the drop
+	 *  phase (see `applyVariantSync`). */
+	orphanKey: ((variantKey: string) => IdempotencyKey) | null;
 }
 
 // -- Variants: one commerce row per sellable unit ----------------------------

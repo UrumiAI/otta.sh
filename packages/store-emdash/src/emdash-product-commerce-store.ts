@@ -56,6 +56,7 @@ import {
 	SkuConflictError,
 	SkuHeldStockError,
 	SkuStockConflictError,
+	type ApplyVariantSyncInput,
 	type Clock,
 	type IdempotencyKey,
 	type ProductCommerce,
@@ -1516,6 +1517,174 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			});
 			if (!written.applied) return CAS_RETRY;
 			if (claim !== null) await this.#releaseClaimAt(claim);
+			return casDone(undefined);
+		});
+	}
+
+	/**
+	 * One CMS save's whole repeater projection in ONE compare-and-set on the
+	 * product document (#602). The variants are embedded in that document, so the
+	 * per-row path — a read-modify-write per declared size, then a stock-joined
+	 * list to compute the drop set, then a read-modify-write per dropped size —
+	 * spent its round trips re-reading the same revision. Here every declare and
+	 * every orphan is folded over ONE read, with exactly the guards `upsertVariant`
+	 * and `deactivateVariant` apply per row, and committed as one revision.
+	 *
+	 * THE DROP SET COMES FROM THAT SAME READ, after the declares have been folded
+	 * in, so a resurrected key is never dropped by the save that brought it back.
+	 * A lost compare-and-set re-reads and re-folds everything: a peer's write
+	 * between the read and the write is retried over, never overwritten.
+	 *
+	 * The sku side effects are the single-row methods' own, in their own order: a
+	 * resurrect re-claims (and heartbeats) its sku before the commit, an orphan
+	 * reads its claim before the commit and releases it at that revision after.
+	 * A save that changes nothing — a redelivery — commits nothing.
+	 */
+	async applyVariantSync(input: ApplyVariantSyncInput): Promise<void> {
+		if (typeof input.productId !== "string" || input.productId.length === 0) {
+			throw new MissingProductIdError();
+		}
+		for (const declare of input.declares) {
+			if (typeof declare.variantKey !== "string" || declare.variantKey.length === 0) {
+				throw new MissingVariantKeyError();
+			}
+		}
+		const { productId, contentUpdatedAt } = input;
+		const refOf = (variantKey: string): SkuOwnerRef => ({ kind: "variant", productId, variantKey });
+		await this.#cas<void>("applyVariantSync", async () => {
+			const current = await this.#products.getVersioned(productId);
+			// Nothing to declare and nothing live to drop.
+			if (current === null && input.declares.length === 0) return casDone(undefined);
+			const now = this.#clock.now().toISOString();
+			const doc =
+				current === null ? newShellProductDoc(productId, now) : normalizeProductDoc(current.value);
+			const variants: Record<string, ProductVariantDoc> = { ...doc.variants };
+			let changed = current === null;
+			const reclaimed: Array<{ hold: SkuHold; ref: SkuOwnerRef }> = [];
+
+			// 1. The declares, in order — `upsertVariant`'s guards, row by row.
+			for (const declare of input.declares) {
+				const existing = variants[declare.variantKey];
+				if (existing === undefined) {
+					variants[declare.variantKey] = newVariantDoc(
+						declare.variantKey,
+						declare.title ?? null,
+						declare.key,
+						contentUpdatedAt,
+						now,
+					);
+					changed = true;
+					continue;
+				}
+				if (existing.idempotencyKey === declare.key) continue;
+				if (existing.contentUpdatedAt !== null && contentUpdatedAt < existing.contentUpdatedAt) {
+					continue;
+				}
+				const resurrecting =
+					existing.orphanedAt !== null &&
+					(existing.contentUpdatedAt === null || contentUpdatedAt > existing.contentUpdatedAt);
+				let sku = existing.sku;
+				let price = existing.price;
+				if (resurrecting) {
+					if (sku !== null) {
+						const ref = refOf(declare.variantKey);
+						const hold = await this.#reclaimSku(sku, ref);
+						// Reused while it was gone: the size comes back without it.
+						if (hold === null) sku = null;
+						else reclaimed.push({ hold, ref });
+					}
+					if (price !== null) {
+						const productCurrency = resolveProductCurrency(
+							{ ...doc, variants },
+							declare.variantKey,
+						);
+						if (productCurrency !== null && productCurrency !== price.currency) price = null;
+					}
+				}
+				variants[declare.variantKey] = {
+					...existing,
+					title: declare.title !== undefined ? declare.title : existing.title,
+					sku,
+					price,
+					orphanedAt: resurrecting ? null : existing.orphanedAt,
+					idempotencyKey: declare.key,
+					contentUpdatedAt,
+					updatedAt: now,
+				};
+				changed = true;
+			}
+
+			// 2. The drop set, from this same read — `deactivateVariant`'s guards.
+			const releases: OwnClaim[] = [];
+			if (input.orphanKey !== null) {
+				const declared = new Set(input.declares.map((declare) => declare.variantKey));
+				for (const existing of Object.values(variants)) {
+					if (declared.has(existing.variantKey) || existing.orphanedAt !== null) continue;
+					const key = input.orphanKey(existing.variantKey);
+					if (existing.idempotencyKey === key) continue;
+					if (existing.contentUpdatedAt !== null && existing.contentUpdatedAt > contentUpdatedAt) {
+						continue;
+					}
+					// Read BEFORE the orphaning write, exactly as `deactivateVariant` does.
+					const claim =
+						existing.sku === null
+							? null
+							: await this.#readOwnClaim(existing.sku, refOf(existing.variantKey));
+					if (claim !== null) releases.push(claim);
+					variants[existing.variantKey] = {
+						...existing,
+						orphanedAt: now,
+						idempotencyKey: key,
+						contentUpdatedAt,
+						updatedAt: now,
+					};
+					changed = true;
+				}
+			}
+
+			if (!changed) return casDone(undefined);
+			// The re-assertion every resurrect owes before it commits (see `upsertVariant`).
+			for (const { hold, ref } of reclaimed) {
+				let held: boolean;
+				try {
+					held = await this.#heartbeatClaim(hold, ref, {
+						claimed: null,
+						createdTarget: null,
+						committed: false,
+						contended: 0,
+					});
+				} catch (err) {
+					if (!(err instanceof SkuConflictError)) throw err;
+					return CAS_RETRY;
+				}
+				if (!held) return CAS_RETRY;
+			}
+			const written = await this.#products.compareAndSet(productId, current?.revision ?? null, {
+				...doc,
+				variants,
+			});
+			if (!written.applied) return CAS_RETRY;
+			// COMMITTED. A release that fails now must not turn a landed sync into a
+			// thrown one — the caller would log it as lost and the merchant would
+			// re-save for nothing. An unreleased claim on an orphan is backed by
+			// nothing, so the lease (`CLAIM_ABANDON_AFTER_MS`) frees it for the next
+			// claimant: at worst one lease of refusals, never a sku held for good.
+			let skipped = 0;
+			let firstError: unknown = null;
+			for (const claim of releases) {
+				try {
+					await this.#releaseClaimAt(claim);
+				} catch (err) {
+					skipped++;
+					firstError ??= err;
+				}
+			}
+			if (skipped > 0) {
+				console.warn(
+					`[otta] applyVariantSync committed for product_id=${productId}; ${String(skipped)} claim release(s) skipped ` +
+						`(${firstError instanceof Error ? firstError.name : "unknown error"}) — the claim lease frees them`,
+				);
+			}
 			return casDone(undefined);
 		});
 	}

@@ -837,6 +837,60 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			const listed = await client.listProductVariants("prod-cv4");
 			expect(listed.map((row) => row.variantKey)).toEqual([key]);
 		});
+
+		test("applyProductVariantSync (#602) declares, renames and orphans one save in one call — sku and price carried through", async () => {
+			await parentProduct("prod-cv5", "SKU-CV5");
+			await client.applyProductVariantSync("prod-cv5", {
+				contentUpdatedAt: VWM,
+				declares: [
+					{ variantKey: "small", title: "Small", idempotencyKey: "cv5-d-small-1" },
+					{ variantKey: "large", title: "Large", idempotencyKey: "cv5-d-large-1" },
+				],
+				orphanIdempotencyKey: (key) => `cv5-o-${key}-1`,
+			});
+			const [large] = (await client.listProductVariants("prod-cv5")).filter(
+				(row) => row.variantKey === "large",
+			);
+			if (large === undefined) throw new Error("unreachable");
+			const priced = await client.updateProductVariantFields(
+				"prod-cv5",
+				"large",
+				{ sku: "SKU-CV5-L", price: { amount: 4200, currency: "USD" } },
+				large.updatedAt,
+				"cv5-price",
+			);
+			expect(priced.ok).toBe(true);
+
+			// The next save renames "large" and drops "small".
+			await client.applyProductVariantSync("prod-cv5", {
+				contentUpdatedAt: "2026-08-09T00:00:00.000Z",
+				declares: [{ variantKey: "large", title: "Large (L)", idempotencyKey: "cv5-d-large-2" }],
+				orphanIdempotencyKey: (key) => `cv5-o-${key}-2`,
+			});
+
+			const listed = await client.listProductVariants("prod-cv5");
+			expect(listed).toHaveLength(1);
+			expect(listed[0]).toMatchObject({
+				variantKey: "large",
+				title: "Large (L)",
+				sku: "SKU-CV5-L",
+				price: { amount: 4200, currency: "USD" },
+			});
+		});
+
+		test("applyProductVariantSync refuses an invalid row before writing anything", async () => {
+			await expect(
+				client.applyProductVariantSync("prod-cv6", {
+					contentUpdatedAt: VWM,
+					declares: [
+						{ variantKey: "small", idempotencyKey: "cv6-d-small" },
+						{ variantKey: "", idempotencyKey: "cv6-d-blank" },
+					],
+					orphanIdempotencyKey: null,
+				}),
+			).rejects.toThrow();
+			expect(await client.listProductVariants("prod-cv6")).toEqual([]);
+		});
 		// ── end variants ──────────────────────────────────────────────────
 
 		// ── cart ──────────────────────────────────────────────────────────

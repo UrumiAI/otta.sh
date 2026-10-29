@@ -165,6 +165,105 @@ function redeclare(
 	);
 }
 
+// -- applyVariantSync (#602): the per-row oracle and its helpers --
+/** One CMS save as the sync sees it: a watermark, a replay tag the
+ *  per-row keys are minted from, the declared rows in order, and
+ *  whether the drop phase runs. */
+interface Save {
+	at: string;
+	tag: string;
+	declares: Array<{ key: string; title?: string | null }>;
+	drop?: boolean;
+}
+
+function declareKey(key: string, tag: string): ReturnType<typeof idempotencyKey> {
+	return idempotencyKey(`declare:${key}:${tag}`);
+}
+
+function orphanKeyOf(key: string, tag: string): ReturnType<typeof idempotencyKey> {
+	return idempotencyKey(`orphan:${key}:${tag}`);
+}
+
+/** TODAY'S PATH, verbatim — the oracle the batch is held to: one
+ *  `upsertVariant` per declared row, then the live read, then one
+ *  `deactivateVariant` per live row the save no longer declares. */
+async function legacySave(h: ProductCommerceStoreHarness, pid: string, save: Save): Promise<void> {
+	for (const d of save.declares) {
+		await h.store.upsertVariant(
+			{
+				productId: productId(pid),
+				variantKey: d.key,
+				...(d.title !== undefined ? { title: d.title } : {}),
+				contentUpdatedAt: save.at,
+			},
+			declareKey(d.key, save.tag),
+		);
+	}
+	if (save.drop === false) return;
+	const declared = new Set(save.declares.map((d) => d.key));
+	for (const row of await h.store.listVariants(productId(pid))) {
+		if (declared.has(row.variantKey) || row.orphanedAt !== null) continue;
+		await h.store.deactivateVariant(
+			productId(pid),
+			row.variantKey,
+			orphanKeyOf(row.variantKey, save.tag),
+			save.at,
+		);
+	}
+}
+
+function batchSave(h: ProductCommerceStoreHarness, pid: string, save: Save): Promise<void> {
+	return h.store.applyVariantSync({
+		productId: productId(pid),
+		contentUpdatedAt: save.at,
+		declares: save.declares.map((d) => ({
+			variantKey: d.key,
+			...(d.title !== undefined ? { title: d.title } : {}),
+			key: declareKey(d.key, save.tag),
+		})),
+		orphanKey: save.drop === false ? null : (key) => orphanKeyOf(key, save.tag),
+	});
+}
+
+/** Everything a reader can see of a product's variants, with the
+ *  product id folded out of the skus (each side owns its own skus,
+ *  because one sku names one live sellable unit) and the orphan stamp
+ *  reduced to the fact it records. */
+async function shapeOf(h: ProductCommerceStoreHarness, pid: string): Promise<unknown[]> {
+	return (await h.store.listVariants(productId(pid))).map((v) => ({
+		variantKey: v.variantKey,
+		title: v.title,
+		sku: v.sku === null ? null : v.sku.replace(pid.toUpperCase(), "<pid>"),
+		price: v.price,
+		orphaned: v.orphanedAt !== null,
+		onHand: v.onHand,
+	}));
+}
+
+/** Give one size a sku (and stock) and a price on BOTH products, through
+ *  the admin edit — the commerce facts a sync must carry through intact. */
+async function priceVariant(
+	h: ProductCommerceStoreHarness,
+	pid: string,
+	key: string,
+	facts: { sku?: boolean; amount?: number },
+): Promise<void> {
+	const current = await variantOf(h, pid, key);
+	const s = `${pid}-${key}`.toUpperCase();
+	const res = await h.store.updateVariantFields(
+		{
+			productId: productId(pid),
+			variantKey: key,
+			...(facts.sku === true ? { sku: sku(s) } : {}),
+			...(facts.amount !== undefined ? { price: money(cents(facts.amount), currency("USD")) } : {}),
+		},
+		idempotencyKey(`price-${pid}-${key}-${String(facts.amount)}`),
+		current.updatedAt.toISOString(),
+	);
+	if (!res.ok) throw new Error(`price: ${pid}/${key} refused (${res.reason})`);
+	if (facts.sku === true) await h.seedStock(s, 7);
+}
+
 /** A canonical ULID for the download-file cases' keys. */
 const DL_ULID = "01J9ZQ3V8K4M2N6P7R8S9T0VWX";
 
@@ -5426,6 +5525,181 @@ export function productCommerceStoreContract(
 						seeded.updatedAt.toISOString(),
 					);
 					expect(res.ok).toBe(true);
+				});
+			});
+
+			describe("applyVariantSync: one save's whole repeater in one write (#602)", () => {
+				test("EQUIVALENCE: add, remove, rename, re-key, re-add, replay and a stale save land exactly where today's per-row path lands", async () => {
+					const h = await makeStore();
+					const sides = ["ref-eq", "bat-eq"] as const;
+					const run = async (save: Save): Promise<void> => {
+						await legacySave(h, sides[0], save);
+						await batchSave(h, sides[1], save);
+						expect(await shapeOf(h, sides[1])).toEqual(await shapeOf(h, sides[0]));
+					};
+					for (const pid of sides) await seedEditable(h, pid, { sku: `${pid}-P`.toUpperCase() });
+
+					// 1. ADD three sizes, then the admin prices two of them (one with a sku).
+					await run({
+						at: "2026-07-10T01:00:00.000Z",
+						tag: "s1",
+						declares: [
+							{ key: "a", title: "A" },
+							{ key: "b", title: "B" },
+							{ key: "c", title: "C" },
+						],
+					});
+					for (const pid of sides) {
+						await priceVariant(h, pid, "a", { sku: true, amount: 1500 });
+						await priceVariant(h, pid, "b", { amount: 1200 });
+					}
+					// 2. RENAME a, ADD d, REMOVE b and c (b priced, c not).
+					await run({
+						at: "2026-07-10T02:00:00.000Z",
+						tag: "s2",
+						declares: [
+							{ key: "a", title: "A (renamed)" },
+							{ key: "d", title: "D" },
+						],
+					});
+					// 3. RE-ADD b, keep d; a (holding a sku and stock) is removed.
+					await run({
+						at: "2026-07-10T03:00:00.000Z",
+						tag: "s3",
+						declares: [{ key: "b" }, { key: "d", title: null }],
+					});
+					// While a is orphaned its sku is free, and another product takes it.
+					for (const pid of sides) {
+						await h.store.upsert(
+							{ productId: productId(`${pid}-thief`), sku: sku(`${pid}-a`.toUpperCase()) },
+							idempotencyKey(`thief-${pid}`),
+						);
+					}
+					// 4. RE-ADD a (its sku was reused, so it comes back without it) and
+					//    RE-KEY c as c2 — a new size beside the retained orphan.
+					const s4: Save = {
+						at: "2026-07-10T04:00:00.000Z",
+						tag: "s4",
+						declares: [
+							{ key: "a", title: "A" },
+							{ key: "c2", title: "C" },
+						],
+					};
+					await run(s4);
+					// 5. A REDELIVERY of save 4 changes nothing.
+					await run(s4);
+					// 6. A newer save at an EQUAL watermark (a frozen `updatedAt`): it may
+					//    drop, but it cannot resurrect b.
+					await run({ at: s4.at, tag: "s6", declares: [{ key: "b" }, { key: "a" }] });
+					// 7. A STALE save, delivered late, moves nothing.
+					await run({
+						at: "2026-07-10T02:30:00.000Z",
+						tag: "s7",
+						declares: [{ key: "b", title: "stale" }],
+					});
+					// 8. A save whose rows all failed to parse: declares nothing, drops nothing.
+					await run({ at: "2026-07-10T05:00:00.000Z", tag: "s8", declares: [], drop: false });
+					// 9. The merchant empties the repeater: every live size is orphaned.
+					await run({ at: "2026-07-10T06:00:00.000Z", tag: "s9", declares: [] });
+
+					// And the oracle is not vacuous: the scenario reached every state.
+					const final = await shapeOf(h, sides[1]);
+					expect(final).toHaveLength(5);
+					expect(final.every((v) => (v as { orphaned: boolean }).orphaned)).toBe(true);
+				});
+
+				test("a declare resurrects and an orphan releases the sku claim, in one call", async () => {
+					const h = await makeStore();
+					await batchSave(h, "prod-avs-claim", {
+						at: "2026-07-10T01:00:00.000Z",
+						tag: "s1",
+						declares: [{ key: "large" }],
+					});
+					await priceVariant(h, "prod-avs-claim", "large", { sku: true });
+
+					await batchSave(h, "prod-avs-claim", {
+						at: "2026-07-10T02:00:00.000Z",
+						tag: "s2",
+						declares: [{ key: "small" }],
+					});
+
+					// The orphan freed its sku, exactly as `deactivateVariant` does…
+					expect((await variantOf(h, "prod-avs-claim", "large")).orphanedAt).not.toBeNull();
+					await h.store.upsert(
+						{ productId: productId("prod-avs-taker"), sku: sku("PROD-AVS-CLAIM-LARGE") },
+						idempotencyKey("avs-taker"),
+					);
+					// …and a resurrect revalidates it on the way back, exactly as
+					// `upsertVariant` does: it was reused, so the size returns sku-less.
+					await batchSave(h, "prod-avs-claim", {
+						at: "2026-07-10T03:00:00.000Z",
+						tag: "s3",
+						declares: [{ key: "large" }, { key: "small" }],
+					});
+					const back = await variantOf(h, "prod-avs-claim", "large");
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBeNull();
+					expect((await h.store.getByProductId(productId("prod-avs-taker")))?.sku).toBe(
+						"PROD-AVS-CLAIM-LARGE",
+					);
+				});
+
+				test("an unknown product with no declares is a no-op; with declares it is created, unpriced", async () => {
+					const h = await makeStore();
+					await batchSave(h, "prod-avs-none", { at: V_WM, tag: "s1", declares: [] });
+					expect(await h.store.listVariants(productId("prod-avs-none"))).toEqual([]);
+					expect(await h.store.getByProductId(productId("prod-avs-none"))).toBeNull();
+
+					await batchSave(h, "prod-avs-new", {
+						at: V_WM,
+						tag: "s1",
+						declares: [{ key: "small", title: "Small" }, { key: "large" }],
+					});
+					const rows = await h.store.listVariants(productId("prod-avs-new"));
+					expect(rows.map((v) => [v.variantKey, v.title, v.sku, v.price, v.orphanedAt])).toEqual([
+						["large", null, null, null, null],
+						["small", "Small", null, null, null],
+					]);
+				});
+
+				test("`orphanKey: null` withholds the drop phase: an undeclared live size stays live", async () => {
+					const h = await makeStore();
+					await declare(h, "prod-avs-keep", "small");
+					await batchSave(h, "prod-avs-keep", {
+						at: "2026-07-11T00:00:00.000Z",
+						tag: "s1",
+						declares: [{ key: "large" }],
+						drop: false,
+					});
+					expect((await variantOf(h, "prod-avs-keep", "small")).orphanedAt).toBeNull();
+					expect((await variantOf(h, "prod-avs-keep", "large")).orphanedAt).toBeNull();
+				});
+
+				test("a missing product id or an empty declared key is refused BEFORE anything is written", async () => {
+					const h = await makeStore();
+					await expect(
+						h.store.applyVariantSync({
+							productId: "" as ReturnType<typeof productId>,
+							contentUpdatedAt: V_WM,
+							declares: [{ variantKey: "small", key: idempotencyKey("k") }],
+							orphanKey: null,
+						}),
+					).rejects.toBeInstanceOf(MissingProductIdError);
+					await declare(h, "prod-avs-bad", "keep");
+					await expect(
+						h.store.applyVariantSync({
+							productId: productId("prod-avs-bad"),
+							contentUpdatedAt: "2026-07-11T00:00:00.000Z",
+							declares: [
+								{ variantKey: "small", key: idempotencyKey("k1") },
+								{ variantKey: "", key: idempotencyKey("k2") },
+							],
+							orphanKey: (key) => idempotencyKey(`o-${key}`),
+						}),
+					).rejects.toBeInstanceOf(MissingVariantKeyError);
+					// Whole or nothing: the valid declare did not land and nothing dropped.
+					const rows = await h.store.listVariants(productId("prod-avs-bad"));
+					expect(rows.map((v) => [v.variantKey, v.orphanedAt])).toEqual([["keep", null]]);
 				});
 			});
 		});
