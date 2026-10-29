@@ -1578,7 +1578,27 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				variants,
 			});
 			if (!written.applied) return CAS_RETRY;
-			for (const claim of releases) await this.#releaseClaimAt(claim);
+			// COMMITTED. A release that fails now must not turn a landed sync into a
+			// thrown one — the caller would log it as lost and the merchant would
+			// re-save for nothing. An unreleased claim on an orphan is backed by
+			// nothing, so the lease (`CLAIM_ABANDON_AFTER_MS`) frees it for the next
+			// claimant: at worst one lease of refusals, never a sku held for good.
+			let skipped = 0;
+			let firstError: unknown = null;
+			for (const claim of releases) {
+				try {
+					await this.#releaseClaimAt(claim);
+				} catch (err) {
+					skipped++;
+					firstError ??= err;
+				}
+			}
+			if (skipped > 0) {
+				console.warn(
+					`[otta] applyVariantSync committed for product_id=${productId}; ${String(skipped)} claim release(s) skipped ` +
+						`(${firstError instanceof Error ? firstError.name : "unknown error"}) — the claim lease frees them`,
+				);
+			}
 			return casDone(undefined);
 		});
 	}

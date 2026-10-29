@@ -253,6 +253,20 @@ async function seedOrphanedVariant(id: string, key: string, title: string | null
 	);
 }
 
+/** Give a size a sku through the admin edit — the state that made the old
+ *  drop-set list pay one inventory read per row. */
+async function giveSku(id: string, key: string): Promise<string> {
+	const s = `${id}-${key}`.toUpperCase();
+	const variant = await requireVariant(id, key);
+	const res = await commerceStore().updateVariantFields(
+		{ productId: toProductId(id), variantKey: key, sku: toSku(s) },
+		idempotencyKey(`sku-${id}-${key}`),
+		variant.updatedAt,
+	);
+	if (!res.ok) throw new Error(`giveSku: ${id}/${key} refused (${res.reason})`);
+	return s;
+}
+
 /**
  * A saved products content record — the shape `content:afterSave` actually
  * receives (`contentItemToRecord(item)`). Pass `title: null` for a collection
@@ -306,6 +320,19 @@ function unpublishedDraft(
 		{ status: "draft", liveRevisionId: null, draftRevisionId: `rev-${version}`, version },
 		title,
 	);
+}
+
+/** How many times `needle` appears in the isolate's output after `from`,
+ *  waiting for the first occurrence to arrive: workerd writes `console.*` to its
+ *  own stdio, which reaches this process asynchronously after the hook returns. */
+async function workerLogCount(from: number, needle: string): Promise<number> {
+	const count = (): number => sandboxHandle.workerOutput().slice(from).split(needle).length - 1;
+	for (let waited = 0; count() === 0 && waited < 5_000; waited += 25) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	// Let anything written alongside it land too, so a duplicate is counted.
+	await new Promise((resolve) => setTimeout(resolve, 100));
+	return count();
 }
 
 function afterSave(
@@ -1013,24 +1040,53 @@ describe("sync hooks — the variant repeater declares presence and the name cac
 		expect(orphaned.idempotencyKey).toBe(`products:${id}:variant-orphaned:${goneKey}:${WM}:1`);
 	});
 
-	test("the drop set is computed AFTER the declares, so a resurrected key is never dropped by the save that brought it back", async () => {
+	test("one save revives a size and drops the sibling that took its sku: the revived size comes back WITHOUT it, and the sibling's claim is released", async () => {
 		const id = pid("prod-order");
-		await seedOrphanedVariant(id, "small", "Small");
+		// "small" held SHARED-S, was orphaned (freeing it), and "medium" took it.
+		await seedVariant(id, "small", "Small");
+		const shared = await giveSku(id, "small");
+		await commerceStore().deactivateVariant(
+			toProductId(id),
+			"small",
+			idempotencyKey(`seed-orphan-${id}-small`),
+			SEEDED_WM,
+		);
 		await seedVariant(id, "medium", "Medium");
+		const took = await commerceStore().updateVariantFields(
+			{ productId: toProductId(id), variantKey: "medium", sku: toSku(shared) },
+			idempotencyKey(`took-${id}`),
+			(await requireVariant(id, "medium")).updatedAt,
+		);
+		expect(took.ok).toBe(true);
 		productCalls.reset();
 
+		// This save declares "small" again and stops declaring "medium".
 		await afterSave(productContent(id, {}, TITLE, { variants: VARIANTS }));
 
-		// The outcome IS the ordering proof: "small" was orphaned, this save declares
-		// it again, and it comes back live — while "medium", which this save stopped
-		// declaring, is dropped by the same write. Had the drop set been taken
-		// before the declares and applied after them, the save that restored the
-		// size would have orphaned it again in the same breath.
-		expect((await requireVariant(id, "small")).orphanedAt).toBeNull();
-		expect((await requireVariant(id, "medium")).orphanedAt).not.toBeNull();
-		// And the mechanism (#602): declares and drop set are ONE store write, over
-		// ONE read — no stock-joined list (`get`) at all.
-		expect(productCalls.calls).toEqual([...PRODUCT_SYNC_CALLS, "getVersioned", "compareAndSet"]);
+		// The per-row path's outcome, exactly: the declare ran while "medium" still
+		// held the sku, so "small" revalidates and comes back live but sku-less (an
+		// orphan cannot reclaim what was reused while it was gone); "medium" is
+		// dropped by the same save and its claim released, so the sku is free.
+		const small = await requireVariant(id, "small");
+		expect(small.orphanedAt).toBeNull();
+		expect(small.sku).toBeNull();
+		const medium = await requireVariant(id, "medium");
+		expect(medium.orphanedAt).not.toBeNull();
+		expect(medium.sku).toBe(shared);
+		const claim = (await storage[SKU_OWNERS_COLLECTION]?.get(shared)) as {
+			live: boolean;
+		} | null;
+		expect(claim?.live).toBe(false);
+		// And the mechanism (#602): declares and drop set are ONE store write over
+		// ONE read. The one `get` is the refused re-claim checking whether the sku's
+		// holder ("medium", on this same product) still backs its claim — the
+		// single-row resurrect's own read, not the old stock-joined list.
+		expect(productCalls.calls).toEqual([
+			...PRODUCT_SYNC_CALLS,
+			"getVersioned",
+			"get",
+			"compareAndSet",
+		]);
 	});
 
 	test("REDELIVERY reuses the declare and orphan keys (the store dedupes); a newer save mints fresh ones — and the two key-spaces never collide", async () => {
@@ -1358,14 +1414,33 @@ describe("sync hooks — the variant repeater declares presence and the name cac
 				};
 			},
 		};
+		const from = sandboxHandle.workerOutput().length;
 		const outcome = await afterSave(
 			productContent(id, { status: "published" }, TITLE, { variants: VARIANTS }),
 		);
 		productCalls.failOn = null;
 
-		// Fire-and-forget, exactly like the product title's channel: logged, never
-		// thrown, and lost until the next save (there is still no reconcile job).
+		// The sync RAN and its one write is what failed: upsert, activate, then the
+		// variant sync's read and its faulted write — not retried, since a storage
+		// fault is not contention.
+		expect(productCalls.calls).toEqual([
+			"getVersioned",
+			"compareAndSet",
+			"getVersioned",
+			"compareAndSet",
+			"getVersioned",
+			"compareAndSet",
+		]);
+		// Fire-and-forget, exactly like the product title's channel: logged ONCE,
+		// never thrown, and lost until the next save (there is still no reconcile
+		// job).
 		expect(outcome).toEqual({ result: null });
+		expect(
+			await workerLogCount(
+				from,
+				`variant sync failed for product_id=${id} declares=${String(VARIANTS.length)} `,
+			),
+		).toBe(1);
 		const doc = await requireDoc(id);
 		expect(doc.title).toBe(TITLE);
 		expect(doc.active).toBe(true);
@@ -1424,20 +1499,6 @@ describe("sync hooks — the variant sync's storage cost and its equivalence to 
 				for (const [name, collection] of Object.entries(originals)) storage[name] = collection;
 			},
 		};
-	}
-
-	/** Give a size a sku through the admin edit — the state that made the old
-	 *  drop-set list pay one inventory read per row. */
-	async function giveSku(id: string, key: string): Promise<string> {
-		const s = `${id}-${key}`.toUpperCase();
-		const variant = await requireVariant(id, key);
-		const res = await commerceStore().updateVariantFields(
-			{ productId: toProductId(id), variantKey: key, sku: toSku(s) },
-			idempotencyKey(`sku-${id}-${key}`),
-			variant.updatedAt,
-		);
-		if (!res.ok) throw new Error(`giveSku: ${id}/${key} refused (${res.reason})`);
-		return s;
 	}
 
 	const SIZES = Array.from({ length: 20 }, (_, i) => `size-${String(i).padStart(2, "0")}`);
@@ -1508,6 +1569,59 @@ describe("sync hooks — the variant sync's storage cost and its equivalence to 
 			expect((await requireVariant(id, key)).orphanedAt).not.toBeNull();
 		}
 		expect((await requireVariant(id, "new")).orphanedAt).toBeNull();
+	});
+
+	// THE REMAINING LIMIT, PINNED (#637): each sku'd size the save ORPHANS costs a
+	// claim read plus a claim release, and each one it REVIVES costs a claim read,
+	// a takeover and a heartbeat — on `sku_owners`, one document per sku, so not
+	// batched.
+	// About 20 such sizes in one save is what the Free budget still carries.
+
+	test("EMPTYING the repeater of 20 SKU'd sizes costs 44 calls — 4, plus a claim read and release per size", async () => {
+		const id = pid("prod-cost-empty");
+		await seedSkuSizes(id, SIZES);
+
+		const counter = countAll();
+		try {
+			await afterSave(productContent(id, {}, TITLE, { variants: [] }));
+		} finally {
+			counter.stop();
+		}
+
+		expect(counter.total()).toBe(44);
+		expect(counter.byCollection).toEqual({
+			[PRODUCT_COMMERCE_COLLECTION]: 4,
+			[SKU_OWNERS_COLLECTION]: 40,
+		});
+		for (const key of SIZES) expect((await requireVariant(id, key)).orphanedAt).not.toBeNull();
+	});
+
+	test("RE-ADDING 20 orphaned SKU'd sizes costs 64 calls — 4, plus a claim read, a claim takeover and a heartbeat per size", async () => {
+		const id = pid("prod-cost-readd");
+		await seedSkuSizes(id, SIZES);
+		await afterSave(productContent(id, {}, TITLE, { variants: [] }));
+
+		const counter = countAll();
+		try {
+			await afterSave(
+				productContent(id, { updatedAt: "2026-07-11T00:00:00.000Z" }, TITLE, {
+					variants: SIZES.map((key) => ({ key, name: key })),
+				}),
+			);
+		} finally {
+			counter.stop();
+		}
+
+		expect(counter.total()).toBe(64);
+		expect(counter.byCollection).toEqual({
+			[PRODUCT_COMMERCE_COLLECTION]: 4,
+			[SKU_OWNERS_COLLECTION]: 60,
+		});
+		for (const key of SIZES) {
+			const variant = await requireVariant(id, key);
+			expect(variant.orphanedAt).toBeNull();
+			expect(variant.sku).toBe(`${id}-${key}`.toUpperCase());
+		}
 	});
 
 	/**

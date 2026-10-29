@@ -467,7 +467,7 @@ export async function syncVariants({
 		// the honest caveat. The write is all-or-nothing, and re-running the save
 		// is safe: every row is idempotent under its key and ordered by the watermark.
 		console.error(
-			`[otta] ${hook} variant sync failed for product_id=${productId} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved/published again:`,
+			`[otta] ${hook} variant sync failed for product_id=${productId} declares=${String(declared.length)} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved/published again:`,
 			err,
 		);
 	}
