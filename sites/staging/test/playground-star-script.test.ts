@@ -1,0 +1,147 @@
+/**
+ * @vitest-environment happy-dom
+ *
+ * The playground's star prompt script (`public/scripts/playground-star.js`),
+ * run in a DOM over the markup `starPrompt()` renders: the card opens once a
+ * session, dismissing it is remembered, focus is not lost, and the count is
+ * filled from `/_otta/stars` without ever being required.
+ */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { starPrompt } from "../src/lib/playground-star.js";
+
+const SCRIPT = readFileSync(
+	path.resolve(
+		path.dirname(fileURLToPath(import.meta.url)),
+		"../public/scripts/playground-star.js",
+	),
+	"utf8",
+);
+
+let urls: string[] = [];
+
+function page(answer: () => Promise<Response> = async () => Response.json({ label: "57" })) {
+	// The script is run below as the page would; happy-dom does not fetch files.
+	document.body.innerHTML = starPrompt().replace(/<script[^>]*><\/script>/, "");
+	urls = [];
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string) => {
+			urls.push(url);
+			return answer();
+		}),
+	);
+	new Function(SCRIPT)();
+	return document.querySelector<HTMLElement>(".otta-star")!;
+}
+
+const settle = async (): Promise<void> => {
+	for (let i = 0; i < 5; i += 1) await Promise.resolve();
+};
+
+beforeEach(() => {
+	vi.useFakeTimers();
+	localStorage.clear();
+	sessionStorage.clear();
+});
+
+afterEach(() => {
+	vi.useRealTimers();
+	vi.unstubAllGlobals();
+	document.body.innerHTML = "";
+});
+
+describe("playground-star.js", () => {
+	test("opens the card after a moment on the first page of a session", () => {
+		const root = page();
+		expect(root.dataset.state).toBe("pill");
+		vi.advanceTimersByTime(1800);
+		expect(root.dataset.state).toBe("card");
+	});
+
+	test("later pages of the session stay on the pill", () => {
+		page();
+		vi.advanceTimersByTime(1800);
+		const root = page();
+		vi.advanceTimersByTime(5000);
+		expect(root.dataset.state).toBe("pill");
+	});
+
+	test("Not now goes back to the pill for good and keeps focus in the prompt", () => {
+		let root = page();
+		vi.advanceTimersByTime(1800);
+		const later = root.querySelector<HTMLButtonElement>(".otta-star-later")!;
+		later.focus();
+		later.click();
+		expect(root.dataset.state).toBe("pill");
+		expect(document.activeElement).toBe(root.querySelector(".otta-star-pill"));
+		sessionStorage.clear(); // a new session
+		root = page();
+		vi.advanceTimersByTime(5000);
+		expect(root.dataset.state).toBe("pill");
+	});
+
+	test("Escape anywhere on the page dismisses the open card", () => {
+		const root = page();
+		vi.advanceTimersByTime(1800);
+		document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+		expect(root.dataset.state).toBe("pill");
+		expect(localStorage.getItem("otta-star:dismissed")).toBe("1");
+	});
+
+	test("starring from the card counts as dismissing it", () => {
+		const root = page();
+		vi.advanceTimersByTime(1800);
+		root.querySelector<HTMLAnchorElement>(".otta-star-cta")!.click();
+		expect(root.dataset.state).toBe("pill");
+	});
+
+	test("fills the count once and reuses it for the session", async () => {
+		let root = page();
+		await settle();
+		expect(urls).toEqual(["/_otta/stars"]);
+		const counts = root.querySelectorAll<HTMLElement>("[data-otta-star-count]");
+		expect([...counts].every((el) => !el.hidden)).toBe(true);
+		expect(root.querySelector("[data-otta-star-label]")!.textContent).toBe("57");
+		root = page();
+		await settle();
+		expect(urls).toEqual([]);
+		expect(root.querySelector("[data-otta-star-label]")!.textContent).toBe("57");
+	});
+
+	test("sits above EmDash's playground toolbar only when it reaches the corner", () => {
+		let box = { height: 70, top: 674, right: 374 }; // phone width: the toolbar wraps and spans
+		vi.stubGlobal("innerWidth", 390);
+		vi.stubGlobal("innerHeight", 760);
+		document.body.innerHTML = starPrompt().replace(/<script[^>]*><\/script>/, "");
+		const bar = document.createElement("div");
+		bar.id = "emdash-playground-toolbar";
+		bar.getBoundingClientRect = () => box as DOMRect;
+		document.body.append(bar);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ label: null })),
+		);
+		new Function(SCRIPT)();
+		const root = document.querySelector<HTMLElement>(".otta-star")!;
+		expect(root.style.bottom).toBe("98px");
+		box = { height: 38, top: 706, right: 895 }; // desktop: centred, clear of the corner
+		vi.stubGlobal("innerWidth", 1280);
+		dispatchEvent(new Event("resize"));
+		expect(root.style.bottom).toBe("");
+	});
+
+	test("no count leaves the prompt reading Star", async () => {
+		const root = page(async () => Response.json({ stars: null, label: null }));
+		await settle();
+		const counts = root.querySelectorAll<HTMLElement>("[data-otta-star-count]");
+		expect([...counts].every((el) => el.hidden)).toBe(true);
+		const offline = page(async () => {
+			throw new TypeError("offline");
+		});
+		await settle();
+		expect(offline.querySelector<HTMLElement>("[data-otta-star-count]")!.hidden).toBe(true);
+	});
+});

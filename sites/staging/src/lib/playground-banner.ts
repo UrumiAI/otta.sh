@@ -1,12 +1,13 @@
 /**
- * The one sentence the playground adds to every HTML page.
+ * The one sentence the playground adds to every HTML page, and the GitHub
+ * star prompt beside it (`playground-star.ts`).
  *
- * It is specific about what this sandbox is and what it is not: Otta is
- * installed and the sample products can be bought as far as the cart, and
- * card payments are not connected. It does not mention pay-per-crawl, MCP
- * or x402 — none of those ship.
+ * The sentence is specific about what this sandbox is and what it is not:
+ * Otta is installed and the sample products can be bought as far as the
+ * cart, and card payments are not connected. It does not mention
+ * pay-per-crawl, MCP or x402 — none of those ship.
  */
-import { githubStars, starPrompt } from "./playground-star.js";
+import { starPrompt } from "./playground-star.js";
 
 const MARKER = "otta-playground-note";
 
@@ -17,13 +18,13 @@ export async function injectPlaygroundBanner(response: Response): Promise<Respon
 	if (!type.includes("text/html")) return response;
 	const html = await response.text();
 	if (html.includes(MARKER)) return new Response(html, response);
-	const injected = injectBanner(html, await githubStars());
+	const injected = injectBanner(html);
 	return new Response(injected, response);
 }
 
-export function injectBanner(html: string, stars: number | null = null): string {
+export function injectBanner(html: string): string {
 	if (html.includes(MARKER)) return html;
-	const chrome = BANNER + starPrompt(stars);
+	const chrome = BANNER + starPrompt();
 	const opened = /<body[^>]*>/i.exec(html);
 	if (opened !== null && opened.index !== undefined) {
 		const at = opened.index + opened[0].length;
