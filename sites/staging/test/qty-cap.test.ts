@@ -96,13 +96,13 @@ describe.each<[string, APIRoute, Record<string, string>, string, string]>([
 });
 
 describe("the copy", () => {
-	test("QTY_TOO_LARGE names the plugin's OWN limit, per request — not the generic fallback", () => {
+	test("QTY_TOO_LARGE names the plugin's OWN per-line limit — not the generic fallback", () => {
 		const message = cartErrorMessage("QTY_TOO_LARGE");
 		// Built from the constant, so the copy cannot drift from the cap.
 		expect(message).toContain(CART_LINE_MAX_QTY.toLocaleString("en-US"));
-		// The cap is per request — an add can still take a line past it — so the
-		// copy must not claim a cart-wide maximum.
-		expect(message).toMatch(/at a time/i);
+		// The cap bounds one cart LINE (#608), so the copy says so: true for a
+		// request over the cap and for an add onto a line already near it.
+		expect(message).toMatch(/of one item in your cart/i);
 		expect(message).not.toBe(cartErrorMessage("SOME_UNMAPPED_TOKEN"));
 	});
 

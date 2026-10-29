@@ -67,9 +67,10 @@ const MESSAGES: Record<string, string> = {
 	// The site's own (cart/add.ts): ONE unit refused OUT_OF_STOCK — there is no
 	// smaller quantity to try (QA2 F).
 	SOLD_OUT: "Sorry, this item is sold out.",
-	// Built from the plugin's own cap, so the number cannot drift. "At a time":
-	// the cap is per request, and an add can still take a line past it.
-	QTY_TOO_LARGE: `You can add at most ${CART_LINE_MAX_QTY.toLocaleString("en-US")} of one item at a time — please enter a smaller quantity.`,
+	// Built from the plugin's own cap, so the number cannot drift. Worded per
+	// LINE: the cap bounds what one cart line holds, so this is true both for a
+	// request over it and for an add that would merge a line past it (#608).
+	QTY_TOO_LARGE: `You can have at most ${CART_LINE_MAX_QTY.toLocaleString("en-US")} of one item in your cart.`,
 	CART_NOT_FOUND: "Your cart could not be found — it may have expired.",
 	LINE_NOT_FOUND: "That cart item could not be found — it may have already been removed.",
 	CART_CHECKED_OUT: "This cart has already been checked out.",
