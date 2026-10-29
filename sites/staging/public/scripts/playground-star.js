@@ -7,6 +7,7 @@ const root = document.querySelector(".otta-star");
 const DISMISSED = "otta-star:dismissed";
 const SEEN = "otta-star:seen";
 const COUNT = "otta-star:count";
+const NO_COUNT = "-"; // remembered too, so a rate-limited count is not asked for on every page
 
 function read(storage, key) {
 	try {
@@ -31,12 +32,16 @@ function showCount(label) {
 
 async function loadCount() {
 	const cached = read("sessionStorage", COUNT);
+	if (cached === NO_COUNT) return;
 	if (cached) return showCount(cached);
 	try {
 		const response = await fetch("/_otta/stars", { headers: { accept: "application/json" } });
 		if (!response.ok) return;
 		const { label } = await response.json();
-		if (typeof label !== "string" || label === "") return;
+		if (typeof label !== "string" || label === "") {
+			write("sessionStorage", COUNT, NO_COUNT);
+			return;
+		}
 		write("sessionStorage", COUNT, label);
 		showCount(label);
 	} catch {
@@ -46,7 +51,8 @@ async function loadCount() {
 
 // EmDash's own playground toolbar is fixed at the bottom centre and, on narrow screens,
 // spans the width. Sit above it whenever it would reach the prompt's corner.
-const CARD_SPAN = 304 + 20 + 12; // card width, right offset, breathing room
+// The card's width and right offset in src/lib/playground-star.ts, plus breathing room.
+const CARD_SPAN = 304 + 20 + 12;
 function clearToolbar() {
 	const bar = document.getElementById("emdash-playground-toolbar");
 	const box = bar?.getBoundingClientRect();
@@ -71,12 +77,17 @@ if (root) {
 		if (hadFocus) root.querySelector(".otta-star-pill")?.focus();
 	};
 	const onActivate = (event) => {
+		if (event.type === "auxclick" && event.button !== 1) return; // middle-click only
 		if (event.target.closest("[data-otta-star-dismiss], .otta-star-cta")) done();
 	};
 	root.addEventListener("click", onActivate);
-	root.addEventListener("auxclick", onActivate); // middle-click opens the repo too
+	root.addEventListener("auxclick", onActivate);
 	document.addEventListener("keydown", (event) => {
-		if (event.key === "Escape" && root.dataset.state === "card") done();
+		if (event.key !== "Escape" || root.dataset.state !== "card" || event.defaultPrevented) return;
+		// An Escape meant for an admin dialog or menu is not a no to the prompt.
+		const owner = document.activeElement?.closest('[role="dialog"], [aria-modal="true"]');
+		if (owner && !root.contains(owner)) return;
+		done();
 	});
 	if (read("localStorage", DISMISSED) !== "1" && read("sessionStorage", SEEN) !== "1") {
 		timer = setTimeout(() => {

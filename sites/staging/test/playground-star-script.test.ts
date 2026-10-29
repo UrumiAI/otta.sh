@@ -91,6 +91,31 @@ describe("playground-star.js", () => {
 		expect(localStorage.getItem("otta-star:dismissed")).toBe("1");
 	});
 
+	test("an Escape meant for another dialog leaves the card alone", () => {
+		const root = page();
+		const dialog = document.createElement("div");
+		dialog.setAttribute("role", "dialog");
+		dialog.innerHTML = "<button>Close</button>";
+		document.body.append(dialog);
+		vi.advanceTimersByTime(1800);
+		dialog.querySelector("button")!.focus();
+		document.activeElement!.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+		);
+		expect(root.dataset.state).toBe("card");
+		expect(localStorage.getItem("otta-star:dismissed")).toBeNull();
+	});
+
+	test("right-click on the star link does not dismiss, middle-click does", () => {
+		const root = page();
+		vi.advanceTimersByTime(1800);
+		const cta = root.querySelector(".otta-star-cta")!;
+		cta.dispatchEvent(new MouseEvent("auxclick", { button: 2, bubbles: true }));
+		expect(root.dataset.state).toBe("card");
+		cta.dispatchEvent(new MouseEvent("auxclick", { button: 1, bubbles: true }));
+		expect(root.dataset.state).toBe("pill");
+	});
+
 	test("starring from the card counts as dismissing it", () => {
 		const root = page();
 		vi.advanceTimersByTime(1800);
@@ -138,6 +163,10 @@ describe("playground-star.js", () => {
 		await settle();
 		const counts = root.querySelectorAll<HTMLElement>("[data-otta-star-count]");
 		expect([...counts].every((el) => el.hidden)).toBe(true);
+		page(async () => Response.json({ stars: null, label: null }));
+		await settle();
+		expect(urls).toEqual([]); // "no count" is remembered for the session too
+		sessionStorage.clear();
 		const offline = page(async () => {
 			throw new TypeError("offline");
 		});

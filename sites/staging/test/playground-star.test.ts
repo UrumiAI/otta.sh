@@ -11,7 +11,7 @@ describe("starPrompt", () => {
 		const html = starPrompt();
 		expect(html).toContain(`href="${REPO_URL}"`);
 		expect(html).toContain('rel="noopener noreferrer"');
-		expect(html).toContain('<script src="/scripts/playground-star.js" defer></script>');
+		expect(html).toContain('<script type="module" src="/scripts/playground-star.js"></script>');
 		expect(html).toContain('data-state="pill"');
 		expect(html).not.toContain('role="dialog"');
 		expect(html.indexOf("<style>")).toBeLessThan(html.indexOf("<aside"));
