@@ -42,6 +42,7 @@ import {
 } from "../src/cron/index.js";
 import { BACKGROUND_WORK_KEY } from "../src/cron/background-work-setting.js";
 import { MAINTENANCE_LEG_INTERVAL_MS } from "../src/cron/sweeps.js";
+import { COMMIT_WINDOW_EXEMPT_BUDGET, MAX_COMMIT_WINDOW } from "../src/cron/tick-budget.js";
 import {
 	adapters,
 	DAY_MS,
@@ -200,6 +201,14 @@ describe("an expiry's coupon release cut off by the query ceiling (#621)", () =>
 				const held = async () => (await redemptions.query({ limit: 10 })).items.length;
 
 				const first = await sweep(raced, NOW, budget);
+				// The tick stays inside the overrun contract: past its budget only by the
+				// one commit window a Free-sized tick may open, and never twice.
+				expect(
+					first.budget.queriesUsed,
+					`${label}: within the overrun contract`,
+				).toBeLessThanOrEqual(
+					budget + (budget <= COMMIT_WINDOW_EXEMPT_BUDGET ? MAX_COMMIT_WINDOW : 0),
+				);
 				const state = (await adapters(storage).orderStore.getById(orderId))?.state;
 				// Never the lost-release shape: an expired order with its redemption gone
 				// and its use still counted.
