@@ -78,6 +78,7 @@ import {
 import {
 	addAggregate,
 	addProductLine,
+	canonicalJson,
 	compareProductLines,
 	PRODUCTS_UNBUILDABLE,
 	REPORTING_MONTHLY_FORMAT,
@@ -1253,7 +1254,7 @@ export class EmdashReportingStore implements ReportingStore {
 				}
 				const wasClean = isCleanMonthlyDoc(pinned.value);
 				const same =
-					wasClean && JSON.stringify(pinned.value.currencies) === JSON.stringify(currencies);
+					wasClean && canonicalJson(pinned.value.currencies) === canonicalJson(currencies);
 				if (same) return casDone("unchanged");
 				const written = await this.#monthly.updateIf(month, {
 					where: { gen: pinned.value.gen },
@@ -2015,7 +2016,8 @@ function sameLines(
 	held: readonly ReportingProductLine[] | null,
 	want: readonly ReportingProductLine[],
 ): boolean {
-	return held !== null && JSON.stringify(held) === JSON.stringify(want);
+	// Key order is not compared: Postgres reads a guarded write back through jsonb.
+	return held !== null && canonicalJson(held) === canonicalJson(want);
 }
 
 /** A month's day documents summed by currency — what `rebuildMonth` stores. */

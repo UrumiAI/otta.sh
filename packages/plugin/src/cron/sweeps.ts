@@ -3463,7 +3463,7 @@ export const REPORTING_VERIFY_CALLS =
 	REPORTING_VERIFY_DAY_CALLS;
 
 /**
- * THE MONTH GRAIN AND THE TOP-PRODUCTS LINES (issue #572; ADR-0040), after the heal's
+ * THE MONTH GRAIN AND THE TOP-PRODUCTS LINES (issue #572; ADR-0041), after the heal's
  * walk.
  *
  * A long Reports period reads a clean `reporting_monthly` document for each whole

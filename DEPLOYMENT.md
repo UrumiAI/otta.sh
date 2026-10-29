@@ -1188,7 +1188,7 @@ release, or a rollout that overlapped versions, treat today's report figures as 
 until then. Orders, stock and payments are unaffected — only the reporting rollup is.
 
 The month cache and top-products lines behind long Reports periods (#572,
-[ADR-0040](./adr/0040-reporting-month-cache-and-product-lines.md)) have the same exposure in
+[ADR-0041](./adr/0041-reporting-month-cache-and-product-lines.md)) have the same exposure in
 another form. A Worker from before that release moves day documents without marking their month
 document or their product lines stale. So after a rollback past it, or a rollout that overlapped
 it, a long report can read a month or a day's top products that no longer match the day documents.

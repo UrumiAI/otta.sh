@@ -696,6 +696,25 @@ export function compareProductLines(
 		: codeUnitAsc(a.productId, b.productId);
 }
 
+/**
+ * A JSON value serialized with every object's keys sorted — the comparison form for a
+ * cache read back from storage. On Postgres a guarded write round-trips the document
+ * through `jsonb`, which does not keep key order (it orders keys by length, then
+ * bytewise), so a plain `JSON.stringify` of an unchanged document read back differs
+ * from the one built, and a rebuild would see a change that is not one. Arrays keep
+ * their order: stored product lines are already sorted.
+ */
+export function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v)).join(",")}]`;
+	if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+	const keys = Object.keys(value as Record<string, unknown>)
+		.filter((k) => (value as Record<string, unknown>)[k] !== undefined)
+		.toSorted(codeUnitAsc);
+	return `{${keys
+		.map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`)
+		.join(",")}}`;
+}
+
 /** The `YYYY-MM` calendar month a day key falls in. */
 export function monthKeyOf(dayKey: string): string {
 	return dayKey.slice(0, 7);
@@ -729,7 +748,7 @@ export const REPORTING_MONTHLY_FORMAT = 1;
 
 /**
  * `reporting_monthly/{YYYY-MM}` — a calendar month's day documents, summed, for every
- * currency at once (issue #572; ADR-0040).
+ * currency at once (issue #572; ADR-0041).
  *
  * **It is a CACHE of the day documents, rebuilt from them, never moved by a delta.**
  * A long report reads one of these for each whole month it covers instead of the
@@ -760,7 +779,7 @@ export const REPORTING_MONTHLY_FORMAT = 1;
  * stalls past the settle window and THEN writes, a live event whose claim a recompute
  * stamped and which dies between its day write and its second touch, and writers from a
  * build older than #572 (a rollback or mixed-version window), which never touch a month
- * at all. See ADR-0040 and DEPLOYMENT.md.
+ * at all. See ADR-0041 and DEPLOYMENT.md.
  *
  * So a CLEAN document (`dirty === 0`, current `format`) is the sum of the month's day
  * documents up to those residues, and a dirty one is never read: the reader takes that

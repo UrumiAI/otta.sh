@@ -519,6 +519,16 @@ describeEachDialect("EmdashReportingStore month grain and product lines (#572)",
 	});
 });
 
+/** A value with every object's keys in Postgres jsonb's order: shorter first, then bytewise. */
+function jsonbOrder<T>(value: T): T {
+	if (Array.isArray(value)) return value.map((v: unknown) => jsonbOrder(v)) as T;
+	if (value === null || typeof value !== "object") return value;
+	const entries = Object.entries(value as Record<string, unknown>).toSorted(([a], [b]) =>
+		a.length !== b.length ? a.length - b.length : a < b ? -1 : a > b ? 1 : 0,
+	);
+	return Object.fromEntries(entries.map(([k, v]) => [k, jsonbOrder(v)])) as T;
+}
+
 /** The settle window the sweep passes a rebuild (`REPORTING_SETTLE_MS` in the plugin). */
 const SETTLE_MS = 20 * 60_000;
 
@@ -605,6 +615,29 @@ describeEachDialect("EmdashReportingStore month cache: the review's holes (#572)
 			);
 			// And again: nothing left to repair.
 			expect(await h.store.rebuildDayProducts("2026-05-12")).toMatchObject({ repaired: 0 });
+		});
+	});
+
+	test("a cache that comes back with its keys reordered (Postgres jsonb) is still unchanged", async () => {
+		const h = makeReportingHarness(bound.storage);
+		await oneOrder(h, "k1", "paid", "2026-05-12T09:00:00.000Z");
+		await settle(h);
+		// Postgres round-trips a guarded write through jsonb, which orders object keys by
+		// length then bytes: the same document, read back in another key order.
+		const month = (await monthly().get("2026-05"))!;
+		await monthly().put("2026-05", jsonbOrder(month));
+		const day = (await dailyRaw().get("USD:2026-05-12"))!;
+		await dailyRaw().put("USD:2026-05-12", jsonbOrder(day));
+		expect(Object.keys((await dailyRaw().get("USD:2026-05-12"))!.products![0]!)).toEqual([
+			"qty",
+			"cents",
+			"title",
+			"productId",
+		]);
+		expect(await h.store.buildMonth("2026-05")).toBe("unchanged");
+		expect(await h.store.rebuildDayProducts("2026-05-12")).toMatchObject({
+			written: 0,
+			repaired: 0,
 		});
 	});
 

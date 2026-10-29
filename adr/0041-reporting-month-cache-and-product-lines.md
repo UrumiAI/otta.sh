@@ -1,4 +1,4 @@
-# 0040. Long reports read a month cache and built product lines, kept honest by a verifier
+# 0041. Long reports read a month cache and built product lines, kept honest by a verifier
 
 - Status: accepted
 - Date: 2026-10-29
