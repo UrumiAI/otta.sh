@@ -30,8 +30,10 @@ import {
 	EmdashPaymentEventStore,
 	normalizeOrderDoc,
 	PAYMENT_ANOMALIES_COLLECTION,
+	PAYMENT_EVENTS_COLLECTION,
 	PAYMENT_REFS_COLLECTION,
 	type PaymentAnomalyDoc,
+	type PaymentEventDoc,
 	type PaymentRefDoc,
 	type StorageAccess,
 } from "../src/index.js";
@@ -190,5 +192,98 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 				`${tag}: winner anomalies`,
 			).toHaveLength(0);
 		}
+	}, 180_000);
+
+	test(`${String(K)} concurrent deliveries of ONE event to its OWN order all re-drive; a foreign event's leave no row (#616)`, async () => {
+		// `settleOrder` reads the order BEFORE it claims the dedupe key (#616), so
+		// every racer of a same-order duplicate holds an order snapshot taken before
+		// the claim. Exactly one claims; every other one reads the binding back as
+		// its own order and re-drives — never a false RECEIPT_REBOUND. A foreign
+		// event (no such order) claims nothing at all, however many copies race.
+		const h: OrderHarness = makeOrderHarness(storage);
+		const paymentEventStore = new EmdashPaymentEventStore({ storage });
+		const settleDeps = { ...h.settleDeps, paymentEventStore };
+		const events = collectionOf<PaymentEventDoc>(storage, PAYMENT_EVENTS_COLLECTION);
+		const anomalies = collectionOf<PaymentAnomalyDoc>(storage, PAYMENT_ANOMALIES_COLLECTION);
+		await h.seedDigital({ productId: "d-dup", sku: "DIG-DUP", priceCents: 900, title: "Ebook" });
+		const raced = new Set<string>();
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const tag = `loop ${String(loop)}`;
+			const cartId = await h.cartWith([
+				{ sku: "DIG-DUP", productId: "d-dup", qty: 1, kind: "digital" },
+			]);
+			const created = await createOrderFromCart(h.createDeps, {
+				cartId,
+				idempotencyKey: idempotencyKey(`dup-${String(loop)}`),
+				buyerRef: "dup@example.com",
+				paymentMethod: "stripe",
+			});
+			if (!created.ok) throw new Error(`${tag}: checkout failed: ${created.reason}`);
+			const order = created.order;
+			raced.add(order.id);
+			raced.add(`wc_${String(loop)}`);
+			const own = h.stripeGateway.webhook({
+				outcome: "succeeded",
+				orderId: order.id,
+				providerRef: `pi-dup-${String(loop)}`,
+				amount: order.totals.total,
+				currency: "USD",
+				dedupeKey: `evt-dup-${String(loop)}`,
+			});
+			const foreignKey = `evt-foreign-${String(loop)}`;
+			const foreign = h.stripeGateway.webhook({
+				outcome: "succeeded",
+				orderId: `wc_${String(loop)}`,
+				providerRef: `pi-foreign-${String(loop)}`,
+				amount: order.totals.total,
+				currency: "USD",
+				dedupeKey: foreignKey,
+			});
+
+			const results: SettleOutcome[] = await Promise.all([
+				...Array.from({ length: K }, () =>
+					settleCaptured(settleOrder(settleDeps, h.stripeGateway, own)),
+				),
+				...Array.from({ length: K }, () =>
+					settleCaptured(settleOrder(settleDeps, h.stripeGateway, foreign)),
+				),
+			]);
+			expect(
+				results.flatMap((r) => (r.kind === "threw" ? [String(r.err)] : [])),
+				`${tag}: thrown`,
+			).toEqual([]);
+			const settled = results.map((r) => (r.kind === "settled" ? r.result : undefined));
+			for (const r of settled.slice(0, K)) expect(r?.ok, `${tag}: own delivery`).toBe(true);
+			for (const r of settled.slice(K)) {
+				expect(r, `${tag}: foreign delivery`).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_FOUND",
+					orderId: `wc_${String(loop)}`,
+					dedupeKey: foreignKey,
+				});
+			}
+
+			const doc = await h.orders.get(order.id);
+			if (doc === null) throw new Error(`${tag}: missing order document ${order.id}`);
+			const stored = normalizeOrderDoc(doc);
+			expect(stored.state, `${tag}: state`).toBe("paid");
+			expect(stored.payments, `${tag}: ledger`).toHaveLength(1);
+			expect(
+				await paymentEventStore.orderForDedupeKey(`evt-dup-${String(loop)}`),
+				`${tag}: bound`,
+			).toBe(order.id);
+			expect(await events.get(foreignKey), `${tag}: foreign row`).toBeNull();
+		}
+		// No anomaly of any kind against a raced order: not a false RECEIPT_REBOUND on
+		// the own-order duplicates, and nothing at all for the foreign ones.
+		const found: PaymentAnomalyDoc[] = [];
+		let cursor: string | undefined;
+		do {
+			const page = await anomalies.query({ limit: 100, cursor });
+			for (const { data } of page.items) found.push(data);
+			cursor = page.hasMore ? page.cursor : undefined;
+		} while (cursor !== undefined);
+		expect(found.filter((a) => raced.has(a.orderId))).toEqual([]);
 	}, 180_000);
 });

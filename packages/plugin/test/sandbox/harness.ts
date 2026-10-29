@@ -188,6 +188,10 @@ export interface SandboxHandle {
 	/** The email bridge's base URL (for a `globalOutbound` stub to forward to),
 	 *  or `undefined` without `email: true`. */
 	readonly emailBridgeUrl: string | undefined;
+	/** Everything the isolate has written to its stdout and stderr since boot —
+	 *  `console.*` inside a hook lands here, not on the test's own console, so a
+	 *  case that pins a log line reads it from this. */
+	workerOutput(): string;
 	close(): Promise<void>;
 }
 
@@ -442,6 +446,7 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 	// findFreePort() and workerd's own bind are two separate steps (see
 	// bootWithPortRetry above) — wrap the whole spawn-and-wait sequence so a
 	// lost bind race gets a fresh port on retry, not the same doomed one.
+	let output = "";
 	const { child, baseUrl } = await bootWithPortRetry(async (port) => {
 		await writeFile(
 			configPath,
@@ -457,6 +462,10 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		let stderr = "";
 		bootChild.stderr.on("data", (chunk: Buffer) => {
 			stderr += chunk.toString();
+			output += chunk.toString();
+		});
+		bootChild.stdout.on("data", (chunk: Buffer) => {
+			output += chunk.toString();
 		});
 		const exitPromise = new Promise<never>((_resolve, reject) => {
 			// "close", not "exit" — Node only guarantees the stdio streams have
@@ -508,6 +517,7 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		rawFetch: (pathname, init) => fetch(`${baseUrl}${pathname}`, init),
 		sentEmails: () => [...(mail?.messages ?? [])],
 		emailBridgeUrl: mail?.baseUrl,
+		workerOutput: () => output,
 		async close() {
 			child.kill();
 			await mail?.close();

@@ -33,6 +33,7 @@ import {
 	EmdashOrderStore,
 	ORDERS_COLLECTION,
 	PAYMENT_ANOMALIES_COLLECTION,
+	PAYMENT_EVENTS_COLLECTION,
 	StorageContentionError,
 } from "@urumi.ai/otta-store-emdash";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -231,7 +232,14 @@ describe("the route's identity", () => {
 		// 200, not 404 (#595): a verified event naming an order this store never
 		// made is another tenant's on a shared Stripe account. An Otta order is
 		// always inserted before its intent exists, so Otta's own event cannot land here.
-		expect(settleResultToResponse({ ok: false, reason: "ORDER_NOT_FOUND" })).toEqual({
+		expect(
+			settleResultToResponse({
+				ok: false,
+				reason: "ORDER_NOT_FOUND",
+				orderId: toOrderId("wc_123"),
+				dedupeKey: "evt_foreign",
+			}),
+		).toEqual({
 			ok: false,
 			status: 200,
 			reason: "ORDER_NOT_FOUND",
@@ -642,6 +650,7 @@ describe("(viii-b) a VERIFIED payment_intent event that is not Otta's is acknowl
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		await seedPendingOrder("ord-bystander");
 		const before = await harness.stores.orderStore.getById(toOrderId("ord-bystander"));
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 
 		const res = await invoke(
 			signedStripeEvent(foreignIntentEvent("evt_foreign", metadata), WEBHOOK_SECRET, "wh-foreign"),
@@ -651,6 +660,17 @@ describe("(viii-b) a VERIFIED payment_intent event that is not Otta's is acknowl
 		expect(await collectionCount(ORDERS_COLLECTION)).toBe(1);
 		expect(await harness.stores.orderStore.getById(toOrderId("ord-bystander"))).toEqual(before);
 		expect(await collectionCount(PAYMENT_ANOMALIES_COLLECTION)).toBe(0);
+		// #616: not even a dedupe row — the order is read before the event is
+		// claimed, so a foreign event leaves nothing behind to prune.
+		expect(await collectionCount(PAYMENT_EVENTS_COLLECTION)).toBe(0);
+		if (reason === "ORDER_NOT_FOUND") {
+			// The info line names the event and the order it named, so an operator
+			// can find the payment in Stripe (#615, #616).
+			expect(info).toHaveBeenCalledTimes(1);
+			const line = String(info.mock.calls[0]?.[0]);
+			expect(line).toContain("evt_foreign");
+			expect(line).toContain("wc_123");
+		}
 	});
 
 	test("a signed body that is not a Stripe event shape is still 400 MALFORMED", async () => {

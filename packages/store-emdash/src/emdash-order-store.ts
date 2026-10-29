@@ -351,6 +351,14 @@ const MAX_LIST_PAGES = 1000;
  */
 const LIST_PAGE_SIZE = 100;
 
+/**
+ * The most values one `in` query carries — EmDash's own `SQL_BATCH_SIZE`, and a
+ * DIFFERENT bound from {@link LIST_PAGE_SIZE}: D1 binds at most 100 parameters per
+ * statement and the host binds its own beside the values (issue #578). See the same
+ * constant in `emdash-product-commerce-store.ts`.
+ */
+const IN_BATCH = 50;
+
 /** The outcome of a hold-bracket completion: what landed, and what was lost. */
 export interface HoldCompletionResult {
 	/** True when this call had outstanding work and finished it. */
@@ -1564,7 +1572,8 @@ export class EmdashOrderStore implements OrderStore {
 	 * orders no indexed arm already counted — decided in memory from each document's own
 	 * `searchKey`/`buyerRefLower`. Unlike the list's, this arm is NOT keyset-bounded: a
 	 * count is a cardinality over the whole matching set, so it resolves every pointer the
-	 * sku collected, `O(matches)`. See {@link #ordersMatchingSku} for the ceiling.
+	 * sku collected, `O(matches)` in reads — streamed through {@link #walkSkuMatches}, so
+	 * memory stays one read batch. See {@link #ordersMatchingSku} for the ceiling.
 	 */
 	async countOrders(filter: OrderListFilter): Promise<number> {
 		const search = foldSearch(filter.search);
@@ -1575,14 +1584,10 @@ export class EmdashOrderStore implements OrderStore {
 		}
 		if (search === undefined) return total;
 		const idArm = idArmOf(search);
-		for (const doc of await this.#ordersMatchingSku(
-			search,
-			filter,
-			null,
-			Number.POSITIVE_INFINITY,
-		)) {
+		// Streamed, not collected: only a counter outlives each read batch.
+		await this.#walkSkuMatches(search, filter, null, Number.POSITIVE_INFINITY, (doc) => {
 			if (!matchesSearchArms(doc, search, idArm)) total++;
-		}
+		});
 		return total;
 	}
 
@@ -2460,8 +2465,8 @@ export class EmdashOrderStore implements OrderStore {
 	 * frozen `createdAt` and are indexed `[sku, createdAt]`, so the list reads them
 	 * newest-first and opens only the orders it could actually return — `need` of them,
 	 * drained past the boundary tie group like any other arm. The pointer gives an order
-	 * ID; the document is then read by id, which is one read per order the arm returns
-	 * rather than an N+1 over the table.
+	 * ID, and the orders are then read together, {@link IN_BATCH} pointers per query, by
+	 * {@link #walkSkuMatches} — not one `get` per pointer (issue #601).
 	 *
 	 * **The COUNT passes `Infinity` and is therefore `O(matches)`.** A cardinality has no
 	 * page to stop at, so counting a sku resolves every order that ever bought it. The
@@ -2479,10 +2484,38 @@ export class EmdashOrderStore implements OrderStore {
 		cursor: OrderListCursor | null,
 		need: number,
 	): Promise<OrderDoc[]> {
-		if (search === undefined || search === "") return [];
+		const docs: OrderDoc[] = [];
+		await this.#walkSkuMatches(search, filter, cursor, need, (doc) => {
+			docs.push(doc);
+		});
+		return docs;
+	}
+
+	/**
+	 * The walk behind {@link #ordersMatchingSku}, handing each matching order to `onMatch`
+	 * instead of collecting it — so the COUNT, which passes `need = Infinity`, holds no
+	 * more than one read batch of orders at a time rather than every order the sku ever
+	 * sold. Returns how many orders matched.
+	 *
+	 * Each index page is resolved in slices of {@link IN_BATCH} pointers, one
+	 * {@link #readOrdersById} per slice, and slicing stops as soon as the boundary tie
+	 * group is passed: a common list page (`limit + 1` well under 50) costs ONE batch read.
+	 * A pointer the batch did not return is read by id, lazily and only when the walk
+	 * actually reaches it — a document that predates `searchKey`, or a pointer with no
+	 * order behind it — so the batch never narrows what the per-id read found, and never
+	 * reads past the boundary the old per-pointer loop stopped at.
+	 */
+	async #walkSkuMatches(
+		search: string | undefined,
+		filter: OrderListFilter,
+		cursor: OrderListCursor | null,
+		need: number,
+		onMatch: (doc: OrderDoc) => void,
+	): Promise<number> {
+		if (search === undefined || search === "") return 0;
 		const range = createdAtRange(filter, cursor);
 		const where: WhereClause = range === null ? { sku: search } : { sku: search, createdAt: range };
-		const docs: OrderDoc[] = [];
+		let matched = 0;
 		let boundary: string | null = null;
 		let indexCursor: string | undefined;
 		for (let page = 0; page < this.#maxListPages; page++) {
@@ -2492,22 +2525,63 @@ export class EmdashOrderStore implements OrderStore {
 				limit: LIST_PAGE_SIZE,
 				cursor: indexCursor,
 			});
-			for (const { data } of result.items) {
-				if (boundary !== null && data.createdAt !== boundary) return docs;
-				const stored = await this.#orders.get(data.orderId);
-				// A pointer with no order behind it, or one the lines no longer bear, is not a
-				// row: the pointer is derived and may never widen the predicate.
-				if (stored === null) continue;
-				const doc = normalizeOrderDoc(stored);
-				if (!orderSkuKeys(doc).includes(search)) continue;
-				if (!matchesOrderFilter(doc, filter) || !isAfterCursor(doc, cursor)) continue;
-				docs.push(doc);
-				if (boundary === null && docs.length >= need) boundary = data.createdAt;
+			for (let start = 0; start < result.items.length; start += IN_BATCH) {
+				const slice = result.items.slice(start, start + IN_BATCH);
+				const byId = await this.#readOrdersById(slice.map(({ data }) => data.orderId));
+				for (const { data } of slice) {
+					if (boundary !== null && data.createdAt !== boundary) return matched;
+					let doc = byId.get(data.orderId);
+					if (doc === undefined) {
+						const stored = await this.#orders.get(data.orderId);
+						// A pointer with no order behind it, or one the lines no longer bear, is not a
+						// row: the pointer is derived and may never widen the predicate.
+						if (stored === null) continue;
+						doc = normalizeOrderDoc(stored);
+					}
+					if (!orderSkuKeys(doc).includes(search)) continue;
+					if (!matchesOrderFilter(doc, filter) || !isAfterCursor(doc, cursor)) continue;
+					onMatch(doc);
+					matched++;
+					if (boundary === null && matched >= need) boundary = data.createdAt;
+				}
 			}
-			if (!result.hasMore || result.cursor === undefined) return docs;
+			if (!result.hasMore || result.cursor === undefined) return matched;
 			indexCursor = result.cursor;
 		}
-		throw new ScanPageLimitError("listOrders", this.#maxListPages, docs.length, "maxListPages");
+		throw new ScanPageLimitError("listOrders", this.#maxListPages, matched, "maxListPages");
+	}
+
+	/**
+	 * A batch of order documents by id, keyed by id — the sku arm's anti-N+1 read.
+	 *
+	 * `orderId` is not a declared field, so the batch rides {@link OrderDoc.searchKey}, the
+	 * declared FOLDED id: `searchKey in [...]`, {@link IN_BATCH} ids per query (callers
+	 * pass at most that many), paged to its end. Two ids differing only in case fold to one
+	 * key, so a document is keyed by its own `orderId` and one nobody asked for is dropped.
+	 * An id the batch did not return is simply absent; the caller decides whether to read
+	 * it by id.
+	 */
+	async #readOrdersById(ids: readonly string[]): Promise<Map<string, OrderDoc>> {
+		const wanted = new Set(ids);
+		const found = new Map<string, OrderDoc>();
+		const keys = [...new Set([...wanted].map((id) => searchKeyFor(id)))];
+		for (let start = 0; start < keys.length; start += IN_BATCH) {
+			const chunk = keys.slice(start, start + IN_BATCH);
+			let cursor: string | undefined;
+			do {
+				const result = await this.#orders.query({
+					where: { searchKey: { in: chunk } },
+					limit: LIST_PAGE_SIZE,
+					cursor,
+				});
+				for (const { data } of result.items) {
+					const doc = normalizeOrderDoc(data);
+					if (wanted.has(doc.orderId)) found.set(doc.orderId, doc);
+				}
+				cursor = result.hasMore ? result.cursor : undefined;
+			} while (cursor !== undefined);
+		}
+		return found;
 	}
 
 	/**
