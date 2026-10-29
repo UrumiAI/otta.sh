@@ -274,7 +274,7 @@ export async function computeQuote(
 			!validation.ok &&
 			validation.reason === "COUPON_EXHAUSTED" &&
 			context.idempotencyKey !== undefined &&
-			(await deps.couponStore.holdsUseUnderKey(couponRecord.id, context.idempotencyKey))
+			(await heldUnderKey(deps.couponStore, couponRecord.id, context.idempotencyKey))
 		) {
 			validation = validateCoupon(couponRecord, { ...couponContext, useHeldByThisCheckout: true });
 		}
@@ -636,4 +636,26 @@ async function withTimeout<T>(
 /** Convenience: subtotal of a line set (integer minor units). */
 export function sumLineSubtotals(lines: ReadonlyArray<TotalsLineInput>): Cents {
 	return cents(lines.reduce((sum, l) => sum + l.unitPriceCents * l.qty, 0));
+}
+
+/**
+ * `CouponStore.holdsUseUnderKey`, asked only to soften a refusal (#627). A read that
+ * fails answers `false`: the checkout keeps the typed `COUPON_EXHAUSTED` it already
+ * had, never a generic error, and `redeem` remains the guard either way. Logged, so
+ * a failing read is visible.
+ */
+async function heldUnderKey(
+	couponStore: CouponStore,
+	couponId: string,
+	key: IdempotencyKey,
+): Promise<boolean> {
+	try {
+		return await couponStore.holdsUseUnderKey(couponId, key);
+	} catch (err) {
+		console.warn(
+			`[domain] coupon ${JSON.stringify(couponId)}: holdsUseUnderKey failed → COUPON_EXHAUSTED`,
+			err,
+		);
+		return false;
+	}
 }

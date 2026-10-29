@@ -8,7 +8,7 @@ import {
 	reconcileCouponRedemptions,
 	type Order,
 } from "@urumi.ai/otta-domain";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
 const FAR_FUTURE = "9999-12-31T00:00:00.000Z";
@@ -262,4 +262,125 @@ test("a same-key checkout quoting while the first holds the coupon's last use is
 	// One use, for the one order.
 	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(1);
 	expect(await h.couponStore.listRedemptionsCreatedBefore(FAR_FUTURE)).toHaveLength(1);
+});
+
+/**
+ * #627 review. The same-key duplicate let past the soft check only REPLAYS call 1's
+ * redemption. If its own insert then throws (a transient storage error), it must
+ * not release that redemption: the use is call 1's, and call 1's order still lands
+ * discounted. Releasing it would hand the last use of a single-use coupon to
+ * another shopper as well.
+ */
+test("a same-key duplicate that replayed the held use and then throws does not release it (#627 review)", async () => {
+	const h = makeOrderHarness();
+	await h.seedPhysical({ productId: "p1", sku: "SKU-1", priceCents: 1000, title: "W", onHand: 10 });
+	await h.couponStore.create({
+		id: "cpn",
+		code: "SAVE5",
+		type: "fixed_amount",
+		amountCents: cents(500),
+		rateBps: null,
+		capCents: null,
+		currency: currency("USD"),
+		minSubtotalCents: null,
+		startsAt: null,
+		expiresAt: null,
+		maxUses: 1,
+		maxUsesPerCustomer: null,
+	});
+	const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+	const command = {
+		cartId,
+		idempotencyKey: idempotencyKey("k-double-click"),
+		buyerRef: "b@example.com",
+		paymentMethod: "stripe" as const,
+		couponCode: "SAVE5",
+	};
+
+	let releaseFirst!: () => void;
+	const firstHeld = new Promise<void>((resolve) => {
+		releaseFirst = resolve;
+	});
+	let reachedInsert!: () => void;
+	const firstAtInsert = new Promise<void>((resolve) => {
+		reachedInsert = resolve;
+	});
+	let calls = 0;
+	const insert = h.orderStore.createFromCart.bind(h.orderStore);
+	h.orderStore.createFromCart = async (input) => {
+		const mine = ++calls;
+		if (mine === 1) {
+			reachedInsert();
+			await firstHeld;
+		}
+		if (mine === 2) throw new Error("transient storage error");
+		return await insert(input);
+	};
+	const first = createOrderFromCart(h.createDeps, command);
+	await firstAtInsert;
+
+	// The double click replays call 1's redemption, then its insert throws.
+	await expect(createOrderFromCart(h.createDeps, command)).rejects.toThrow(
+		"transient storage error",
+	);
+	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(1);
+	// Still taken: another shopper is refused.
+	const otherCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+	const other = await createOrderFromCart(h.createDeps, {
+		...command,
+		cartId: otherCart,
+		idempotencyKey: idempotencyKey("k-other-shopper"),
+	});
+	expect(other).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
+
+	releaseFirst();
+	const a = await first;
+	if (!a.ok) throw new Error(`the first call was refused ${a.reason}`);
+	expect(a.order.totals.discount).toBe(500);
+	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(1);
+	expect(await h.couponStore.listRedemptionsCreatedBefore(FAR_FUTURE)).toHaveLength(1);
+});
+
+test("a failing holdsUseUnderKey read keeps the typed COUPON_EXHAUSTED refusal (#627 review)", async () => {
+	const h = makeOrderHarness();
+	await h.seedPhysical({ productId: "p1", sku: "SKU-1", priceCents: 1000, title: "W", onHand: 10 });
+	await h.couponStore.create({
+		id: "cpn",
+		code: "SAVE5",
+		type: "fixed_amount",
+		amountCents: cents(500),
+		rateBps: null,
+		capCents: null,
+		currency: currency("USD"),
+		minSubtotalCents: null,
+		startsAt: null,
+		expiresAt: null,
+		maxUses: 1,
+		maxUsesPerCustomer: null,
+	});
+	const taken = await h.couponStore.redeem({
+		couponId: "cpn",
+		orderId: orderId("o-other"),
+		idempotencyKey: idempotencyKey("k-other"),
+		createdAt: h.clock.now().toISOString(),
+	});
+	expect(taken.ok).toBe(true);
+	h.couponStore.holdsUseUnderKey = async () => {
+		throw new Error("storage unavailable");
+	};
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const res = await createOrderFromCart(h.createDeps, {
+			cartId,
+			idempotencyKey: idempotencyKey("k-mine"),
+			buyerRef: "b@example.com",
+			paymentMethod: "stripe",
+			couponCode: "SAVE5",
+		});
+		expect(res).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
+		expect(warn).toHaveBeenCalledTimes(1);
+	} finally {
+		warn.mockRestore();
+	}
 });

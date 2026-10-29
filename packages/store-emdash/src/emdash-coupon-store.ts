@@ -476,6 +476,14 @@ export class EmdashCouponStore implements CouponStore {
 	 * it. A `claimed` or `bumping` key counts: its owner is still in flight, and a
 	 * caller let through by it goes on to `redeem`, which waits for that owner's answer
 	 * and replays it, so the counter moves at most once for the key either way.
+	 *
+	 * The cost of counting `bumping`: if its owner died mid-bump, the caller let
+	 * through waits out the owner's lease (`COUPON_BUMP_LEASE_MS` plus one
+	 * `BUMP_WAIT_MAX_DELAY_MS`, about 11 s, at most `BUMP_WAIT_MAX_READS` reads)
+	 * before it takes over, where before it was refused at once. Those reads can
+	 * exceed a per-invocation query cap (Workers Free) and end the call with a
+	 * contention error instead. Accepted: it needs a crash inside the bump step, and
+	 * it never moves the counter twice.
 	 */
 	async holdsUseUnderKey(couponId: string, idempotencyKey: IdempotencyKey): Promise<boolean> {
 		const doc = await this.#redemptions.get(couponRedemptionDocId(couponId, idempotencyKey));
