@@ -446,6 +446,7 @@ export function createOrdersConsoleHandler(): RouteHandler<OrdersConsoleInput> {
 			// 401 on a missing admin token, a malformed response, a bug in this
 			// file — so the copy names the SYMPTOM and says the last possibility out
 			// loud rather than asserting a cause it does not know.
+			console.error("[otta] orders console failed:", err);
 			return UNAVAILABLE;
 		}
 	};

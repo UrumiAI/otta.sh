@@ -54,6 +54,18 @@
  * implementation therefore classifies every id first (index lookups), then
  * applies the work grouped by SKU — one `compareAndSet` per SKU, not per id.
  *
+ * `releaseHeld` is not atomic across its prune and its terminal state either. Every
+ * other settle records its terminal state FIRST and prunes by whichever state won
+ * (first-wins, #593), so a lost race never moves the wrong units. `releaseHeld`
+ * cannot: its terminal write is unconditional and the cart-scoped release may yet
+ * be refused in the aggregate write, so it prunes first. A `commit` that read the
+ * same live `held` hold can therefore win `committed` between that prune and that
+ * write — leaving a committed reservation whose units are back on sale. That is
+ * not healed here; `releaseHeld` throws `ReservationReleaseLostError` (naming the
+ * sku and qty to reconcile) instead of answering `true` (#617). Unreachable in
+ * production today — every `commit` path sees only adopted holds, which
+ * `releaseHeld` refuses in that same aggregate write — but the port allows it.
+ *
  * ## Contention
  *
  * Read-modify-write on a hot SKU retries. The budget is bounded and the
@@ -88,7 +100,11 @@ import {
 	type CasStep,
 } from "./cas-retry.js";
 import { collectionOf } from "./collection-of.js";
-import { ReservationIdCollisionError, ReservationNotReleasableError } from "./errors.js";
+import {
+	ReservationIdCollisionError,
+	ReservationNotReleasableError,
+	ReservationReleaseLostError,
+} from "./errors.js";
 import type { HoldDeadlineStamper } from "./hold-deadline-stamper.js";
 import {
 	adjustClaimId,
@@ -450,6 +466,12 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * write and answers `true` (see `#releasedWithoutHold`). That is why the
 	 * domain's `removeLine` routes a `pending` line here too: its retry is what
 	 * heals the crash.
+	 *
+	 * The same prune-first order means a `commit` that read the live `held` hold
+	 * can win the first-wins terminal state between this call's prune and its
+	 * terminal write. The units are then back under a `committed` reservation;
+	 * this call throws `ReservationReleaseLostError` rather than answer `true`
+	 * (#617). A retry reads the terminal state and answers `false`.
 	 */
 	async releaseHeld(reservationId: string): Promise<boolean> {
 		const index = await this.#mustIndex(reservationId);
@@ -461,7 +483,8 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		if (hold === undefined) return this.#releasedWithoutHold(index.idempotencyKey, reservationId);
 		if (hold.state !== "held") return false;
 		await this.#markKeyTerminal(index.idempotencyKey, { ok: true, reservationId }, reservationId);
-		const released = await this.#cas<boolean | "gone">("releaseHeld", async () => {
+		// The units this call returned, or why it returned none.
+		const released = await this.#cas<number | false | "gone">("releaseHeld", async () => {
 			const current = await this.#inventory.getVersioned(index.sku);
 			if (current === null) return casDone<"gone">("gone");
 			const doc = normalizeInventoryDoc(current.value);
@@ -476,11 +499,17 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 				onHand: doc.onHand + live.qty,
 				holds,
 			});
-			return written.applied ? casDone(true) : CAS_RETRY;
+			return written.applied ? casDone(live.qty) : CAS_RETRY;
 		});
 		if (released === false) return false;
 		if (released === "gone") return this.#releasedWithoutHold(index.idempotencyKey, reservationId);
-		await this.#setTerminalState(reservationId, "released");
+		// The units are back, but the terminal state is first-wins: a `commit` that
+		// read this same live hold may have recorded `committed` first (#617). That
+		// cannot be undone here, and answering `true` would hide it — so it is loud.
+		const winner = await this.#setTerminalState(reservationId, "released");
+		if (winner !== "released") {
+			throw new ReservationReleaseLostError(reservationId, index.sku, released, winner);
+		}
 		return true;
 	}
 
@@ -506,8 +535,9 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		) {
 			return false;
 		}
-		await this.#setTerminalState(reservationId, "released");
-		return true;
+		// The peer that pruned answers for its own lost race; this call moved nothing,
+		// so it only reports the state that won.
+		return (await this.#setTerminalState(reservationId, "released")) === "released";
 	}
 
 	/**

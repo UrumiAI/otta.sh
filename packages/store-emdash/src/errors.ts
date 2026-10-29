@@ -73,6 +73,56 @@ export function isReservationNotReleasableError(
 }
 
 /**
+ * A cart-scoped `releaseHeld` returned a hold's units and then LOST the
+ * first-wins terminal-state write to a concurrent `commit` (#617).
+ *
+ * `releaseHeld` prunes before it records its terminal state (its terminal write is
+ * unconditional, and the release may yet be refused in the aggregate write), so a
+ * `commit` that read the same live `held` hold can win `committed` in between. The
+ * units are then back on sale under a committed reservation — the one outcome a
+ * `true` answer would hide. Unlike {@link ReservationNotReleasableError}, which says
+ * NOTHING moved, this one says units DID move: `qty` of `sku` need reconciling
+ * against the order that committed. It is loud for the same reason `commit`'s lost
+ * race is: the store has no anomaly sink of its own, and a silent answer is wrong.
+ *
+ * Unreachable in production today — every `commit` path sees only ADOPTED holds,
+ * which `releaseHeld` refuses in the same aggregate write — but the port allows a
+ * `commit` on a `held` hold, so the adapter must not lie about it.
+ */
+export class ReservationReleaseLostError extends Error {
+	override readonly name = "ReservationReleaseLostError";
+	/** Structural discriminator — survives a sandbox bridge, unlike `instanceof`. */
+	readonly code = "RESERVATION_RELEASE_LOST";
+	readonly reservationId: string;
+	readonly sku: string;
+	/** The units this release returned to `sku` before it lost. */
+	readonly qty: number;
+	/** The terminal state that won — `committed` in every reachable case. */
+	readonly state: string;
+
+	constructor(reservationId: string, sku: string, qty: number, state: string) {
+		super(
+			`releaseHeld returned ${String(qty)} unit(s) of ${sku} for reservation ${reservationId}, ` +
+				`but a concurrent settle won its terminal state as ${state} — the units are back on ` +
+				"sale under a reservation that is not released, and need reconciling",
+		);
+		this.reservationId = reservationId;
+		this.sku = sku;
+		this.qty = qty;
+		this.state = state;
+	}
+}
+
+/** Structural test for {@link ReservationReleaseLostError}. */
+export function isReservationReleaseLostError(err: unknown): err is ReservationReleaseLostError {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		(err as { code?: unknown }).code === "RESERVATION_RELEASE_LOST"
+	);
+}
+
+/**
  * An order id came back already taken by a DIFFERENT idempotency key.
  *
  * `orders/{orderId}` is created create-if-absent from the key claim's payload, and
