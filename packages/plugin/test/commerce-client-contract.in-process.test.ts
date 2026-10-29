@@ -41,6 +41,7 @@
  * and its ceiling arbitration are the real adapters.
  */
 import {
+	NOOP_LOGGER,
 	addLine,
 	cents,
 	currency as toCurrency,
@@ -948,7 +949,12 @@ describe("in-process commerce: a cart line with no productId resolves by sku (#1
 		await seedDigital("prod-drift", "SKU-DRIFT");
 		const { cartId } = await client.createCart("USD");
 		const added = await addLine(
-			{ cartStore: stores.cartStore, inventoryStore: stores.inventory, clock: stores.clock },
+			{
+				cartStore: stores.cartStore,
+				inventoryStore: stores.inventory,
+				clock: stores.clock,
+				logger: NOOP_LOGGER,
+			},
 			cartId,
 			toSku("SKU-DRIFT"),
 			null,

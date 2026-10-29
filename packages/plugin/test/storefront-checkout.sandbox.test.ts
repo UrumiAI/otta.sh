@@ -45,6 +45,7 @@
  *    to its typed reason — with the real Stripe gateway armed from kv.
  */
 import {
+	NOOP_LOGGER,
 	addLine as addLineInDomain,
 	cents,
 	currency,
@@ -464,6 +465,7 @@ async function addLegacyLine(cartId: string, sku: string, qty: number): Promise<
 			cartStore: new EmdashCartStore({ storage, inventory, idGen: uuidIdGen, clock: systemClock }),
 			inventoryStore: inventory,
 			clock: systemClock,
+			logger: NOOP_LOGGER,
 		},
 		cartId,
 		toSku(sku),

@@ -3,6 +3,7 @@ import { cents } from "../money/cents.js";
 import { currencyPaymentIncrement } from "../money/currencies.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import { NOOP_LOGGER, type Logger } from "../ports/logger.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import type {
 	CapturedPayment,
@@ -23,6 +24,10 @@ import {
 } from "./provider-refunded-flag.js";
 
 export interface RefundOrderDeps {
+	/** Where this path's diagnostics go. Optional (no-op when absent) so the many
+	 *  narrow construction sites of the cancel/refund family need not wire it; every
+	 *  production composition root does. */
+	logger?: Logger;
 	orderStore: OrderStore;
 	/** The loud-anomaly seam (PAID_FLIP_LOST precedent) for the
 	 *  impossible-by-construction "issued but unrecorded" residual — when present,
@@ -538,7 +543,7 @@ async function refundOnLedger(
 						if (!written) {
 							// Another flag landed during the provider call and is kept for a
 							// person; the provider's answer is logged rather than dropped.
-							console.warn(
+							(deps.logger ?? NOOP_LOGGER).warn(
 								`[domain] order ${cmd.orderId}: provider-refund flag not written — another reconciliation flag was raised meanwhile. Provider answer: ${flag}`,
 							);
 						}

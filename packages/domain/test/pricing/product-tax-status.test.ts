@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { RecordingLogger } from "../../src/testing/recording-logger.js";
+import { beforeEach, describe, expect, test } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import { idempotencyKey } from "../../src/money/ids.js";
 import type { ProductTaxStatus } from "../../src/ports/product-commerce-store.js";
@@ -254,6 +255,7 @@ describe("the quote command carries the product's status, absent when taxable", 
 // -- computeQuote end to end -------------------------------------------------
 
 let deps: QuoteDeps;
+let logger: RecordingLogger;
 let shippingRules: InMemoryShippingRulesStore;
 let settings: InMemorySettingsStore;
 let seq = 0;
@@ -264,7 +266,8 @@ beforeEach(async () => {
 	const taxRules = new InMemoryTaxRulesStore();
 	settings = new InMemorySettingsStore();
 	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
-	deps = { shippingRules, taxRules, couponStore, clock, settings };
+	logger = new RecordingLogger();
+	deps = { shippingRules, taxRules, couponStore, clock, logger, settings };
 	await shippingRules.createZone({ id: "z-gb", name: "UK", regions: ["GB"] });
 	await shippingRules.createMethod({
 		id: "m-taxed",
@@ -395,7 +398,6 @@ describe("computeQuote: product status and method taxable", () => {
 	});
 
 	test("an outside calculator taxing shipping on an untaxed method ⇒ TAX_UNAVAILABLE", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
 		await save({ ...NEW_STORE_TAX_SETTINGS, enabled: true });
 		const calc: TaxCalculator = {
 			id: "acme.tax",
@@ -418,7 +420,6 @@ describe("computeQuote: product status and method taxable", () => {
 	});
 
 	test("an outside calculator taxing a 'none' line ⇒ TAX_UNAVAILABLE", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
 		await save({ ...NEW_STORE_TAX_SETTINGS, enabled: true });
 		const calc: TaxCalculator = {
 			id: "acme.tax",

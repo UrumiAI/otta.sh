@@ -17,7 +17,7 @@
  */
 import type { CartDeps } from "@urumi.ai/otta-domain";
 import type { CartStoreHarness } from "@urumi.ai/otta-domain/testing";
-import { FixedClock } from "@urumi.ai/otta-domain/testing";
+import { FixedClock, RecordingLogger } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashCartStore,
@@ -76,7 +76,12 @@ export function makeCartHarness(
 		onCasAttempts: options.onCasAttempts,
 	});
 	const inventoryDocs = collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION);
-	const deps: CartDeps = { cartStore: store, inventoryStore: inventory, clock };
+	const deps: CartDeps = {
+		cartStore: store,
+		inventoryStore: inventory,
+		clock,
+		logger: new RecordingLogger(),
+	};
 	return {
 		deps,
 		clock,

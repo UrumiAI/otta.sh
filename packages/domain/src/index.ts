@@ -635,6 +635,8 @@ export {
 	type RetryLatePaymentRefundsOptions,
 } from "./orders/late-payment.js";
 export type { Clock } from "./ports/clock.js";
+export type { Logger } from "./ports/logger.js";
+export { NOOP_LOGGER } from "./ports/logger.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
 export { isProductTaxStatus, PRODUCT_TAX_STATUSES } from "./ports/product-commerce-store.js";

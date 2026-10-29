@@ -2,6 +2,8 @@ import { type Cents, cents, type Currency } from "../money/cents.js";
 import type { IdempotencyKey } from "../money/ids.js";
 import { ORDER_ADDRESS_MAX_LENGTHS } from "../orders/order-address.js";
 import type { Clock } from "../ports/clock.js";
+import { describeErrorForLog } from "../ports/describe-error.js";
+import type { Logger } from "../ports/logger.js";
 import type { CouponRecord, CouponStore } from "../ports/coupon-store.js";
 import type { SettingsStore } from "../ports/settings-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
@@ -34,6 +36,8 @@ import { type CouponValidationFailure, validateCoupon } from "./validate-coupon.
 import { resolveShippingZone, type ZoneDestination, type ZoneResolution } from "./zone-match.js";
 
 export interface QuoteDeps {
+	/** Where this path's diagnostics go (the caller owns the sink). */
+	logger: Logger;
 	shippingRules: ShippingRulesStore;
 	taxRules: TaxRulesStore;
 	couponStore: CouponStore;
@@ -274,7 +278,7 @@ export async function computeQuote(
 			!validation.ok &&
 			validation.reason === "COUPON_EXHAUSTED" &&
 			context.idempotencyKey !== undefined &&
-			(await heldUnderKey(deps.couponStore, couponRecord.id, context.idempotencyKey))
+			(await heldUnderKey(deps.logger, deps.couponStore, couponRecord.id, context.idempotencyKey))
 		) {
 			validation = validateCoupon(couponRecord, { ...couponContext, useHeldByThisCheckout: true });
 		}
@@ -540,7 +544,7 @@ async function calculateTax(
 	} catch {
 		id = undefined;
 	}
-	if (!isValidCalculatorId(id)) return refuse("<invalid id>", "has an invalid id");
+	if (!isValidCalculatorId(id)) return refuse(deps.logger, "<invalid id>", "has an invalid id");
 	let raw: unknown;
 	// Issue #447: the calculator's own IO can stop when Otta stops waiting.
 	const controller = new AbortController();
@@ -551,24 +555,24 @@ async function calculateTax(
 			controller,
 		);
 	} catch (err) {
-		return refuse(id, err === TIMED_OUT ? "timed out" : "threw");
+		return refuse(deps.logger, id, err === TIMED_OUT ? "timed out" : "threw");
 	}
 	// Reading the answer runs ITS code too (a getter, a Proxy trap), so every
 	// read stays inside the fence; the validated copy holds only primitives.
 	try {
 		if (typeof raw === "object" && raw !== null && (raw as { ok?: unknown }).ok === false) {
-			return refuse(id, "refused");
+			return refuse(deps.logger, id, "refused");
 		}
 		const result = validateTaxResult(request, raw);
-		if (result === null) return refuse(id, "answered invalidly");
+		if (result === null) return refuse(deps.logger, id, "answered invalidly");
 		// A tax that is safe on its own may still overflow the ORDER total, which
 		// `assembleTotals` would throw on — refuse it here instead.
 		if (!Number.isSafeInteger(orderTotalOf(preTax, result, request.pricesIncludeTax))) {
-			return refuse(id, "answered a tax that overflows the order total");
+			return refuse(deps.logger, id, "answered a tax that overflows the order total");
 		}
 		return { calculatorId: id, result };
 	} catch {
-		return refuse(id, "answered invalidly");
+		return refuse(deps.logger, id, "answered invalidly");
 	}
 }
 
@@ -584,10 +588,9 @@ function orderTotalOf(preTax: PreTaxTotals, result: TaxResult, pricesIncludeTax:
 	return Number.isSafeInteger(exact) ? payableTotal(exact, preTax.currency) : exact;
 }
 
-function refuse(id: string, why: string): null {
-	// `console` is an ambient global, not an IO import (see create-order-from-cart's
-	// logIntentFailure). No request data is logged: it carries the buyer's address.
-	console.warn(`[domain] tax calculator ${JSON.stringify(id)} ${why} → TAX_UNAVAILABLE`);
+function refuse(logger: Logger, id: string, why: string): null {
+	// No request data is logged: it carries the buyer's address.
+	logger.warn(`[domain] tax calculator ${JSON.stringify(id)} ${why} → TAX_UNAVAILABLE`);
 	return null;
 }
 
@@ -645,6 +648,7 @@ export function sumLineSubtotals(lines: ReadonlyArray<TotalsLineInput>): Cents {
  * a failing read is visible.
  */
 async function heldUnderKey(
+	logger: Logger,
 	couponStore: CouponStore,
 	couponId: string,
 	key: IdempotencyKey,
@@ -652,9 +656,9 @@ async function heldUnderKey(
 	try {
 		return await couponStore.holdsUseUnderKey(couponId, key);
 	} catch (err) {
-		console.warn(
+		logger.warn(
 			`[domain] coupon ${JSON.stringify(couponId)}: holdsUseUnderKey failed → COUPON_EXHAUSTED`,
-			err,
+			{ error: describeErrorForLog(err) },
 		);
 		return false;
 	}
