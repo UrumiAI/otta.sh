@@ -1,4 +1,5 @@
 import { type Cents, cents, type Currency } from "../money/cents.js";
+import type { IdempotencyKey } from "../money/ids.js";
 import { ORDER_ADDRESS_MAX_LENGTHS } from "../orders/order-address.js";
 import type { Clock } from "../ports/clock.js";
 import type { CouponRecord, CouponStore } from "../ports/coupon-store.js";
@@ -56,6 +57,13 @@ export interface QuoteDeps {
 /** Why the quote is being made — passed to the calculator as `purpose`. */
 export interface QuoteContext {
 	purpose: "quote" | "order";
+	/**
+	 * The checkout's idempotency key, for an order's quote (#627). With it, a coupon
+	 * at its cap whose use a redemption under THIS key already holds is not refused
+	 * `COUPON_EXHAUSTED`: that is a same-key replay of the checkout that took it, and
+	 * `redeem` answers it. Absent ⇒ the soft check refuses as it always did.
+	 */
+	idempotencyKey?: IdempotencyKey;
 }
 
 export interface QuoteCommand {
@@ -253,11 +261,23 @@ export async function computeQuote(
 	if (command.couponCode !== undefined && command.couponCode !== "") {
 		couponRecord = await deps.couponStore.findByCode(command.couponCode);
 		if (couponRecord === null) return { ok: false, reason: "COUPON_NOT_FOUND" };
-		const validation = validateCoupon(couponRecord, {
+		const couponContext = {
 			now: deps.clock.now().toISOString(),
 			subtotalCents: subtotal,
 			currency: command.currency,
-		});
+		};
+		let validation = validateCoupon(couponRecord, couponContext);
+		// #627: the use that makes it look exhausted may be this checkout's own — a
+		// double-clicked Place whose first call took the last use and is still in
+		// flight. Asked only on that refusal, so a valid coupon costs no extra read.
+		if (
+			!validation.ok &&
+			validation.reason === "COUPON_EXHAUSTED" &&
+			context.idempotencyKey !== undefined &&
+			(await deps.couponStore.holdsUseUnderKey(couponRecord.id, context.idempotencyKey))
+		) {
+			validation = validateCoupon(couponRecord, { ...couponContext, useHeldByThisCheckout: true });
+		}
 		if (!validation.ok) return { ok: false, reason: validation.reason };
 		coupon = validation.coupon;
 	}

@@ -296,6 +296,77 @@ describeEachDialect("coupon lifecycle", (ctx) => {
 		expect(await fx.coupons.redemptions.count({ couponId: "cpn", holdsUse: "yes" })).toBe(0);
 	});
 
+	// Issue #627: the same double click, on a coupon at its cap. Call 1 has taken the
+	// LAST use and is still in flight, held at its order insert, so call 2 finds no
+	// order under the key and quotes a coupon whose counter reads `maxUses`. The use is
+	// call 2's own checkout's: it must resolve as call 1 does, never COUPON_EXHAUSTED,
+	// while another key at that moment is refused.
+	test("a same-key place quoting while the first holds the coupon's last use resolves as the first does, not COUPON_EXHAUSTED", async () => {
+		const fx = fixture();
+		await fx.orders.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1500,
+			title: "Widget",
+			onHand: 5,
+		});
+		await fx.coupons.store.create({
+			id: "cpn",
+			code: "SAVE5",
+			type: "fixed_amount",
+			amountCents: cents(500),
+			rateBps: null,
+			capCents: null,
+			currency: USD,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 1,
+			maxUsesPerCustomer: null,
+		});
+		const cartId = await fx.orders.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		const firstAtInsert = opening();
+		const releaseFirst = opening();
+		const orderStore = fx.createDeps.orderStore;
+		const first: CreateOrderDeps = {
+			...fx.createDeps,
+			orderStore: overriding(orderStore, {
+				async createFromCart(input) {
+					firstAtInsert.open();
+					await releaseFirst.promise;
+					return await orderStore.createFromCart(input);
+				},
+			}),
+		};
+		const firstCall = createOrderFromCart(first, cmd(cartId)).finally(() => firstAtInsert.open());
+		await firstAtInsert.promise;
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(1);
+
+		// Another shopper, another key: the last use is taken.
+		const otherCart = await fx.orders.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		const other = await createOrderFromCart(fx.createDeps, {
+			...cmd(otherCart),
+			idempotencyKey: idempotencyKey("k-other-shopper"),
+		});
+		expect(other).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
+
+		// The double click, while call 1 is in flight.
+		const second = await createOrderFromCart(fx.createDeps, cmd(cartId)).finally(() =>
+			releaseFirst.open(),
+		);
+		const a = await firstCall;
+		if (!second.ok) throw new Error(`the same-key call was refused ${second.reason}`);
+		if (!a.ok) throw new Error(`the first call was refused ${a.reason}`);
+		expect(second.order.id).toBe(a.order.id);
+		expect(second.order.totals.discount).toBe(500);
+		expect((await fx.coupons.store.findById("cpn"))?.usesCount).toBe(1);
+		expect(await fx.coupons.redemptions.count({ couponId: "cpn", holdsUse: "yes" })).toBe(1);
+	});
+
 	// #598 review: the orphan sweep reads the key through the PURE peek. A checkout
 	// that died between its key claim and its order document leaves a claim carrying
 	// a discounted order; the sweep must neither complete it (conjuring an order the

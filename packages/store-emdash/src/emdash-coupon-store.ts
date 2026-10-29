@@ -114,6 +114,7 @@ import {
 	type CouponStore,
 	type CreateCouponInput,
 	type DeleteCouponResult,
+	type IdempotencyKey,
 	type IdGen,
 	type RedeemCouponInput,
 	type RedeemResult,
@@ -467,6 +468,18 @@ export class EmdashCouponStore implements CouponStore {
 			await this.#releaseCustomerSlot(claim.doc);
 		}
 		return answer;
+	}
+
+	/**
+	 * One read of the key document, `coupon_redemptions/{couponId}:{idempotencyKey}`.
+	 * It holds a use in every state but `refused` (`holdsUse`), and a release deletes
+	 * it. A `claimed` or `bumping` key counts: its owner is still in flight, and a
+	 * caller let through by it goes on to `redeem`, which waits for that owner's answer
+	 * and replays it, so the counter moves at most once for the key either way.
+	 */
+	async holdsUseUnderKey(couponId: string, idempotencyKey: IdempotencyKey): Promise<boolean> {
+		const doc = await this.#redemptions.get(couponRedemptionDocId(couponId, idempotencyKey));
+		return doc !== null && normalizeRedemptionDoc(doc).holdsUse === "yes";
 	}
 
 	/**

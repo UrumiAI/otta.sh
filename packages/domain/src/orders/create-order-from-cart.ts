@@ -374,7 +374,9 @@ export async function createOrderFromCart(
 			methodId: command.shippingMethodId,
 			couponCode: command.couponCode,
 		}),
-		{ purpose: "order" },
+		// The key lets a same-key replay past the soft exhaustion check when its own
+		// first call holds the coupon's last use (#627); `redeem` below replays it.
+		{ purpose: "order", idempotencyKey: command.idempotencyKey },
 	);
 	if (!quote.ok) return { ok: false, reason: quote.reason };
 	const breakdown = quote.breakdown;

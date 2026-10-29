@@ -185,3 +185,81 @@ test("the orphan sweep frees a redemption whose key's order applied a DIFFERENT 
 	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(0);
 	expect((await h.couponStore.findById("cpn-other"))?.usesCount).toBe(1);
 });
+
+/**
+ * Issue #627. A double-clicked Place on a coupon at its cap: call 1 has taken the
+ * LAST use and is still in flight (held before its order insert), so call 2's
+ * idempotency short-circuit finds no order and its quote sees `usesCount ===
+ * maxUses`. That use is call 2's own checkout's, so call 2 must resolve the way call
+ * 1 does — never `COUPON_EXHAUSTED`. A different key at that moment is still
+ * refused: the cap holds.
+ */
+test("a same-key checkout quoting while the first holds the coupon's last use is not refused COUPON_EXHAUSTED (#627)", async () => {
+	const h = makeOrderHarness();
+	await h.seedPhysical({ productId: "p1", sku: "SKU-1", priceCents: 1000, title: "W", onHand: 10 });
+	await h.couponStore.create({
+		id: "cpn",
+		code: "SAVE5",
+		type: "fixed_amount",
+		amountCents: cents(500),
+		rateBps: null,
+		capCents: null,
+		currency: currency("USD"),
+		minSubtotalCents: null,
+		startsAt: null,
+		expiresAt: null,
+		maxUses: 1,
+		maxUsesPerCustomer: null,
+	});
+	const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+	const command = {
+		cartId,
+		idempotencyKey: idempotencyKey("k-double-click"),
+		buyerRef: "b@example.com",
+		paymentMethod: "stripe" as const,
+		couponCode: "SAVE5",
+	};
+
+	// Call 1 is held at its insert — AFTER its redeem took the last use.
+	let releaseFirst!: () => void;
+	const firstHeld = new Promise<void>((resolve) => {
+		releaseFirst = resolve;
+	});
+	let reachedInsert!: () => void;
+	const firstAtInsert = new Promise<void>((resolve) => {
+		reachedInsert = resolve;
+	});
+	let calls = 0;
+	const insert = h.orderStore.createFromCart.bind(h.orderStore);
+	h.orderStore.createFromCart = async (input) => {
+		if (++calls === 1) {
+			reachedInsert();
+			await firstHeld;
+		}
+		return await insert(input);
+	};
+	const first = createOrderFromCart(h.createDeps, command);
+	await firstAtInsert;
+	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(1);
+
+	// A different shopper's checkout now is refused: the last use is taken.
+	const otherCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+	const other = await createOrderFromCart(h.createDeps, {
+		...command,
+		cartId: otherCart,
+		idempotencyKey: idempotencyKey("k-other-shopper"),
+	});
+	expect(other).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
+
+	// The double click, while call 1 is still in flight: the same checkout.
+	const second = await createOrderFromCart(h.createDeps, command);
+	releaseFirst();
+	const firstResult = await first;
+	if (!second.ok) throw new Error(`the same-key call was refused ${second.reason}`);
+	if (!firstResult.ok) throw new Error(`the first call was refused ${firstResult.reason}`);
+	expect(second.order.id).toBe(firstResult.order.id);
+	expect(second.order.totals.discount).toBe(500);
+	// One use, for the one order.
+	expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(1);
+	expect(await h.couponStore.listRedemptionsCreatedBefore(FAR_FUTURE)).toHaveLength(1);
+});
