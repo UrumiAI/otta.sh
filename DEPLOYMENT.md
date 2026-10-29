@@ -361,12 +361,18 @@ order of appearance in a deployment's life:
 >   `.env`) that the Cloudflare Vite plugin writes there. `wrangler deploy` never uploads it,
 >   but any copy of `dist/` would carry it. A built `dist/` run with `astro preview` therefore
 >   has no local vars;
-> - it **fails the build, and deletes `dist/server`**, if a secret's value is in the bundle
->   anyway, for example from a `.env` file, which the first step cannot reach. Remove the
->   variable from the build environment and the `.env` file, then build again.
+> - it **fails the build, and deletes `dist/server`**, if a secret's value (16 characters or
+>   more) is in the bundle anyway, for example from a `.env` file, which the first step cannot
+>   reach. It also searches `dist/client`, where prerendered pages land, and a hit there deletes
+>   `dist/client` too. Remove the variable from the build environment and the `.env` file, then
+>   build again.
 >
 > For `astro dev`, keep local secrets in `sites/staging/.dev.vars` (gitignored). The dev
-> Worker reads it, and Astro never does, so nothing in it can reach a bundle. A dev `.env`
+> Worker reads it, and Astro never does, so nothing in it can reach a bundle. A
+> `sites/staging/.dev.vars` also replaces the env that the e2e stack injects (its throwaway
+> `EMDASH_ENCRYPTION_KEY` arrives through `CLOUDFLARE_INCLUDE_PROCESS_ENV`, which wrangler
+> ignores when `.dev.vars` exists), so move it aside, or put the e2e key in it, for
+> `pnpm test:e2e`. A dev `.env`
 > that holds only `EMDASH_ENCRYPTION_KEY` still builds: no server module names that key today,
 > and the build fails if one ever does.
 >

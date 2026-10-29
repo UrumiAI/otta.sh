@@ -38,6 +38,7 @@ import {
 	dropShellPathEnv,
 	findInlinedSecretsInDir,
 	findLeakedSecretValuesInDir,
+	MIN_SEARCHED_SECRET_LENGTH,
 	inlinedEnvKeys,
 	isBuildSecretEnvKey,
 	SHELL_PATH_ENV_KEYS,
@@ -167,17 +168,27 @@ interface HookRun {
 
 /**
  * Runs one integration instance through a build's hooks in Astro's order:
- * `astro:config:setup` (project root `projectRoot`, so Astro's `.env` lookup
- * happens there), the Vite plugin it injects (`configResolved`, mode
- * "production"), `astro:config:done` and, when `serverDir` is given,
- * `astro:build:done` over it.
+ * `astro:config:setup` (project root `projectRoot` and optional `vite.envDir`,
+ * which decide where Astro's `.env` lookup happens), the Vite plugin it injects
+ * (`configResolved` with `mode`, default "production"), `astro:config:done`
+ * (server and client output dirs) and, when `serverDir` is given,
+ * `astro:build:done`.
  */
 async function runHooks(
 	command: string,
 	{
 		projectRoot = "/nonexistent-otta-root",
+		envDir,
+		mode = "production",
 		serverDir,
-	}: { projectRoot?: string; serverDir?: string } = {},
+		clientDir = "/nonexistent-otta-client",
+	}: {
+		projectRoot?: string;
+		envDir?: string;
+		mode?: string;
+		serverDir?: string;
+		clientDir?: string;
+	} = {},
 ): Promise<HookRun> {
 	const run: HookRun = { warnings: [] };
 	const logger = {
@@ -193,15 +204,23 @@ async function runHooks(
 	await hook("astro:config:setup")({
 		command,
 		logger,
-		config: { root: pathToFileURL(`${projectRoot}/`), vite: {} },
+		config: {
+			root: pathToFileURL(`${projectRoot}/`),
+			vite: envDir === undefined ? {} : { envDir },
+		},
 		updateConfig: (update: { vite?: { plugins?: typeof plugins } }) => {
 			plugins.push(...(update.vite?.plugins ?? []));
 		},
 	});
-	for (const plugin of plugins) plugin.configResolved?.({ mode: "production" });
+	for (const plugin of plugins) plugin.configResolved?.({ mode });
 	if (serverDir === undefined) return run;
 	await hook("astro:config:done")({
-		config: { build: { server: pathToFileURL(`${serverDir}/`) } },
+		config: {
+			build: {
+				server: pathToFileURL(`${serverDir}/`),
+				client: pathToFileURL(`${clientDir}/`),
+			},
+		},
 	});
 	try {
 		await hook("astro:build:done")({ logger });
@@ -321,11 +340,16 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 				path.join(server, "chunk.mjs"),
 				`const secret = "${MARKER}";\nexport { secret };`,
 			);
+			const client = path.join(dir, "client");
+			mkdirSync(client);
+			writeFileSync(path.join(client, "index.html"), "<p>clean</p>");
 			process.env.GITHUB_CLIENT_SECRET = MARKER;
-			const { failure } = await runHooks("build", { serverDir: server });
+			const { failure } = await runHooks("build", { serverDir: server, clientDir: client });
 			expect(failure).toContain("chunk.mjs: GITHUB_CLIENT_SECRET");
 			expect(failure).not.toContain(MARKER);
 			expect(existsSync(server)).toBe(false);
+			// A server-only leak leaves the (clean) client output alone.
+			expect(existsSync(client)).toBe(true);
 		}));
 
 	test("a value from the project's .env file (never in process.env), JSON-escaped in the chunk", () =>
@@ -338,6 +362,67 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 			const { failure } = await runHooks("build", { projectRoot: dir, serverDir: server });
 			expect(failure).toContain("chunk.mjs: STRIPE_SECRET_KEY");
 			expect(failure).not.toContain(MARKER);
+		}));
+
+	test.each([
+		[".env.production.local", "production"],
+		[".env.staging", "staging"],
+	])(
+		"a value only in %s (mode %s) fails the build: the mode reaches the .env lookup",
+		(file, mode) =>
+			withTempDir(async (dir) => {
+				const server = path.join(dir, "dist", "server");
+				mkdirSync(server, { recursive: true });
+				writeFileSync(path.join(dir, file), `GITHUB_CLIENT_SECRET=${MARKER}\n`);
+				writeFileSync(path.join(server, "chunk.mjs"), `const s = "${MARKER}";`);
+				const { failure } = await runHooks("build", { projectRoot: dir, mode, serverDir: server });
+				expect(failure).toContain("chunk.mjs: GITHUB_CLIENT_SECRET");
+				expect(existsSync(server)).toBe(false);
+			}),
+	);
+
+	test("a value in the .env under `vite.envDir` (not the project root) fails the build", () =>
+		withTempDir(async (dir) => {
+			const envDir = path.join(dir, "env-files");
+			const server = path.join(dir, "dist", "server");
+			mkdirSync(envDir);
+			mkdirSync(server, { recursive: true });
+			writeFileSync(path.join(envDir, ".env"), `STRIPE_SECRET_KEY=${MARKER}\n`);
+			writeFileSync(path.join(server, "chunk.mjs"), `const s = "${MARKER}";`);
+			const { failure } = await runHooks("build", { projectRoot: dir, envDir, serverDir: server });
+			expect(failure).toContain("chunk.mjs: STRIPE_SECRET_KEY");
+		}));
+
+	test("a common short value under a secret name does not fail, even where the bundle has it", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "dist", "server");
+			mkdirSync(server, { recursive: true });
+			// A clean bundle really contains "postgres", "password" and "changeme".
+			writeFileSync(path.join(dir, ".env"), "DB_PASSWORD=password\nSMTP_PASS=changeme\n");
+			writeFileSync(
+				path.join(server, "chunk.mjs"),
+				`const kinds = ["postgres", "password", "changeme"];`,
+			);
+			process.env.POSTGRES_PASSWORD = "postgres";
+			const { failure } = await runHooks("build", { projectRoot: dir, serverDir: server });
+			expect(failure).toBeUndefined();
+			expect(existsSync(path.join(server, "chunk.mjs"))).toBe(true);
+		}));
+
+	test("a value in the CLIENT output (a prerendered page) fails the build and deletes both outputs", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "dist", "server");
+			const client = path.join(dir, "dist", "client");
+			mkdirSync(server, { recursive: true });
+			mkdirSync(path.join(client, "about"), { recursive: true });
+			writeFileSync(path.join(server, "entry.mjs"), "export {};");
+			writeFileSync(path.join(client, "about", "index.html"), `<p>${MARKER}</p>`);
+			process.env.GITHUB_CLIENT_SECRET = MARKER;
+			const { failure } = await runHooks("build", { serverDir: server, clientDir: client });
+			expect(failure).toContain(`client/${path.join("about", "index.html")}: GITHUB_CLIENT_SECRET`);
+			expect(failure).not.toContain(MARKER);
+			expect(existsSync(server)).toBe(false);
+			expect(existsSync(client)).toBe(false);
 		}));
 
 	test("deletes dist/server/.dev.vars, the plaintext copy of the local dev secrets", () =>
@@ -363,18 +448,19 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 });
 
 describe("findLeakedSecretValuesInDir", () => {
-	test("finds raw and JSON-escaped values in any file, by key; skips values too short to search", () =>
+	test("finds raw and JSON-escaped values in any file, by key; skips values under 16 chars", () =>
 		withTempDir((dir) => {
 			mkdirSync(path.join(dir, "chunks"));
 			const escaped = 'abc"def\\ghi-long';
 			writeFileSync(path.join(dir, "chunks", "a.mjs"), "x = 'raw-secret-value-1';");
 			writeFileSync(path.join(dir, "b.json"), JSON.stringify({ v: escaped }));
-			writeFileSync(path.join(dir, "c.mjs"), "short x=1234567");
+			writeFileSync(path.join(dir, "c.mjs"), "short x=123456789012345");
 			const secrets = new Map([
 				["RAW_SECRET", "raw-secret-value-1"],
 				["ESCAPED_TOKEN", escaped],
-				["SHORT_SECRET", "1234567"],
+				["SHORT_SECRET", "123456789012345"],
 			]);
+			expect(MIN_SEARCHED_SECRET_LENGTH).toBe(16);
 			expect(findLeakedSecretValuesInDir(dir, secrets).toSorted()).toEqual([
 				"b.json: ESCAPED_TOKEN",
 				`${path.join("chunks", "a.mjs")}: RAW_SECRET`,

@@ -83,11 +83,13 @@
  *    a careless `wrangler deploy` has nothing to ship, if any secret VALUE is
  *    still in it: the values dropped from the shell plus the secrets Astro
  *    itself loads from `.env` files (`loadEnv`, which `process.env` never
- *    sees). It searches every server file for each value, raw and
+ *    sees). It searches every server file, and every client file (a
+ *    prerendered page is rendered on the server but written there), for each
+ *    value of at least {@link MIN_SEARCHED_SECRET_LENGTH} characters, raw and
  *    JSON-escaped, so the define's form and the bundler's spacing do not
- *    matter. Astro's inlined env object is checked by key as well
- *    ({@link findInlinedSecretsInDir}), which also covers a value too short to
- *    search for.
+ *    matter. A client hit deletes the client output too. Astro's inlined env
+ *    object is checked by key as well ({@link findInlinedSecretsInDir}), which
+ *    also covers a value too short to search for.
  */
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -246,11 +248,14 @@ export function findInlinedSecretsInDir(dir: string): string[] {
 }
 
 /**
- * Values shorter than this are not searched for: a short string such as `true`
- * or `1234` matches unrelated code. Real secrets are far longer, and Astro's
- * inlined env object is still checked by key ({@link findInlinedSecretsInDir}).
+ * Values shorter than this are not searched for. A clean server bundle already
+ * contains `"postgres"`, `"password"` and `changeme`, so a builder whose shell
+ * has `POSTGRES_PASSWORD=postgres` would otherwise fail every build. Real
+ * secrets (API keys, OAuth client secrets, generated keys) are far longer, and
+ * a short value Astro inlines is still caught by key in its env object
+ * ({@link findInlinedSecretsInDir}).
  */
-export const MIN_SEARCHED_SECRET_LENGTH = 8;
+export const MIN_SEARCHED_SECRET_LENGTH = 16;
 
 /** Every file under `dir`, recursively. */
 function filesIn(dir: string): string[] {
@@ -350,6 +355,7 @@ export async function scrubBuildPathsInDir(dir: string, root: string): Promise<n
 
 export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration {
 	let serverDir: URL | undefined;
+	let clientDir: URL | undefined;
 	let envDir: string | false | undefined;
 	let mode = "production";
 	// The secrets dropped from the shell, kept (in memory only) to search the
@@ -387,6 +393,7 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 			},
 			"astro:config:done": ({ config }) => {
 				serverDir = config.build.server;
+				clientDir = config.build.client;
 			},
 			"astro:build:done": async ({ logger }) => {
 				if (serverDir === undefined || !existsSync(serverDir)) return;
@@ -399,17 +406,30 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 							secrets.set(key, value);
 						}
 					}
-					const leaks = [
+					// A prerendered page renders on the server but is written to the CLIENT
+					// output, which is uploaded as public static assets: search it too.
+					const client =
+						clientDir !== undefined && existsSync(clientDir) ? fileURLToPath(clientDir) : undefined;
+					const serverLeaks = [
 						...new Set([
 							...findInlinedSecretsInDir(server),
 							...findLeakedSecretValuesInDir(server, secrets),
 						]),
 					];
+					const clientLeaks =
+						client === undefined
+							? []
+							: findLeakedSecretValuesInDir(client, secrets).map((leak) => `client/${leak}`);
+					const leaks = [...serverLeaks, ...clientLeaks];
 					if (leaks.length > 0) {
-						rmSync(server, { recursive: true, force: true });
+						// Without the server output there is nothing for `wrangler deploy` to
+						// ship. A client hit is public HTML or JS, so that output goes as well.
+						const deleted =
+							clientLeaks.length > 0 && client !== undefined ? [server, client] : [server];
+						for (const dir of deleted) rmSync(dir, { recursive: true, force: true });
 						throw new Error(
-							`a secret was written into the worker bundle (issue #584), so ${server} was ` +
-								`deleted:\n  ${leaks.toSorted().join("\n  ")}\n${LEAK_HELP}`,
+							`a secret was written into the build output (issue #584), so ${deleted.join(" and ")} ` +
+								`${deleted.length === 1 ? "was" : "were"} deleted:\n  ${leaks.toSorted().join("\n  ")}\n${LEAK_HELP}`,
 						);
 					}
 				}
