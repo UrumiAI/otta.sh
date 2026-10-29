@@ -237,6 +237,44 @@ export function couponStoreContract(
 			expect((await store.findById("c1"))?.usesCount).toBe(2);
 		});
 
+		// Issue #627: the checkout's soft exhaustion check asks this before refusing, so a
+		// same-key replay of the checkout that took the last use reaches `redeem`'s replay.
+		// It must answer for THIS key alone: another key's use, a refusal, or a released
+		// use never lets a checkout past the cap.
+		test("holdsUseUnderKey is true only while THIS key's redemption of THIS coupon holds a use", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon({ maxUses: 1 }));
+			await store.create(fixedCoupon({ id: "c2", code: "OTHER" }));
+			const key = idempotencyKey("k-mine");
+			expect(await store.holdsUseUnderKey("c1", key)).toBe(false);
+			const mine = await store.redeem({
+				couponId: "c1",
+				orderId: orderId("o-mine"),
+				idempotencyKey: key,
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			expect(mine.ok).toBe(true);
+			if (!mine.ok) return;
+			expect(await store.holdsUseUnderKey("c1", key)).toBe(true);
+			// Another key, and another coupon under the same key, hold nothing.
+			expect(await store.holdsUseUnderKey("c1", idempotencyKey("k-other"))).toBe(false);
+			expect(await store.holdsUseUnderKey("c2", key)).toBe(false);
+			// A key the cap refused holds no use, though a replay of it answers the refusal.
+			const refused = await store.redeem({
+				couponId: "c1",
+				orderId: orderId("o-refused"),
+				idempotencyKey: idempotencyKey("k-refused"),
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			expect(refused).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
+			expect(await store.holdsUseUnderKey("c1", idempotencyKey("k-refused"))).toBe(false);
+			// Released, it holds nothing either.
+			await store.release(mine.redemptionId);
+			expect(await store.holdsUseUnderKey("c1", key)).toBe(false);
+			// A read: it moved no counter.
+			expect((await store.findById("c1"))?.usesCount).toBe(0);
+		});
+
 		test("maxUsesPerCustomer caps per-customer redemptions when a customer id is present", async () => {
 			const { store } = await makeStore();
 			await store.create(fixedCoupon({ maxUses: 10, maxUsesPerCustomer: 1 }));

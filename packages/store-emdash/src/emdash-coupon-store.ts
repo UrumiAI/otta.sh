@@ -117,6 +117,7 @@ import {
 	type CouponUsesObservation,
 	type CreateCouponInput,
 	type DeleteCouponResult,
+	type IdempotencyKey,
 	type IdGen,
 	type RedeemCouponInput,
 	type RedeemResult,
@@ -470,6 +471,26 @@ export class EmdashCouponStore implements CouponStore {
 			await this.#releaseCustomerSlot(claim.doc);
 		}
 		return answer;
+	}
+
+	/**
+	 * One read of the key document, `coupon_redemptions/{couponId}:{idempotencyKey}`.
+	 * It holds a use in every state but `refused` (`holdsUse`), and a release deletes
+	 * it. A `claimed` or `bumping` key counts: its owner is still in flight, and a
+	 * caller let through by it goes on to `redeem`, which waits for that owner's answer
+	 * and replays it, so the counter moves at most once for the key either way.
+	 *
+	 * The cost of counting `bumping`: if its owner died mid-bump, the caller let
+	 * through waits out the owner's lease (`COUPON_BUMP_LEASE_MS` plus one
+	 * `BUMP_WAIT_MAX_DELAY_MS`, about 11 s, at most `BUMP_WAIT_MAX_READS` reads)
+	 * before it takes over, where before it was refused at once. Those reads can
+	 * exceed a per-invocation query cap (Workers Free) and end the call with a
+	 * contention error instead. Accepted: it needs a crash inside the bump step, and
+	 * it never moves the counter twice.
+	 */
+	async holdsUseUnderKey(couponId: string, idempotencyKey: IdempotencyKey): Promise<boolean> {
+		const doc = await this.#redemptions.get(couponRedemptionDocId(couponId, idempotencyKey));
+		return doc !== null && normalizeRedemptionDoc(doc).holdsUse === "yes";
 	}
 
 	/**

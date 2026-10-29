@@ -180,6 +180,15 @@ export class InMemoryCouponStore implements CouponStore {
 		return { ok: true };
 	}
 
+	/** A row exists only for a use that is held (a refusal writes none, a release
+	 *  deletes it), so its presence is the answer. */
+	async holdsUseUnderKey(couponId: string, idempotencyKey: IdempotencyKey): Promise<boolean> {
+		for (const r of this.#redemptions.values()) {
+			if (r.couponId === couponId && r.idempotencyKey === idempotencyKey) return true;
+		}
+		return false;
+	}
+
 	async redeem(input: RedeemCouponInput): Promise<RedeemResult> {
 		const coupon = this.#coupons.get(input.couponId);
 		if (coupon === undefined) throw new Error(`unknown coupon: ${input.couponId}`);

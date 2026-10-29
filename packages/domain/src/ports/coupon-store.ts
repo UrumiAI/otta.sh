@@ -83,6 +83,20 @@ export interface CouponStore {
 	redeem(input: RedeemCouponInput): Promise<RedeemResult>;
 
 	/**
+	 * Whether the redemption `(couponId, idempotencyKey)` holds a use: claimed under
+	 * that key and neither refused nor released. A pure read; it moves nothing.
+	 *
+	 * Issue #627: the checkout asks this before its SOFT exhaustion check refuses. A
+	 * double-clicked Place runs two same-key checkouts, and the second can quote after
+	 * the first took the coupon's last use, while the first is still in flight (so the
+	 * idempotency short-circuit finds no order yet). That use is the second call's own
+	 * checkout's, so the second goes on to `redeem`, whose replay answers it. Only
+	 * THIS key's use counts, so a different checkout key is never let past the cap,
+	 * and `redeem` stays the atomic guard either way.
+	 */
+	holdsUseUnderKey(couponId: string, idempotencyKey: IdempotencyKey): Promise<boolean>;
+
+	/**
 	 * Release a redemption: `DELETE` the row and decrement `uses_count` (guarded
 	 * `uses_count > 0`), all-or-nothing. Releasing an already-released or
 	 * never-redeemed id is a no-op, not an error.

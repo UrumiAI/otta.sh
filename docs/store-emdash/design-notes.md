@@ -1509,7 +1509,7 @@ Per-shape depth and contention, as the suite reports them per case:
 | two concurrent crowds of 20 on two addresses, cap 3 each | 3 | 0 |
 | a consume freeing one slot against a crowd of 20 (10 loops) | 2 | 0 |
 | 30 concurrent registrations of one address (15 loops) | 1 | 0 |
-| 12 concurrent redeems of one address, get-or-create (8 loops) | 8 | 0 |
+| 12 concurrent redeems of one address, get-or-create (8 loops) | 7 (slot releases); the wait is separate, below | 0 |
 | 24 concurrent grants of one entitlement key (12 loops) | 2 | 0 |
 | 16 concurrent grants for one scope, distinct keys (10 loops) | 2 | 0 |
 | 16 concurrent settings updates on one key (10 loops) | 3 | 0 |
@@ -1531,12 +1531,18 @@ the shipping/tax rules shape, which is why the settings budget is asserted at
 The identity races (`login-challenge-race.pg.test.ts`,
 `customer-email-claim-race.pg.test.ts`) are worth reading as a pair. The
 registration stampede measures **1**: the first writer takes the claim and every peer is
-then refused by reading it, so nothing contends. The get-or-create measures **8**, and
-that depth is not contention at all — it is the bounded WAIT a redeemer spends re-reading
-until the winner's account document is readable, because the claim refuses a second
-registration from the moment it is taken, which is a moment before the account behind it
-exists. It is measured at N=12 and grows with how long the winner takes, not with the
-crowd.
+then refused by reading it, so nothing contends. The get-or-create has two depths, and
+the suite asserts them separately. Its contention is the N slot releases on one throttle
+document: a release loses only to a peer's committed release, and each peer commits once,
+so the depth is at most N (measured 5–7 at N=12). Its deepest step, though, is not
+contention at all — it is the WAIT a redeemer spends re-reading until the winner's account
+document is readable, because the claim refuses a second registration from the moment it
+is taken, which is a moment before the account behind it exists. That depth grows with how
+long the winner's write takes, not with the crowd (measured 1–2 locally, 13 on a loaded CI
+runner, 22–24 with the winner's write delayed 400 ms), so nothing bounds it in attempts and it
+is not left to the runner: the suite holds the winner's account write until a peer has
+retried, and keeps the peers from re-reading while it lands, so it asserts one account and
+a retry rather than a depth.
 
 `restock-concurrency.pg.test.ts` reports its depth and contention count **per case**
 rather than per file, so a ceiling is attributed to the shape that produced it by
@@ -1880,7 +1886,9 @@ a moment before the account behind it is readable, so a single re-read after the
 duplicate could find nothing and report a duplicate for an address the caller was
 logging into. Its re-read is therefore **inside** the bounded retry, and only an
 exhausted budget is reported — as the typed retryable contention failure, never as a
-duplicate (measured depth 8 at N=12, which is the wait, not contention).
+duplicate. That wait is the step's deepest depth, and it tracks how long the winner's
+account write takes, not contention (see the per-shape measurements above; the race suite
+holds that write behind a gate so the depth does not depend on the runner's speed).
 
 ### The claim is the fast path; the email lookup heals
 
@@ -1935,7 +1943,7 @@ residue back before proving what a later caller sees:
 | consume committed, release lost | a held slot for a spent challenge | the replay is `CONSUMED`; the window resets at the expiry |
 | an address update that loses its revision to a concurrent delete | none | the retry re-checks ownership and answers the miss rather than resurrecting the address |
 | a registrant parked past its lease, overtaken by a peer | none | its own re-assertion refuses before any account write: one account owns the address, and it is the peer's |
-| consume committed and slot released, then `#resolveCustomer` exhausts its budget | a spent challenge with no account resolved | the caller sees the typed retryable failure and the link cannot be replayed (`CONSUMED`) — one lost login, never a second redemption. Not enumerated in the suite: it needs a contention storm on a document only one caller writes |
+| consume committed and slot released, then `#resolveCustomer` exhausts its budget | a spent challenge with no account resolved | the caller sees the typed retryable failure and the link cannot be replayed (`CONSUMED`) — one lost login, never a second redemption. Not enumerated in the suite: it needs the winner's account write to outlast the attempt-limited wait (24 jittered attempts, roughly 0.5 s), not contention — measured exhausting at a 600 ms write, and succeeding only on its last attempt at 400 ms ([#647](https://github.com/UrumiAI/otta.sh/issues/647)) |
 
 ### What the identity tier does NOT carry
 
