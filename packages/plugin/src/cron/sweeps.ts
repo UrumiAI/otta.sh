@@ -292,9 +292,11 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     heal sizes itself to the calls left, so the other way round a Free tick the
  *     heal had busy deferred the coupon leg every time — and a held coupon use is
  *     something a shopper can hit, a stale rollup is not. `coupon-recount` (#619)
- *     follows it, for the same reason and the same place: ahead of the heal, and
- *     after the orphan sweep, so a use the sweep frees this tick is not first seen
- *     as drift;
+ *     comes after the heal, not before it: its correction waits a settle window
+ *     anyway, and ahead of the heal its one-page entry left a Free tick's closed-day
+ *     heal a call short of finishing, so the next, idle minute ran the heal again
+ *     (`cron-late-refunds.test.ts`). After the orphan sweep, too, so a use the sweep
+ *     frees this tick is not first seen as drift;
  *     `product-orphans` is last of all, the leg nothing else waits on.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
@@ -310,8 +312,8 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"sku-transfers",
 	"order-sku-index",
 	"coupon-orphans",
-	"coupon-recount",
 	"reporting-heal",
+	"coupon-recount",
 	"product-orphans",
 ];
 
