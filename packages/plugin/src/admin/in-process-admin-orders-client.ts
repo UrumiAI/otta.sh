@@ -13,9 +13,9 @@
  * admin screens consume these results through `console-api.ts` STRUCTURAL
  * mirrors — they import no wire type — so a field quietly dropped here is
  * invisible to the compiler and breaks at runtime. In particular:
- *  - `OrdersListResult.total` is always present on a page this tier served, and
- *    an ABSENT total is never spelled `0` (that would caption a page of rows
- *    with a count of none);
+ *  - `OrdersListResult.total` is present on a page this tier served unless the
+ *    count itself failed (logged, see `#page`), and an ABSENT total is never
+ *    spelled `0` (that would caption a page of rows with a count of none);
  *  - `cursorRejected` is only ever `true`, never `false` and never "present but
  *    unset" — it means "you asked for a page you did not get";
  *  - `allowedTransitions` is DERIVED from the domain (`adminNextStates`: the state
@@ -1048,22 +1048,30 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		return { filter: tokenFilter, pos, limit };
 	}
 
-	/** The page and its EXACT count, under ONE filter, in parallel — sharing the
-	 *  filter is what lets the count describe the page it captions. */
+	/** The page and its EXACT count, under ONE filter — sharing the filter is what
+	 *  lets the count describe the page it captions.
+	 *
+	 *  The list runs FIRST and the count only after it, and a count that fails is
+	 *  logged and dropped rather than failing the page: the count is the costlier
+	 *  read (a sku search resolves every order that ever bought the sku, issue
+	 *  #601), so past a store's query budget it is the half that gives out, and a
+	 *  page of rows with no total — which the console captions page-scoped — beats
+	 *  an "unavailable" pane. A failing LIST still fails the page. */
 	async #page(
 		filter: OrderListFilter,
 		pos: OrderListCursor | null,
 		limit: number,
 	): Promise<OrdersListResult> {
-		const [result, total] = await Promise.all([
-			this.#stores.orderStore.listOrders(filter, { cursor: pos, limit }),
-			this.#stores.orderStore.countOrders(filter),
-		]);
+		const result = await this.#stores.orderStore.listOrders(filter, { cursor: pos, limit });
+		const total = await this.#stores.orderStore.countOrders(filter).catch((err: unknown) => {
+			console.error("[otta] orders count failed:", err);
+			return undefined;
+		});
 		return {
 			orders: result.orders.map(toOrderSummaryWire),
 			nextCursor:
 				result.nextCursor === null ? null : encodeOrderCursor(result.nextCursor, filter, limit),
-			total,
+			...(total === undefined ? {} : { total }),
 		};
 	}
 }

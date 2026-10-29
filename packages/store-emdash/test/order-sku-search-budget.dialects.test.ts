@@ -200,6 +200,11 @@ describeEachDialect("the line-sku search arm's storage budget", (ctx) => {
 		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
 		const legacy = await orders.get("Ord-Legacy");
 		await orders.put("Ord-Legacy", { ...legacy!, searchKey: null });
+		// Two ids that differ only in case fold to ONE `searchKey`: one batch read returns
+		// both, and each must still resolve as its own row.
+		await lined(h.store, "ORD-CASE", ["S1"]);
+		await lined(h.store, "ord-case", ["S1"]);
+		h.advance(1000);
 		// A dangling pointer (no order behind it) and a stale one (the order's lines do
 		// not carry the sku): neither is a row.
 		const index = collectionOf<OrderSkuIndexDoc>(bound.storage, ORDER_SKU_INDEX_COLLECTION);
@@ -231,7 +236,36 @@ describeEachDialect("the line-sku search arm's storage budget", (ctx) => {
 			}
 			expect(await h.store.countOrders(filter)).toBe(expected.length);
 		}
-		// The legacy order is a row under the unfiltered search.
-		expect(await perOrderOracle(bound.storage, "S1")).toContain("Ord-Legacy");
+		// The legacy order and both case twins are rows under the unfiltered search.
+		const all = await perOrderOracle(bound.storage, "S1");
+		expect(all).toContain("Ord-Legacy");
+		expect(all).toContain("ORD-CASE");
+		expect(all).toContain("ord-case");
 	}, 180_000);
+
+	test("orders that predate searchKey: the list pays at most one batch read over the per-order path", async () => {
+		const h: OrderHarness = makeOrderHarness(bound.storage);
+		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
+		for (let i = 0; i < 60; i++) {
+			const id = `old-${String(i).padStart(3, "0")}`;
+			await lined(h.store, id, ["S2"]);
+			const doc = await orders.get(id);
+			await orders.put(id, { ...doc!, searchKey: null });
+			h.advance(1000);
+		}
+		const counted = countedStorage(bound.storage);
+		const store = makeOrderHarness(bound.storage, { storageForOrders: counted.storage }).store;
+
+		const page = await store.listOrders({ search: "S2" }, { cursor: null, limit: 25 });
+
+		expect(page.orders.map((o) => o.id)).toEqual(
+			Array.from({ length: 25 }, (_, i) => `old-${String(59 - i).padStart(3, "0")}`),
+		);
+		// The per-order path cost 29 here: the id and buyer-reference arms (2), one index
+		// page (1) and one `get` per order up to the `limit + 1` boundary (26). The batch
+		// finds none of these orders, so each falls back to that same `get` — read lazily,
+		// never for the pointers past the boundary — and the batch itself adds ONE query
+		// (`ceil(26 / 50)`).
+		expect(counted.calls()).toBeLessThanOrEqual(29 + 1);
+	}, 120_000);
 });
