@@ -40,6 +40,10 @@ export interface InventoryStore {
 	// is released (by this call, or already), `false` — moving nothing — when it
 	// is not the cart's to free (`adopted`, `committed`, or never held). An id
 	// that does not exist throws `ReservationNotFoundError`, as `release` does.
+	// An adapter that returns the units before it records the terminal state may
+	// also THROW when it loses that first-wins race to a `commit` (#617: store-
+	// emdash's `ReservationReleaseLostError`); the units have moved, so neither
+	// answer is true. A retry then reads `committed` and answers `false`.
 	releaseHeld(reservationId: string): Promise<boolean>;
 	// Additive (Phase 4 §5): the single guarded `held → adopted` flip that hands a
 	// cart's live reservation to an order. Sets `order_id` and re-points

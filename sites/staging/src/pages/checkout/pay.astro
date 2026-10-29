@@ -42,6 +42,7 @@ import Notice from "../../components/Notice.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { PAY_ERROR_ID } from "../../lib/error-notice.js";
 import { busyResponse, dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
 import { payHoldCopy } from "../../lib/hold.js";
 import { payPageRedirect } from "../../lib/pay-guard.js";
@@ -147,7 +148,16 @@ const model: PayModel = {
 							data-pay-server-now={renderedAt}
 						/>
 					</div>
-					<p id="payment-error" class="pay-error" role="alert" hidden />
+					{/* #604: a refusal the script reports (a declined card, a confirm
+					    that failed, a page that cannot take payment). The ALERT region
+					    is in the DOM from first render and never hidden — only its
+					    text is — for the reason #payment-closed below gives. Each new
+					    attempt hides the text, so a repeat of the same decline appears
+					    again and is announced again; `fail()` focuses the region
+					    (`tabindex="-1"`) after a refused attempt. */}
+					<div id={PAY_ERROR_ID} class="pay-error-region" role="alert" tabindex="-1">
+						<p id="payment-error-text" class="pay-error" hidden />
+					</div>
 					{/* QA2 M1c: shown when the time to pay runs out while this page is
 					    open — by the deadline script, or by the inline script when
 					    Stripe says the intent was withdrawn. Rendered by the page,
@@ -203,13 +213,46 @@ const model: PayModel = {
 						var mount = document.getElementById("payment-element");
 						var form = document.getElementById("payment-form");
 						var errorBox = document.getElementById("payment-error");
+						var errorText = document.getElementById("payment-error-text");
 						var submit = document.getElementById("payment-submit");
-						if (!mount || !form || !errorBox || !submit) return;
+						if (!mount || !form || !errorBox || !errorText || !submit) return;
 
-						function fail(message) {
-							errorBox.textContent = message;
-							errorBox.hidden = false;
+						/** The pending half of the last `fail`, so a newer state wins. */
+						var failTimer;
+
+						/** Hide the refusal, and drop one still waiting to be said. */
+						function clearFailure() {
+							clearTimeout(failTimer);
+							errorText.hidden = true;
+						}
+
+						/**
+						 * Say why (#604). The region (#payment-error, role=alert) is
+						 * always in the DOM, and the text appearing in it is what is
+						 * announced. A repeat of the same decline is announced again
+						 * because the submit handler hides the text for the Stripe round
+						 * trip (`clearFailure`); the text is cleared here and set, and
+						 * shown, a tick later, so a newer submit or a close in between
+						 * wins and the box is never shown empty. Focus goes to the region
+						 * unless this is the load-time give-up (`atLoad`: announced, not
+						 * focused), the page has closed (its own notice speaks and holds
+						 * focus), or the buyer has moved on to something outside the form.
+						 */
+						function fail(message, atLoad) {
+							var active = document.activeElement;
+							var moveFocus =
+								!atLoad && (!active || active === document.body || form.contains(active));
 							submit.disabled = true;
+							clearTimeout(failTimer);
+							errorText.textContent = "";
+							failTimer = setTimeout(function () {
+								// Closed meanwhile (the deadline module's close(), which
+								// cannot reach this timer): its own notice speaks and holds focus.
+								if (payClosed()) return;
+								errorText.hidden = false;
+								errorText.textContent = message;
+								if (moveFocus) errorBox.focus();
+							}, 0);
 						}
 
 						/**
@@ -221,7 +264,7 @@ const model: PayModel = {
 						function giveUp(message) {
 							var box = mount.closest(".mount");
 							if (box) box.hidden = true;
-							fail(message);
+							fail(message, true);
 						}
 
 						/** Set by the deadline script (below) when the hold runs out
@@ -246,7 +289,7 @@ const model: PayModel = {
 							var hadFocus = form.contains(document.activeElement);
 							form.dataset.payClosed = "true";
 							submit.disabled = true;
-							errorBox.hidden = true;
+							clearFailure();
 							// QA3 N4: a cancelled order says so; anything else is the deadline.
 							var cancelled = reason === "cancelled";
 							var body = document.getElementById(
@@ -560,7 +603,7 @@ const model: PayModel = {
 							// The deadline script stops a late submit before it gets here;
 							// this is the belt for a browser where that script did not run.
 							if (payClosed()) return;
-							errorBox.hidden = true;
+							clearFailure();
 							submit.disabled = true;
 							stripe
 								.confirmPayment({
@@ -743,6 +786,15 @@ const model: PayModel = {
 	   flex gap it would otherwise add while its body is hidden. */
 	#payment-closed {
 		width: 100%;
+	}
+	/* The same for the refusal region (#604), which is also focused: kept
+	   clear of the viewport's top edge when it scrolls into view. */
+	.pay-error-region {
+		width: 100%;
+		scroll-margin-top: 1rem;
+	}
+	.pay-error-region:has(> [hidden]) {
+		margin-top: -1.25rem;
 	}
 	#payment-closed:has(> [hidden]) {
 		margin-top: -1.25rem;

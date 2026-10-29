@@ -202,6 +202,19 @@ export interface UpsertProductVariantInput {
 	contentUpdatedAt?: string;
 }
 
+/** One save's whole repeater projection (#602) — every declare plus the drop
+ *  instruction, under the save's one watermark. Each declare is the
+ *  `UpsertProductVariantInput` body (still NOTHING commercial) plus its own
+ *  per-row replay key. */
+export interface ApplyVariantSyncInput {
+	contentUpdatedAt: string;
+	declares: ReadonlyArray<{ variantKey: string; title?: string | null; idempotencyKey: string }>;
+	/** The orphan replay key for a variant this save stopped declaring, or `null`
+	 *  to withhold the drop phase. A function because the drop set is computed
+	 *  by the store, from the same read its one write commits against. */
+	orphanIdempotencyKey: ((variantKey: string) => string) | null;
+}
+
 /** The ADMIN edit's body — the commerce-owned fields only. `title` is absent BY
  *  DESIGN: the console renders a variant's name as read-only text. */
 export interface UpdateProductVariantFieldsInput {
@@ -336,6 +349,11 @@ export interface CommerceClient {
 		input: UpsertProductVariantInput,
 		idempotencyKey: string,
 	): Promise<ProductVariantWire>;
+	/** The CMS sync of ONE save (#602): every declare and the orphan of every
+	 *  live variant the save no longer declares, in one store write. The outcome
+	 *  is exactly `upsertProductVariant` per declare then `deactivateProductVariant`
+	 *  per dropped key — at the cost of one read and one write. */
+	applyProductVariantSync(productId: string, input: ApplyVariantSyncInput): Promise<void>;
 	/** The guarded ADMIN edit. `expectedUpdatedAt` is the compare-and-set
 	 *  watermark read off the row; every refusal is a typed result, never a
 	 *  thrown transport error. */

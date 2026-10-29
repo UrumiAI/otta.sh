@@ -32,6 +32,13 @@ export const CART_ERROR_ID = "cart-error";
 /** The product page's refusal notice (`ProductContentModel.errorMessage`). */
 export const PRODUCT_ERROR_ID = "product-error";
 
+/** The pay page's refusal region (#604): a declined card, a confirm that
+ *  failed, a page that cannot take payment. Unlike the notices above it is
+ *  filled in the browser — `pay.astro`'s inline script reads it by this id —
+ *  so it is a permanent `role="alert"` region whose TEXT is hidden, and the
+ *  script focuses it. */
+export const PAY_ERROR_ID = "payment-error";
+
 /** The page's title, led by "Error: " while it shows a refusal. */
 export function errorTitle(title: string, hasError: boolean): string {
 	return hasError ? `Error: ${title}` : title;
