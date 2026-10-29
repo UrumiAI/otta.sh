@@ -9,10 +9,13 @@
  *     with the leg's unit on that order's sku. `expired` is terminal and `markPaid`
  *     is a guarded `pending → paid` flip, so the settle takes the late-payment path
  *     and commits nothing. The unit comes back on sale exactly once.
+ *     A REGRESSION GUARD: no interleaving exists in which that settle commits, so
+ *     this case pins the reasoning rather than racing two writers on one row.
  *  2. The backstop. Even a commit racing the release on the SAME reservation (no
  *     production path does this for a dead order) cannot leave the units both sold
  *     and returned: the reservation's terminal state is first-wins, and the stock
- *     agrees with whichever write won.
+ *     and the leg's count agree with whichever write won. Both orders are forced
+ *     (`parkFirst`), so each path is proven to run, and then raced unordered.
  *
  * Postgres-only (`process.env.PG_CONNECTION_STRING`): SQLite serializes every
  * write, so it cannot race.
@@ -114,7 +117,7 @@ describe.skipIf(!PG)("stranded-holds against a racing settle [postgres]", () => 
 			const after = await s.orderStore.getById(toOrderId(order.id));
 			expect(after?.state).toBe("expired");
 			// The release happened, once, and nothing committed the reservation.
-			expect(released).toBe(1);
+			expect(released).toEqual({ released: 1 });
 			expect(await terminalState(order.id)).toBe("released");
 			const inv = await inventoryDoc(order.sku);
 			expect(inv?.onHand).toBe(10);
@@ -122,20 +125,84 @@ describe.skipIf(!PG)("stranded-holds against a racing settle [postgres]", () => 
 		}
 	}, 120_000);
 
-	test("a commit racing the release on the same reservation: one wins, and the stock agrees with it", async () => {
+	const reservationOf = async (orderId: string): Promise<string> => {
+		const placed = await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).get(orderId);
+		const id = placed?.items[0]?.reservationId;
+		if (typeof id !== "string") throw new Error("no reservation");
+		return id;
+	};
+
+	test("commit wins: the release that read the hold live and lost the terminal write returns nothing", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const order = await stranded(`commit-first-${crypto.randomUUID()}`, "cancelled");
+		const reservationId = await reservationOf(order.id);
+		const doc = await inventoryDoc(order.sku);
+		if (doc === null) throw new Error("the placed sku must exist");
+		// The release reads the index live, then waits at its terminal write while the
+		// commit runs to the end: its write then finds the commit's.
+		let commitDone!: () => void;
+		const committed = new Promise<void>((resolve) => (commitDone = resolve));
+		const leg = createInProcessCommerceStores(
+			sweepContext(parkFirst(storage, RESERVATION_INDEX_COLLECTION, "compareAndSet", committed)),
+		);
+		const releasing = releaseStrandedOnSku(
+			doc,
+			collectionOf<OrderDoc>(storage, ORDERS_COLLECTION),
+			leg,
+		);
+		await stores().inventory.commit(reservationId);
+		commitDone();
+		expect(await releasing).toEqual({ released: 0 });
+		expect(await terminalState(order.id)).toBe("committed");
+		const inv = await inventoryDoc(order.sku);
+		expect(inv?.onHand).toBe(9);
+		expect(Object.keys(inv?.holds ?? {})).toEqual([]);
+	}, 120_000);
+
+	test("release wins: the commit that read the hold live and lost the terminal write is the loud anomaly", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const order = await stranded(`release-first-${crypto.randomUUID()}`, "cancelled");
+		const reservationId = await reservationOf(order.id);
+		const doc = await inventoryDoc(order.sku);
+		if (doc === null) throw new Error("the placed sku must exist");
+		let releaseDone!: () => void;
+		const releasedFirst = new Promise<void>((resolve) => (releaseDone = resolve));
+		const committer = createInProcessCommerceStores(
+			sweepContext(
+				parkFirst(storage, RESERVATION_INDEX_COLLECTION, "compareAndSet", releasedFirst),
+			),
+		);
+		const committing = committer.inventory.commit(reservationId).then(
+			() => "committed",
+			(err: unknown) => (err instanceof Error ? err.name : "error"),
+		);
+		// Let the commit read the hold live before the release runs.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const visit = await releaseStrandedOnSku(
+			doc,
+			collectionOf<OrderDoc>(storage, ORDERS_COLLECTION),
+			stores(),
+		);
+		releaseDone();
+		expect(visit).toEqual({ released: 1 });
+		expect(await committing).toBe("ReservationCommitLostError");
+		expect(await terminalState(order.id)).toBe("released");
+		const inv = await inventoryDoc(order.sku);
+		expect(inv?.onHand).toBe(10);
+		expect(Object.keys(inv?.holds ?? {})).toEqual([]);
+	}, 120_000);
+
+	test("unordered, a commit racing the release: the winner decides the stock and the count", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		for (let round = 0; round < ROUNDS; round++) {
 			const order = await stranded(`commit-${String(round)}-${crypto.randomUUID()}`, "cancelled");
 			const s = stores();
 			const doc = await inventoryDoc(order.sku);
 			if (doc === null) throw new Error("the placed sku must exist");
-			const placed = await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).get(order.id);
-			const reservationId = placed?.items[0]?.reservationId;
-			if (typeof reservationId !== "string") throw new Error("no reservation");
+			const reservationId = await reservationOf(order.id);
 
-			await Promise.all([
-				// A lost commit is the loud anomaly settle raises; the race is what is
-				// under test, so it is caught here.
+			const [, visit] = await Promise.all([
+				// A lost commit is the loud anomaly settle raises; caught here.
 				s.inventory.commit(reservationId).catch(() => undefined),
 				releaseStrandedOnSku(doc, collectionOf<OrderDoc>(storage, ORDERS_COLLECTION), s),
 			]);
@@ -143,11 +210,40 @@ describe.skipIf(!PG)("stranded-holds against a racing settle [postgres]", () => 
 			const winner = await terminalState(order.id);
 			expect(["committed", "released"]).toContain(winner);
 			const inv = await inventoryDoc(order.sku);
-			// Released: the unit is back (10). Committed: it is sold (9). Never 11, never
-			// a hold left behind.
+			// Released: the unit is back (10) and counted. Committed: it is sold (9) and
+			// not counted. Never 11, never a hold left behind.
 			expect(inv?.onHand).toBe(winner === "released" ? 10 : 9);
+			expect(visit.released).toBe(winner === "released" ? 1 : 0);
 			expect(Object.keys(inv?.holds ?? {})).toEqual([]);
 		}
-		// Which side wins is the scheduler's choice, and either is safe: not asserted.
 	}, 120_000);
 });
+
+/** `base`, with the FIRST `method` call on `collection` held until `until` settles —
+ *  how a case fixes which of two racers writes first. */
+function parkFirst(
+	base: StorageAccess,
+	collection: string,
+	method: string,
+	until: Promise<void>,
+): StorageAccess {
+	const target = base[collection];
+	if (target === undefined) throw new Error(`no ${collection} collection`);
+	let parked = false;
+	return {
+		...base,
+		[collection]: new Proxy(target, {
+			get(t, prop, receiver) {
+				const value: unknown = Reflect.get(t, prop, receiver);
+				if (prop !== method || typeof value !== "function") return value;
+				return async (...args: unknown[]) => {
+					if (!parked) {
+						parked = true;
+						await until;
+					}
+					return (value as (...a: unknown[]) => Promise<unknown>).apply(t, args);
+				};
+			},
+		}),
+	};
+}

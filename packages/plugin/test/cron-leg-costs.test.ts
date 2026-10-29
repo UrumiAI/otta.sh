@@ -62,7 +62,7 @@ import {
 	EMAIL_SEND_AND_RECORD_CALLS,
 	holdIntentCost,
 	releaseStrandedOnSku,
-	strandedHoldCost,
+	strandedReleaseCost,
 	TICK_OVERHEAD_QUERIES,
 	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
@@ -644,12 +644,12 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		// The leg gets the inventory document from its page, so that read is not the unit's.
 		const doc = await collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION).get(placed.sku);
 		if (doc === null) throw new Error("the placed sku must exist");
-		expect(strandedHoldCost(doc)).toBe(LEG_QUERY_COSTS["stranded-holds"].unit);
+		expect(1 + strandedReleaseCost(1)).toBe(LEG_QUERY_COSTS["stranded-holds"].unit);
 		const s = counted();
 		const orders = collectionOf<OrderDoc>(wrappedStorage(), ORDERS_COLLECTION);
 		let released = 0;
 		const used = await cost(async () => {
-			released = await releaseStrandedOnSku(doc, orders, s);
+			released = (await releaseStrandedOnSku(doc, orders, s)).released;
 		});
 		expect(released).toBe(1);
 		expect(
@@ -665,9 +665,41 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		const s = counted();
 		const orders = collectionOf<OrderDoc>(wrappedStorage(), ORDERS_COLLECTION);
 		const used = await cost(async () => {
-			expect(await releaseStrandedOnSku(doc, orders, s)).toBe(0);
+			expect(await releaseStrandedOnSku(doc, orders, s)).toEqual({ released: 0 });
 		});
 		expect(used).toBe(1);
+	});
+
+	test("stranded-holds: the release of three holds one order adopted on one sku fits strandedReleaseCost(3)", async () => {
+		const s = counted();
+		const sku = "COST-STRANDED-MANY";
+		await s.inventory.seedOnHand(toSku(sku), 10);
+		const held: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			const reserved = await s.inventory.reserve(
+				toSku(sku),
+				1,
+				idempotencyKey(`res-stranded-many-${String(i)}`),
+			);
+			if (!reserved.ok) throw new Error(reserved.reason);
+			await s.inventory.stampHoldDeadline(
+				reserved.reservationId,
+				new Date(Date.now() + DAY_MS).toISOString(),
+			);
+			held.push(reserved.reservationId);
+		}
+		await s.inventory.adoptMany({
+			reservationIds: held,
+			orderId: toOrderId("order-stranded-many"),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+			now: new Date().toISOString(),
+		});
+		const used = await cost(async () => {
+			expect(
+				await s.inventory.releaseAdoptedManyReporting(held, "order-stranded-many"),
+			).toHaveLength(3);
+		});
+		expect(used, `measured ${String(used)}`).toBe(strandedReleaseCost(3));
 	});
 
 	test("sku-transfers: one product with a stranded carry", async () => {

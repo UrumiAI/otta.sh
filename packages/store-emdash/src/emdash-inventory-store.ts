@@ -157,6 +157,16 @@ interface PruneEntry {
 	terminal: TerminalReservationState;
 }
 
+/**
+ * One hold `releaseAdoptedMany` settled as `released`, with its units. The adapter
+ * answers these (the port's answer is `void`) so a caller that must report what it
+ * returned, like the stranded-holds sweep (#631), does not count a no-op as one.
+ */
+export interface ReleasedHold {
+	readonly reservationId: string;
+	readonly qty: number;
+}
+
 /** A not-yet-terminal id `releaseAdoptedMany` read, with the revision it read. */
 interface LiveRelease {
 	readonly id: string;
@@ -580,10 +590,26 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * 3N + 2S rather than 7N. An id already terminal only has any hold residue pruned,
 	 * as in `releaseAdopted`. Not atomic across SKUs; every step is idempotent, so a
 	 * partial application is completed by any replayer.
+	 *
+	 * {@link releaseAdoptedManyReporting} is the same call, answering what it released.
 	 */
 	async releaseAdoptedMany(reservationIds: readonly string[], orderId: string): Promise<void> {
+		await this.releaseAdoptedManyReporting(reservationIds, orderId);
+	}
+
+	/**
+	 * {@link releaseAdoptedMany}, answering the holds whose terminal state is
+	 * `released` and that were still in the aggregate this call read: the ones whose
+	 * units this call's prune returns (or a peer's, racing it, returned). A hold that
+	 * was not this order's, that a commit won, or that was already gone is not in the
+	 * answer. Same calls, same writes; the port's `releaseAdoptedMany` answers nothing.
+	 */
+	async releaseAdoptedManyReporting(
+		reservationIds: readonly string[],
+		orderId: string,
+	): Promise<ReleasedHold[]> {
 		const ids = [...new Set(reservationIds)];
-		if (ids.length === 0) return;
+		if (ids.length === 0) return [];
 		const rows = await Promise.all(ids.map((id) => this.#index.getVersioned(id)));
 		const live = new Map<string, LiveRelease[]>();
 		const residue = new Map<string, PruneEntry[]>();
@@ -599,9 +625,18 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 			}
 			live.set(index.sku, [...(live.get(index.sku) ?? []), { id, index, revision: row.revision }]);
 		}
+		const released: ReleasedHold[] = [];
 		for (const sku of new Set([...live.keys(), ...residue.keys()])) {
-			await this.#releaseAdoptedOnSku(sku, live.get(sku) ?? [], residue.get(sku) ?? [], orderId);
+			released.push(
+				...(await this.#releaseAdoptedOnSku(
+					sku,
+					live.get(sku) ?? [],
+					residue.get(sku) ?? [],
+					orderId,
+				)),
+			);
 		}
+		return released;
 	}
 
 	/** One SKU's share of {@link releaseAdoptedMany}: one read, the per-id terminal
@@ -611,9 +646,9 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		live: readonly LiveRelease[],
 		residue: readonly PruneEntry[],
 		orderId: string,
-	): Promise<void> {
+	): Promise<ReleasedHold[]> {
 		const current = await this.#inventory.getVersioned(sku);
-		if (current === null) return;
+		if (current === null) return [];
 		const doc = normalizeInventoryDoc(current.value);
 		const entries: PruneEntry[] = [...residue];
 		for (const { id, index, revision } of live) {
@@ -625,10 +660,18 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 			const terminal = await this.#setTerminalStateAt(id, index, revision, "released");
 			entries.push({ reserveKey: index.idempotencyKey, reservationId: id, terminal });
 		}
-		if (entries.length === 0) return;
-		if (await this.#pruneAt(sku, current.revision, doc, entries)) return;
+		if (entries.length === 0) return [];
+		// What this prune returns: each released entry whose hold this read still had.
+		const released: ReleasedHold[] = [];
+		for (const entry of entries) {
+			const hold = doc.holds[entry.reserveKey];
+			if (entry.terminal !== "released" || hold?.reservationId !== entry.reservationId) continue;
+			released.push({ reservationId: entry.reservationId, qty: hold.qty });
+		}
+		if (await this.#pruneAt(sku, current.revision, doc, entries)) return released;
 		// A peer moved the aggregate since the read: the ordinary, re-reading prune.
 		await this.#prune(sku, entries, "releaseAdoptedMany");
+		return released;
 	}
 
 	/**

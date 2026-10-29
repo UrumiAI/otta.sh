@@ -129,6 +129,23 @@ describeEachDialect("EmdashInventoryStore", (ctx) => {
 
 // -- what the port cannot express, because it is this model's own property ------
 
+/** #631: an adopted hold of `orderId` on SKU-1, for the reporting release's cases. */
+async function adoptFor(h: EmdashHarness, key: string, qty: number, orderId: string) {
+	const reservationId = await h.holdWithExpiry("SKU-1", qty, key, "2026-07-10T00:15:00.000Z");
+	await h.store.adoptMany({
+		reservationIds: [reservationId],
+		orderId,
+		holdExpiresAt: "2026-07-10T00:30:00.000Z",
+		now: "2026-07-10T00:05:00.000Z",
+	});
+	return reservationId;
+}
+
+/** The harness exposes the port; the reporting release is the adapter's own. */
+function adapter(h: EmdashHarness): EmdashInventoryStore {
+	return h.store as EmdashInventoryStore;
+}
+
 describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 	const bound = ctx.useStorage(INVENTORY_LAYOUT);
 	const harness = (): EmdashHarness => buildHarness(bound.storage);
@@ -382,6 +399,35 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 			await h.store.commit(r.reservationId);
 			await expect(h.store.release(r.reservationId)).rejects.toThrow(/in state committed/);
 			expect(await h.onHand("SKU-1")).toBe(4);
+		});
+	});
+
+	describe("releaseAdoptedManyReporting answers what it released (#631)", () => {
+		it("names each hold it returned, with its units, and nothing on a replay", async () => {
+			const h = harness();
+			await h.seed("SKU-1", 10);
+			const a = await adoptFor(h, "k1", 2, "ord-1");
+			const b = await adoptFor(h, "k2", 3, "ord-1");
+			const released = await adapter(h).releaseAdoptedManyReporting([a, b], "ord-1");
+			expect(released.toSorted((x, y) => x.qty - y.qty)).toEqual([
+				{ reservationId: a, qty: 2 },
+				{ reservationId: b, qty: 3 },
+			]);
+			expect(await h.onHand("SKU-1")).toBe(10);
+			expect(await adapter(h).releaseAdoptedManyReporting([a, b], "ord-1")).toEqual([]);
+			expect(await h.onHand("SKU-1")).toBe(10);
+		});
+
+		it("answers nothing for a committed hold, another order's hold, or an unknown id", async () => {
+			const h = harness();
+			await h.seed("SKU-1", 10);
+			const committed = await adoptFor(h, "k1", 1, "ord-1");
+			expect(await h.store.commitMany([committed])).toEqual({ lost: [] });
+			const other = await adoptFor(h, "k2", 1, "ord-2");
+			expect(
+				await adapter(h).releaseAdoptedManyReporting([committed, other, "res-unknown"], "ord-1"),
+			).toEqual([]);
+			expect(await h.onHand("SKU-1")).toBe(8);
 		});
 	});
 

@@ -504,6 +504,9 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// before it can absorb anything, so a thin slice is mostly overhead.
 	"reporting-heal": { time: 0.6, queries: 0.6 },
 	"coupon-orphans": { time: 0.3, queries: 0.3 },
+	// Its first pass reads the whole inventory: capped like the other scans, so it
+	// cannot starve `product-orphans` behind it. Leftovers come in the second pass.
+	"stranded-holds": { time: 0.3, queries: 0.3 },
 	// A CMS read per row: under a long walk it must not take the tick from the legs
 	// a customer waits on. Its leftovers come back to it in the second pass.
 	"product-orphans": { time: 0.3, queries: 0.3 },
@@ -687,10 +690,10 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// order applied this coupon (#598) — 4 at worst, so 10 (measured; 8 when no
 		// order exists by id or key).
 		"coupon-orphans": { entry: 2, unit: 10 },
-		// entry: the cursor read and the first inventory page. unit: one sku holding
-		// one unit for a dead order — the order read, then `releaseAdoptedMany` for one
-		// id on one sku (five calls) — 6, measured. A sku holding more is sized from the
-		// document in hand (`strandedHoldCost`).
+		// entry: the cursor read and the first inventory page. unit: one order holding
+		// a sku — its read (1), and for a dead order the release of its one hold there
+		// (`strandedReleaseCost(1)`, 5) — 6, measured. Each part is gated on its own
+		// size, and a release of more holds on its own count.
 		"stranded-holds": { entry: 2, unit: 6 },
 		// entry: the state read, the one page of rows, and the circuit breaker's CMS list
 		// (`CONTENT_LIST_QUERIES`). unit: one row's reads at worst — two misses and then a
@@ -1901,11 +1904,21 @@ export async function runCommerceSweeps(
 					await releaseOrphanedRedemptions(storage, stores, now, cursors, options, legBudget),
 			),
 		"stranded-holds": async () =>
-			await run(
-				"stranded-holds",
-				async (legBudget) =>
-					await releaseStrandedHolds(storage, stores, cursors, options, legBudget),
-			),
+			await run("stranded-holds", async (legBudget) => {
+				const result = await releaseStrandedHolds(
+					storage,
+					stores,
+					nowIso,
+					cursors,
+					options,
+					legBudget,
+					// The cursor write that records a run's place, even one the ceiling stopped.
+					() => budget.allowCommit(1),
+				);
+				// Stopped by its share with skus left: a candidate for the second pass.
+				if (legBudget.stopped) stoppedByBudget.add("stranded-holds");
+				return result;
+			}),
 		"product-orphans": async () => {
 			// The host hands `ctx.content` over only under `content:read`, and the
 			// workerd mirror's production entry has no CMS at all. Without it there is
@@ -3311,9 +3324,9 @@ async function releaseOrphanedRedemptions(
  * units stay off sale until something releases them. #629 stops new cases; this
  * leg returns the ones live stores already have.
  *
- * WHAT IS RELEASED. A hold whose order is in a state that releases its holds —
- * the order store's own `RELEASES_ADOPTED_HOLDS`: `expired`, `cancelled`, `failed`
- * — and whose order owes no hold work (`holdsPendingAt` null). The release is
+ * WHAT IS RELEASED. A hold whose order is in a state that releases its holds (the
+ * order store's own `RELEASES_ADOPTED_HOLDS`: `expired`, `cancelled`, `failed`)
+ * and whose order owes no hold work (`holdsPendingAt` null). The release is
  * `releaseAdoptedMany(ids, orderId)`, the call that order's own transition would
  * have made: order-scoped (only a hold THAT order adopted), idempotent, and a
  * no-op on a hold that is already terminal. Never released:
@@ -3338,67 +3351,125 @@ async function releaseOrphanedRedemptions(
  * committed, with no units returned. The units are never both sold and returned.
  *
  * DISCOVERY. `inventory` declares no index, so the leg pages the collection in
- * the host's own order (`createdAt`, then id) and judges each document in hand: a
- * sku with no adopted hold costs nothing past its share of the page. One order
- * read per order holding the sku decides it.
+ * the host's own order (`createdAt`, then id) and judges each document in hand.
+ * The UNIT is one order holding a sku: one order read, and for a dead order the
+ * release (`strandedReleaseCost`). Each is gated on its own size, after the page
+ * read, so a sku held by many orders (a hot sku with live checkouts, or several
+ * stranded ones) is worked through over ticks rather than refused whole forever.
  *
- * THE CURSOR ROTATES, like `sku-transfers`': nothing on an inventory document
- * says "stranded", so the predicate cannot narrow as the work completes. The
- * cursor is the host's page cursor plus the id of the last document handled on
- * that page, kept in `ctx.kv`. A run that stops mid-page resumes after that id;
- * a run that reaches the end wraps to the start. A lost or unreadable cursor
- * restarts the rotation, which costs re-reads and nothing else.
+ * THE CURSOR. Nothing on an inventory document says "stranded", so the walk is a
+ * ROTATION: the host's page cursor, the last sku finished on that page, and the
+ * last order judged on the sku after it (orders are judged in id order), kept in
+ * `ctx.kv` and written even when the run throws. It also counts the rotation's
+ * releases and errors.
+ *
+ * A ONE-OFF REPAIR. #629 stops new strands, so a rotation that ends having
+ * released nothing (and met no error) has nothing left to find. The leg then
+ * records `done` in its cursor and from then on costs one kv read a run. Deleting
+ * the `cron:sweep:cursor:stranded-holds` key starts it again.
+ *
+ * ONE BAD SKU DOES NOT PIN THE ROTATION. A sku whose work throws (anything but the
+ * tick's ceiling) is logged, counted as an error of the rotation, and stepped
+ * past; the next rotation tries it again. A page cursor the host refuses
+ * (`InvalidCursorError`) restarts the rotation.
  */
 async function releaseStrandedHolds(
 	storage: AdapterStorageAccess,
 	stores: InProcessCommerceStores,
+	nowIso: string,
 	cursors: SweepCursorStore,
 	options: CommerceSweepOptions,
 	budget: LegBudget,
+	allowCursorWrite: () => void,
 ): Promise<{ count: number; incomplete?: true }> {
+	const raw = await cursors.read(STRANDED_HOLDS_CURSOR);
+	const saved = parseStrandedCursor(raw);
+	if (saved.done !== null) return { count: 0 };
 	const inventory = collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION);
 	const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
-	const saved = parseStrandedCursor(await cursors.read(STRANDED_HOLDS_CURSOR));
-	let place = saved;
 	const limit = options.pageSize ?? DEFAULT_PAGE_SIZE;
 	const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
-	const gate = budget.gate(0, LEG_QUERY_COSTS["stranded-holds"].unit);
+	let place = saved;
 	let released = 0;
 	let incomplete = true;
-	walk: for (let pages = 0; pages < maxPages; pages++) {
-		if (!gate()) break;
-		let page: Awaited<ReturnType<typeof inventory.query>>;
-		try {
-			page = await inventory.query({
-				limit,
-				...(place.page === null ? {} : { cursor: place.page }),
-			});
-		} catch (err) {
-			// A cursor the host refuses (a format change, a hand-edited kv) must not fail
-			// the leg on every run: start the rotation again, and fail this run loudly.
-			if (place.page !== null) await cursors.write(STRANDED_HOLDS_CURSOR, "");
-			throw err;
+	try {
+		walk: for (let pages = 0; pages < maxPages; pages++) {
+			// Room for the page and one order read after it.
+			if (!budget.canStart(1, 1)) {
+				budget.stopped = true;
+				break;
+			}
+			let page: Awaited<ReturnType<typeof inventory.query>>;
+			try {
+				page = await inventory.query({
+					limit,
+					...(place.page === null ? {} : { cursor: place.page }),
+				});
+			} catch (err) {
+				// Only a cursor the host REFUSES restarts the rotation; any other failure
+				// keeps the place, and the next run tries the same page again.
+				if (place.page !== null && isInvalidCursorError(err)) {
+					console.warn("[otta] cron sweep stranded-holds: its cursor was refused; starting over");
+					place = STRANDED_START;
+				}
+				throw err;
+			}
+			// Created after the page read, so the read cannot leave the gate's cap short
+			// of the first unit (the stall the first cut had).
+			const gate = budget.gate(0, 1);
+			const at = place.after === null ? -1 : page.items.findIndex((i) => i.id === place.after);
+			for (const item of page.items.slice(at + 1)) {
+				const skipThrough = place.partial?.sku === item.id ? place.partial.order : null;
+				let visit: StrandedVisit;
+				try {
+					visit = await releaseStrandedOnSku(item.data, orders, stores, gate, skipThrough);
+				} catch (err) {
+					if (isSweepQueryCeilingError(err)) throw err;
+					console.error(
+						`[otta] cron sweep stranded-holds: sku ${item.id} FAILED, stepped past:`,
+						err,
+					);
+					place = { ...place, after: item.id, partial: null, errors: place.errors + 1 };
+					continue;
+				}
+				released += visit.released;
+				place = { ...place, released: place.released + visit.released };
+				if (visit.stoppedAfter !== undefined) {
+					// Out of budget part-way through the sku: resume after the last order judged.
+					place = {
+						...place,
+						partial:
+							visit.stoppedAfter === null
+								? place.partial
+								: { sku: item.id, order: visit.stoppedAfter },
+					};
+					break walk;
+				}
+				place = { ...place, after: item.id, partial: null };
+			}
+			if (!page.hasMore || page.cursor === undefined) {
+				// The end of the inventory: the rotation is done. A clean one ends the repair.
+				place =
+					place.released === 0 && place.errors === 0
+						? { ...STRANDED_START, done: nowIso }
+						: STRANDED_START;
+				if (place.done !== null) {
+					console.info(
+						"[otta] cron sweep stranded-holds: a full pass found nothing stranded; the repair is done",
+					);
+				}
+				incomplete = false;
+				break;
+			}
+			place = { ...place, page: page.cursor, after: null, partial: null };
 		}
-		const after = place.after;
-		const seen = after === null ? -1 : page.items.findIndex((item) => item.id === after);
-		for (const item of page.items.slice(seen + 1)) {
-			if (!gate(strandedHoldCost(item.data))) break walk;
-			released += await releaseStrandedOnSku(item.data, orders, stores);
-			place = { page: place.page, after: item.id };
+	} finally {
+		// Even when the run threw: the progress it made is kept, and a run stopped at
+		// the ceiling may still record its place.
+		if (JSON.stringify(place) !== JSON.stringify(saved)) {
+			allowCursorWrite();
+			await cursors.write(STRANDED_HOLDS_CURSOR, JSON.stringify(place));
 		}
-		if (!page.hasMore || page.cursor === undefined) {
-			// The end of the inventory: wrap, and this rotation is done.
-			place = { page: null, after: null };
-			incomplete = false;
-			break;
-		}
-		place = { page: page.cursor, after: null };
-	}
-	if (place.page !== saved.page || place.after !== saved.after) {
-		await cursors.write(
-			STRANDED_HOLDS_CURSOR,
-			place.page === null && place.after === null ? "" : JSON.stringify(place),
-		);
 	}
 	return legResult(released, incomplete);
 }
@@ -3407,75 +3478,137 @@ async function releaseStrandedHolds(
  *  `RELEASES_ADOPTED_HOLDS`. `paid` and every later state are absent on purpose. */
 const RELEASES_ADOPTED_HOLDS: ReadonlySet<OrderState> = new Set(["expired", "cancelled", "failed"]);
 
-/** `stranded-holds`' place: the host page cursor (`null` for the first page) and
- *  the id of the last document handled on that page (`null` for none yet). */
+/** `stranded-holds`' place in its rotation, and the rotation's tally. */
 interface StrandedCursor {
+	/** The host page cursor; `null` for the first page. */
 	readonly page: string | null;
+	/** The last sku finished on that page; `null` for none yet. */
 	readonly after: string | null;
+	/** The sku after `after`, part-way: the last order on it already judged. */
+	readonly partial: { readonly sku: string; readonly order: string } | null;
+	/** Holds released, and skus that failed, in this rotation so far. */
+	readonly released: number;
+	readonly errors: number;
+	/** Set once a whole rotation found nothing: the repair is finished. */
+	readonly done: string | null;
 }
 
-/** A saved cursor, or the start of the rotation for anything unreadable. */
+const STRANDED_START: StrandedCursor = {
+	page: null,
+	after: null,
+	partial: null,
+	released: 0,
+	errors: 0,
+	done: null,
+};
+
+/** A saved cursor, or the start of a rotation for anything unreadable. */
 function parseStrandedCursor(raw: string | null): StrandedCursor {
-	if (raw === null || raw === "") return { page: null, after: null };
+	if (raw === null || raw === "") return STRANDED_START;
 	try {
 		const parsed: unknown = JSON.parse(raw);
-		if (typeof parsed !== "object" || parsed === null) return { page: null, after: null };
-		const { page, after } = parsed as { page?: unknown; after?: unknown };
+		if (typeof parsed !== "object" || parsed === null) return STRANDED_START;
+		const p = parsed as Record<string, unknown>;
+		const partial = p.partial as { sku?: unknown; order?: unknown } | null | undefined;
+		const sku = cursorText(partial?.sku);
+		const order = cursorText(partial?.order);
 		return {
-			page: typeof page === "string" && page !== "" ? page : null,
-			after: typeof after === "string" && after !== "" ? after : null,
+			page: cursorText(p.page),
+			after: cursorText(p.after),
+			partial: sku !== null && order !== null ? { sku, order } : null,
+			released: cursorCount(p.released),
+			errors: cursorCount(p.errors),
+			done: cursorText(p.done),
 		};
 	} catch {
-		return { page: null, after: null };
+		return STRANDED_START;
 	}
 }
 
-/** Each order's adopted reservation ids on one inventory document. */
-function adoptedByOrder(doc: InventoryDoc): Map<string, string[]> {
+/** A non-empty string, or `null`. */
+function cursorText(value: unknown): string | null {
+	return typeof value === "string" && value !== "" ? value : null;
+}
+
+/** A non-negative safe integer, or 0. */
+function cursorCount(value: unknown): number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+/** The host's refusal of a page cursor it cannot decode. It does not export the
+ *  class, so it is matched by name, like `StorageQueryError`. */
+function isInvalidCursorError(err: unknown): boolean {
+	return err instanceof Error && err.name === "InvalidCursorError";
+}
+
+/** Each order's adopted reservation ids on one inventory document, in order-id
+ *  order (the order `stranded-holds` resumes a sku in). */
+function adoptedByOrder(doc: InventoryDoc): [string, string[]][] {
 	const byOrder = new Map<string, string[]>();
 	for (const hold of Object.values(normalizeInventoryDoc(doc).holds)) {
 		if (hold.state !== "adopted" || typeof hold.orderId !== "string") continue;
 		byOrder.set(hold.orderId, [...(byOrder.get(hold.orderId) ?? []), hold.reservationId]);
 	}
-	return byOrder;
+	return [...byOrder].toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** What releasing `holds` adopted holds of one order on one sku costs:
+ *  `releaseAdoptedMany`'s three calls a hold and two for the sku. Exported for
+ *  `cron-leg-costs.test.ts`, which measures it. */
+export function strandedReleaseCost(holds: number): number {
+	return 3 * holds + 2;
+}
+
+/** One sku's visit: the holds it released, and — when the budget stopped it part-way
+ *  — the last order it judged (`null`: none yet). */
+export interface StrandedVisit {
+	readonly released: number;
+	readonly stoppedAfter?: string | null;
 }
 
 /**
- * The most one inventory document can cost `stranded-holds`: per order holding it,
- * the order read and a release of its ids on this sku (`releaseAdoptedMany`: three
- * calls an id and two for the sku). Zero for a sku with no adopted hold. Exported
- * for `cron-leg-costs.test.ts`.
- */
-export function strandedHoldCost(doc: InventoryDoc): number {
-	let calls = 0;
-	for (const ids of adoptedByOrder(doc).values()) calls += 1 + 3 * ids.length + 2;
-	return calls;
-}
-
-/**
- * `stranded-holds`' unit: release the holds on one inventory document whose order
- * is dead and owes no hold work, and say how many it released. Exported for
- * `cron-leg-costs.test.ts`, which measures it.
+ * `stranded-holds`' work on one inventory document: for each order holding it, in
+ * order-id order and after `skipThrough`, read the order (gated at one call) and,
+ * when it is dead and owes no hold work, release its holds on this sku (gated at
+ * their cost). Counts only the holds the store reports it returned. Exported for
+ * `cron-leg-costs.test.ts` and the race suite.
  */
 export async function releaseStrandedOnSku(
 	doc: InventoryDoc,
 	orders: { get(id: string): Promise<OrderDoc | null> },
 	stores: Pick<InProcessCommerceStores, "inventory">,
-): Promise<number> {
+	gate: (unitHint?: number) => boolean = () => true,
+	skipThrough: string | null = null,
+): Promise<StrandedVisit> {
 	let released = 0;
+	let judged: string | null = null;
 	for (const [orderId, reservationIds] of adoptedByOrder(doc)) {
+		if (skipThrough !== null && orderId <= skipThrough) continue;
+		if (!gate(1)) return { released, stoppedAfter: judged };
 		const order = await orders.get(orderId);
-		if (order === null || !RELEASES_ADOPTED_HOLDS.has(order.state)) continue;
-		// Still owing an intent: mid-transition, and `hold-intents`' to finish.
-		if (order.holdsPendingAt !== null) continue;
-		await stores.inventory.releaseAdoptedMany(reservationIds, orderId);
-		released += reservationIds.length;
-		console.warn(
-			`[otta] cron sweep: released ${String(reservationIds.length)} hold(s) on ${doc.sku}` +
-				` still adopted by ${order.state} order ${orderId} (#631)`,
-		);
+		// Still owing an intent (`holdsPendingAt` set): mid-transition, and
+		// `hold-intents`' to finish.
+		if (
+			order !== null &&
+			RELEASES_ADOPTED_HOLDS.has(order.state) &&
+			order.holdsPendingAt === null
+		) {
+			if (!gate(strandedReleaseCost(reservationIds.length))) {
+				return { released, stoppedAfter: judged };
+			}
+			const returned = await stores.inventory.releaseAdoptedManyReporting(reservationIds, orderId);
+			if (returned.length > 0) {
+				const units = returned.reduce((sum, hold) => sum + hold.qty, 0);
+				released += returned.length;
+				console.warn(
+					`[otta] cron sweep: released ${String(returned.length)} hold(s), ${String(units)} unit(s)` +
+						` of ${doc.sku}, still adopted by ${order.state} order ${orderId} (#631)`,
+				);
+			}
+		}
+		judged = orderId;
 	}
-	return released;
+	return { released };
 }
 
 /**

@@ -220,11 +220,9 @@ describe("cron late-refunds", () => {
 	test("an IDLE tick costs one due check: no deferral line, no warning, no state write", async () => {
 		const cursors = memoryCursors();
 		const opts = { queryBudget: 30, cursors, gateways: () => ({}) };
-		// A first tick stamps the scans; the second is the idle minute under test. The
-		// first gets room for every scan to finish, so none is left to run in the second.
+		// A first tick stamps the scans; the second is the idle minute under test.
 		await runCommerceSweeps(h.ctx, SWEEP_TASK_NAME, {
 			...opts,
-			queryBudget: 600,
 			now: new Date("2999-01-01T00:00:00.000Z"),
 		});
 		const writesBefore = cursors.writes;
