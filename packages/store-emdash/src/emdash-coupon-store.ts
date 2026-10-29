@@ -102,6 +102,7 @@
  * exact search reach a coupon — as a document read, never a scan.
  */
 import {
+	COUPON_RECOUNT_SETTLE_MS,
 	customerId as toCustomerId,
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
@@ -110,8 +111,10 @@ import {
 	type CouponListPage,
 	type CouponListResult,
 	type CouponRecord,
+	type CouponRecountResult,
 	type CouponRedemption,
 	type CouponStore,
+	type CouponUsesObservation,
 	type CreateCouponInput,
 	type DeleteCouponResult,
 	type IdempotencyKey,
@@ -563,6 +566,93 @@ export class EmdashCouponStore implements CouponStore {
 				idempotencyKey: toIdempotencyKey(doc.idempotencyKey),
 				createdAt: doc.createdAt,
 			}));
+	}
+
+	/**
+	 * The recount (issue #619): set `usesCount` to the number of `applied`
+	 * redemptions, on a second look that saw the same drift with the counter
+	 * untouched in between.
+	 *
+	 * WHY `applied` IS THE TRUTH. The counter is only ever bumped by a key that holds
+	 * the bump step (`bumping`), and only ever decremented after a release deleted an
+	 * `applied` key (or one `#settleForRelease` settled as applied). So an `applied`
+	 * document is exactly a `+1` that has landed and whose `-1` has not been owed yet;
+	 * `claimed` provably never bumped; `refused` never kept a use. `bumping` is the one
+	 * state whose `+1` may or may not have landed, and it is never guessed at here: the
+	 * answer is `in_flight`, and the coupon is judged on a later pass.
+	 *
+	 * THE READS, AND THEIR ORDER, ARE THE RACE ARGUMENT:
+	 *
+	 *  1. the coupon (its `usesCount` and its REVISION — the version: the host moves it
+	 *     on every write of the document, a guarded `updateIf` included);
+	 *  2. the coupon's `bumping` redemptions — any at all is `in_flight`;
+	 *  3. its `applied` ones.
+	 *
+	 * A redemption whose `+1` landed BEFORE read 1 is either already `applied` at read
+	 * 3, or was still `bumping` — and then it was `bumping` at read 2 as well, since a
+	 * key's state only moves forward, so the call stops there. (The other order would
+	 * miss a key that moved `bumping → applied` between the two counts.) A `+1` landing
+	 * AFTER read 1 moves the revision, so the compare-and-set below refuses (`moved`) —
+	 * or, landing after that write, it is a key that was not yet `applied` at read 3,
+	 * so it was not counted, and its `+1` on top of the corrected value is right.
+	 *
+	 * WHAT A SINGLE LOOK CANNOT SEE is a release between its delete and its decrement:
+	 * the deleted key is no longer counted, its `-1` has not landed, and correcting
+	 * then would take that use away twice — the counter one LOW, which can grant a use
+	 * past the cap. Hence the second look. It writes only when the version, the
+	 * counter AND the applied count are all unchanged from an observation at least
+	 * {@link COUPON_RECOUNT_SETTLE_MS} old. With the revision unchanged no `+1` landed
+	 * in between, so no key can have JOINED the applied set; with the count unchanged
+	 * none can have LEFT it either. A release whose `-1` is still to come therefore
+	 * deleted its key before the first look, and has been between two adjacent storage
+	 * calls for the whole settle window — the residual, of the same kind as the bump
+	 * lease's (an owner paused for longer than the lease).
+	 *
+	 * THE WRITE is a compare-and-set at the revision read in step 1: any write of the
+	 * coupon since — a bump, a decrement, an admin edit — refuses it, and it moves the
+	 * revision itself, so a bump racing it is refused or re-reads in turn. Four calls
+	 * at most: three reads and the write.
+	 */
+	async recountUses(
+		couponId: string,
+		previous: CouponUsesObservation | null,
+		at: string,
+	): Promise<CouponRecountResult> {
+		const read = await this.#coupons.getVersioned(couponId);
+		if (read === null) return { outcome: "not_found" };
+		const coupon = normalizeCouponDoc(read.value);
+		// Before the applied count, never after it: see the order above.
+		const bumping = await this.#redemptions.count({ couponId, state: "bumping" });
+		if (bumping > 0) return { outcome: "in_flight" };
+		const liveUses = await this.#redemptions.count({ couponId, state: "applied" });
+		if (liveUses === coupon.usesCount) return { outcome: "exact", usesCount: liveUses };
+		const observation: CouponUsesObservation = {
+			couponId,
+			usesCount: coupon.usesCount,
+			liveUses,
+			version: read.revision,
+			observedAt: at,
+		};
+		if (previous === null || !sameDrift(previous, observation)) {
+			return { outcome: "drift", observation };
+		}
+		// Written so a NaN (an unreadable time on either side) is NOT settled: NaN
+		// compares false, and `< SETTLE` would have let it through.
+		const elapsed = Date.parse(at) - Date.parse(previous.observedAt);
+		if (!(elapsed >= COUPON_RECOUNT_SETTLE_MS)) {
+			// Inside the window, keep the first look. A time that cannot be ordered
+			// against now (unreadable, or ahead of it) is replaced by this look instead,
+			// or it would hold the coupon back for good.
+			return { outcome: "drift", observation: elapsed >= 0 ? previous : observation };
+		}
+		// Not retried: a refusal means the counter moved, and the next pass judges again.
+		const written = await this.#coupons.compareAndSet(couponId, read.revision, {
+			...coupon,
+			usesCount: liveUses,
+		});
+		return written.applied
+			? { outcome: "corrected", from: coupon.usesCount, to: liveUses }
+			: { outcome: "moved" };
 	}
 
 	// -- the admin list --------------------------------------------------------
@@ -1267,6 +1357,16 @@ export class EmdashCouponStore implements CouponStore {
 }
 
 // -- predicates and projections ---------------------------------------------
+
+/** The same drift, seen again: same coupon, same counter, same version, same count. */
+function sameDrift(a: CouponUsesObservation, b: CouponUsesObservation): boolean {
+	return (
+		a.couponId === b.couponId &&
+		a.usesCount === b.usesCount &&
+		a.liveUses === b.liveUses &&
+		a.version === b.version
+	);
+}
 
 /** What a recorded outcome answers with. A refusal carries no replay flag. */
 function answerOf(

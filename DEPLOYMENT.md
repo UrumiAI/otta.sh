@@ -801,15 +801,27 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all thirteen sweep legs: they share a store composition
-and a clock, and splitting them would only put thirteen rows in contention on the same documents. The
-six scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
-`stranded-holds`, `product-orphans`) and the sign-in challenge prune run at most every fifteen minutes inside that
-task (housekeeping: the scans read a page budget of a collection per run); a scan cut short by
-the budget carries on next tick until its pass is done. `stranded-holds` is a one-off repair
-(#631): it reads the inventory until one whole pass releases nothing, then records
-`done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv read a run from
-then on. Deleting that key starts it again. `product-orphans` soft-deletes a
+hook when it comes due. One task drives all fourteen sweep legs: they share a store composition
+and a clock, and splitting them would only put fourteen rows in contention on the same documents. The
+seven scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`coupon-recount`, `stranded-holds`, `product-orphans`) and the sign-in challenge prune run at most
+every fifteen minutes inside that task (housekeeping: the scans read a page budget of a collection
+per run); a scan cut short by the budget carries on next tick until its pass is done.
+`stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
+nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
+read a run from then on. Deleting that key starts it again. `coupon-recount` sets a
+coupon's use count back to the uses its redemptions hold when the two disagree (a release cut
+between its delete and its decrement leaves it one high); it corrects only on a second look, at
+least ten minutes after the first (each run rechecks the coupons it saw drift before walking on),
+that finds the same drift with the counter untouched, and logs each correction by coupon code and
+id. **Deploying it builds one index.** It counts a coupon's redemptions by state, through a new
+`(couponId, state)` index on `coupon_redemptions`. EmDash builds a declared index on the first
+scheduled tick after the deploy, as an expression index over the whole shared `_plugin_storage`
+table. On D1 that writes about one index row per plugin-storage row, every plugin's rows included,
+and counts against the daily rows-written limit (100,000 on Free); on Postgres the plain `CREATE
+INDEX` holds writes to that table until it finishes. A large store on Workers Free should deploy
+well clear of its daily write ceiling (early in the UTC day, not after a sale), and a large
+Postgres store at a quiet hour. `product-orphans` soft-deletes a
 commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
 soft delete was lost. It reads each live row's document through `ctx.content` (the
 `content:read` capability already declared) and is built for a CMS read that LIES: on the
@@ -996,9 +1008,11 @@ behind the other legs' due checks, and hold expiry would stall. Any whole number
 ignored for the Free preset. **Choosing Paid on Workers Free is a mistake the platform
 punishes**: ticks then fail with D1's "too many API requests by single Worker invocation" once
 there is a backlog. Against D1's *daily* Free limits the cadence is small: about 12,000 queries a
-day from the sweep when idle (8 a minute, plus the scans every fifteen), each reading a handful
-of rows and writing almost none — well under the 5 million rows read and 100,000 rows written a
-day. The host's own share of each scheduled event was not measured; on Free, 20 queries is the
+day from the sweep when idle (8 a minute, plus the scans every fifteen), writing almost none. The
+idle reads touch a handful of rows each; a scan run reads up to a page (100 rows) of its
+collection, and each coupon the recount judges costs two index-served counts over that coupon's
+own redemptions. That stays well under the 5 million rows read and 100,000 rows written a
+day for a store of ordinary size. The host's own share of each scheduled event was not measured; on Free, 20 queries is the
 allowance left for it, and on Paid the 600 preset leaves 400 of the 1000.
 
 **Choosing the budget.**

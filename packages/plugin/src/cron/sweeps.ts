@@ -1,5 +1,5 @@
 /**
- * The scheduled sweep: thirteen legs, one tick (INC-C4).
+ * The scheduled sweep: fourteen legs, one tick (INC-C4).
  *
  * WHY THIS FILE EXISTS AT ALL. ADR-0019 §7 says it plainly — the aggregates are
  * one document each, a coupling that spans two of them is made *idempotently
@@ -151,6 +151,7 @@
 import {
 	assertSweepLimit,
 	cancelDueIntents,
+	COUPON_RECOUNT_SETTLE_MS,
 	DEFAULT_COUPON_GRACE_MS,
 	dispatchOrderEmails,
 	EmailSendTimeoutError,
@@ -166,6 +167,8 @@ import {
 	retryLatePaymentRefunds,
 	softDeleteProductCommerce,
 	UnitBackoff,
+	type CouponRecountResult,
+	type CouponUsesObservation,
 	type EmailSender,
 	type OrderId,
 	type OrderState,
@@ -177,11 +180,13 @@ import {
 	INVENTORY_COLLECTION,
 	normalizeInventoryDoc,
 	COUPON_REDEMPTIONS_COLLECTION,
+	COUPONS_COLLECTION,
 	EmdashReportingStore,
 	isScanPageLimitError,
 	ORDER_SKU_INDEX_COLLECTION,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
+	type CouponDoc,
 	type CouponRedemptionDoc,
 	type InventoryDoc,
 	type OrderDoc,
@@ -226,7 +231,7 @@ import {
 	WHOLE_TICK,
 } from "./tick-budget.js";
 
-/** The thirteen legs in the order a SUMMARY lists them (and the order the sweep ran
+/** The fourteen legs in the order a SUMMARY lists them (and the order the sweep ran
  *  them in before QA2 M2). The order a tick RUNS them in is `LEG_PRIORITY`, with
  *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
@@ -240,6 +245,7 @@ export const SWEEP_LEGS = [
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
+	"coupon-recount",
 	"stranded-holds",
 	"product-orphans",
 	"late-refunds",
@@ -248,7 +254,7 @@ export const SWEEP_LEGS = [
 export type SweepLeg = (typeof SWEEP_LEGS)[number];
 
 /**
- * The legs that run on the slow cadence rather than every tick: the six that walk
+ * The legs that run on the slow cadence rather than every tick: the seven that walk
  * a collection (or a whole closed day) on every run, and the sign-in challenge
  * prune. The others find their work from a predicate that narrows as the work
  * completes, so an idle run is one empty query — cheap enough for every minute.
@@ -263,6 +269,9 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
 	"order-sku-index",
 	"reporting-heal",
 	"coupon-orphans",
+	// A counter one use off (issue #619) is corrected only on a second look a settle
+	// window later anyway, so a fifteen-minute cadence costs it nothing.
+	"coupon-recount",
 	// Units a dead order still holds (#631) are off sale, but they have been since
 	// before #629 shipped: a fifteen-minute cadence costs nothing a shopper notices,
 	// and the leg pages the whole inventory over its rotation.
@@ -287,7 +296,7 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     by abandoned carts — the costliest unit, about twenty calls on Free);
  *  3. `late-refunds` — a customer's money, best-effort behind Stripe's own retries
  *     (and leading one tick per interval on Free, see `runCommerceSweeps`);
- *  4. housekeeping: `prune-challenges` and the six scans. `coupon-orphans` stays
+ *  4. housekeeping: `prune-challenges` and the seven scans. `coupon-orphans` stays
  *     after `expire-orders`, though it no longer depends on it finishing, and runs
  *     ahead of `reporting-heal`: its unit is fixed (10 calls since #598) while the
  *     heal sizes itself to the calls left, so the other way round a Free tick the
@@ -295,7 +304,12 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     something a shopper can hit, a stale rollup is not. `stranded-holds` (#631)
  *     comes after the heal: the units it returns have been off sale since before
  *     #629, its first pass over the inventory is a real cost on a busy store, and
- *     aging still brings it to the head of a tick it keeps missing;
+ *     aging still brings it to the head of a tick it keeps missing. `coupon-recount`
+ *     (#619) comes after both: its correction waits a settle window anyway, and
+ *     ahead of the heal its one-page entry left a Free tick's closed-day heal a
+ *     call short of finishing, so the next, idle minute ran the heal again
+ *     (`cron-late-refunds.test.ts`). After the orphan sweep, too, so a use the sweep
+ *     frees this tick is not first seen as drift;
  *     `product-orphans` is last of all, the leg nothing else waits on.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
@@ -313,6 +327,7 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"coupon-orphans",
 	"reporting-heal",
 	"stranded-holds",
+	"coupon-recount",
 	"product-orphans",
 ];
 
@@ -547,6 +562,7 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// before it can absorb anything, so a thin slice is mostly overhead.
 	"reporting-heal": { time: 0.6, queries: 0.6 },
 	"coupon-orphans": { time: 0.3, queries: 0.3 },
+	"coupon-recount": { time: 0.3, queries: 0.3 },
 	// Its first pass reads the whole inventory: capped like the other scans, so it
 	// cannot starve `product-orphans` behind it. Leftovers come in the second pass.
 	"stranded-holds": { time: 0.3, queries: 0.3 },
@@ -591,6 +607,10 @@ export const CONTENT_LIST_QUERIES = 4;
  * ceiling is for.
  */
 export const PRODUCT_ORPHAN_DELETE_CALLS = 4;
+
+/** One coupon's recount at worst (`EmdashCouponStore.recountUses`): the coupon read,
+ *  its in-flight and applied counts, and the correcting write. */
+export const COUPON_RECOUNT_CALLS = 4;
 
 /**
  * How old a commerce row must be before `product-orphans` judges it. The row is
@@ -677,7 +697,13 @@ export const ORPHAN_SUSPECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * work with no deadline must not jump ahead of `cancel-intents` and the money legs.
  * It still runs whenever a tick has room, and its second pass takes the leftovers.
  */
-export const UNPROMOTED_LEGS: readonly SweepLeg[] = ["product-orphans"];
+export const UNPROMOTED_LEGS: readonly SweepLeg[] = [
+	"product-orphans",
+	// #619: a correction already waits a settle window for its second look, so a few
+	// more ticks behind a backlog cost nothing; promoted, its turns took calls from the
+	// expiry under the midnight backlog (cron-sweep-backlog.test.ts).
+	"coupon-recount",
+];
 
 /** The most one row's reads can cost: `ORPHAN_READS_PER_STRIKE - 1` misses, then a
  *  document found. */
@@ -733,6 +759,10 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// order applied this coupon (#598) — 4 at worst, so 10 (measured; 8 when no
 		// order exists by id or key).
 		"coupon-orphans": { entry: 2, unit: 10 },
+		// entry: the cursor state read and the one page of coupons. unit: one coupon's
+		// `recountUses` — the coupon read, its in-flight and applied counts, and the
+		// correcting write at worst (#619): 4, measured.
+		"coupon-recount": { entry: 2, unit: COUPON_RECOUNT_CALLS },
 		// entry: the cursor read and the first inventory page. unit: one order holding
 		// a sku — its read (1), and for a dead order the release of its one hold there
 		// (`strandedReleaseCost(1)`, 5) — 6, measured. A release of more holds is gated
@@ -1165,6 +1195,7 @@ const CURSOR_KEY_PREFIX = "cron:sweep:cursor:";
 const SKU_TRANSFER_CURSOR = "sku-transfers";
 const SKU_INDEX_CURSOR = "order-sku-index";
 const COUPON_CURSOR = "coupon-orphans";
+const COUPON_RECOUNT_CURSOR = "coupon-recount";
 const PRODUCT_ORPHAN_CURSOR = "product-orphans";
 const REPORTING_CURSOR = "reporting-heal";
 const STRANDED_HOLDS_CURSOR = "stranded-holds";
@@ -1957,6 +1988,11 @@ export async function runCommerceSweeps(
 				"coupon-orphans",
 				async (legBudget) =>
 					await releaseOrphanedRedemptions(storage, stores, now, cursors, options, legBudget),
+			),
+		"coupon-recount": async () =>
+			await run(
+				"coupon-recount",
+				async (legBudget) => await recountCouponUses(storage, stores, now, cursors, legBudget),
 			),
 		"stranded-holds": async () =>
 			await run("stranded-holds", async (legBudget) => {
@@ -3324,7 +3360,9 @@ function addDays(day: string, delta: number): string {
  * `"yes"` for a terminal `applied` redemption: the list is dominated by legitimate
  * redemptions that will never be released, sorted oldest-first, so any fixed-size
  * bite out of its head is permanently occupied by them and a new orphan is never
- * reached. `state` is NOT a declared index, so it cannot be filtered on.
+ * reached. (`state` is declared since #619, for the recount's counts, but filtering
+ * on it would not help here: an `applied` redemption is exactly the live use the
+ * walk must still judge.)
  *
  * SO THE WINDOW ADVANCES. The leg queries `coupon_redemptions` directly on the two
  * fields that ARE declared — `createdAt` and `holdsUse` — between a cursor and the
@@ -3340,13 +3378,10 @@ function addDays(day: string, delta: number): string {
  * says it was actually consumed. Idempotent by construction: a second sweep finds
  * no redemption to release.
  *
- * WHAT THIS LEG DOES NOT DO, said plainly rather than left to be discovered:
- * ADR-0019 also requires a RECOUNT of the global counter, because a release that
- * dies between the guarded delete and the decrement leaves `usesCount` one HIGH and
- * a recount is the only thing that restores exactness. `CouponStore` exposes no
- * recount, and adding one is a `@urumi.ai/otta-store-emdash` change — out of this
- * increment's scope. The residual is in the SAFE direction (a use nobody holds
- * refuses a redemption that might have fit; it never grants one that does not).
+ * WHAT THIS LEG DOES NOT DO: recount the global counter. ADR-0019 requires one,
+ * because a release that dies between the guarded delete and the decrement leaves
+ * `usesCount` one HIGH with nothing left for this leg to find. That is the
+ * `coupon-recount` leg (#619, `recountCouponUses`).
  */
 async function releaseOrphanedRedemptions(
 	storage: AdapterStorageAccess,
@@ -3424,6 +3459,259 @@ async function releaseOrphanedRedemptions(
 	}
 	if (next !== null && next !== from) await cursors.write(COUPON_CURSOR, next);
 	return legResult(released, walked.incomplete);
+}
+
+/** The most coupons one run of `coupon-recount` judges — rechecks and the rotation
+ *  together — "a few", whatever the budget, so a large catalog is walked over many
+ *  ticks, never in one. */
+export const COUPON_RECOUNTS_PER_TICK = 10;
+
+/** The most of those that may be RECHECKS, so the rotation always moves on: busy
+ *  coupons whose drift keeps being voided could otherwise take every slot of every
+ *  run, and the rest of the catalog would never be looked at. */
+export const COUPON_RECOUNT_RECHECKS_PER_TICK = COUPON_RECOUNTS_PER_TICK - 2;
+
+/** The host's page ceiling: the most rows one `query` returns. */
+const COUPON_RECOUNT_SCAN_ROWS = 100;
+
+/** The most drift observations the leg keeps between runs — its only bound. A
+ *  coupon past it is simply observed again on its next turn. */
+export const COUPON_RECOUNT_MAX_SEEN = 100;
+
+/** A kept observation, with the coupon's code for the log line a correction writes. */
+type SeenObservation = CouponUsesObservation & { readonly code?: string };
+
+/** Where the rotation stands, and the drift each coupon showed at its last look. */
+interface CouponRecountState {
+	/** The host's keyset cursor for the page the rotation is in; null at the start
+	 *  of a pass (the first page). */
+	readonly cursor: string | null;
+	/** How many of that page's rows are already judged. */
+	readonly skip: number;
+	readonly seen: Record<string, SeenObservation>;
+}
+
+/**
+ * COUPON RECOUNT (issue #619): set each coupon's `usesCount` back to the uses its
+ * redemptions actually hold.
+ *
+ * Nothing else heals a counter once it has drifted. It goes HIGH when a release is
+ * cut between deleting its redemption and decrementing (a crash, or the
+ * `expire-orders` budget cut on deploys before #640), and when a release's settling
+ * falls back to the witness; a capped coupon then refuses shoppers it has room for.
+ * It goes LOW when a `+1` is lost. `coupon-orphans` cannot help with either: by the
+ * time the counter is wrong, the redemption it would need to find is gone.
+ *
+ * THE JUDGING IS THE STORE'S (`CouponStore.recountUses`), and it is a two-look
+ * protocol: a drift is only corrected when a second look, at least
+ * `COUPON_RECOUNT_SETTLE_MS` after the first, finds the counter untouched and the
+ * same drift. Between the looks the observation waits here, in the leg's cursor
+ * record. The store's doc says why that, and the order of its reads, is what keeps a
+ * recount from losing a redeem that races it or taking a released use twice.
+ *
+ * A RUN HAS TWO PHASES, sharing `COUPON_RECOUNTS_PER_TICK`:
+ *
+ * 1. RECHECKS. Every kept observation old enough to confirm is looked at again, by
+ *    id, oldest first, up to `COUPON_RECOUNT_RECHECKS_PER_TICK`. So the second look
+ *    comes one settle window after the first (give or take a cadence), however big
+ *    the catalog: waiting for the rotation to come round again would take a full
+ *    pass, and a busy coupon whose drift a redeem voids in between would never be
+ *    confirmed on a big catalog. A kept observation leaves only by being judged
+ *    (confirmed, replaced, or its coupon gone), never by age: a run on a starved
+ *    Free tick can come long after the last, and dropping the observation then
+ *    would only start the wait again.
+ * 2. THE ROTATION through `coupons` in the host's own `(createdAt, id)` order, by its
+ *    keyset cursor: one page read of the rest of the allowance, judged, and the
+ *    place saved (the page's cursor, plus how many of its rows were judged when the
+ *    budget cut the walk short), so a big catalog is spread over many ticks and any
+ *    number of coupons sharing one `createdAt` is walked through. At the end it
+ *    wraps, and the leg is stamped done for the cadence. A coupon already rechecked
+ *    this run is passed over. A cursor the host refuses starts the pass again.
+ *
+ * A CORRECTION IS LOGGED THE MOMENT IT IS WRITTEN, by code and id, so nothing later
+ * in the run can lose the line. A coupon whose recount THROWS is logged, passed over
+ * (the rotation never stops on it for good: it is retried next pass) and ends the
+ * run there; the cursor is still saved, so the coupons judged before it stay judged.
+ *
+ * NOT RECOUNTED: per-customer slots (a key's slot is released with its redemption,
+ * so they do not drift the same way), and a use a PAID order holds whose redemption
+ * an earlier sweep deleted (#598) — with the redemption gone there is no record to
+ * count, and the counter agrees with the records.
+ */
+async function recountCouponUses(
+	storage: AdapterStorageAccess,
+	stores: InProcessCommerceStores,
+	now: Date,
+	cursors: SweepCursorStore,
+	budget: LegBudget,
+): Promise<{ count: number; incomplete?: true; anomalies?: readonly string[] }> {
+	const coupons = collectionOf<CouponDoc>(storage, COUPONS_COLLECTION);
+	const raw = await cursors.read(COUPON_RECOUNT_CURSOR);
+	const state = parseRecountState(raw);
+	const nowIso = now.toISOString();
+	const nowMs = now.getTime();
+	const seen: Record<string, SeenObservation> = {};
+	for (const [couponId, observation] of Object.entries(state.seen)) {
+		// A time ahead of now could never settle; an unreadable one never parses.
+		if (nowMs - Date.parse(observation.observedAt) >= 0) seen[couponId] = observation;
+	}
+	const anomalies: string[] = [];
+	let corrected = 0;
+	let failed = false;
+
+	/** One coupon's look. False when it threw (logged, and the run ends there). */
+	const judge = async (couponId: string, code: string | undefined): Promise<boolean> => {
+		let result: CouponRecountResult;
+		try {
+			result = await stores.couponStore.recountUses(couponId, seen[couponId] ?? null, nowIso);
+		} catch (err) {
+			// The tick's hard ceiling is the runner's to report, never a coupon's fault.
+			if (isSweepQueryCeilingError(err)) throw err;
+			failed = true;
+			// Forgotten, so a coupon that always throws cannot hold a recheck slot.
+			delete seen[couponId];
+			anomalies.push(
+				`coupon ${code ?? "?"} (${couponId}): recount failed, passed over until next pass: ` +
+					(err instanceof Error ? err.message : String(err)),
+			);
+			return false;
+		}
+		if (result.outcome !== "drift") {
+			delete seen[couponId];
+		} else if (couponId in seen || Object.keys(seen).length < COUPON_RECOUNT_MAX_SEEN) {
+			seen[couponId] = code === undefined ? result.observation : { ...result.observation, code };
+		}
+		if (result.outcome === "corrected") {
+			corrected++;
+			console.error(
+				`[otta] cron sweep coupon-recount ANOMALY coupon ${code ?? "?"} (${couponId}): ` +
+					`usesCount ${String(result.from)} corrected to ${String(result.to)}` +
+					" (the uses its redemptions hold)",
+			);
+		}
+		return true;
+	};
+
+	// 1. Rechecks: the kept observations old enough to confirm, oldest first.
+	const due = Object.values(seen)
+		.filter((observation) => nowMs - Date.parse(observation.observedAt) >= COUPON_RECOUNT_SETTLE_MS)
+		.toSorted((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt))
+		.slice(0, COUPON_RECOUNT_RECHECKS_PER_TICK)
+		.map((observation) => ({ id: observation.couponId, data: { code: observation.code } }));
+	const rechecks = await walkWindow(
+		{ items: due, reachedEnd: true, outOfTime: false },
+		budget,
+		"coupon-recount",
+		async (item) => ((await judge(item.id, item.data.code)) ? undefined : "stop"),
+	);
+	const rechecked = new Set(rechecks.handled.map((item) => item.id));
+	if (failed || rechecks.incomplete) {
+		return await saveRecount(cursors, raw, { ...state, seen }, corrected, anomalies);
+	}
+
+	// 2. The rotation, with what the rechecks left of the allowance (at least two).
+	const room = COUPON_RECOUNTS_PER_TICK - rechecks.handled.length;
+	let page: Awaited<ReturnType<typeof coupons.query>>;
+	try {
+		page = await coupons.query({
+			orderBy: { createdAt: "asc" },
+			limit: Math.min(COUPON_RECOUNT_SCAN_ROWS, state.skip + room),
+			...(state.cursor === null ? {} : { cursor: state.cursor }),
+		});
+	} catch (err) {
+		if (!isInvalidCursorError(err)) throw err;
+		// A cursor the host no longer reads: start the pass again from the top.
+		anomalies.push(
+			`rotation cursor refused, pass restarted: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return await saveRecount(cursors, raw, { cursor: null, skip: 0, seen }, corrected, anomalies);
+	}
+	const rows = page.items
+		.slice(state.skip)
+		.map((item) => ({ id: item.id, data: { code: item.data.code } }));
+	const nextPage = page.hasMore ? (page.cursor ?? null) : null;
+	const walked = await walkWindow(
+		{ items: rows, reachedEnd: nextPage === null, outOfTime: false },
+		budget,
+		"coupon-recount",
+		async (item) => {
+			if (failed) return "stop";
+			// Judged a moment ago; a second look now would only keep the first.
+			if (rechecked.has(item.id)) return;
+			// A throw is HANDLED — the cursor passes it — and the run stops after it.
+			await judge(item.id, item.data.code);
+		},
+		(item) => (rechecked.has(item.id) ? 0 : COUPON_RECOUNT_CALLS),
+	);
+	const pageDone = walked.handled.length === rows.length;
+	const wrapped = pageDone && nextPage === null;
+	const next: CouponRecountState = pageDone
+		? { cursor: nextPage, skip: 0, seen }
+		: { cursor: state.cursor, skip: state.skip + walked.handled.length, seen };
+	return await saveRecount(cursors, raw, next, corrected, anomalies, wrapped);
+}
+
+/** Write the leg's record when it changed, and report the run. */
+async function saveRecount(
+	cursors: SweepCursorStore,
+	raw: string | null,
+	next: CouponRecountState,
+	corrected: number,
+	anomalies: readonly string[],
+	wrapped = false,
+): Promise<{ count: number; incomplete?: true; anomalies?: readonly string[] }> {
+	const serialized = JSON.stringify(next);
+	if (serialized !== raw) await cursors.write(COUPON_RECOUNT_CURSOR, serialized);
+	return legResult(corrected, !wrapped, anomalies);
+}
+
+/** The saved record, or a fresh start: a record that does not parse (or one in an
+ *  earlier shape), or an entry that is not an observation, is dropped — the next
+ *  look observes it again. */
+function parseRecountState(raw: string | null): CouponRecountState {
+	const fresh: CouponRecountState = { cursor: null, skip: 0, seen: {} };
+	if (raw === null) return fresh;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return fresh;
+	}
+	if (typeof parsed !== "object" || parsed === null) return fresh;
+	const record = parsed as { cursor?: unknown; skip?: unknown; seen?: unknown };
+	const positioned =
+		(typeof record.cursor === "string" || record.cursor === null) &&
+		typeof record.skip === "number" &&
+		Number.isInteger(record.skip) &&
+		record.skip >= 0 &&
+		record.skip < COUPON_RECOUNT_SCAN_ROWS;
+	const seen: Record<string, SeenObservation> = {};
+	if (typeof record.seen === "object" && record.seen !== null) {
+		for (const [couponId, value] of Object.entries(record.seen)) {
+			if (isObservation(value) && value.couponId === couponId) {
+				const code = (value as { code?: unknown }).code;
+				seen[couponId] = typeof code === "string" ? { ...value, code } : value;
+			}
+		}
+	}
+	return {
+		cursor: positioned ? (record.cursor as string | null) : null,
+		skip: positioned ? (record.skip as number) : 0,
+		seen,
+	};
+}
+
+function isObservation(value: unknown): value is CouponUsesObservation {
+	if (typeof value !== "object" || value === null) return false;
+	const v = value as Record<string, unknown>;
+	return (
+		typeof v.couponId === "string" &&
+		typeof v.usesCount === "number" &&
+		typeof v.liveUses === "number" &&
+		typeof v.version === "string" &&
+		typeof v.observedAt === "string" &&
+		!Number.isNaN(Date.parse(v.observedAt))
+	);
 }
 
 /**

@@ -32,6 +32,7 @@ import {
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
+	COUPONS_COLLECTION,
 	EmdashCouponStore,
 	EmdashEntitlementStore,
 	EmdashPaymentEventStore,
@@ -42,6 +43,7 @@ import {
 	orderSkuIndexId,
 	PRODUCT_COMMERCE_COLLECTION,
 	uuidIdGen,
+	type CouponDoc,
 	type InventoryDoc,
 	type OrderDoc,
 	type ProductCommerceDoc,
@@ -268,6 +270,26 @@ async function seedEveryLeg(): Promise<void> {
 		if (!claimed.ok) throw new Error("seed redemption failed");
 	}
 
+	// coupon-recount: a coupon whose counter reads two uses no redemption holds — a
+	// release cut between its delete and its decrement, twice (#619).
+	await coupons.create({
+		id: "coupon-drift",
+		code: "DRIFT10",
+		type: "percentage",
+		amountCents: null,
+		rateBps: 1000,
+		capCents: null,
+		currency: currency("USD"),
+		minSubtotalCents: cents(0),
+		startsAt: new Date(START.getTime() - 30 * DAY_MS).toISOString(),
+		expiresAt: new Date(START.getTime() + 30 * DAY_MS).toISOString(),
+		maxUses: 2,
+		maxUsesPerCustomer: null,
+	});
+	const couponDocs = collectionOf<CouponDoc>(storage, COUPONS_COLLECTION);
+	const drift = await couponDocs.getVersioned("coupon-drift");
+	if (drift === null) throw new Error("no drift coupon");
+	await couponDocs.compareAndSet("coupon-drift", drift.revision, { ...drift.value, usesCount: 2 });
 	// stranded-holds (#631): three cancelled orders whose holds stayed adopted.
 	for (let i = 0; i < 3; i++) {
 		const placed = await placeOrder(
@@ -380,6 +402,7 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 		"order-sku-index": unindexed.every((pointer) => pointer !== null),
 		"reporting-heal": claims.items.every((claim) => claim.data.absorbedAt !== null),
 		"coupon-orphans": (await coupons.findById("coupon-orphan"))?.usesCount === 0,
+		"coupon-recount": (await coupons.findById("coupon-drift"))?.usesCount === 0,
 		"stranded-holds": (
 			await Promise.all(
 				[0, 1, 2].map((i) => s.inventory.getOnHand(toSku(`ORDER-stranded-${String(i)}`))),
@@ -539,6 +562,7 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			"order-sku-index",
 			"reporting-heal",
 			"coupon-orphans",
+			"coupon-recount",
 			"stranded-holds",
 			"product-orphans",
 		];

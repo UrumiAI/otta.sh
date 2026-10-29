@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
 import { customerId, idempotencyKey, orderId } from "../money/ids.js";
-import type { CouponStore, CreateCouponInput, UpdateCouponInput } from "../ports/coupon-store.js";
+import {
+	COUPON_RECOUNT_SETTLE_MS,
+	type CouponStore,
+	type CreateCouponInput,
+	type RedeemCouponInput,
+	type UpdateCouponInput,
+} from "../ports/coupon-store.js";
 import type { SeedCouponSummaryRow } from "./in-memory-coupon-store.js";
 
 export interface CouponStoreHarness {
@@ -65,6 +71,28 @@ function fixedCoupon(over: Partial<CreateCouponInput> = {}): CreateCouponInput {
 		maxUses: null,
 		maxUsesPerCustomer: null,
 		...over,
+	};
+}
+
+/** The recount cases' first look, and the instants after it. */
+const RECOUNT_T0 = "2026-07-10T01:00:00.000Z";
+
+function after(ms: number): string {
+	return new Date(Date.parse(RECOUNT_T0) + ms).toISOString();
+}
+
+/** `n` settle windows after the first look — old enough to confirm. */
+function settled(n = 1): string {
+	return after(n * COUPON_RECOUNT_SETTLE_MS);
+}
+
+/** A guest redemption of `couponId` under `key`. */
+function redeemOf(couponId: string, key: string): RedeemCouponInput {
+	return {
+		couponId,
+		orderId: orderId(`o-${key}`),
+		idempotencyKey: idempotencyKey(key),
+		createdAt: "2026-07-10T00:00:00.000Z",
 	};
 }
 
@@ -689,6 +717,161 @@ export function couponStoreContract(
 			const res = await h.store.listCoupons({}, { limit: 2 });
 			expect(res.coupons.map((c) => c.id)).toEqual(["p2", "p1"]);
 			expect(res.nextCursor).toBeNull();
+		});
+
+		// -- recountUses (issue #619: a drifted counter heals) --
+
+		test("recountUses lowers a counter left HIGH to its live redemptions — on a confirmed second look only", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "c1", code: "HIGH", maxUses: 2 }));
+			expect((await h.store.redeem(redeemOf("c1", "k1"))).ok).toBe(true);
+			// A release cut between its delete and its decrement: one use nobody holds.
+			await h.seedCoupon(couponRow({ id: "c1", code: "HIGH", maxUses: 2, usesCount: 2 }));
+			// The harm: a capped coupon refuses a shopper it has room for.
+			expect(await h.store.redeem(redeemOf("c1", "k2"))).toEqual({
+				ok: false,
+				reason: "COUPON_EXHAUSTED",
+			});
+
+			const first = await h.store.recountUses("c1", null, RECOUNT_T0);
+			expect(first).toMatchObject({
+				outcome: "drift",
+				observation: { couponId: "c1", usesCount: 2, liveUses: 1, observedAt: RECOUNT_T0 },
+			});
+			if (first.outcome !== "drift") return;
+			// Seen once is not enough: nothing is written on the first look.
+			expect((await h.store.findById("c1"))?.usesCount).toBe(2);
+			// Nor on a second look inside the settle window — the observation is kept.
+			const early = await h.store.recountUses("c1", first.observation, after(60_000));
+			expect(early).toEqual({ outcome: "drift", observation: first.observation });
+			expect((await h.store.findById("c1"))?.usesCount).toBe(2);
+
+			const confirmed = await h.store.recountUses("c1", first.observation, settled());
+			expect(confirmed).toEqual({ outcome: "corrected", from: 2, to: 1 });
+			expect((await h.store.findById("c1"))?.usesCount).toBe(1);
+			// The use is back on sale.
+			expect((await h.store.redeem(redeemOf("c1", "k3"))).ok).toBe(true);
+			expect((await h.store.findById("c1"))?.usesCount).toBe(2);
+			// And once exact, a further run changes nothing.
+			expect(await h.store.recountUses("c1", null, settled(2))).toEqual({
+				outcome: "exact",
+				usesCount: 2,
+			});
+			expect((await h.store.findById("c1"))?.usesCount).toBe(2);
+		});
+
+		test("recountUses raises a counter left LOW to its live redemptions, and a third run changes nothing", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "c1", code: "LOW" }));
+			for (const key of ["k1", "k2", "k3"]) {
+				expect((await h.store.redeem(redeemOf("c1", key))).ok).toBe(true);
+			}
+			// A counter write lost: three uses held, one counted.
+			await h.seedCoupon(couponRow({ id: "c1", code: "LOW", usesCount: 1 }));
+
+			const first = await h.store.recountUses("c1", null, RECOUNT_T0);
+			expect(first).toMatchObject({ outcome: "drift", observation: { usesCount: 1, liveUses: 3 } });
+			if (first.outcome !== "drift") return;
+			expect(await h.store.recountUses("c1", first.observation, settled())).toEqual({
+				outcome: "corrected",
+				from: 1,
+				to: 3,
+			});
+			expect((await h.store.findById("c1"))?.usesCount).toBe(3);
+			// Run again with the SAME observation (a caller that kept it): exact, no write.
+			expect(await h.store.recountUses("c1", first.observation, settled(2))).toEqual({
+				outcome: "exact",
+				usesCount: 3,
+			});
+			expect(await h.store.recountUses("c1", null, settled(3))).toEqual({
+				outcome: "exact",
+				usesCount: 3,
+			});
+			expect((await h.store.findById("c1"))?.usesCount).toBe(3);
+		});
+
+		test("recountUses never acts on an observation the counter has moved since: a redeem or release in between is kept", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "c1", code: "MOVE" }));
+			const held = await h.store.redeem(redeemOf("c1", "k1"));
+			expect(held.ok).toBe(true);
+			if (!held.ok) return;
+			await h.seedCoupon(couponRow({ id: "c1", code: "MOVE", usesCount: 3 }));
+			const first = await h.store.recountUses("c1", null, RECOUNT_T0);
+			if (first.outcome !== "drift") throw new Error(`expected drift, got ${first.outcome}`);
+
+			// A redeem lands between the two looks: the observation is void, the redeem
+			// is counted, and a fresh observation replaces the old one.
+			expect((await h.store.redeem(redeemOf("c1", "k2"))).ok).toBe(true);
+			const second = await h.store.recountUses("c1", first.observation, settled());
+			expect(second).toMatchObject({
+				outcome: "drift",
+				observation: { usesCount: 4, liveUses: 2, observedAt: settled() },
+			});
+			expect((await h.store.findById("c1"))?.usesCount).toBe(4);
+			if (second.outcome !== "drift") return;
+
+			// So does a release.
+			await h.store.release(held.redemptionId);
+			const third = await h.store.recountUses("c1", second.observation, settled(2));
+			expect(third).toMatchObject({
+				outcome: "drift",
+				observation: { usesCount: 3, liveUses: 1 },
+			});
+			expect((await h.store.findById("c1"))?.usesCount).toBe(3);
+			if (third.outcome !== "drift") return;
+
+			// Left alone for the settle window, it is corrected to exactly the uses held.
+			expect(await h.store.recountUses("c1", third.observation, settled(3))).toEqual({
+				outcome: "corrected",
+				from: 3,
+				to: 1,
+			});
+			expect((await h.store.findById("c1"))?.usesCount).toBe(1);
+		});
+
+		test("recountUses never confirms on an observation whose time is unreadable or ahead of now: it observes afresh", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "c1", code: "CLOCK", usesCount: 2 }));
+			const first = await h.store.recountUses("c1", null, RECOUNT_T0);
+			if (first.outcome !== "drift") throw new Error(`expected drift, got ${first.outcome}`);
+			// An unparseable time is NaN, and NaN compares false to everything: it must
+			// read as NOT settled, never skip the window.
+			const garbled = { ...first.observation, observedAt: "not-a-time" };
+			const onGarbled = await h.store.recountUses("c1", garbled, settled());
+			expect(onGarbled).toEqual({
+				outcome: "drift",
+				observation: { ...first.observation, observedAt: settled() },
+			});
+			expect((await h.store.findById("c1"))?.usesCount).toBe(2);
+			// Nor may a future time hold the coupon back until the clock reaches it.
+			const ahead = { ...first.observation, observedAt: settled(100) };
+			const onAhead = await h.store.recountUses("c1", ahead, settled());
+			expect(onAhead).toEqual({
+				outcome: "drift",
+				observation: { ...first.observation, observedAt: settled() },
+			});
+			if (onAhead.outcome !== "drift") return;
+			// The fresh observation confirms one settle window later, as any first look does.
+			expect(await h.store.recountUses("c1", onAhead.observation, settled(2))).toEqual({
+				outcome: "corrected",
+				from: 2,
+				to: 0,
+			});
+		});
+
+		test("recountUses of an unknown coupon is not_found, and an observation of another coupon confirms nothing", async () => {
+			const h = await makeStore();
+			expect(await h.store.recountUses("nope", null, RECOUNT_T0)).toEqual({
+				outcome: "not_found",
+			});
+			await h.seedCoupon(couponRow({ id: "a", code: "AAA", usesCount: 1 }));
+			await h.seedCoupon(couponRow({ id: "b", code: "BBB", usesCount: 1 }));
+			const seenA = await h.store.recountUses("a", null, RECOUNT_T0);
+			if (seenA.outcome !== "drift") throw new Error(`expected drift, got ${seenA.outcome}`);
+			const onB = await h.store.recountUses("b", seenA.observation, settled());
+			expect(onB).toMatchObject({ outcome: "drift", observation: { couponId: "b" } });
+			expect((await h.store.findById("b"))?.usesCount).toBe(1);
 		});
 
 		// -- countCoupons (INC-23: the exact count the admin list captions with) --

@@ -27,6 +27,7 @@ import {
 	escalateStaleLateRefunds,
 	expireOrdersBatch,
 	cancelDueIntents,
+	COUPON_RECOUNT_SETTLE_MS,
 	DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS,
 	retryLatePaymentRefunds,
 	settleOrder,
@@ -38,9 +39,11 @@ import {
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
+	COUPONS_COLLECTION,
 	INVENTORY_COLLECTION,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
+	type CouponDoc,
 	type InventoryDoc,
 	type OrderDoc,
 	type ProductCommerceDoc,
@@ -52,6 +55,7 @@ import { createInProcessCommerceStores } from "../src/commerce/in-process-commer
 import {
 	CONTENT_MISS_QUERIES,
 	CONTENT_READ_QUERIES,
+	COUPON_RECOUNT_CALLS,
 	COUPON_RELEASE_CALLS,
 	GUEST_COUPON_RELEASE_CALLS,
 	LATE_REFUND_ESCALATION_UNIT,
@@ -691,6 +695,27 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		});
 		expect(used).toBe(COUPON_ORPHAN_WORST_UNIT);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["coupon-orphans"].unit);
+	});
+
+	// #619: the worst unit is the confirming look that writes — the coupon read, the
+	// in-flight count, the applied count and the correcting compare-and-set.
+	test("coupon-recount: one coupon's confirmed correction", async () => {
+		const s = counted();
+		const couponId = await costCoupon(s, "coupon-cost-recount", "COSTRECOUNT");
+		const docs = collectionOf<CouponDoc>(storage, COUPONS_COLLECTION);
+		const doc = await docs.getVersioned(couponId);
+		if (doc === null) throw new Error("no coupon");
+		await docs.compareAndSet(couponId, doc.revision, { ...doc.value, usesCount: 3 });
+		const T0 = new Date(Date.now() - 2 * COUPON_RECOUNT_SETTLE_MS).toISOString();
+		const first = await s.couponStore.recountUses(couponId, null, T0);
+		if (first.outcome !== "drift") throw new Error(`expected drift, got ${first.outcome}`);
+		const used = await cost(async () => {
+			expect(
+				await s.couponStore.recountUses(couponId, first.observation, new Date().toISOString()),
+			).toEqual({ outcome: "corrected", from: 3, to: 0 });
+		});
+		expect(used).toBe(COUPON_RECOUNT_CALLS);
+		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["coupon-recount"].unit);
 	});
 
 	test("stranded-holds: one sku holding one unit for a dead order, released (#631)", async () => {

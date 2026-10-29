@@ -59,8 +59,8 @@ export const COUPON_CUSTOMER_CAPS_COLLECTION = "coupon_customer_caps";
 
 /** One collection as the plugin descriptor declares it. */
 export interface CouponCollectionIndexDeclaration {
-	readonly indexes?: readonly string[];
-	readonly uniqueIndexes?: readonly string[];
+	readonly indexes?: readonly (string | readonly string[])[];
+	readonly uniqueIndexes?: readonly (string | readonly string[])[];
 }
 
 /**
@@ -77,7 +77,7 @@ export interface CouponCollectionIndexDeclaration {
  * that is never issued. There is deliberately no `active` index — the coupon
  * table has no active or soft-delete column at all.
  *
- * `coupon_redemptions` declares six fields, and every one of them is a port
+ * `coupon_redemptions` declares seven indexes, and every one of them is a port
  * method's only handle:
  *
  * - `couponId` — the delete guard counts the coupon's redemptions.
@@ -88,8 +88,20 @@ export interface CouponCollectionIndexDeclaration {
  * - `createdAt` — `listRedemptionsCreatedBefore` both RANGES and ORDERS on it.
  * - `redemptionId` — `release` is given the generated id, not the document id.
  * - `holdsUse` — the text mirror that keeps a REFUSED key out of all three of
- *   those reads (see {@link holdsUseFor}). The `state` it mirrors is NOT indexed:
- *   nothing queries by it, and every reader that needs it has the document.
+ *   those reads (see {@link holdsUseFor}).
+ * - `["couponId", "state"]` — `recountUses` (issue #619) COUNTS a coupon's
+ *   `applied` and `bumping` redemptions, two `count()` calls instead of paging
+ *   every redemption the coupon ever had. Every redemption document carries
+ *   `state`, so it needs no backfill either. It is a COMPOSITE, never `state`
+ *   alone, and the reason is the query plan, not the allow-list (a composite's
+ *   fields are each queryable). The host never runs `ANALYZE`, so SQLite/D1 plans
+ *   without statistics, and between single-field indexes of equal shape it took
+ *   the one created LAST — a lone `state` index — and counted a coupon's applied
+ *   uses by reading EVERY applied redemption in the store (measured on Miniflare
+ *   D1: 5,000 rows read for a 50-use coupon in a 5,000-row store, against 51 on
+ *   the composite). The composite matches both equality terms, so the planner
+ *   prefers it whatever the creation order; `coupon-recount-index-plan.test.ts`
+ *   pins that plan.
  *
  * The two counter collections are reached by document id alone and declare
  * nothing. Neither declares a unique index: uniqueness here is the claim
@@ -106,7 +118,15 @@ export const COUPON_COLLECTIONS: Readonly<Record<string, CouponCollectionIndexDe
 	[COUPONS_COLLECTION]: { indexes: ["createdAt"] },
 	[COUPON_CODES_COLLECTION]: {},
 	[COUPON_REDEMPTIONS_COLLECTION]: {
-		indexes: ["couponId", "orderId", "idempotencyKey", "createdAt", "redemptionId", "holdsUse"],
+		indexes: [
+			"couponId",
+			"orderId",
+			"idempotencyKey",
+			"createdAt",
+			"redemptionId",
+			"holdsUse",
+			["couponId", "state"],
+		],
 	},
 	[COUPON_CUSTOMER_CAPS_COLLECTION]: {},
 };

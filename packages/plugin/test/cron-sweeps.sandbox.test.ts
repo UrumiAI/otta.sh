@@ -45,6 +45,7 @@ import {
 import { FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
+	COUPONS_COLLECTION,
 	EmdashCartStore,
 	EmdashCouponStore,
 	EmdashCredentialVerifier,
@@ -60,6 +61,7 @@ import {
 	REPORTING_DAILY_COLLECTION,
 	systemClock,
 	uuidIdGen,
+	type CouponDoc,
 	type InventoryDoc,
 	type OrderDoc,
 	type OrderSkuIndexDoc,
@@ -1072,6 +1074,125 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		// the counter holds the one fresh use above, never drops below it.
 		await sweepInProcess({ cursors: freshCursors() });
 		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(1);
+	}, 180_000);
+});
+
+describe("coupon-recount (issue #619)", () => {
+	const MINUTE_MS = 60 * 1000;
+
+	/** A coupon whose counter is then set by hand to `usesCount`, after `held`
+	 *  real redemptions: the drift a lost decrement (high) or bump (low) leaves. */
+	async function driftedCoupon(
+		id: string,
+		held: number,
+		usesCount: number,
+		maxUses: number | null,
+	): Promise<void> {
+		const s = stores();
+		await s.couponStore.create({
+			id,
+			code: id.toUpperCase().replaceAll("-", ""),
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: cents(0),
+			startsAt: new Date(Date.now() - 30 * DAY_MS).toISOString(),
+			expiresAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+			maxUses,
+			maxUsesPerCustomer: null,
+		});
+		for (let i = 0; i < held; i++) {
+			const res = await s.couponStore.redeem({
+				couponId: id,
+				orderId: toOrderId(`order-${id}-${String(i)}`),
+				idempotencyKey: idempotencyKey(`redeem-${id}-${String(i)}`),
+				createdAt: new Date().toISOString(),
+			});
+			expect(res.ok).toBe(true);
+		}
+		const docs = collectionOf<CouponDoc>(storage, COUPONS_COLLECTION);
+		const doc = await docs.getVersioned(id);
+		if (doc === null) throw new Error(`no coupon ${id}`);
+		expect((await docs.compareAndSet(id, doc.revision, { ...doc.value, usesCount })).applied).toBe(
+			true,
+		);
+	}
+
+	/** One whole turn of the leg over the shared store's coupons, at `at`, with every
+	 *  other leg stubbed out: this store is shared, and a sweep run at a future
+	 *  instant must not expire another case's orders. */
+	async function recountTurn(cursors: SweepCursorStore, at: Date): Promise<number> {
+		const others = Object.fromEntries(
+			SWEEP_LEGS.filter((name) => name !== "coupon-recount").map((name) => [name, async () => 0]),
+		);
+		let corrected = 0;
+		for (let i = 0; i < 20; i++) {
+			const found = leg(
+				await sweepInProcess({ cursors, now: at, legBodies: others }),
+				"coupon-recount",
+			);
+			expect(found.notDue, "a turn starts only when the leg is due").not.toBe(true);
+			corrected += found.count;
+			if (found.incomplete !== true) return corrected;
+		}
+		throw new Error("coupon-recount never finished a turn in 20 sweeps");
+	}
+
+	test("heals a counter left HIGH and one left LOW on its second look, and a third look changes nothing", async () => {
+		await driftedCoupon("recount-high", 1, 2, 2);
+		await driftedCoupon("recount-low", 3, 1, null);
+		const s = stores();
+		const usesOf = async (id: string) => (await s.couponStore.findById(id))?.usesCount;
+		// The harm the high counter does: a shopper refused with a use to spare.
+		expect(
+			await s.couponStore.redeem({
+				couponId: "recount-high",
+				orderId: toOrderId("order-recount-high-refused"),
+				idempotencyKey: idempotencyKey("redeem-recount-high-refused"),
+				createdAt: new Date().toISOString(),
+			}),
+		).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
+
+		const cursors = freshCursors();
+		const start = new Date();
+		// First look: the drift is seen and kept, nothing is written.
+		await recountTurn(cursors, start);
+		expect(await usesOf("recount-high")).toBe(2);
+		expect(await usesOf("recount-low")).toBe(1);
+
+		// One cadence on, past the settle window: both are corrected.
+		expect(
+			await recountTurn(cursors, new Date(start.getTime() + 15 * MINUTE_MS)),
+		).toBeGreaterThanOrEqual(2);
+		expect(await usesOf("recount-high")).toBe(1);
+		expect(await usesOf("recount-low")).toBe(3);
+		const again = await s.couponStore.redeem({
+			couponId: "recount-high",
+			orderId: toOrderId("order-recount-high-again"),
+			idempotencyKey: idempotencyKey("redeem-recount-high-again"),
+			createdAt: new Date().toISOString(),
+		});
+		expect(again).toMatchObject({ ok: true });
+
+		// A third turn: both exact, nothing moves.
+		await recountTurn(cursors, new Date(start.getTime() + 30 * MINUTE_MS));
+		expect(await usesOf("recount-high")).toBe(2);
+		expect(await usesOf("recount-low")).toBe(3);
+	}, 180_000);
+
+	test("runs inside the isolate through the sandbox bridge: a first look writes nothing", async () => {
+		await driftedCoupon("recount-isolate", 0, 1, null);
+		await clearSweepState();
+		let ran = false;
+		for (let i = 0; i < 12 && !ran; i++) {
+			const found = leg(await tick(), "coupon-recount");
+			ran = found.deferred !== true && found.notDue !== true;
+		}
+		expect(ran, "coupon-recount reached in 12 ticks").toBe(true);
+		// One look on the wall clock is never a confirmed one.
+		expect((await stores().couponStore.findById("recount-isolate"))?.usesCount).toBe(1);
 	}, 180_000);
 });
 
