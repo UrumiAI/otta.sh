@@ -97,12 +97,14 @@ export {
 	OutboxEntryUnlocatableError,
 	isPaymentRefConflictError,
 	isReservationNotReleasableError,
+	isReservationReleaseLostError,
 	isScanPageLimitError,
 	OrderIdCollisionError,
 	OrderNotFoundError,
 	PaymentRefConflictError,
 	ReservationIdCollisionError,
 	ReservationNotReleasableError,
+	ReservationReleaseLostError,
 	ScanPageLimitError,
 } from "./errors.js";
 export {

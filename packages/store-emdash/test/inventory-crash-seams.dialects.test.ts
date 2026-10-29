@@ -54,12 +54,14 @@ import {
 	EmdashInventoryStore,
 	INVENTORY_COLLECTION,
 	INVENTORY_MOVEMENTS_COLLECTION,
+	isReservationReleaseLostError,
 	isStorageContentionError,
 	newInventoryDoc,
 	normalizeInventoryDoc,
 	RESERVATION_INDEX_COLLECTION,
 	RESERVATION_KEYS_COLLECTION,
 	ReservationNotReleasableError,
+	ReservationReleaseLostError,
 	stockClaimId,
 	uuidIdGen,
 } from "../src/index.js";
@@ -607,6 +609,108 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 			expect(await committing).toEqual({ lost: [first.reservationId] });
 			expect(await onHand("SKU-E5")).toBe(5);
 			expect(await holdCount("SKU-E5")).toBe(0);
+		});
+
+		/**
+		 * `releaseHeld` is the one settle that prunes BEFORE its terminal write (its
+		 * terminal state is unconditional, and the cart-scoped release may yet be
+		 * refused), so the first-wins rule cannot decide its prune — only its answer
+		 * (#617). The window is a plain race, no crash: `releaseHeld` has read the
+		 * live `held` hold and its index entry and is parked at the prune; a `commit`
+		 * reads the same hold, wins the terminal state and parks at its own prune;
+		 * then the release prunes (the units come back) and loses the terminal write.
+		 */
+		it("releaseHeld loses to commit on a held hold: it never answers true, and throws ReservationReleaseLostError", async () => {
+			await seed("SKU-E6", 5);
+			const first = await makeStore().reserve("SKU-E6", 2, idempotencyKey("k-e6"));
+			if (!first.ok) throw new Error("the seed reserve must succeed");
+
+			const releaseGate = parkCall(raw(INVENTORY_COLLECTION), isUpdateWrite);
+			const releasing = settleOne(
+				storeWith(INVENTORY_COLLECTION, releaseGate.collection).releaseHeld(first.reservationId),
+			);
+			await releaseGate.arrived;
+
+			const commitGate = parkCall(raw(INVENTORY_COLLECTION), isUpdateWrite);
+			const committing = storeWith(INVENTORY_COLLECTION, commitGate.collection).commit(
+				first.reservationId,
+			);
+			await commitGate.arrived;
+			expect((await reverseIndex().get(first.reservationId))?.terminalState).toBe("committed");
+			expect(await holdCount("SKU-E6")).toBe(1);
+
+			releaseGate.release();
+			const answer = await releasing;
+			expect(answer).not.toBe(true);
+			expect(answer).toBeInstanceOf(ReservationReleaseLostError);
+			expect(isReservationReleaseLostError(answer)).toBe(true);
+			expect(answer).toMatchObject({
+				reservationId: first.reservationId,
+				sku: "SKU-E6",
+				qty: 2,
+				state: "committed",
+			});
+
+			commitGate.release();
+			await expect(committing).resolves.toBeUndefined();
+			// The documented residual the error reports: the reservation is committed,
+			// and its units are back on sale — returned by the release that lost.
+			expect((await reverseIndex().get(first.reservationId))?.terminalState).toBe("committed");
+			expect(await holdCount("SKU-E6")).toBe(0);
+			expect(await onHand("SKU-E6")).toBe(5);
+			// Every later caller is told the truth, and nothing moves again.
+			expect(await makeStore().releaseHeld(first.reservationId)).toBe(false);
+			await expect(makeStore().commit(first.reservationId)).resolves.toBeUndefined();
+			expect(await onHand("SKU-E6")).toBe(5);
+		});
+
+		/**
+		 * The singular order-scoped release, as `finishCheckout`'s lost-adoption path
+		 * calls it: it has read the hold as adopted by THIS order and is parked at its
+		 * terminal write when a `commit` wins and crashes before its prune. The release
+		 * then prunes by the winner — the units stay sold — and, being a silent no-op
+		 * for any hold that is not its to free, resolves without a throw.
+		 */
+		it("releaseAdopted loses to commit: the units stay sold, and it resolves silently", async () => {
+			await seed("SKU-E7", 5);
+			const key = "k-e7";
+			const first = await makeStore().reserve("SKU-E7", 2, idempotencyKey(key));
+			if (!first.ok) throw new Error("the seed reserve must succeed");
+			await stampDeadline("SKU-E7", key, "2026-07-10T00:15:00.000Z");
+			expect(
+				await makeStore().adoptMany({
+					reservationIds: [first.reservationId],
+					orderId: "ord-e7",
+					holdExpiresAt: "2026-07-10T00:30:00.000Z",
+					now: "2026-07-10T00:05:00.000Z",
+				}),
+			).toEqual({ adopted: [first.reservationId], lost: [] });
+
+			const parked = parkCall(raw(RESERVATION_INDEX_COLLECTION), isUpdateWrite);
+			const releasing = settleOne(
+				storeWith(RESERVATION_INDEX_COLLECTION, parked.collection).releaseAdopted(
+					first.reservationId,
+					"ord-e7",
+				),
+			);
+			await parked.arrived;
+
+			const crash = failCall(raw(INVENTORY_COLLECTION), isUpdateWrite, { mode: "instead" });
+			await expect(
+				storeWith(INVENTORY_COLLECTION, crash.collection).commit(first.reservationId),
+			).rejects.toThrow(InjectedCrashError);
+			expect((await reverseIndex().get(first.reservationId))?.terminalState).toBe("committed");
+			expect(await holdCount("SKU-E7")).toBe(1);
+
+			parked.release();
+			expect(await releasing).toBeUndefined();
+			// Pruned as COMMITTED, not returned.
+			expect(await onHand("SKU-E7")).toBe(3);
+			expect(await holdCount("SKU-E7")).toBe(0);
+			expect((await reverseIndex().get(first.reservationId))?.terminalState).toBe("committed");
+			await expect(makeStore().commit(first.reservationId)).resolves.toBeUndefined();
+			await makeStore().releaseAdopted(first.reservationId, "ord-e7");
+			expect(await onHand("SKU-E7")).toBe(3);
 		});
 	});
 
