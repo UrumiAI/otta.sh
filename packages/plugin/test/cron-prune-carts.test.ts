@@ -7,7 +7,13 @@
  * carts through the real document-store adapters on a clock in the past, then runs
  * real ticks over SQLite.
  */
-import { currency, idempotencyKey, orderId as toOrderId } from "@urumi.ai/otta-domain";
+import {
+	addLine,
+	currency,
+	idempotencyKey,
+	orderId as toOrderId,
+	sku as toSku,
+} from "@urumi.ai/otta-domain";
 import {
 	CART_CREATE_KEYS_COLLECTION,
 	CARTS_COLLECTION,
@@ -24,7 +30,10 @@ import { runCommerceSweeps, SWEEP_TASK_NAME } from "../src/cron/index.js";
 import {
 	ABANDONED_CART_PASS_INTERVAL_MS,
 	ABANDONED_CART_TTL_MS,
+	ABANDONED_CARTS_PER_DAY_FREE,
 	ABANDONED_CARTS_PER_RUN,
+	abandonedCartsDailyCap,
+	LEG_PRIORITY,
 	LEG_QUERY_COSTS,
 	MAINTENANCE_LEGS,
 	pruneAbandonedCart,
@@ -79,6 +88,18 @@ async function onlyPruneCartsDue(): Promise<ReturnType<typeof memoryCursors>> {
 	return cursors;
 }
 
+/** Stamps every OTHER slow-cadence leg as just run at `at`, keeping the rest of the
+ *  tick state (prune-carts' own stamp included). */
+async function othersRunAt(cursors: ReturnType<typeof memoryCursors>, at: Date): Promise<void> {
+	const state = JSON.parse((await cursors.read("state")) ?? "{}") as {
+		lastRun?: Record<string, string>;
+	};
+	for (const leg of MAINTENANCE_LEGS) {
+		if (leg !== "prune-carts") (state.lastRun ??= {})[leg] = at.toISOString();
+	}
+	await cursors.write("state", JSON.stringify(state));
+}
+
 async function tick(
 	cursors: ReturnType<typeof memoryCursors>,
 	options: { now?: Date; queryBudget?: number; counter?: CallCounter } = {},
@@ -114,9 +135,11 @@ describe("prune-carts (#39)", () => {
 		expect(MAINTENANCE_LEGS).toContain("prune-carts");
 	});
 
-	test("never promoted: however long it waits, prune-carts stays last and is never starving", () => {
+	test("never promoted: however long it waits, prune-carts keeps its place right after product-orphans and is never starving", () => {
 		const waits = { "prune-carts": STARVING_TICKS * 10 };
-		expect(tickOrder(waits).at(-1)).toBe("prune-carts");
+		const order = tickOrder(waits);
+		expect(order[order.indexOf("product-orphans") + 1]).toBe("prune-carts");
+		expect(order.indexOf("prune-carts")).toBe(LEG_PRIORITY.indexOf("prune-carts"));
 		expect(starvingLeg(waits)).toBeUndefined();
 		expect(UNPROMOTED_LEGS).toContain("prune-carts");
 	});
@@ -275,11 +298,16 @@ describe("prune-carts (#39)", () => {
 			const cursors = await onlyPruneCartsDue();
 
 			const first = pruneLeg(await tick(cursors, { queryBudget: 5_000 }));
-			// The cap stopped it (once per run, and a tick may run the leg twice).
-			expect(first.count % ABANDONED_CARTS_PER_RUN).toBe(0);
-			expect(first.incomplete).toBe(true);
+			// The per-run cap stopped it: no second run this tick, and it is stamped, so
+			// the next tick finds it not due — it waits its cadence, not one minute.
+			expect(first).toMatchObject({
+				count: ABANDONED_CARTS_PER_RUN,
+				incomplete: true,
+				waitsCadence: true,
+			});
+			const next = new Date(NOW.getTime() + MINUTE_MS);
+			expect(pruneLeg(await tick(cursors, { now: next, queryBudget: 5_000 })).notDue).toBe(true);
 			const left = old.length - first.count;
-			expect(left).toBeGreaterThan(0);
 
 			// Between ticks a row the old count-based resume had counted leaves the page.
 			if (between === "checkout-first") {
@@ -288,11 +316,11 @@ describe("prune-carts (#39)", () => {
 				await carts().delete(live.at(-1)!);
 			}
 
-			// The pass finishes within the hour (it rests a day once it does), and every
-			// abandoned cart is gone by then: none was passed over.
+			// The pass finishes a cadence or two on (it rests a day once it does), and
+			// every abandoned cart is gone by then: none was passed over.
 			let pruned = 0;
 			for (let i = 1; i <= 5 && pruned < left; i++) {
-				const at = new Date(NOW.getTime() + i * MINUTE_MS);
+				const at = new Date(NOW.getTime() + i * 16 * MINUTE_MS);
 				pruned += pruneLeg(await tick(cursors, { now: at, queryBudget: 5_000 })).count;
 			}
 			expect(pruned).toBe(left);
@@ -300,6 +328,131 @@ describe("prune-carts (#39)", () => {
 			for (const id of live.slice(1, -1)) expect(await carts().get(id), id).not.toBeNull();
 		},
 	);
+
+	test("on the Free preset a UTC day's deletes stop at its cap, and the capped leg waits its cadence", async () => {
+		expect(abandonedCartsDailyCap(30)).toBe(ABANDONED_CARTS_PER_DAY_FREE);
+		expect(abandonedCartsDailyCap(600)).toBeNull();
+		const ids: string[] = [];
+		for (let i = 0; i < 4; i++) ids.push(await emptyCart(OLD));
+		const cursors = await onlyPruneCartsDue();
+		// Two short of today's cap already.
+		const today = NOW.toISOString().slice(0, 10);
+		await cursors.write(
+			"prune-carts",
+			JSON.stringify({ day: today, deletedToday: ABANDONED_CARTS_PER_DAY_FREE - 2 }),
+		);
+
+		let pruned = 0;
+		let waited: number | undefined;
+		for (let i = 0; i < 10 && waited === undefined; i++) {
+			const at = new Date(NOW.getTime() + i * MINUTE_MS);
+			const counter: CallCounter = { calls: 0 };
+			const leg = pruneLeg(await tick(cursors, { now: at, queryBudget: 30, counter }));
+			expect(counter.calls).toBeLessThanOrEqual(30);
+			pruned += leg.count;
+			if (leg.waitsCadence === true) waited = i;
+		}
+		expect(pruned).toBe(2);
+		expect(waited).toBeDefined();
+		// Stamped: the next minute it is not due.
+		const after = new Date(NOW.getTime() + (waited! + 1) * MINUTE_MS);
+		expect(pruneLeg(await tick(cursors, { now: after, queryBudget: 30 })).notDue).toBe(true);
+		// A cadence later, still today: one kv read, nothing deleted, waiting again.
+		const later = new Date(NOW.getTime() + (waited! + 16) * MINUTE_MS);
+		await othersRunAt(cursors, later);
+		expect(pruneLeg(await tick(cursors, { now: later, queryBudget: 30 }))).toMatchObject({
+			count: 0,
+			waitsCadence: true,
+		});
+		expect((await Promise.all(ids.map((id) => carts().get(id)))).filter(Boolean)).toHaveLength(2);
+		// The next UTC day the rest go.
+		let tomorrow = 0;
+		for (let i = 0; i < 10 && tomorrow < 2; i++) {
+			const at = new Date(NOW.getTime() + DAY_MS + i * MINUTE_MS);
+			await othersRunAt(cursors, at);
+			tomorrow += pruneLeg(await tick(cursors, { now: at, queryBudget: 30 })).count;
+		}
+		expect(tomorrow).toBe(2);
+		for (const id of ids) expect(await carts().get(id)).toBeNull();
+	});
+
+	test("above the Free preset there is no daily cap", async () => {
+		const ids: string[] = [];
+		for (let i = 0; i < 4; i++) ids.push(await emptyCart(OLD));
+		const cursors = await onlyPruneCartsDue();
+		await cursors.write(
+			"prune-carts",
+			JSON.stringify({
+				day: NOW.toISOString().slice(0, 10),
+				deletedToday: ABANDONED_CARTS_PER_DAY_FREE * 10,
+			}),
+		);
+		expect(pruneLeg(await tick(cursors, { queryBudget: 600 })).count).toBe(4);
+		for (const id of ids) expect(await carts().get(id)).toBeNull();
+	});
+
+	test("a real add-line landing between the prune's read and its delete keeps the cart and its line", async () => {
+		const s = adapters(storage, NOW);
+		await s.inventory.seedOnHand(toSku("SKU-RACE"), 5);
+		const id = await emptyCart(OLD, "create:race-add");
+		const cutoffMs = NOW.getTime() - ABANDONED_CART_TTL_MS;
+		const real = carts();
+		let added = false;
+		// Not a stub: the real collection throughout. The only seam is WHEN the shopper's
+		// add runs — through the real use-case and store, right after the prune's read.
+		const interleaved = {
+			get: (key: string) => real.get(key),
+			compareAndDelete: (key: string, revision: string) => real.compareAndDelete(key, revision),
+			getVersioned: async (key: string) => {
+				const read = await real.getVersioned(key);
+				if (!added) {
+					added = true;
+					const add = await addLine(
+						{ cartStore: s.cartStore, inventoryStore: s.inventory, clock: s.clock },
+						id,
+						toSku("SKU-RACE"),
+						null,
+						1,
+						idempotencyKey("add-race"),
+					);
+					expect(add.ok).toBe(true);
+				}
+				return read;
+			},
+		};
+		const outcome = await pruneAbandonedCart(id, cutoffMs, {
+			carts: interleaved,
+			createKeys: createKeys(),
+			orderKeys: collectionOf<unknown>(storage, ORDER_KEYS_COLLECTION),
+		});
+
+		expect(outcome).toBe("kept");
+		const cart = await s.cartStore.get(id);
+		expect(cart?.lines.map((line) => [line.sku, line.qty])).toEqual([["SKU-RACE", 1]]);
+		expect(cart?.lines[0]?.reservationState).toBe("held");
+		// The cart has a line now: no later pass touches it.
+		const summary = await tick(await onlyPruneCartsDue());
+		expect(pruneLeg(summary).count).toBe(0);
+		expect(await carts().get(id)).not.toBeNull();
+	});
+
+	test("an add-line after the prune finds no cart, and the shopper's next create mints a fresh one", async () => {
+		const s = adapters(storage, NOW);
+		await s.inventory.seedOnHand(toSku("SKU-LATE"), 5);
+		const id = await emptyCart(OLD, "create:late-add");
+		await tick(await onlyPruneCartsDue());
+		expect(await carts().get(id)).toBeNull();
+		const add = await addLine(
+			{ cartStore: s.cartStore, inventoryStore: s.inventory, clock: s.clock },
+			id,
+			toSku("SKU-LATE"),
+			null,
+			1,
+			idempotencyKey("add-late"),
+		);
+		expect(add.ok).toBe(false);
+		expect(await emptyCart(NOW, "create:late-add")).not.toBe(id);
+	});
 
 	test("on the Workers Free preset a backlog drains over ticks, no tick passing its budget", async () => {
 		const FREE = 30;

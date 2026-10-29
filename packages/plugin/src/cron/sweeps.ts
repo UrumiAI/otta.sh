@@ -227,6 +227,7 @@ import { PRODUCTS_COLLECTION } from "../sync/hooks.js";
 import type { ContentReadAccess, PluginContext } from "../types.js";
 import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
 import {
+	COMMIT_WINDOW_EXEMPT_BUDGET,
 	isSweepQueryCeilingError,
 	MAX_COMMIT_WINDOW,
 	SweepQueryCeilingError,
@@ -319,8 +320,8 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     call short of finishing, so the next, idle minute ran the heal again
  *     (`cron-late-refunds.test.ts`). After the orphan sweep, too, so a use the sweep
  *     frees this tick is not first seen as drift;
- *     `product-orphans` is next to last, and `prune-carts` (#39) last of all: an
- *     empty cart a month untouched is nothing anyone waits on.
+ *     `product-orphans` then, and `prune-carts` (#39) right after it: an empty
+ *     cart a month untouched is nothing anyone waits on.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
  */
@@ -1063,6 +1064,11 @@ export interface SweepLegOutcome {
 	/** Present and true for a leg that STOPPED EARLY — out of budget, or at its
 	 *  per-tick batch — with work left over for the next tick. */
 	readonly incomplete?: boolean;
+	/** Present and true for a maintenance leg that stopped with work left at a RATE
+	 *  LIMIT of its own (`prune-carts`' per-run and daily delete caps), not for want
+	 *  of budget: it is stamped like a finished run and waits out its cadence, rather
+	 *  than running again on the very next tick as an `incomplete` scan does. */
+	readonly waitsCadence?: boolean;
 	/** The failure message, when `ok` is false. */
 	readonly error?: string;
 	/** Loud, human-readable markers a leg wants surfaced (a genuinely lost hold).
@@ -1459,8 +1465,9 @@ export async function runCommerceSweeps(
 			clearDeferral(leg);
 			logOutcome(outcome);
 			// A scan cut short is NOT stamped: it resumes on the very next tick, from
-			// its cursor, rather than waiting out another interval.
-			if (maintenance && outcome.incomplete !== true) {
+			// its cursor, rather than waiting out another interval — unless what cut it
+			// short is a rate limit of its own (`waitsCadence`).
+			if (maintenance && (outcome.incomplete !== true || outcome.waitsCadence === true)) {
 				state.lastRun[leg] = nowIso;
 				stateChanged = true;
 			}
@@ -1515,7 +1522,10 @@ export async function runCommerceSweeps(
 			const outcome = { leg, ok: true, ...result, count: result.count };
 			record(outcome);
 			logOutcome(outcome);
-			if (MAINTENANCE_LEGS.includes(leg) && outcome.incomplete !== true) {
+			if (
+				MAINTENANCE_LEGS.includes(leg) &&
+				(outcome.incomplete !== true || outcome.waitsCadence === true)
+			) {
 				state.lastRun[leg] = nowIso;
 				stateChanged = true;
 			}
@@ -2046,6 +2056,7 @@ export async function runCommerceSweeps(
 					legBudget,
 					// The cursor write that records a run's place, even one the ceiling stopped.
 					() => budget.allowCommit(1),
+					abandonedCartsDailyCap(queryBudget),
 				);
 				// Stopped by its share with carts left: a candidate for the second pass.
 				if (legBudget.stopped) stoppedByBudget.add("prune-carts");
@@ -2557,7 +2568,11 @@ function logOutcome(outcome: Omit<SweepLegOutcome, "queries">): void {
 	if (outcome.count > 0 || outcome.incomplete === true) {
 		console.log(
 			`[otta] cron sweep ${outcome.leg} ${String(outcome.count)}` +
-				(outcome.incomplete === true ? " (more next tick)" : ""),
+				(outcome.incomplete !== true
+					? ""
+					: outcome.waitsCadence === true
+						? " (more at its next run)"
+						: " (more next tick)"),
 		);
 	}
 	for (const anomaly of outcome.anomalies ?? []) {
@@ -4653,14 +4668,44 @@ export const ABANDONED_CART_TTL_MS = 30 * DAY_MS;
 export const ABANDONED_CART_PASS_INTERVAL_MS = DAY_MS;
 
 /**
- * At most this many carts deleted per RUN of the leg, whatever the budget allows: a
- * backlog on a large store drains over ticks (an unfinished pass runs again on the
- * very next one) instead of spending a Paid tick's whole share on deletes. Per run,
- * not per tick: a leg that stops with work left may run a second time on what the
- * tick has left (the second pass, `runAgain`), so one tick deletes at most twice
- * this.
+ * At most this many carts deleted per RUN of the leg, whatever the budget allows. A
+ * run that reaches it is stamped (`waitsCadence`) and the pass carries on at the
+ * leg's next cadence, fifteen minutes on: a backlog drains at most 50 carts a quarter
+ * hour (4,800 a day) instead of spending every tick's share on deletes. A run
+ * stopped by this cap is not run again in the same tick — the second pass takes only
+ * a leg its SHARE stopped — while a run its share stopped (on Free, after a cart or
+ * two) is `incomplete` and goes again on the second pass or the next tick, under
+ * the same cap counted afresh. So one tick deletes fewer than twice this.
  */
 export const ABANDONED_CARTS_PER_RUN = 50;
+
+/**
+ * At most this many carts deleted per UTC day on the Workers Free preset (a query
+ * budget of `COMMIT_WINDOW_EXEMPT_BUDGET`, 30, or less), counted in the leg's kv
+ * cursor. D1 Free allows 100,000 rows written a day, and once a store passes it
+ * every write fails — add-to-cart and checkout included — until the UTC reset.
+ *
+ * What a delete writes, by DEPLOYMENT.md's index-row model: EmDash builds every
+ * declared index as an expression index over the whole shared `_plugin_storage`
+ * table with no `WHERE`, so every row carries an entry in each — Otta declares 46
+ * (`COMMERCE_STORAGE_COLLECTIONS`) — plus the table row itself and the host's own
+ * `idx_plugin_storage_list`. A deleted row is therefore about 48 rows written, and a
+ * pruned cart deletes two (the cart, and its `cart_create_keys` record): about 96,
+ * say 100 with other plugins' indexes. 300 carts is then about 30,000 rows written a
+ * day — under a third of the Free allowance, leaving the store's own traffic the
+ * rest; the leg's cursor and the tick-state writes add a few thousand more on a
+ * day the cap is reached. A backlog of N abandoned carts drains in N / 300 days.
+ *
+ * Paid has no daily rows-written limit (writes are billed per million), so a larger
+ * budget has no daily cap and drains at `ABANDONED_CARTS_PER_RUN` a cadence.
+ */
+export const ABANDONED_CARTS_PER_DAY_FREE = 300;
+
+/** The daily delete cap for a tick whose query budget is `queryBudget`: the Free
+ *  cap at and below the Free preset, none above it. */
+export function abandonedCartsDailyCap(queryBudget: number): number | null {
+	return queryBudget <= COMMIT_WINDOW_EXEMPT_BUDGET ? ABANDONED_CARTS_PER_DAY_FREE : null;
+}
 
 /** `prune-carts`' place in a pass, and when the last pass finished. */
 interface PruneCartsCursor {
@@ -4682,22 +4727,43 @@ interface PruneCartsCursor {
 	readonly passDoneAt: string | null;
 }
 
-const PRUNE_CARTS_START: PruneCartsCursor = { cursor: null, after: null, passDoneAt: null };
-const PRUNE_CARTS_START_SERIALIZED = JSON.stringify(PRUNE_CARTS_START);
+/** The carts deleted on one UTC day (`YYYY-MM-DD`), for the Free daily cap. Kept
+ *  beside the place and never reset by a pass ending or a cursor refused. */
+interface PruneCartsDay {
+	readonly day: string | null;
+	readonly deletedToday: number;
+}
 
-function parsePruneCartsCursor(raw: string | null): PruneCartsCursor {
-	if (raw === null || raw === "") return PRUNE_CARTS_START;
+const PRUNE_CARTS_START: PruneCartsCursor = { cursor: null, after: null, passDoneAt: null };
+const PRUNE_CARTS_NO_DAY: PruneCartsDay = { day: null, deletedToday: 0 };
+const PRUNE_CARTS_START_SERIALIZED = serializePruneCarts(PRUNE_CARTS_START, PRUNE_CARTS_NO_DAY);
+
+function serializePruneCarts(place: PruneCartsCursor, day: PruneCartsDay): string {
+	return JSON.stringify({
+		cursor: place.cursor,
+		after: place.after,
+		passDoneAt: place.passDoneAt,
+		day: day.day,
+		deletedToday: day.deletedToday,
+	});
+}
+
+function parsePruneCartsCursor(raw: string | null): PruneCartsCursor & PruneCartsDay {
+	const empty = { ...PRUNE_CARTS_START, ...PRUNE_CARTS_NO_DAY };
+	if (raw === null || raw === "") return empty;
 	try {
 		const parsed: unknown = JSON.parse(raw);
-		if (typeof parsed !== "object" || parsed === null) return PRUNE_CARTS_START;
+		if (typeof parsed !== "object" || parsed === null) return empty;
 		const p = parsed as Record<string, unknown>;
 		return {
 			cursor: cursorText(p.cursor),
 			after: cursorText(p.after),
 			passDoneAt: cursorText(p.passDoneAt),
+			day: cursorText(p.day),
+			deletedToday: cursorCount(p.deletedToday),
 		};
 	} catch {
-		return PRUNE_CARTS_START;
+		return empty;
 	}
 }
 
@@ -4836,7 +4902,13 @@ async function pruneAbandonedCarts(
 	options: CommerceSweepOptions,
 	budget: LegBudget,
 	allowCursorWrite: () => void,
-): Promise<{ count: number; incomplete?: true; anomalies?: readonly string[] }> {
+	dailyCap: number | null,
+): Promise<{
+	count: number;
+	incomplete?: true;
+	waitsCadence?: true;
+	anomalies?: readonly string[];
+}> {
 	const raw = await cursors.read(PRUNE_CARTS_CURSOR);
 	const saved = parsePruneCartsCursor(raw);
 	if (saved.passDoneAt !== null) {
@@ -4844,6 +4916,16 @@ async function pruneAbandonedCarts(
 		// A stamp ahead of now (a clock step) is not a reason to rest forever.
 		if (rested >= 0 && rested < ABANDONED_CART_PASS_INTERVAL_MS) return { count: 0 };
 	}
+	// The Free preset's daily cap (`ABANDONED_CARTS_PER_DAY_FREE`): a day's count is
+	// the stored one only when it is today's.
+	const today = now.toISOString().slice(0, 10);
+	const deletedBefore = saved.day === today ? saved.deletedToday : 0;
+	const runLimit =
+		dailyCap === null
+			? ABANDONED_CARTS_PER_RUN
+			: Math.min(ABANDONED_CARTS_PER_RUN, Math.max(0, dailyCap - deletedBefore));
+	// Today's allowance is spent: one kv read, and the leg waits its cadence.
+	if (runLimit === 0) return { count: 0, incomplete: true, waitsCadence: true };
 	const collections = {
 		carts: collectionOf<CartDoc>(storage, CARTS_COLLECTION),
 		createKeys: collectionOf<CartCreateKeyDoc>(storage, CART_CREATE_KEYS_COLLECTION),
@@ -4853,15 +4935,20 @@ async function pruneAbandonedCarts(
 	const limit = options.pageSize ?? DEFAULT_PAGE_SIZE;
 	const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
 	const unit = LEG_QUERY_COSTS["prune-carts"].unit;
-	let place: PruneCartsCursor = { ...saved, passDoneAt: null };
+	let place: PruneCartsCursor = { cursor: saved.cursor, after: saved.after, passDoneAt: null };
 	const anomalies: string[] = [];
 	let pruned = 0;
 	let incomplete = true;
+	let capped = false;
 	// Even when the run throws, its progress is kept: a run stopped at the ceiling
-	// may still record its place. No write when nothing moved: the place read back,
-	// or a fresh start where nothing was stored.
+	// may still record its place, and the day's count its deletes. No write when
+	// nothing moved: the place read back, or a fresh start where nothing was stored.
 	const savePlace = async (): Promise<void> => {
-		const serialized = JSON.stringify(place);
+		const day: PruneCartsDay =
+			pruned > 0
+				? { day: today, deletedToday: deletedBefore + pruned }
+				: { day: saved.day, deletedToday: saved.deletedToday };
+		const serialized = serializePruneCarts(place, day);
 		if (serialized === (raw ?? PRUNE_CARTS_START_SERIALIZED)) return;
 		allowCursorWrite();
 		await cursors.write(PRUNE_CARTS_CURSOR, serialized);
@@ -4895,7 +4982,13 @@ async function pruneAbandonedCarts(
 					place = { ...place, after: item.id };
 					continue;
 				}
-				if (pruned >= ABANDONED_CARTS_PER_RUN || !gate()) break walk;
+				// The run's cap (per run, and what is left of the Free day's) before the
+				// budget's gate: a capped run waits its cadence, a gated one goes again.
+				if (pruned >= runLimit) {
+					capped = true;
+					break walk;
+				}
+				if (!gate()) break walk;
 				let outcome: "pruned" | "kept";
 				try {
 					outcome = await pruneAbandonedCart(item.id, cutoffMs, collections);
@@ -4934,5 +5027,8 @@ async function pruneAbandonedCarts(
 		throw err;
 	}
 	await savePlace();
-	return legResult(pruned, incomplete, anomalies);
+	return {
+		...legResult(pruned, incomplete, anomalies),
+		...(capped ? { waitsCadence: true as const } : {}),
+	};
 }

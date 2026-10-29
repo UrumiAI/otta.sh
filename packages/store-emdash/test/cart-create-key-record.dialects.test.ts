@@ -21,7 +21,9 @@ import {
 import { expect, test } from "vitest";
 import {
 	CART_CREATE_KEYS_COLLECTION,
+	CARTS_COLLECTION,
 	type CartCreateKeyDoc,
+	type CartDoc,
 	collectionOf,
 	normalizeCartDoc,
 	type StorageAccess,
@@ -126,5 +128,60 @@ describeEachDialect("a keyed create records its key on the cart (#39)", (ctx) =>
 
 		expect((await h.carts.get(active))?.updatedAt).toBe(h.clock.now().toISOString());
 		expect((await h.carts.get(spent))?.updatedAt).toBe(spentBefore);
+	});
+
+	test("a replay records the key on a cart minted before carts carried one, in the same write", async () => {
+		const h = make();
+		const cartId = await h.store.create(USD, idempotencyKey("create:legacy"));
+		const doc = await h.carts.get(cartId);
+		if (doc === null) throw new Error("the cart must exist");
+		const { createKey: _dropped, ...legacy } = doc;
+		await h.carts.put(cartId, legacy);
+		h.clock.advance(60_000);
+
+		expect(await h.store.create(USD, idempotencyKey("create:legacy"))).toBe(cartId);
+
+		const after = await h.carts.get(cartId);
+		expect(after?.createKey).toBe("create:legacy");
+		expect(after?.updatedAt).toBe(h.clock.now().toISOString());
+	});
+
+	test("a replay whose cart is pruned between the refused create and the touch claims the key again (#39)", async () => {
+		const base = bound.storage;
+		const keys = collectionOf<CartCreateKeyDoc>(base, CART_CREATE_KEYS_COLLECTION);
+		const cartsDocs = collectionOf<CartDoc>(base, CARTS_COLLECTION);
+		const first = await makeCartHarness(base).store.create(USD, idempotencyKey("create:gone"));
+		// The prune lands at the worst moment for the replay: after its create-if-absent
+		// was refused by the existing cart, before its touch reads it — key record first,
+		// then the cart, as `pruneAbandonedCart` deletes them.
+		let reads = 0;
+		const real = base[CARTS_COLLECTION]!;
+		const racing = new Proxy(real, {
+			get(target, prop, receiver) {
+				if (prop !== "getVersioned") {
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? value.bind(target) : value;
+				}
+				return async (id: string) => {
+					reads++;
+					if (reads === 1 && id === first) {
+						const record = await keys.getVersioned("create:gone");
+						if (record !== null) await keys.compareAndDelete("create:gone", record.revision);
+						const cart = await cartsDocs.getVersioned(id);
+						if (cart !== null) await cartsDocs.compareAndDelete(id, cart.revision);
+					}
+					return target.getVersioned(id);
+				};
+			},
+		}) satisfies StorageCollection;
+		const storageForCart: StorageAccess = { ...base, [CARTS_COLLECTION]: racing };
+		const h = makeCartHarness(base, { storageForCart });
+
+		const replayed = await h.store.create(USD, idempotencyKey("create:gone"));
+
+		expect(replayed).not.toBe(first);
+		expect(await cartsDocs.get(first)).toBeNull();
+		expect((await keys.get("create:gone"))?.cartId).toBe(replayed);
+		expect((await cartsDocs.get(replayed))?.createKey).toBe("create:gone");
 	});
 });

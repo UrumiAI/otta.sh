@@ -234,7 +234,7 @@ export class EmdashCartStore implements CartStore {
 				newCartDoc(cartId, currency, now, key),
 			);
 			if (written.applied) return cartId;
-			if (await this.#touchReplayed(cartId, now)) return cartId;
+			if (await this.#touchReplayed(cartId, key, now)) return cartId;
 			// Gone between the two writes: the prune deleted it, and its key record
 			// first (#39). Claim the key again.
 		}
@@ -250,13 +250,17 @@ export class EmdashCartStore implements CartStore {
 	 * re-currency asked again). A checked-out cart is an order's record and is left as
 	 * it is. A lost write means another write landed — which moved `updatedAt` itself —
 	 * unless the cart is gone. Says whether the cart is still there.
+	 *
+	 * The same write records the key on a cart minted before carts carried one
+	 * (`createKey`), at no extra call: the prune can then delete its key record too.
 	 */
-	async #touchReplayed(cartId: string, now: string): Promise<boolean> {
+	async #touchReplayed(cartId: string, key: IdempotencyKey, now: string): Promise<boolean> {
 		const current = await this.#carts.getVersioned(cartId);
 		if (current === null) return false;
 		if (current.value.state !== "active") return true;
 		const touched = await this.#carts.compareAndSet(cartId, current.revision, {
 			...current.value,
+			createKey: current.value.createKey ?? key,
 			updatedAt: now,
 		});
 		return touched.applied || (await this.#carts.get(cartId)) !== null;
