@@ -53,6 +53,7 @@ import {
 	CONTENT_MISS_QUERIES,
 	CONTENT_READ_QUERIES,
 	COUPON_RELEASE_CALLS,
+	GUEST_COUPON_RELEASE_CALLS,
 	LATE_REFUND_ESCALATION_UNIT,
 	LEG_QUERY_COSTS,
 	legReserveQueries,
@@ -391,6 +392,31 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		const used = await cost(() => s.couponStore.releaseByOrder(order));
 		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(0);
 		expect(used).toBe(COUPON_RELEASE_CALLS);
+	});
+
+	// A guest redemption has no per-customer slot to free: two calls fewer.
+	test("expire-orders: a guest order's coupon release alone fits GUEST_COUPON_RELEASE_CALLS", async () => {
+		const s = counted();
+		const couponId = await costCoupon(s, "coupon-cost-guest", "COSTGUEST");
+		const placed = await placeOrder(
+			"release-guest",
+			new Date(Date.now() - 30 * MINUTE_MS).toISOString(),
+			1,
+			"COSTGUEST",
+		);
+		const claimed = await s.couponStore.redeem({
+			couponId,
+			orderId: toOrderId(placed.id),
+			idempotencyKey: idempotencyKey("create-release-guest"),
+			createdAt: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+		});
+		if (!claimed.ok) throw new Error("redeem failed");
+		const order = await s.orderStore.getById(toOrderId(placed.id));
+		if (order === null) throw new Error("no order");
+		expect(order.customerId).toBeNull();
+		const used = await cost(() => s.couponStore.releaseByOrder(order));
+		expect((await s.couponStore.findById(couponId))?.usesCount).toBe(0);
+		expect(used).toBe(GUEST_COUPON_RELEASE_CALLS);
 	});
 
 	// QA2 M2: one order expiry was 22 calls on a 30-call Workers Free tick, so a

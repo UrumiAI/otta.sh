@@ -10,13 +10,22 @@
  * gone, and the coupon's `usesCount` stays one high for good — a capped coupon then
  * refuses a shopper it should admit.
  *
- * So the sweep never starts a coupon release it cannot finish. Which call the ceiling
- * lands on depends on what the tick spent before the expiry reached this order, so
- * the suite runs the unit with every amount of room around its cost, and pins for
- * each: one budget-limited sweep, then the next coupon sweep leaves `usesCount`
- * exact, then a third sweep changes nothing.
+ * So the sweep never begins a coupon release it cannot afford, and finishes one it
+ * has begun inside the commit window (`COUPON_RELEASE_CALLS`). Which call the
+ * ceiling would land on depends on what the tick spent before the expiry reached
+ * this order, so the suite runs the unit with every amount of room around its cost,
+ * for a guest redemption, a customer-bound one, and a customer-bound one whose
+ * per-customer slot write loses its compare-and-set to a peer once or twice — and
+ * pins for each: one budget-limited sweep, then the next coupon sweep leaves
+ * `usesCount` exact, then a third sweep changes nothing.
  */
-import { cents, currency, idempotencyKey, orderId as toOrderId } from "@urumi.ai/otta-domain";
+import {
+	cents,
+	currency,
+	customerId,
+	idempotencyKey,
+	orderId as toOrderId,
+} from "@urumi.ai/otta-domain";
 import {
 	collectionOf,
 	EmdashCouponStore,
@@ -47,10 +56,16 @@ import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
 const NOW = new Date("2026-09-20T12:00:00.000Z");
 const PAID = 600;
+const CAPS = "coupon_customer_caps";
+
+let warnings: string[];
 
 beforeEach(() => {
+	warnings = [];
 	vi.spyOn(console, "log").mockImplementation(() => {});
-	vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+		warnings.push(args.map(String).join(" "));
+	});
 });
 
 afterEach(() => {
@@ -63,15 +78,47 @@ function leg(summary: CommerceSweepSummary, name: SweepLeg) {
 	return found;
 }
 
+/**
+ * `storage` with a PEER writing the per-customer slot document just before each of
+ * the next `races.left` compare-and-sets on it, so that write loses and the store
+ * retries — real contention, on the real document. `races.lost` counts the losses.
+ */
+function racingSlots(storage: StorageAccess, races: { left: number; lost: number }): StorageAccess {
+	const caps = storage[CAPS];
+	if (caps === undefined) throw new Error(`no ${CAPS} collection`);
+	const wrapped = new Proxy(caps, {
+		get(target, prop) {
+			const value: unknown = Reflect.get(target, prop, target);
+			if (typeof value !== "function") return value;
+			if (prop !== "compareAndSet") return (value as (...a: unknown[]) => unknown).bind(target);
+			return async (id: string, ...rest: unknown[]) => {
+				if (races.left > 0) {
+					races.left--;
+					const current = await target.getVersioned(id);
+					if (current !== null) await target.compareAndSet(id, current.revision, current.value);
+				}
+				const written = (await (value as (...a: unknown[]) => Promise<unknown>).apply(target, [
+					id,
+					...rest,
+				])) as { applied: boolean };
+				if (!written.applied) races.lost++;
+				return written;
+			};
+		},
+	});
+	return { ...storage, [CAPS]: wrapped };
+}
+
 /** A lapsed one-line order that applied `SAVE10`, its redemption claimed as
- *  checkout claims it (the order's id and creation key), the coupon at one use. */
-async function lapsedOrderWithCoupon(storage: StorageAccess) {
+ *  checkout claims it (the order's id and creation key, the order's customer), the
+ *  coupon at one use. */
+async function lapsedOrderWithCoupon(storage: StorageAccess, customer: string | null) {
 	const placed = await placeOrder(
 		storage,
 		"coupon-cut",
 		new Date(NOW.getTime() - 30 * MINUTE_MS),
 		new Date(NOW.getTime() - 2 * HOUR_MS),
-		"SAVE10",
+		{ appliedCouponCode: "SAVE10", ...(customer === null ? {} : { customerId: customer }) },
 	);
 	const coupons = new EmdashCouponStore({
 		storage,
@@ -90,66 +137,191 @@ async function lapsedOrderWithCoupon(storage: StorageAccess) {
 		startsAt: new Date(NOW.getTime() - DAY_MS).toISOString(),
 		expiresAt: new Date(NOW.getTime() + DAY_MS).toISOString(),
 		maxUses: 10,
-		maxUsesPerCustomer: null,
+		maxUsesPerCustomer: 1,
 	});
 	const redeemed = await coupons.redeem({
 		couponId: "coupon-cut",
 		orderId: toOrderId(placed.id),
 		idempotencyKey: idempotencyKey("create-coupon-cut"),
+		...(customer === null ? {} : { customerId: customerId(customer) }),
 		createdAt: new Date(NOW.getTime() - 2 * HOUR_MS).toISOString(),
 	});
 	expect(redeemed.ok).toBe(true);
 	return { orderId: toOrderId(placed.id), coupons };
 }
 
+const SHAPES = [
+	{ name: "a guest redemption", customer: null, slotRaces: 0 },
+	{ name: "a customer-bound redemption", customer: "cust-cut", slotRaces: 0 },
+	{
+		name: "a customer-bound redemption, its slot write lost once",
+		customer: "cust-cut",
+		slotRaces: 1,
+	},
+	// Two lost slot writes is the most the commit window absorbs (see
+	// `COUPON_RELEASE_CALLS`): the customer figure (7) plus the window is exactly that
+	// release's cost, so a figure below the real one fails here.
+	{
+		name: "a customer-bound redemption, its slot write lost twice",
+		customer: "cust-cut",
+		slotRaces: 2,
+	},
+] as const;
+
 describe("an expiry's coupon release cut off by the query ceiling (#621)", () => {
-	test("the next coupon sweep leaves usesCount exact, and a third sweep changes nothing — wherever the ceiling lands", async () => {
-		// Budgets from too small to start the expiry at all up to comfortably past one
-		// whole unit: every call of the flip and the release is the last one admitted
-		// for one of them.
-		const cutBeforeRelease: number[] = [];
-		for (let budget = 14; budget <= 40; budget++) {
-			const { storage } = await makeSqliteStorage(commerceStorageLayout());
-			const { orderId, coupons } = await lapsedOrderWithCoupon(storage);
-			const redemptions = collectionOf(storage, "coupon_redemptions");
-			const ctx = sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: PAID });
-			const cursors = memoryCursors();
-			const sweep = async (at: Date, queryBudget: number) =>
-				await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
-					cursors,
-					emailSender: recordingSender([]),
-					now: at,
-					queryBudget,
+	test.each(SHAPES)(
+		"$name: the next coupon sweep leaves usesCount exact, and a third sweep changes nothing — wherever the ceiling lands",
+		async ({ customer, slotRaces }) => {
+			// Budgets from too small to start the expiry at all up to comfortably past one
+			// whole unit, on both sides of the Free preset (whose commit window is not
+			// kept out of the ceiling): every call of the flip and the release is the
+			// last one admitted for one of them.
+			const skipped: number[] = [];
+			for (let budget = 14; budget <= 44; budget++) {
+				const label = `budget ${String(budget)}`;
+				warnings = [];
+				const { storage } = await makeSqliteStorage(commerceStorageLayout());
+				const { orderId, coupons } = await lapsedOrderWithCoupon(storage, customer);
+				const redemptions = collectionOf(storage, "coupon_redemptions");
+				const races = { left: slotRaces, lost: 0 };
+				const raced = sweepContext(racingSlots(storage, races), undefined, {
+					[BACKGROUND_WORK_KEY]: PAID,
 				});
-			const usesCount = async () => (await coupons.findById("coupon-cut"))?.usesCount;
-			const held = async () => (await redemptions.query({ limit: 10 })).items.length;
+				const ctx = sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: PAID });
+				const cursors = memoryCursors();
+				const sweep = async (on: typeof ctx, at: Date, queryBudget: number) =>
+					await runCommerceSweeps(on, SWEEP_TASK_NAME, {
+						cursors,
+						emailSender: recordingSender([]),
+						now: at,
+						queryBudget,
+					});
+				const usesCount = async () => (await coupons.findById("coupon-cut"))?.usesCount;
+				const held = async () => (await redemptions.query({ limit: 10 })).items.length;
 
-			const first = await sweep(NOW, budget);
-			expect(first.budget.queriesUsed, `budget ${String(budget)}`).toBeLessThanOrEqual(budget);
-			const state = (await adapters(storage).orderStore.getById(orderId))?.state;
-			// Never the lost-release shape: an expired order with its redemption gone and
-			// its use still counted.
-			if (state === "expired" && (await held()) === 0) {
-				expect(await usesCount(), `budget ${String(budget)}: released whole`).toBe(0);
+				const first = await sweep(raced, NOW, budget);
+				const state = (await adapters(storage).orderStore.getById(orderId))?.state;
+				// Never the lost-release shape: an expired order with its redemption gone
+				// and its use still counted.
+				if (state === "expired" && (await held()) === 0) {
+					expect(await usesCount(), `${label}: released whole`).toBe(0);
+					// A release that ran to the end had its slot write raced as staged.
+					expect(races.lost, `${label}: the slot write lost`).toBe(slotRaces);
+				}
+				if (state === "expired" && (await held()) === 1) {
+					// The release was skipped, not cut: the expiry is counted, the leg is
+					// reported unfinished, and nothing calls it an estimate gone wrong.
+					skipped.push(budget);
+					expect(leg(first, "expire-orders"), label).toMatchObject({
+						ok: true,
+						count: 1,
+						incomplete: true,
+					});
+					expect(
+						warnings.filter((line) =>
+							line.includes("expire-orders stopped at the tick's query ceiling"),
+						),
+						label,
+					).toEqual([]);
+				}
+
+				// The next coupon sweep (a full cadence on, so the leg is due whatever the
+				// first tick stamped) — Paid room, so nothing is cut this time.
+				const second = await sweep(
+					ctx,
+					new Date(NOW.getTime() + MAINTENANCE_LEG_INTERVAL_MS),
+					PAID,
+				);
+				expect((await adapters(storage).orderStore.getById(orderId))?.state).toBe("expired");
+				expect(await usesCount(), `${label}: healed`).toBe(0);
+				expect(await held(), `${label}: no redemption left`).toBe(0);
+				expect(leg(second, "coupon-orphans").ok).toBe(true);
+
+				// A third sweep finds nothing owed and gives nothing back twice.
+				const third = await sweep(
+					ctx,
+					new Date(NOW.getTime() + 2 * MAINTENANCE_LEG_INTERVAL_MS),
+					PAID,
+				);
+				expect(await usesCount(), `${label}: not released twice`).toBe(0);
+				expect(leg(third, "coupon-orphans")).toMatchObject({ ok: true, count: 0 });
+				expect(leg(third, "expire-orders").count).toBe(0);
 			}
-			if (state === "expired" && (await held()) === 1) cutBeforeRelease.push(budget);
+			// The case the issue is about was actually staged: the expiry landed and its
+			// coupon release did not, for at least one budget.
+			expect(skipped.length).toBeGreaterThan(0);
+		},
+		600_000,
+	);
+});
 
-			// The next coupon sweep (a full cadence on, so the leg is due whatever the
-			// first tick stamped) — Paid room, so nothing is cut this time.
-			const second = await sweep(new Date(NOW.getTime() + MAINTENANCE_LEG_INTERVAL_MS), PAID);
-			expect((await adapters(storage).orderStore.getById(orderId))?.state).toBe("expired");
-			expect(await usesCount(), `budget ${String(budget)}: healed`).toBe(0);
-			expect(await held(), `budget ${String(budget)}: no redemption left`).toBe(0);
-			expect(leg(second, "coupon-orphans").ok).toBe(true);
+describe("a same-key replay's redemption, older than its order's hold (#621)", () => {
+	test("waits at the still-pending order instead of judging it live, and frees the coupon once the order expires", async () => {
+		const { storage } = await makeSqliteStorage(commerceStorageLayout());
+		// The replay's order: created a few minutes ago, its hold still running. The
+		// redemption keeps the FIRST attempt's `createdAt`, two hours back — old enough
+		// to judge. `appliedCouponCode` is not stamped, so the expiry gives nothing back
+		// itself: the coupon sweep is all that stands between the use and a lost one,
+		// exactly as when the expiry's release is skipped for want of budget.
+		const placed = await placeOrder(
+			storage,
+			"replay",
+			new Date(NOW.getTime() + 10 * MINUTE_MS),
+			new Date(NOW.getTime() - 5 * MINUTE_MS),
+		);
+		const coupons = new EmdashCouponStore({
+			storage,
+			idGen: uuidIdGen,
+			clock: adapters(storage).clock,
+		});
+		await coupons.create({
+			id: "coupon-replay",
+			code: "REPLAY10",
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: cents(0),
+			startsAt: new Date(NOW.getTime() - DAY_MS).toISOString(),
+			expiresAt: new Date(NOW.getTime() + DAY_MS).toISOString(),
+			maxUses: 10,
+			maxUsesPerCustomer: null,
+		});
+		const redeemed = await coupons.redeem({
+			couponId: "coupon-replay",
+			orderId: toOrderId(placed.id),
+			idempotencyKey: idempotencyKey("create-replay"),
+			createdAt: new Date(NOW.getTime() - 2 * HOUR_MS).toISOString(),
+		});
+		expect(redeemed.ok).toBe(true);
+		const ctx = sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: PAID });
+		const cursors = memoryCursors();
+		const sweep = async (at: Date) =>
+			await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+				cursors,
+				emailSender: recordingSender([]),
+				now: at,
+			});
+		const usesCount = async () => (await coupons.findById("coupon-replay"))?.usesCount;
 
-			// A third sweep finds nothing owed and gives nothing back twice.
-			const third = await sweep(new Date(NOW.getTime() + 2 * MAINTENANCE_LEG_INTERVAL_MS), PAID);
-			expect(await usesCount(), `budget ${String(budget)}: not released twice`).toBe(0);
-			expect(leg(third, "coupon-orphans")).toMatchObject({ ok: true, count: 0 });
-			expect(leg(third, "expire-orders").count).toBe(0);
-		}
-		// The case the issue is about was actually staged: the expiry landed and its
-		// coupon release did not, for at least one budget.
-		expect(cutBeforeRelease.length).toBeGreaterThan(0);
-	}, 600_000);
+		// Inside the hold: the walk stops at the pending order, judging nothing.
+		const inHold = await sweep(NOW);
+		expect(leg(inHold, "coupon-orphans")).toMatchObject({ ok: true, count: 0, incomplete: true });
+		expect(await usesCount()).toBe(1);
+
+		// The hold lapses and the order expires; the coupon sweep, still before it,
+		// frees the use — once.
+		await sweep(new Date(NOW.getTime() + 11 * MINUTE_MS));
+		expect((await adapters(storage).orderStore.getById(toOrderId(placed.id)))?.state).toBe(
+			"expired",
+		);
+		await sweep(new Date(NOW.getTime() + 11 * MINUTE_MS + MAINTENANCE_LEG_INTERVAL_MS));
+		expect(await usesCount()).toBe(0);
+		const after = await sweep(
+			new Date(NOW.getTime() + 11 * MINUTE_MS + 2 * MAINTENANCE_LEG_INTERVAL_MS),
+		);
+		expect(leg(after, "coupon-orphans")).toMatchObject({ ok: true, count: 0 });
+		expect(await usesCount()).toBe(0);
+	}, 120_000);
 });
