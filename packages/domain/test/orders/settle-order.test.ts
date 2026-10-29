@@ -567,6 +567,80 @@ describe("settleOrder", () => {
 		expect(anomaly?.detail).toContain("could not be read back");
 	});
 
+	test.each(["succeeded", "failed"] as const)(
+		"a verified %s event naming an order this store does not have is ORDER_NOT_FOUND and records NO payment_events row (#616)",
+		async (outcome) => {
+			// Another tenant on a shared Stripe account (WooCommerce's Stripe plugin
+			// also sets `metadata.order_id`). The event verified, but there is no order
+			// to bind it to, so nothing may be written: an orphan dedupe row could never
+			// be pruned (a purge would open the fail-closed RECEIPT_REBOUND arm).
+			const res = await settleOrder(
+				h.settleDeps,
+				h.stripeGw,
+				h.stripeGw.webhook({
+					outcome,
+					orderId: "wc_123",
+					providerRef: "pi_foreign",
+					amount: 1500,
+					currency: "USD",
+					dedupeKey: "evt_foreign",
+				}),
+			);
+
+			// No row: the key is still unclaimed, and nothing is bound to it.
+			expect(await h.paymentEventStore.orderForDedupeKey("evt_foreign")).toBeNull();
+			// The result names the event and the order, so the caller can log them.
+			expect(res).toEqual({
+				ok: false,
+				reason: "ORDER_NOT_FOUND",
+				orderId: "wc_123",
+				dedupeKey: "evt_foreign",
+			});
+			expect(
+				await h.paymentEventStore.dedupe(
+					"evt_foreign",
+					brandOrderId("wc_123"),
+					"stripe",
+					"2026-01-01T00:00:00Z",
+				),
+			).toBe(true);
+			expect(h.paymentEventStore.anomalies()).toHaveLength(0);
+		},
+	);
+
+	test("a receipt already bound to order A, resubmitted naming an order that does not exist, moves nothing and keeps A's binding (#616)", async () => {
+		// The order read now runs BEFORE the claim, so a rebind aimed at a missing
+		// order answers ORDER_NOT_FOUND rather than RECEIPT_REBOUND. Either way
+		// nothing can settle — there is no order — and the binding to A is untouched,
+		// so a later rebind at a REAL order is still refused.
+		const first = await pendingDigital("kd-a");
+		const second = await pendingDigital("kd-b");
+		const receipt = (orderId: string, amount: number) =>
+			h.stripeGw.webhook({
+				outcome: "succeeded" as const,
+				orderId,
+				providerRef: "pi_bound",
+				amount,
+				currency: "USD",
+				dedupeKey: "evt_bound",
+			});
+		expect((await settleOrder(h.settleDeps, h.stripeGw, receipt(first.id, 900))).ok).toBe(true);
+
+		expect(await settleOrder(h.settleDeps, h.stripeGw, receipt("ord-missing", 900))).toEqual({
+			ok: false,
+			reason: "ORDER_NOT_FOUND",
+			orderId: "ord-missing",
+			dedupeKey: "evt_bound",
+		});
+		expect(await h.paymentEventStore.orderForDedupeKey("evt_bound")).toBe(first.id);
+
+		expect(await settleOrder(h.settleDeps, h.stripeGw, receipt(second.id, 900))).toEqual({
+			ok: false,
+			reason: "RECEIPT_REBOUND",
+		});
+		expect((await h.orderStore.getById(second.id))?.state).toBe("pending");
+	});
+
 	test("a REDELIVERY of the same receipt to the SAME order still re-drives (not a rebind)", async () => {
 		// The refusal above must not catch the legitimate replay the whole
 		// claim/resume idiom depends on.
