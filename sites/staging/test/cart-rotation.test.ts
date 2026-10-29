@@ -328,7 +328,9 @@ describe("POST /cart/add on a checked-out cart", () => {
 			});
 			const jar = makeJar({ [CART_COOKIE_NAME]: "cart-old" });
 			const response = await ADD_POST(addContext(handler, jar));
-			expect(response.headers.get("location")).toBe("/products/bottle?error=CART_CHECKED_OUT");
+			expect(response.headers.get("location")).toBe(
+				"/products/bottle?error=CART_CHECKED_OUT#product-error",
+			);
 			expect(jar.jar.get(CART_COOKIE_NAME)).toBe("cart-old");
 			expect(jar.deleted).toEqual([]);
 			expect(calls.some((c) => c.route === STOREFRONT_CART_CREATE_ROUTE)).toBe(false);
@@ -344,7 +346,9 @@ describe("POST /cart/add on a checked-out cart", () => {
 		const jar = makeJar({ [CART_COOKIE_NAME]: "cart-old" });
 		const response = await ADD_POST(addContext(handler, jar));
 
-		expect(response.headers.get("location")).toBe("/products/bottle?error=CART_CHECKED_OUT");
+		expect(response.headers.get("location")).toBe(
+			"/products/bottle?error=CART_CHECKED_OUT#product-error",
+		);
 		expect(jar.jar.get(CART_COOKIE_NAME)).toBe("cart-old");
 		expect(jar.deleted).toEqual([]);
 		expect(calls.some((c) => c.route === STOREFRONT_CART_CREATE_ROUTE)).toBe(false);
@@ -357,7 +361,9 @@ describe("POST /cart/add on a checked-out cart", () => {
 		});
 		const jar = makeJar({ [CART_COOKIE_NAME]: "cart-old" });
 		const response = await ADD_POST(addContext(handler, jar));
-		expect(response.headers.get("location")).toBe("/products/bottle?error=CART_CHECKED_OUT");
+		expect(response.headers.get("location")).toBe(
+			"/products/bottle?error=CART_CHECKED_OUT#product-error",
+		);
 		expect(jar.jar.get(CART_COOKIE_NAME)).toBe("cart-old");
 	});
 });

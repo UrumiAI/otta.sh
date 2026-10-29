@@ -26,6 +26,7 @@ import {
 } from "../../lib/cart-actions.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { busyResponse, dispatchOttaRoute, isBusyResult } from "../../lib/otta-api.js";
+import { CART_ERROR_ID } from "../../lib/error-notice.js";
 
 export const POST: APIRoute = async (context) => {
 	const cartId = currentCartId(context);
@@ -49,5 +50,5 @@ export const POST: APIRoute = async (context) => {
 	// replace, and the cart is fine — the page simply shows it.
 	if (token === "CART_CURRENCY_CURRENT") return seeOther(context, "/cart");
 	clearCartCookieIfBad(context, token);
-	return seeOther(context, "/cart", token);
+	return seeOther(context, "/cart", token, CART_ERROR_ID);
 };

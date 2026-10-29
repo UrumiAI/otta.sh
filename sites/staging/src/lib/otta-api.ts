@@ -28,6 +28,7 @@ import {
 } from "@urumi.ai/otta-plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { cartErrorMessage } from "./error-messages.js";
+import { readCappedBody } from "./request-body.js";
 
 /** The plugin's "the store is busy, try again" token (`renderGuard`'s `BUSY`):
  *  storage contention — the refused step wrote nothing. */
@@ -300,14 +301,28 @@ async function dispatchOnce<TResult>(
  * That is the caller's mistake, not ours: the endpoint answers
  * {@link notAFormResponse} instead. The site middleware's origin check has
  * already refused a cross-site POST by the time an endpoint calls this.
+ *
+ * A body over {@link MAX_FORM_BYTES} is `null` too, and is never parsed: it is
+ * refused on its `Content-Length`, or cut off mid-stream, before `formData()`
+ * would have buffered all of it (#605). No form this site renders comes close —
+ * the largest, /checkout/place, is a handful of `maxlength`-bounded fields —
+ * so the cap only ever turns away a body that was not one of ours.
  */
 export async function readFormBody(request: Request): Promise<FormData | null> {
+	const bytes = await readCappedBody(request, MAX_FORM_BYTES).catch(() => null);
+	if (bytes === null) return null;
+	const contentType = request.headers.get("content-type");
 	try {
-		return await request.formData();
+		return await new Response(bytes as BodyInit, {
+			headers: contentType === null ? {} : { "content-type": contentType },
+		}).formData();
 	} catch {
 		return null;
 	}
 }
+
+/** The largest form body {@link readFormBody} will parse. */
+export const MAX_FORM_BYTES = 64 * 1024;
 
 /** The 400 a form endpoint answers when {@link readFormBody} found no form. */
 export function notAFormResponse(): Response {

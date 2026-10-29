@@ -8,7 +8,7 @@
  */
 const MARKER = "otta-playground-note";
 
-const BANNER = `<div class="${MARKER}" role="note"><p><strong>Otta playground.</strong> This is your own copy of the store for about an hour: EmDash, with the Otta commerce plugin installed, and the sample products priced and in stock. Card payments are not connected, so checkout will not charge a card. <a href="/products">Shop</a> · <a href="/_emdash/admin">Admin</a></p></div><style>.${MARKER}{position:sticky;top:0;z-index:10000;background:#14120b;color:#f4f0e6;font:14px/1.45 ui-sans-serif,system-ui,sans-serif;padding:10px 16px}.otta-playground-note p{margin:0}.otta-playground-note a{color:#ffd59a}</style>`;
+const BANNER = `<div class="${MARKER}" role="note"><p><strong>Otta playground.</strong> This is your own copy of the store for about an hour: EmDash, with the Otta commerce plugin installed, and the sample products priced and in stock. Card payments are not connected, so checkout will not charge a card. <a href="/products">Shop</a> · <a href="/_emdash/admin">Admin</a></p></div><style>.${MARKER}{position:sticky;top:0;z-index:10000;background:#14120b;color:#f4f0e6;font:14px/1.45 ui-sans-serif,system-ui,sans-serif;padding:10px 16px}html{scroll-padding-top:8rem}.otta-playground-note p{margin:0}.otta-playground-note a{color:#ffd59a}</style>`;
 
 export async function injectPlaygroundBanner(response: Response): Promise<Response> {
 	const type = response.headers.get("content-type") ?? "";

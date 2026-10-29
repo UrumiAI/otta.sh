@@ -16,7 +16,7 @@
  * The maximum compare-and-set depth observed is printed, because that number is
  * the contention budget this design accepts (INC-A3 turns it into an assertion).
  */
-import { idempotencyKey } from "@urumi.ai/otta-domain";
+import { idempotencyKey, ReservationCommitLostError } from "@urumi.ai/otta-domain";
 import { FixedClock } from "@urumi.ai/otta-domain/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { InventoryDoc, MovementClaimDoc, StorageAccess } from "../src/index.js";
@@ -29,6 +29,7 @@ import {
 	INVENTORY_COLLECTION,
 	isStorageContentionError,
 	newInventoryDoc,
+	ReservationNotReleasableError,
 	uuidIdGen,
 	normalizeInventoryDoc,
 } from "../src/index.js";
@@ -221,4 +222,42 @@ describe.skipIf(!PG_ENABLED)("no oversell under concurrency [postgres]", () => {
 		expect(sharedClaim.applied?.result).toEqual(a1);
 		expect(otherClaim.applied?.result).toEqual(b);
 	}, 120_000);
+
+	it("a concurrent commit and release of one hold have ONE winner, and the units follow it (#593)", async () => {
+		// The terminal state is first-wins; the prune must return or consume the units
+		// by the WINNER's state, and the loser must say it lost. A loser that pruned by
+		// the state it asked for would put a committed order's units back on sale (or
+		// silently consume a released hold's), with no anomaly raised.
+		const inventory = collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION);
+		const store = new EmdashInventoryStore({
+			storage,
+			idGen: uuidIdGen,
+			clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+		});
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const sku = `SKU-SETTLE-RACE-${String(loop)}`;
+			await inventory.compareAndSet(sku, null, newInventoryDoc(sku, 10));
+			const held = await store.reserve(sku, 2, idempotencyKey(`settle-race-${String(loop)}`));
+			if (!held.ok) throw new Error("the seed reserve must succeed");
+
+			const [commit, release] = await Promise.allSettled([
+				store.commit(held.reservationId),
+				store.release(held.reservationId),
+			]);
+			const doc = await inventory.get(sku);
+			if (doc === null) throw new Error("missing inventory document");
+			expect(Object.keys(normalizeInventoryDoc(doc).holds)).toHaveLength(0);
+			if (commit.status === "fulfilled") {
+				expect(release.status).toBe("rejected");
+				if (release.status === "rejected") {
+					expect(release.reason).toBeInstanceOf(ReservationNotReleasableError);
+				}
+				expect(doc.onHand).toBe(8); // committed: consumed, never returned
+			} else {
+				expect(commit.reason).toBeInstanceOf(ReservationCommitLostError);
+				expect(release.status).toBe("fulfilled");
+				expect(doc.onHand).toBe(10); // released: returned exactly once
+			}
+		}
+	}, 300_000);
 });

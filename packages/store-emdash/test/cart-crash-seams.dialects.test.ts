@@ -35,6 +35,7 @@ import {
 	HoldExpiredError,
 	idempotencyKey,
 	orderId as brandOrderId,
+	removeLine,
 	sku,
 } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
@@ -48,6 +49,8 @@ import {
 	RESERVATION_INDEX_COLLECTION,
 	type CartDoc,
 	type ReservationIndexDoc,
+	RESERVATION_KEYS_COLLECTION,
+	type ReservationKeyDoc,
 	type StorageAccess,
 } from "../src/index.js";
 import { CART_LAYOUT } from "./cart-collections.js";
@@ -405,5 +408,52 @@ describeEachDialect("cart crash seams", (ctx) => {
 		});
 		// And the units stay consumed: a refused release moves nothing.
 		expect(await h.onHand("SKU-1")).toBe(3);
+	});
+
+	test("(i) a remove that crashed between releaseHeld's stock return and its terminal write finishes on retry (#593)", async () => {
+		// `releaseHeld` returns the units in its guarded aggregate write and records
+		// `released` AFTER it. A remove that dies between the two leaves the hold gone
+		// with no terminal state, so the line reads `pending`. A retry must finish
+		// that write and drop the line — never answer LINE_CHECKED_OUT forever.
+		const rawIndex = collectionOf<ReservationIndexDoc>(bound.storage, RESERVATION_INDEX_COLLECTION);
+		const gate = armedNthUpdate(1);
+		const failing = failCall(rawIndex, gate.match, { mode: "instead" });
+		const h = makeCartHarness(
+			withCollection(bound.storage, RESERVATION_INDEX_COLLECTION, failing.collection),
+			{ storageForCart: bound.storage },
+		);
+		await h.seedStock("SKU-1", 5);
+		const cartId = await createCart(h.deps, USD);
+		const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+		if (!add.ok) throw new Error("add must succeed");
+		const reservationId = add.line.reservationId ?? "";
+
+		// The only index update a remove makes is releaseHeld's terminal write.
+		gate.arm();
+		await expectCrash(removeLine(h.deps, cartId, add.line.lineId, idempotencyKey("k-rm")));
+		expect(failing.failed()).toBe(1);
+
+		// What durably landed: the units are back and the hold is pruned, but the
+		// reservation has no terminal state and the reserve key records a success —
+		// the exact shape `#lifecycleOf` reads as `pending`.
+		expect(await h.onHand("SKU-1")).toBe(5);
+		const doc = await h.inventoryDocs.get("SKU-1");
+		if (doc === null) throw new MissingDocumentError("inventory", "SKU-1");
+		expect(normalizeInventoryDoc(doc).holds[idempotencyKey("k1")]).toBeUndefined();
+		expect((await rawIndex.get(reservationId))?.terminalState).toBeUndefined();
+		const reserveKey = await collectionOf<ReservationKeyDoc>(
+			bound.storage,
+			RESERVATION_KEYS_COLLECTION,
+		).get(idempotencyKey("k1"));
+		expect(reserveKey).toMatchObject({ state: "terminal", reservationId });
+		expect((await getCart(h.deps, cartId))?.lines[0]?.reservationState).toBe("pending");
+
+		const clean = makeCartHarness(bound.storage);
+		expect(await removeLine(clean.deps, cartId, add.line.lineId, idempotencyKey("k-rm"))).toEqual({
+			ok: true,
+		});
+		expect((await getCart(clean.deps, cartId))?.lines).toHaveLength(0);
+		expect(await clean.onHand("SKU-1")).toBe(5); // returned exactly once, not 7
+		expect((await rawIndex.get(reservationId))?.terminalState).toBe("released");
 	});
 });

@@ -136,7 +136,10 @@ export {
 } from "./pricing/delete-tax-class.js";
 export {
 	DEFAULT_COUPON_GRACE_MS,
+	orderHoldingRedemption,
 	reconcileCouponRedemptions,
+	redemptionIsOrphaned,
+	type RedemptionHolder,
 	type ReconcileCouponsDeps,
 	type ReconcileCouponsOptions,
 } from "./pricing/reconcile-coupons.js";
@@ -219,6 +222,7 @@ export type {
 	DeleteCouponResult,
 	RedeemCouponInput,
 	RedeemResult,
+	RedemptionOrderRef,
 	UpdateCouponInput,
 	UpdateCouponResult,
 } from "./ports/coupon-store.js";
@@ -271,6 +275,7 @@ export type {
 	CreateOrderTotalsInput,
 	ExpiredOrder,
 	OrderExpiryListOptions,
+	OrderKeyPeek,
 	OrderCustomerKey,
 	OrderEvent,
 	OrderEventKind,

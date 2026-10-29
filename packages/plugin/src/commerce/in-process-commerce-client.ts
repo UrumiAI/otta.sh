@@ -1579,7 +1579,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				// A replay of an abandon whose first call died after its cancel:
 				// finish what it left, payment first. Both are keyed no-ops once done.
 				await this.#withdrawIntentsNow(orderId, startedAt);
-				await this.#stores.couponStore.releaseByOrder(orderId);
+				await this.#stores.couponStore.releaseByOrder(order);
 			}
 			return { ok: true, cancelled: false, orderId: cart.orderId };
 		}
@@ -1600,7 +1600,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		// A concurrent cancel that won the race is released only if it was an
 		// abandon too — the recorded cancellation says whose it was.
 		if (res.ok && isAbandonCancellation(res.order)) {
-			await this.#stores.couponStore.releaseByOrder(orderId);
+			await this.#stores.couponStore.releaseByOrder(res.order);
 		}
 		return { ok: true, cancelled, orderId: cart.orderId };
 	}

@@ -40,6 +40,7 @@
 import { BUYER_REF_MAX, ORDER_ADDRESS_MAX_LENGTHS } from "@urumi.ai/otta-plugin";
 import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
+import { CHECKOUT_ERROR_ID, COUPON_ERROR_ID, DELIVERY_ERROR_ID } from "../../lib/error-notice.js";
 import StepTrack from "../../components/StepTrack.astro";
 import Sum from "../../components/Sum.astro";
 import type { CheckoutModel } from "../contract.js";
@@ -95,7 +96,16 @@ const {
 <div class="checkout-steps"><StepTrack current="details" /></div>
 <h1 class="checkout-title">Checkout</h1>
 
-{errorMessage !== null && <div class="checkout-notice-slot" id="checkout-error"><Notice>{errorMessage}</Notice></div>}
+{/* #603: the element a refused place's redirect names as its fragment
+    (`lib/error-notice.ts`) — an alert, and focusable so the fragment
+    navigation starts focus here rather than at the top of the page. */}
+{
+	errorMessage !== null && (
+		<div class="checkout-notice-slot" id={CHECKOUT_ERROR_ID} role="alert" tabindex="-1">
+			<Notice>{errorMessage}</Notice>
+		</div>
+	)
+}
 
 {
 	locked?.otherEmailNotice != null && (
@@ -221,7 +231,7 @@ const {
 							</button>
 						</div>
 						{couponError !== null && (
-							<div id="coupon-error">
+							<div id={COUPON_ERROR_ID} role="alert" tabindex="-1">
 								<Notice>{couponError}</Notice>
 							</div>
 						)}
@@ -271,7 +281,7 @@ const {
 							</p>
 						)}
 						{destinationError !== null && (
-							<div id="delivery-error">
+							<div id={DELIVERY_ERROR_ID} role="alert" tabindex="-1">
 								<Notice>{destinationError}</Notice>
 							</div>
 						)}
