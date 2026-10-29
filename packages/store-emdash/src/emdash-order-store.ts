@@ -382,6 +382,13 @@ interface FlipOutcome {
  *  ones still owed an intent withdrawal (QA3 N1). Rows, not queries. */
 const EXPIRY_INTENT_LOOKAHEAD = 10;
 
+/**
+ * The states in which an order no longer claims its holds — the checkout use-case's
+ * `RELEASES_HOLDS`. `paid` and its successors are absent on purpose: a paid order's
+ * adopted holds are about to be COMMITTED by the settle that flipped it.
+ */
+const RELEASES_ADOPTED_HOLDS: ReadonlySet<OrderState> = new Set(["expired", "cancelled", "failed"]);
+
 export class EmdashOrderStore implements OrderStore {
 	readonly #orders: StorageCollection<OrderDoc>;
 	readonly #keys: StorageCollection<OrderKeyDoc>;
@@ -942,13 +949,28 @@ export class EmdashOrderStore implements OrderStore {
 	 * no-op the inventory store reports as `lost` (a terminal reservation is not
 	 * adoptable) or — worse, if a later reserve reused the id — an adoption of
 	 * somebody else's units. On any other state the intent is therefore CLOSED
-	 * stamp-only, with no `adoptMany` call and nothing reported lost: the work it
-	 * named is no longer owed, and a `lost` list here would be read as a stock
-	 * anomaly that has not happened.
+	 * with no `adoptMany` call and nothing reported lost: the work it named is no
+	 * longer owed, and a `lost` list here would be read as a stock anomaly that has
+	 * not happened. (On an `expired`, `cancelled` or `failed` order the close first
+	 * runs the order-scoped `releaseAdoptedMany` — a no-op unless an earlier run of
+	 * this very completion adopted for the dead order and crashed before releasing.)
+	 *
+	 * **It re-reads the order AFTER adopting (issue #599)**, as the checkout's own
+	 * `finishCheckout` does. The `pending` read above is not a lock: an expiry or a
+	 * cancel can land between it and `adoptMany`, and that flip's release ran while
+	 * the holds were still cart-`held` — a no-op — so this call's adoption has just
+	 * claimed them for a dead order, and nothing else will ever release them. Reading
+	 * after the adopt closes the window (a flip that preceded the adopt is visible;
+	 * one after it releases the by-then adopted holds itself), and an order seen in a
+	 * hold-releasing state has its holds released HERE, before the stamp. The release
+	 * is order-scoped and idempotent, and it also runs on the stamp-only path, so a
+	 * crash between the adopt and the release leaves the intent outstanding and the
+	 * next sweep finishes it.
 	 *
 	 * Callable by any replayer, and a no-op once the intent is complete or was
 	 * never recorded. `lost` carries every id whose hold could not be adopted —
-	 * each a `RESERVATION_LOST` for the caller, never swallowed here.
+	 * each a `RESERVATION_LOST` for the caller, never swallowed here — and is empty
+	 * once the order has left `pending`, whose own transition decided those holds.
 	 */
 	async completeHoldAdoption(orderId: OrderId): Promise<HoldCompletionResult> {
 		const doc = await this.#orders.get(orderId);
@@ -957,7 +979,8 @@ export class EmdashOrderStore implements OrderStore {
 			return { completed: false, lost: [] };
 		}
 		let lost: string[] = [];
-		if (doc.state === "pending" && intent.reservationIds.length > 0) {
+		let state = doc.state;
+		if (state === "pending" && intent.reservationIds.length > 0) {
 			const result = await this.#inventory.adoptMany({
 				reservationIds: [...intent.reservationIds],
 				orderId,
@@ -965,6 +988,11 @@ export class EmdashOrderStore implements OrderStore {
 				now: this.#clock.now().toISOString(),
 			});
 			lost = result.lost;
+			state = (await this.#orders.get(orderId))?.state ?? state;
+			if (state !== "pending") lost = [];
+		}
+		if (RELEASES_ADOPTED_HOLDS.has(state)) {
+			await this.#inventory.releaseAdoptedMany(intent.reservationIds, orderId);
 		}
 		await this.#stampIntent(orderId, "holdsAdopted");
 		return { completed: true, lost };
