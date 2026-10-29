@@ -22,8 +22,10 @@
  */
 import { STOREFRONT_LIST_ROUTE, type PlpRouteResult, type ProductViewModel } from "@urumi.ai/otta-plugin";
 import { getEmDashCollection, getSiteSettings } from "emdash";
+import { getDb } from "emdash/runtime";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../layouts/Storefront.astro";
+import { contentTableAnswers } from "../lib/content-store.js";
 import { productKey, toCmsProductContent, type ProductEntryData } from "../lib/products.js";
 import { exactCount, shopLinkLabel, tapeRows, TAPE_FETCH_LIMIT } from "../lib/tape.js";
 import {
@@ -67,7 +69,12 @@ try {
  * The front page used to make no data call at all and could not fail; the tape
  * gave it one. `getEmDashCollection` reports a query failure in `error` rather
  * than throwing, but a missing binding throws outright — so both arms land in
- * the same place, and that place is the degraded branch, not a 500.
+ * the same place, and that place is the degraded branch, not a 500. A third
+ * arm fills neither: a missing TABLE (the products table, or a core emdash
+ * table the read depends on) comes back as a bare
+ * `{ entries: [] }` (issue #140), so an empty answer is confirmed with
+ * `contentTableAnswers` before it is believed — otherwise a dead store would
+ * read as a store with nothing in it.
  *
  * The claim this scopes to: THIS PAGE's frontmatter has no unguarded read, so a
  * dead content store costs it the tape and the store's own name, not the
@@ -78,11 +85,17 @@ let entries: readonly { data: unknown }[] | null = null;
 let hasMore: boolean | undefined;
 try {
 	const collection = await getEmDashCollection("products", { limit: TAPE_FETCH_LIMIT });
-	if (collection.error === undefined) {
+	if (collection.error !== undefined) {
+		console.error("[site-staging] home catalog read failed:", collection.error);
+	} else if (
+		collection.entries.length === 0 &&
+		!(await contentTableAnswers("products", getDb, "home catalog"))
+	) {
+		// A missing table arrives as `{ entries: [] }` with no `error` (issue #140):
+		entries = null;
+	} else {
 		entries = collection.entries;
 		hasMore = collection.hasMore;
-	} else {
-		console.error("[site-staging] home catalog read failed:", collection.error);
 	}
 } catch (error) {
 	console.error("[site-staging] home catalog read threw:", error);
