@@ -68,6 +68,8 @@ describe("starsResponse", () => {
 	});
 });
 
+const URL_ATTRIBUTES = new Set(["href", "src", "xlink:href", "action", "formaction"]);
+
 describe("injectBanner with the star prompt", () => {
 	const page = "<html><body><p>Hi</p></body></html>";
 
@@ -128,8 +130,11 @@ describe("injectBanner with the star prompt", () => {
 		expect(scripts[0]!.textContent).toBe("");
 		for (const el of doc.querySelectorAll("*")) {
 			for (const attr of el.getAttributeNames()) {
-				expect(attr.startsWith("on"), `${el.tagName} ${attr}`).toBe(false);
-				expect(el.getAttribute(attr)!.trim().toLowerCase().startsWith("javascript:")).toBe(false);
+				expect(attr.toLowerCase().startsWith("on"), `${el.tagName} ${attr}`).toBe(false);
+				if (!URL_ATTRIBUTES.has(attr.toLowerCase())) continue;
+				// An allowlist, not a list of bad schemes: every link and source resolves to https.
+				const url = new URL(el.getAttribute(attr)!, "https://try.otta.sh/");
+				expect(url.protocol, `${el.tagName} ${attr}`).toBe("https:");
 			}
 		}
 	});

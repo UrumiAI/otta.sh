@@ -37,7 +37,8 @@ the next reader finds script on a checkout page that the ADRs say has none.
    - **One script, ours.** The injected chrome carries exactly one `<script>`, external and
      first-party (`/scripts/playground-star.js`). `playground-star.test.ts` counts script tags
      in the injected output, checks that one's `src`, and checks that no element has an `on*`
-     attribute or a `javascript:` value. `playground-gate.test.ts` counts them again through
+     attribute and that every `href` and `src` resolves to `https:` (an allowlist, so
+     `javascript:`, `data:` and the rest are all refused). `playground-gate.test.ts` counts them again through
      `withPlaygroundBanner`.
    - **Same origin only.** The script's only network call is `fetch("/_otta/stars")`. The
      Worker, not the browser, asks `api.github.com`, with fixed headers and none of the
