@@ -31,6 +31,7 @@ import { POST as CART_ADD_POST } from "../src/pages/cart/add.js";
 import { POST as CART_REMOVE_POST } from "../src/pages/cart/remove.js";
 import { POST as CART_UPDATE_POST } from "../src/pages/cart/update.js";
 import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
+import { readFormBody } from "../src/lib/otta-api.js";
 
 const SITE = "http://localhost:4321";
 
@@ -123,4 +124,116 @@ describe("a body that is not a form is a 400 — never a 500, never a dispatch",
 			expect(response.headers.get("location")).toBe("/?signed-out=1");
 		},
 	);
+});
+
+/**
+ * The form body is capped BEFORE it is parsed (#605). `request.formData()`
+ * buffers whatever arrives, and every one of these endpoints is reachable by an
+ * anonymous shopper, so an unbounded body was an isolate-memory and CPU lever.
+ * A real form here is a few hundred bytes — the longest, /checkout/place, is a
+ * handful of `maxlength`-bounded address fields — so anything near the cap is
+ * not one of ours.
+ */
+const ONE_MB_FORM = `sku=${"A".repeat(1024 * 1024)}&qty=1`;
+
+/** A urlencoded body served as a stream with no Content-Length. */
+function streamedForm(total: number): {
+	request: Request;
+	pulled: () => number;
+	cancelled: () => boolean;
+} {
+	let pulled = 0;
+	let cancelled = false;
+	const chunk = new TextEncoder().encode("a".repeat(16 * 1024));
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			pulled += 4;
+			controller.enqueue(new TextEncoder().encode("sku="));
+		},
+		pull(controller) {
+			if (pulled >= total) {
+				controller.close();
+				return;
+			}
+			pulled += chunk.byteLength;
+			controller.enqueue(chunk);
+		},
+		cancel() {
+			cancelled = true;
+		},
+	});
+	const request = new Request(`${SITE}/cart/add`, {
+		method: "POST",
+		headers: { "content-type": "application/x-www-form-urlencoded" },
+		body,
+		duplex: "half",
+	} as RequestInit);
+	return { request, pulled: () => pulled, cancelled: () => cancelled };
+}
+
+describe("an oversized form body is refused before it is parsed (#605)", () => {
+	const OVERSIZED: BadBody = {
+		label: "a 1 MB urlencoded body",
+		headers: {
+			"content-type": "application/x-www-form-urlencoded",
+			"content-length": String(ONE_MB_FORM.length),
+		},
+		body: ONE_MB_FORM,
+	};
+
+	for (const [pathname, post] of ENDPOINTS) {
+		test(`POST ${pathname} with a 1 MB urlencoded body is a 400, nothing dispatched`, async () => {
+			const { context, dispatched } = makeContext(pathname, OVERSIZED);
+
+			const response = await post(context);
+
+			expect(response.status).toBe(400);
+			expect(dispatched).toEqual([]);
+		});
+	}
+
+	test("a declared Content-Length over the cap is refused without reading the body", async () => {
+		const request = new Request(`${SITE}/cart/add`, {
+			method: "POST",
+			headers: OVERSIZED.headers,
+			body: ONE_MB_FORM,
+		});
+
+		expect(await readFormBody(request)).toBeNull();
+		expect(request.bodyUsed).toBe(false);
+	});
+
+	test("a streamed body with no Content-Length is cut off once past the cap", async () => {
+		const { request, pulled, cancelled } = streamedForm(64 * 1024 * 1024);
+
+		expect(await readFormBody(request)).toBeNull();
+		expect(pulled()).toBeLessThan(1024 * 1024);
+		expect(cancelled()).toBe(true);
+	});
+
+	test("a normal urlencoded form still parses — non-ASCII included", async () => {
+		const request = new Request(`${SITE}/checkout/place`, {
+			method: "POST",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ name: "Zoë Ångström", line1: "1 Rue de l’Église", qty: "2" }),
+		});
+
+		const form = await readFormBody(request);
+
+		expect(form?.get("name")).toBe("Zoë Ångström");
+		expect(form?.get("line1")).toBe("1 Rue de l’Église");
+		expect(form?.get("qty")).toBe("2");
+	});
+
+	test("a normal multipart form still parses", async () => {
+		const sent = new FormData();
+		sent.set("sku", "OTTA-TEE");
+		sent.set("qty", "1");
+		const request = new Request(`${SITE}/cart/add`, { method: "POST", body: sent });
+
+		const form = await readFormBody(request);
+
+		expect(form?.get("sku")).toBe("OTTA-TEE");
+		expect(form?.get("qty")).toBe("1");
+	});
 });

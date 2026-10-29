@@ -28,6 +28,7 @@ import {
 	notAFormResponse,
 	readFormBody,
 } from "../../lib/otta-api.js";
+import { CART_ERROR_ID } from "../../lib/error-notice.js";
 
 export const POST: APIRoute = async (context) => {
 	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006).
@@ -45,7 +46,7 @@ export const POST: APIRoute = async (context) => {
 
 	// Over the cap: the plugin's own QTY_TOO_LARGE, answered without the
 	// dispatch; the copy names the limit (QA U-6).
-	if (qty > CART_LINE_MAX_QTY) return seeOther(context, "/cart", QTY_TOO_LARGE);
+	if (qty > CART_LINE_MAX_QTY) return seeOther(context, "/cart", QTY_TOO_LARGE, CART_ERROR_ID);
 
 	const cartId = currentCartId(context);
 	if (cartId === undefined) return seeOther(context, "/cart");
@@ -62,7 +63,7 @@ export const POST: APIRoute = async (context) => {
 	if (result === null || !result.ok) {
 		const token = failureToken(result);
 		clearCartCookieIfBad(context, token);
-		return seeOther(context, "/cart", token);
+		return seeOther(context, "/cart", token, CART_ERROR_ID);
 	}
 
 	return seeOther(context, "/cart");

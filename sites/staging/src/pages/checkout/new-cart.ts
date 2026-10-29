@@ -38,6 +38,7 @@ import {
 import type { APIRoute } from "astro";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { clearCartCookie, seeOther, withoutReferrer } from "../../lib/cart-actions.js";
+import { CART_ERROR_ID } from "../../lib/error-notice.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { clearCheckoutDraft } from "../../lib/checkout-draft.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
@@ -60,7 +61,7 @@ export const POST: APIRoute = async (context) => {
 			abandoned !== null &&
 			(abandoned.ok || ("error" in abandoned && abandoned.error === "INVALID_INPUT"));
 		if (!settled) {
-			return withoutReferrer(seeOther(context, "/cart?error=NEW_CART_NOT_CLEARED"));
+			return withoutReferrer(seeOther(context, "/cart", "NEW_CART_NOT_CLEARED", CART_ERROR_ID));
 		}
 	}
 

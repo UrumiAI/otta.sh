@@ -15,6 +15,7 @@
  */
 import MediaPanel from "../../components/MediaPanel.astro";
 import Notice from "../../components/Notice.astro";
+import { PRODUCT_ERROR_ID } from "../../lib/error-notice.js";
 import PriceTag from "../../components/PriceTag.astro";
 import QtyField from "../../components/QtyField.astro";
 import StockRule from "../../components/StockRule.astro";
@@ -74,8 +75,10 @@ const { model } = Astro.props;
 					</Notice>
 				</div>
 			)}
+			{/* #603: the refused add's redirect names this element as its
+			    fragment — an alert, focusable so focus starts here. */}
 			{model.errorMessage !== null && (
-				<div class="pdp-notice-slot">
+				<div class="pdp-notice-slot" id={PRODUCT_ERROR_ID} role="alert" tabindex="-1">
 					<Notice>
 						{model.errorMessage}
 						{model.errorAction !== null && (

@@ -1540,6 +1540,26 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(result).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
 		});
 
+		// Issue #608: the 10,000 cap is per LINE. A re-add within the cap on its own
+		// that would merge the line past it is the typed QTY_TOO_LARGE, and the line
+		// keeps its qty.
+		test("addCartLine onto a line already at the cap returns the typed QTY_TOO_LARGE", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-CART-CAP",
+				onHand: 20_000,
+				price: { amount: 100, currency: "USD" },
+			});
+			const cartId = await tier.arrange.cart();
+			const first = await client.addCartLine(cartId, "SKU-CART-CAP", productId, 10_000, "cap-1");
+			expect(first).toMatchObject({ ok: true, line: { qty: 10_000 } });
+
+			const again = await client.addCartLine(cartId, "SKU-CART-CAP", productId, 1, "cap-2");
+			expect(again).toEqual({ ok: false, reason: "QTY_TOO_LARGE" });
+			const read = await client.getCart(cartId);
+			if (!read.ok) throw new Error("cart read must succeed");
+			expect(read.cart.lines.map((l) => l.qty)).toEqual([10_000]);
+		});
+
 		test("adjustCartLine takes the TARGET qty, not a delta, and the line reflects it", async () => {
 			const productId = await seedProduct({
 				sku: "SKU-CART-4",

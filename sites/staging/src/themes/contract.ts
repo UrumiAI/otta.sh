@@ -187,7 +187,9 @@ export interface ProductContentModel {
 	dimmed: boolean;
 	/** Commerce degraded — the notice lead (BUSY copy already chosen), else `null`. */
 	degradedLead: string | null;
-	/** A cart error carried back on the URL, already mapped to shopper copy. */
+	/** A cart error carried back on the URL, already mapped to shopper copy.
+	 *  A theme renders it in the element with `lib/error-notice.ts`'s
+	 *  `PRODUCT_ERROR_ID`, `role="alert"` and `tabindex="-1"` (#603). */
 	errorMessage: string | null;
 	/** The way out that error offers (CART_CHECKED_OUT: the cart page), linked
 	 *  beside `errorMessage`; `null` when it offers none. The page decides it. */
@@ -302,7 +304,9 @@ export interface CartLineModel {
 export interface CartModel {
 	/** "3 items" — UNITS, the badge's number. `null` for an empty/unread cart. */
 	summary: string | null;
-	/** A `?error=` token, already mapped to shopper copy. */
+	/** A `?error=` token, already mapped to shopper copy.
+	 *  A theme renders it in the element with `lib/error-notice.ts`'s
+	 *  `CART_ERROR_ID`, `role="alert"` and `tabindex="-1"` (#603). */
 	errorMessage: string | null;
 	/** The cart could not be READ (not an empty cart). */
 	degraded: boolean;
@@ -345,6 +349,10 @@ export interface CheckoutLockedModel {
 export interface CheckoutModel {
 	/** The plugin's checkout view model, untouched (ADR-0003). */
 	summary: CheckoutSummaryView;
+	/** The page-level refusal, already mapped to shopper copy; `null` when another
+	 *  notice says it (`checkoutNoticeId`). A theme renders it in the element
+	 *  with `lib/error-notice.ts`'s `CHECKOUT_ERROR_ID`, `role="alert"` and
+	 *  `tabindex="-1"` (#603). */
 	errorMessage: string | null;
 	/** `?error=CART_CHECKED_OUT`: the dead-cart trap's exit is offered. */
 	checkedOut: boolean;
