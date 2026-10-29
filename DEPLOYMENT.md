@@ -805,7 +805,9 @@ hook when it comes due. One task drives all sixteen sweep legs: they share a sto
 and a clock, and splitting them would only put sixteen rows in contention on the same documents. The
 nine scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
 `coupon-recount`, `stranded-holds`, `product-orphans`, `prune-carts`, `product-reconcile`) and the
-sign-in challenge prune run at most every fifteen minutes inside that task (housekeeping: the scans read a page budget
+sign-in challenge prune run at most every fifteen minutes inside that task (`product-reconcile`
+checks every fifteen minutes but starts a new pass only once a day on Free, every six hours on
+Paid — see below) (housekeeping: the scans read a page budget
 of a collection per run); a scan cut short by the budget carries on next tick until its pass is done.
 `prune-carts` (#39) deletes each cart that is active, has no lines, owes no hold work, was handed
 off to no order, and has not been written for 30 days (the cart cookie's lifetime), together with
@@ -906,13 +908,23 @@ repaired from a fresh read of its row and then its document: the publish hook's 
 activation, variants) from the live content — which is what `ctx.content` returns: a pending draft
 lives in its revision, not the content columns — or a deactivation. Reading the row first means a
 publish or unpublish landing mid-walk is never overwritten with a stale page. It never activates
-an unpublished product, never writes an unpublished product's title, never touches a tombstoned
-row, never overrules a newer lifecycle event (every flip is watermarked), writes no commercial
-field and touches no order. After a repair it re-reads the row and counts the product only if it
-is now in sync; one that is not is logged as an anomaly ("attempted and is still out of sync"),
-never as re-synced. A product leaves the nominated set once attempted, so a repair that cannot
-hold never pins the walk; one cut short by the tick's query ceiling three runs in a row is stepped
-past and logged. Either is tried again on the next pass.
+a product its document read did not show published, never writes an unpublished product's title,
+never touches a tombstoned row, never overrules a newer lifecycle event (every flip is
+watermarked), writes no commercial field and touches no order.
+
+One window is left: a merchant unpublish (or republish) landing between the repair's document read
+and its activate (or deactivate) finds the row not yet flipped, so the hook's own flip is a no-op,
+and the repair's flip then leaves the product wrongly buyable (or wrongly unbuyable). So every
+repair is **checked** on the product's next visit — later in the same tick when the budget allows,
+else the next tick the leg runs — by the same row-then-document read: a repair that held is
+counted then; a document that moved meanwhile is repaired again at its own watermark; a repair
+that did not hold on an unchanged document is logged as an anomaly ("attempted and is still out of
+sync"), never as re-synced. The wrong state lasts until that visit, not until the next pass. The
+row-then-document ordering assumes both reads see the primary database (one D1 session); it must be
+revisited before D1 read replication (#490) is enabled. A product leaves the nominated set once its
+repair is checked or has failed, so a repair that cannot hold never pins the walk; one cut short by
+the tick's query ceiling three runs in a row is stepped past and logged. Either is tried again on
+the next pass.
 
 **Rows read, and the pass interval.** A pass is cheap in queries but not in D1 *rows read*:
 EmDash's `ContentRepository.findMany` runs an unbounded `COUNT(*) … WHERE deleted_at IS NULL` over
@@ -928,6 +940,12 @@ per tick of a long repair. For an in-sync catalogue:
 | 3 000 | ~96 000 | 1.9% |
 | 5 000 | ~260 000 | 5.2% |
 | 10 000 | ~1 020 000 | 20% |
+| 20 000 | ~4 040 000 | 81% |
+
+**Above about 15 000 products, do not run the Free preset's interval on Workers Free**: one pass a
+day of 20 000 products reads about 4 million of the 5 million rows D1 Free allows, leaving the
+storefront almost nothing. Move the store to Workers Paid (and the Paid preset), or keep the
+catalogue on Free below that size.
 
 So passes are spaced **from the start of one to the start of the next**: 24 hours on Workers Free
 (any background-work setting below the Paid preset), 6 hours on Workers Paid. On Free, six-hourly
@@ -938,14 +956,15 @@ cursor document, every fifteen minutes. A pass that runs long cannot pull the ne
 an unfinished pass resumes every tick until it ends.
 
 Costs in queries: an in-sync page costs seven (the list's four, two row reads of fifty ids each —
-D1's 100-parameter bound — and the cursor write), and no commerce writes. A repair is gated at
-twelve calls, measured: recording the attempt, the fresh row read, the document read, the sync's
-six, the row re-read; a lost unpublish, eight. The leg only starts when its floor fits — the entry's
-seven queries (the cursor read, the list, the row reads) plus one repair's twelve, of the roughly
-twenty-eight a Free tick can spend — so on a busy Free store, where the customer-facing legs take
-most of each tick, repairs run only on the quieter ticks. Measured on Free with the cursor's reads
-and writes counted, 107 drifted products healed in 298 ticks, so a catalogue-wide outage of 1000
-products takes about two days. "Publish changes" repairs a product at once.
+D1's 100-parameter bound — and the cursor write), and no commerce writes. Every visit to a
+nominated product reads five (recording the attempt, the row, the document); a repair adds the
+sync's six writes (eleven in all) or a deactivation's two (seven), and the visit that checks it is
+the five reads alone. The leg only starts when its floor fits — the entry's seven queries (the
+cursor read, the list, the row reads) plus one repair's eleven, of the roughly twenty-eight a Free
+tick can spend — so on a busy Free store, where the customer-facing legs take most of each tick,
+repairs run only on the quieter ticks. Measured on Free with the cursor's reads and writes counted,
+107 drifted products healed in 335 ticks, so a catalogue-wide outage of 1000 products takes about
+two and a half days. "Publish changes" repairs a product at once.
 
 What it does not repair: a **leaked price** from before PR 1b (the sync carries no commercial
 field and the published content holds no price to compare against — re-price it in Pricing &

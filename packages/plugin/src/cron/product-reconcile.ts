@@ -60,13 +60,29 @@
  * at the newer watermark with the newer content — the publish's own write. The same
  * fresh read keeps a repair from activating a product unpublished since the list
  * (its `afterUnpublish` deactivate is a no-op on a row already inactive, so it
- * stamps no gate watermark that would otherwise outrank the activate). A residual
- * window remains between the document read and the activate.
+ * stamps no gate watermark that would otherwise outrank the activate).
+ *
+ * THE FLIP WINDOW, AND THE CHECK THAT CLOSES IT. One window is left between the
+ * repair's document read and its activate (or deactivate): a merchant unpublish
+ * (or republish) landing there finds the row not yet in the state the repair then
+ * puts it in, so the hook's own flip is a no-op that stamps nothing, and the repair's
+ * flip then leaves the product wrongly buyable (or wrongly unbuyable). So every
+ * repair leaves its product nominated, to be CHECKED on its next visit — later in
+ * the same tick when the budget allows, else the next tick the leg runs — by the same
+ * row-then-document read: a repair that held is counted then; a document that moved
+ * meanwhile is repaired again from the current content at its own watermark (the
+ * corrective flip); a repair that did not hold on an unchanged document is an
+ * anomaly. The wrong state therefore lasts until that visit — not until the next
+ * pass. It also assumes both reads see the PRIMARY (one D1 session): with read
+ * replication (issue #490) a replica's older document could pass for the current
+ * one, and the ordering argument here must be revisited before that is enabled.
  *
  * WHAT IT NEVER DOES:
  *  - activate a product the content does not say is PUBLISHED, or write a
  *    not-published product's title (its columns are not the draft the merchant
- *    saved; an inactive row's title is not on sale);
+ *    saved; an inactive row's title is not on sale) — as of its read of the
+ *    document: an unpublish landing between that read and the activate leaves the
+ *    product buyable until the repair's check visit (THE FLIP WINDOW, above);
  *  - resurrect a tombstone (a row soft-deleted while its document lives is the
  *    delete/restore paths' business, and `activate` refuses one anyway);
  *  - overrule a NEWER lifecycle event: every flip is watermarked, so an unpublish
@@ -86,12 +102,11 @@
  * holds (so a leaked draft's newer watermark cannot refuse the repair) and never
  * newer than anything the CMS or the row has actually said.
  *
- * A REPAIR IS COUNTED ONLY WHEN IT HELD. After the sync the row is read again and
- * planned against the same document: only a product that is now in sync counts as
- * repaired. One that is not — an upsert that was a provable no-op (a same-key
- * replay: a pending leaked draft can carry the very save key the live content
- * derives), a variant write that failed and was swallowed — is an ANOMALY, logged
- * as "attempted, still out of sync", never as "re-synced".
+ * A REPAIR IS COUNTED ONLY WHEN IT HELD. The check visit (above) plans the fresh
+ * row against the fresh document: only a product that is now in sync counts as
+ * repaired. One that is not, on an unchanged document — a variant write that failed
+ * and was swallowed, a guarded no-op — is an ANOMALY, logged as "attempted, still out
+ * of sync", never as "re-synced".
  *
  * BOUNDED AND RESUMABLE, AND ALWAYS MOVING. One CMS page (`RECONCILE_PAGE_SIZE`) at
  * a time, behind the host's own keyset cursor (`createdAt DESC, id`), kept in
@@ -214,29 +229,37 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
 export const PRODUCT_RECONCILE_ENTRY_QUERIES =
 	1 + CONTENT_LIST_QUERIES + RECONCILE_ROW_READ_QUERIES;
 
+/** The writes of a sync (`syncLiveProduct`): the upsert's versioned read and
+ *  compare-and-set, the activate's, and — for a document with a repeater — the one
+ *  variant write's. */
+const SYNC_WRITE_CALLS = 6;
+
+/** The writes of a deactivation: its versioned read and compare-and-set. */
+const DEACTIVATE_WRITE_CALLS = 2;
+
+/** What every visit to a nominated product reads before it decides anything: the
+ *  cursor write that records the attempt, then the product's row, then its document
+ *  (`CONTENT_READ_QUERIES`). */
+const VISIT_READ_CALLS = 1 + 1 + CONTENT_READ_QUERIES;
+
 /**
- * The calls one repair of a PUBLISHED product makes at most. Measured in
- * `cron-product-reconcile.test.ts` ("the cost table"):
- *  - the cursor write that records the attempt before the repair: 1;
- *  - the fresh read of the product's row: 1, then of its document
- *    (`CONTENT_READ_QUERIES`): 3;
- *  - the publish's own sync (`syncLiveProduct`): the upsert's versioned read and
- *    compare-and-set, the activate's, and — for a document with a repeater — the
- *    one variant write's: 6;
- *  - the re-read of the row that proves the repair held: 1.
- * Twelve, measured, and no headroom on top: the leg must START inside an idle
- * Workers Free tick (its entry plus one unit, beside the tick's own reads and the
+ * The calls one repair of a PUBLISHED product makes at most, measured in
+ * `cron-product-reconcile.test.ts` ("the cost table"): the visit's reads (5) and the
+ * sync's writes (6). Eleven, and no headroom on top: the leg must START inside an
+ * idle Workers Free tick (its entry plus one unit, beside the tick's own reads and the
  * reserve — `cron-leg-costs.test.ts`). A repair that costs more — a compare-and-set
  * retry, a variant write releasing sku claims — is what the tick's ceiling is for:
  * the attempt is recorded before the repair, and one cut short
  * `RECONCILE_MAX_INTERRUPTS` times in a row is stepped past.
  */
-export const PRODUCT_RECONCILE_REPAIR_CALLS = 12;
+export const PRODUCT_RECONCILE_REPAIR_CALLS = VISIT_READ_CALLS + SYNC_WRITE_CALLS;
 
-/** A lost unpublish's repair: the attempt's cursor write, the fresh row and
- *  document reads, the deactivate's versioned read and compare-and-set, and the row
- *  re-read. */
-export const PRODUCT_RECONCILE_DEACTIVATE_CALLS = 1 + 1 + CONTENT_READ_QUERIES + 2 + 1;
+/** A lost unpublish's repair: the visit's reads and the deactivation's writes. */
+export const PRODUCT_RECONCILE_DEACTIVATE_CALLS = VISIT_READ_CALLS + DEACTIVATE_WRITE_CALLS;
+
+/** The visit that CHECKS a repair: its reads alone. (A check that finds the
+ *  document moved goes on to a repair, gated on that repair's writes.) */
+export const PRODUCT_RECONCILE_CHECK_CALLS = VISIT_READ_CALLS;
 
 /**
  * How many runs in a row a product's repair may be cut short by the tick's query
@@ -339,6 +362,22 @@ export function planReconcile(
 interface PendingRepair {
 	id: string;
 	deactivate?: true;
+	/** Set once the product's repair has run: the next visit CHECKS it (see
+	 *  `reconcileProductCommerce`) against the document the repair was made from. */
+	check?: RepairCheck;
+}
+
+/** What a repair recorded for the visit that checks it. */
+interface RepairCheck {
+	/** The document's `status` and raw `updatedAt` the repair was made from. */
+	status: string;
+	updatedAt: string;
+	/** What the repair did, for the line the check logs when it held. */
+	did: "first-sync" | "sync" | "deactivate";
+	/** The plan's reasons, for the line the check logs when the repair held. */
+	why: string;
+	/** What the repair's writes reported, for the anomaly when it did not. */
+	note: string;
 }
 
 /** The leg's kv document:
@@ -356,6 +395,21 @@ interface ReconcileState {
 	interrupted: Record<string, number>;
 	passStartedAt: string | null;
 	lastPassStartedAt: string | null;
+}
+
+function parseCheck(value: unknown): RepairCheck | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { status, updatedAt, did, why, note } = value as Record<string, unknown>;
+	if (
+		typeof status !== "string" ||
+		typeof updatedAt !== "string" ||
+		typeof why !== "string" ||
+		typeof note !== "string"
+	) {
+		return undefined;
+	}
+	if (did !== "first-sync" && did !== "sync" && did !== "deactivate") return undefined;
+	return { status, updatedAt, did, why, note };
 }
 
 /** An ISO instant, or null. */
@@ -385,9 +439,14 @@ function parseReconcileState(raw: string | null): ReconcileState {
 		if (Array.isArray(pending) && "next" in (parsed as object)) {
 			for (const entry of pending.slice(0, RECONCILE_PAGE_SIZE)) {
 				if (typeof entry !== "object" || entry === null) continue;
-				const { id, deactivate } = entry as Record<string, unknown>;
+				const { id, deactivate, check } = entry as Record<string, unknown>;
 				if (typeof id !== "string" || id.length === 0) continue;
-				state.pending.push(deactivate === true ? { id, deactivate: true } : { id });
+				const parsedCheck = parseCheck(check);
+				state.pending.push({
+					id,
+					...(deactivate === true ? { deactivate: true as const } : {}),
+					...(parsedCheck === undefined ? {} : { check: parsedCheck }),
+				});
 			}
 		}
 		if (typeof interrupted === "object" && interrupted !== null) {
@@ -413,6 +472,25 @@ function notHeldBecause(outcome: LiveSyncOutcome | "deactivated"): string {
 	if (outcome.variants === "withheld") why.push("the variant sync was withheld");
 	// Every write returned and none says it was refused: a guarded no-op.
 	return why.length > 0 ? why.join("; ") : "a write was a no-op";
+}
+
+/** Said when a repair's check finds it held. */
+function sayRepaired(id: string, check: RepairCheck): void {
+	if (check.did === "deactivate") {
+		console.warn(
+			`[otta] cron sweep product-reconcile: product_id=${id} is not published (status ${check.status}) but its commerce row was active — deactivated (a lost unpublish)`,
+		);
+	} else if (check.did === "first-sync") {
+		// No row at all: a catalogue published before the plugin, or a lost FIRST
+		// publish. On a first install that is every product, so it is said at info.
+		console.info(
+			`[otta] cron sweep product-reconcile: product_id=${id} had no commerce row — created and activated from its published content (a first sync)`,
+		);
+	} else {
+		console.warn(
+			`[otta] cron sweep product-reconcile: product_id=${id} re-synced from its published content (${check.why}) — a lost publish sync`,
+		);
+	}
 }
 
 /** Said when a plan needs no write: `unordered` and `replayed` are logged (once a
@@ -547,13 +625,18 @@ export async function reconcileProductCommerce(
 					continue;
 				}
 			}
-			// Each unit is hinted with its own cost; the gate starts at the cheaper one.
-			const unitGate = budget.gate(0, PRODUCT_RECONCILE_DEACTIVATE_CALLS);
+			// Each unit is hinted with its own cost; the gate starts at the cheapest.
+			const unitGate = budget.gate(0, PRODUCT_RECONCILE_CHECK_CALLS);
 			// `done()` replaces `state.pending` with a new array, so this one is stable.
 			for (const nominated of state.pending) {
 				const id = nominated.id;
 				const done = (): void => {
 					state.pending = state.pending.filter((entry) => entry.id !== id);
+					delete state.interrupted[id];
+				};
+				/** Keep the product pending, now as a check of the repair just made. */
+				const toCheck = (check: RepairCheck): void => {
+					state.pending = state.pending.map((entry) => (entry.id === id ? { id, check } : entry));
 					delete state.interrupted[id];
 				};
 				const interrupts = state.interrupted[id] ?? 0;
@@ -565,20 +648,22 @@ export async function reconcileProductCommerce(
 					continue;
 				}
 				const cost =
-					nominated.deactivate === true
-						? PRODUCT_RECONCILE_DEACTIVATE_CALLS
-						: PRODUCT_RECONCILE_REPAIR_CALLS;
+					nominated.check !== undefined
+						? PRODUCT_RECONCILE_CHECK_CALLS
+						: nominated.deactivate === true
+							? PRODUCT_RECONCILE_DEACTIVATE_CALLS
+							: PRODUCT_RECONCILE_REPAIR_CALLS;
 				// Stopped inside the page: what is left stays nominated for the next tick.
 				// The explicit check first: the gate admits an OVERSIZED first unit (clamped
 				// to what is left) so a leg is never refused forever, but this leg's start
 				// floor already guarantees one whole unit, and a repair started without room
-				// to finish would be cut after its writes and before the read that proves it.
+				// to finish would be cut after its writes.
 				if (budget.remainingQueries() < cost) {
 					budget.stopped = true;
 					break walk;
 				}
 				if (!unitGate(cost)) break walk;
-				// Recorded BEFORE the repair, so a run the ceiling cuts short still counts
+				// Recorded BEFORE the visit, so a run the ceiling cuts short still counts
 				// against the product (and the products done before it are saved too).
 				state.interrupted[id] = interrupts + 1;
 				await save();
@@ -592,6 +677,33 @@ export async function reconcileProductCommerce(
 						continue;
 					}
 					const plan = planReconcile(doc, row);
+					const check = nominated.check;
+					if (check !== undefined) {
+						const same =
+							doc["status"] === check.status && String(doc["updatedAt"]) === check.updatedAt;
+						if (plan.kind === "none" || plan.kind === "replayed") {
+							// THE REPAIR HELD — read after its writes, on a fresh document.
+							sayRepaired(id, check);
+							repaired++;
+							done();
+							continue;
+						}
+						if (same) {
+							// Same document, still out of sync: the repair did not hold.
+							const line = `product ${id} was attempted and is still out of sync (${check.note}); it is retried on the next pass`;
+							console.error(`[otta] cron sweep product-reconcile: ${line}`);
+							anomalies.push(line);
+							done();
+							continue;
+						}
+						// The document MOVED between the repair's read and its writes — an
+						// unpublish (or a republish) whose own hook flip was a no-op on a row
+						// not yet in the state the repair then put it in. Repaired again from
+						// this document, at its watermark, below.
+						console.warn(
+							`[otta] cron sweep product-reconcile: product_id=${id} changed while it was being repaired (now ${String(doc["status"])} at ${String(doc["updatedAt"])}); repairing it again from the current content`,
+						);
+					}
 					if (plan.kind === "none") {
 						// Brought into sync since the page was read (its own hook, most often).
 						done();
@@ -602,17 +714,35 @@ export async function reconcileProductCommerce(
 						done();
 						continue;
 					}
+					// Gated again on the FRESH plan: a product nominated for a deactivation
+					// may now need a sync. Without room for its writes, nothing is written;
+					// the product stays pending, and this visit does not count against it.
+					const writes = plan.kind === "deactivate" ? DEACTIVATE_WRITE_CALLS : SYNC_WRITE_CALLS;
+					if (budget.remainingQueries() < writes) {
+						state.interrupted[id] = interrupts;
+						if (interrupts === 0) delete state.interrupted[id];
+						budget.stopped = true;
+						break walk;
+					}
 					client ??= new InProcessCommerceClient(ctx);
-					let outcome: LiveSyncOutcome | "deactivated";
+					const recorded = {
+						status: String(doc["status"]),
+						updatedAt: String(doc["updatedAt"]),
+					};
 					if (plan.kind === "deactivate") {
 						await client.deactivateProductCommerce(
 							id,
 							deriveUnpublishIdempotencyKey(PRODUCTS_COLLECTION, id, doc["updatedAt"]),
 							plan.watermark,
 						);
-						outcome = "deactivated";
+						toCheck({
+							...recorded,
+							did: "deactivate",
+							why: "a lost unpublish",
+							note: notHeldBecause("deactivated"),
+						});
 					} else {
-						outcome = await syncLiveProduct(client, {
+						const outcome = await syncLiveProduct(client, {
 							collection: PRODUCTS_COLLECTION,
 							id,
 							content: doc,
@@ -621,33 +751,14 @@ export async function reconcileProductCommerce(
 							allowedHosts: ALLOWED_HOSTS,
 							rethrow: isSweepQueryCeilingError,
 						});
+						toCheck({
+							...recorded,
+							did: row === undefined ? "first-sync" : "sync",
+							why: plan.reasons.join(", "),
+							note: notHeldBecause(outcome),
+						});
 					}
-					// Held only if the row now reads as in sync with the same document (or
-					// out of it only in the replayed way no sync can change).
-					const after = planReconcile(doc, await rows.one(id));
-					if (after.kind === "none" || after.kind === "replayed") {
-						if (plan.kind === "deactivate") {
-							console.warn(
-								`[otta] cron sweep product-reconcile: product_id=${id} is not published (status ${String(doc["status"])}) but its commerce row was active — deactivated (a lost unpublish)`,
-							);
-						} else if (row === undefined) {
-							// No row at all: a catalogue published before the plugin, or a lost
-							// FIRST publish. On a first install that is every product, so it is
-							// said at info, not as a lost sync.
-							console.info(
-								`[otta] cron sweep product-reconcile: product_id=${id} had no commerce row — created and activated from its published content (a first sync)`,
-							);
-						} else {
-							console.warn(
-								`[otta] cron sweep product-reconcile: product_id=${id} re-synced from its published content (${plan.reasons.join(", ")}) — a lost publish sync`,
-							);
-						}
-						repaired++;
-					} else {
-						const line = `product ${id} was attempted and is still out of sync (${notHeldBecause(outcome)}); it is retried on the next pass`;
-						console.error(`[otta] cron sweep product-reconcile: ${line}`);
-						anomalies.push(line);
-					}
+					continue;
 				} catch (err) {
 					// The tick's own ceiling: the attempt is already counted; stop the run.
 					if (isSweepQueryCeilingError(err)) throw err;
@@ -657,6 +768,9 @@ export async function reconcileProductCommerce(
 				}
 				done();
 			}
+			// A repair leaves its product pending, to be CHECKED: go round again while any
+			// is left, rather than stepping past the page.
+			if (state.pending.length > 0) continue;
 			// Every nominated product is done: step past the page.
 			advance();
 			if (reachedEnd) break;

@@ -41,6 +41,8 @@ import {
 	type SweepCursorStore,
 } from "../src/cron/index.js";
 import {
+	PRODUCT_RECONCILE_CHECK_CALLS,
+	reconcileProductCommerce,
 	PRODUCT_RECONCILE_CURSOR,
 	PRODUCT_RECONCILE_REPAIR_CALLS,
 	planReconcile,
@@ -124,6 +126,10 @@ class Cms {
 	 *  before it returns: a content hook landing between the reconcile's list and
 	 *  its row read. (`product-orphans` lists too, one item at a time.) */
 	afterList: (() => Promise<void>) | undefined;
+	/** Runs once, after the next `get` of `id` has taken its answer and before it
+	 *  returns: a content hook landing between the reconcile's document read and its
+	 *  write. */
+	afterGet: { id: string; run: () => Promise<void> } | undefined;
 	put(doc: Partial<Doc> & { id: string; title?: string }): Doc {
 		const { title, ...rest } = doc;
 		const full: Doc = {
@@ -153,7 +159,13 @@ class Cms {
 				const doc = this.docs.get(id);
 				if (doc === undefined) return null;
 				charge(CONTENT_READ_QUERIES - CONTENT_MISS_QUERIES);
-				return structuredClone(doc) as unknown as Record<string, unknown>;
+				const answer = structuredClone(doc) as unknown as Record<string, unknown>;
+				const hook = this.afterGet?.id === id ? this.afterGet : undefined;
+				if (hook !== undefined) {
+					this.afterGet = undefined;
+					await hook.run();
+				}
+				return answer;
 			},
 			list: async (_collection, options) => {
 				charge(CONTENT_LIST_QUERIES);
@@ -589,15 +601,16 @@ describe("the cost table (LEG_QUERY_COSTS)", () => {
 		// The entry: the cursor read, the list, and a full page's two row reads.
 		expect(entry).toBe(1 + CONTENT_LIST_QUERIES + 2);
 		// The suite's cursor store is not the counted kv, so neither the cursor read and
-		// write nor the repair's attempt write are in `queries`. Past the page's list and
-		// its ONE row read (a page of one is one `in` chunk), the repair: the fresh row
-		// read (1), the document read (3), the sync (6) and the row re-read (1).
-		// Measured: 11; the unit adds the attempt's cursor write, and nothing else (it
-		// must start in an idle Free tick).
-		const repair = outcome.queries - (CONTENT_LIST_QUERIES + 1);
-		expect(repair).toBe(11);
+		// writes nor each visit's attempt write are in `queries`. Past the page's list and
+		// its ONE row read (a page of one is one `in` chunk): the repair's visit — the row
+		// read (1), the document read (3) — and the sync (6); then the visit that CHECKS
+		// it — the row read and the document read again (4). Measured: 10 + 4; each unit
+		// adds its attempt write, and nothing else (it must start in an idle Free tick).
+		const visits = outcome.queries - (CONTENT_LIST_QUERIES + 1);
+		expect(visits).toBe(10 + 4);
 		expect(unit).toBe(PRODUCT_RECONCILE_REPAIR_CALLS);
-		expect(repair + 1).toBe(unit);
+		expect(PRODUCT_RECONCILE_REPAIR_CALLS).toBe(10 + 1);
+		expect(PRODUCT_RECONCILE_CHECK_CALLS).toBe(4 + 1);
 		expect((await row("p1"))?.variants["m"]?.title).toBe("Medium");
 	});
 });
@@ -958,5 +971,136 @@ describe("log levels", () => {
 		expect(warn.filter((line) => line.includes("product_id=p-old"))).toEqual([
 			expect.stringContaining("a lost publish sync"),
 		]);
+	});
+});
+
+describe("the flip window: a lifecycle event between the repair's document read and its write", () => {
+	test("an UNPUBLISH landing after the read and before the activate: the check visit takes the product off sale again", async () => {
+		const cms = new Cms();
+		// A lost first publish: the row is inactive, so the unpublish hook's deactivate
+		// will be a no-op that stamps nothing.
+		await syncedRow("p1", "Shirt", T1, { active: false });
+		cms.put({ id: "p1", title: "Shirt", updatedAt: T2 });
+		// Armed by the reconcile's own list, so it fires on the REPAIR's document read
+		// (not on `product-orphans`' reads earlier in the tick).
+		cms.afterList = async () => {
+			cms.afterGet = {
+				id: "p1",
+				run: async () => {
+					const unpublished = cms.put({ id: "p1", title: "Shirt", status: "draft", updatedAt: T3 });
+					await createAfterUnpublishHandler()(
+						{
+							collection: "products",
+							content: { ...unpublished },
+						} as unknown as ContentStateChangeEvent,
+						sweepContext(storage),
+					);
+				},
+			};
+		};
+
+		const summary = await tick(cms, memoryCursors());
+
+		// The repair activated at T2; its check read the unpublished document and
+		// deactivated at the unpublish's own watermark, in the same tick.
+		expect(await row("p1")).toMatchObject({ active: false, activeUpdatedAt: T3 });
+		expect(leg(summary).anomalies).toBeUndefined();
+	});
+
+	test("a REPUBLISH landing after the read and before the deactivate: the check visit puts the product back on sale", async () => {
+		const cms = new Cms();
+		// A lost unpublish: the row is active, so the publish hook's activate will be a
+		// no-op that stamps nothing.
+		await syncedRow("p1", "Shirt", T1);
+		cms.put({ id: "p1", title: "Shirt", status: "draft", updatedAt: T2 });
+		cms.afterList = async () => {
+			cms.afterGet = {
+				id: "p1",
+				run: async () => {
+					const published = cms.put({ id: "p1", title: "Shirt", updatedAt: T3, version: 2 });
+					await createAfterPublishHandler()(
+						{
+							collection: "products",
+							content: { ...published },
+						} as unknown as ContentStateChangeEvent,
+						sweepContext(storage),
+					);
+				},
+			};
+		};
+
+		const summary = await tick(cms, memoryCursors());
+
+		expect(await row("p1")).toMatchObject({ active: true, activeUpdatedAt: T3 });
+		expect(leg(summary).anomalies).toBeUndefined();
+	});
+
+	test("a product nominated for a DEACTIVATION that now needs a SYNC is gated on the sync's cost: without room, nothing is written and it stays pending", async () => {
+		// Driven directly, with a budget that has room for the nominated deactivation's
+		// visit (7) but not for the sync's writes after it.
+		let remaining = 9;
+		const spend = (n: number): void => {
+			remaining -= n;
+		};
+		const budget = {
+			stopped: false,
+			gate: () => () => true,
+			remainingQueries: () => remaining,
+		} as unknown as Parameters<typeof reconcileProductCommerce>[4];
+		const active = {
+			lifecycle: "live",
+			title: "Shirt",
+			titleRejection: null,
+			active: true,
+			contentUpdatedAt: T1,
+			activeUpdatedAt: T1,
+			variants: {},
+		};
+		const listed = {
+			id: "p1",
+			status: "draft",
+			updatedAt: T2,
+			version: 1,
+			data: { title: "Shirt" },
+		};
+		// Republished since the list: the fresh plan is a sync.
+		const fresh = { ...listed, status: "published", updatedAt: T3, version: 2 };
+		const writes: string[] = [];
+		const cursors: SweepCursorStore = {
+			read: async () => null,
+			write: async (_name, value) => {
+				spend(1);
+				writes.push(value);
+			},
+		};
+		const result = await reconcileProductCommerce(
+			{} as PluginContext,
+			{
+				many: async () => new Map([["p1", active]]),
+				one: async () => {
+					spend(1);
+					return active;
+				},
+			},
+			{
+				list: async () => ({ items: [listed], hasMore: false }),
+				get: async () => {
+					spend(3);
+					return fresh;
+				},
+			},
+			cursors,
+			budget,
+			{ now: NOW, passIntervalMs: RECONCILE_PASS_INTERVAL_PAID_MS },
+		);
+
+		expect(result).toMatchObject({ count: 0, incomplete: true });
+		const last = JSON.parse(writes.at(-1) ?? "{}") as {
+			pending?: { id: string }[];
+			interrupted?: Record<string, number>;
+		};
+		// Still nominated, and this visit is not counted against it.
+		expect(last.pending?.map((entry) => entry.id)).toEqual(["p1"]);
+		expect(last.interrupted).toEqual({});
 	});
 });
