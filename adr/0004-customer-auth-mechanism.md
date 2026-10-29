@@ -86,6 +86,15 @@ is unchanged. Three consequences it did not state are recorded here.
   Per-IP limiting also blunts the timing probe, because it bounds how many samples an
   attacker can take.
 
+> **Implemented 2026-10-29 (issues #29, #91).** The reference site now enforces the per-IP limit
+> itself rather than leaving it to an outside proxy: its middleware checks a Cloudflare Workers
+> Rate Limiting binding (`RATE_LIMIT_AUTH`, 10 per minute per IP, IPv6 per /64) on both
+> login-request routes named above, the sign-in confirm, and the order resume step, and answers
+> 429 over the limit (`sites/staging/src/lib/rate-limit.ts`). The domain port stays IP-blind.
+> The binding is a deploy step (DEPLOYMENT.md §2.5). Without it the site fails open and logs
+> once, so a deployment that skips the step is still not launch-ready for customer login. A WAF
+> rule in front of the site remains a good complement.
+
 ## Amended 2026-10-02 — a live session is the same proof as the sign-in: owner at checkout, claim on listing
 
 An order placed while signed in stayed a guest order: the checkout carried no identity, and the
