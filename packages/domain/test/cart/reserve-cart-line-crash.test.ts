@@ -71,12 +71,13 @@ describe("reserve ↔ cart-line crash window (fake)", () => {
 		await h.seedStock("SKU-1", 5);
 		const cartId = await createCart(h.deps, USD);
 		const key = idempotencyKey("k1");
+		const scoped = cartMutationKey(cartId, key);
 
 		// Crash simulation, faithful to the ledger-first choreography: the add
-		// claimed its key and the reserve finalized (held, stock removed), but the
-		// cart-line write never landed.
-		await h.cartStore.claimMutation({ key, cartId, kind: "add" });
-		const reserved = await h.inventory.reserve("SKU-1", 2, key);
+		// claimed its (cart-scoped, #609) key and the reserve finalized (held, stock
+		// removed), but the cart-line write never landed.
+		await h.cartStore.claimMutation({ key: scoped, cartId, kind: "add" });
+		const reserved = await h.inventory.reserve("SKU-1", 2, scoped);
 		if (!reserved.ok) throw new Error("seed reserve must succeed");
 		const deadline = new Date(h.clock.now().getTime() + DEFAULT_HOLD_TTL_MS).toISOString();
 		h.cartStore.seedDanglingHold(reserved.reservationId, "SKU-1", deadline);

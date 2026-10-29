@@ -421,6 +421,14 @@ order of appearance in a deployment's life:
     including tax rise to match. Orders already placed keep their saved tax. Check Tax
     settings and the country zone's rates before deploying. Rolling back returns these
     stores to 0%; nothing stored changes.
+  - **Rolling back past cart-scoped mutation keys (#609):** the old build can't see keys
+    recorded as `cart:<cartId>:<key>`, so an add retried across the rollback may add a
+    second time (the cart shows it) and shared-cached product pages hit `LINE_NOT_FOUND`
+    again. Holds are still swept normally.
+    The new build still reads a same-cart record written under the bare key by an older
+    build (it logs `[domain] cart mutation resolved a pre-#609 bare key` when it does).
+    That fallback can be dropped in any later release once every store has run this one
+    longer than its hold TTL plus one sweep tick (7 days at the maximum `holdTtlMinutes`).
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)

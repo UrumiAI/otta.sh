@@ -607,7 +607,16 @@ async function resolveMutationKey(
 	const recorded = await deps.cartStore.recordedMutation(scoped);
 	if (recorded !== null) return { key: scoped, recorded };
 	const bare = await deps.cartStore.recordedMutation(requestKey);
-	if (bare !== null && bare.cartId === cartId) return { key: requestKey, recorded: bare };
+	if (bare !== null && bare.cartId === cartId) {
+		// The signal that the fallback is still in use, so it can be dropped once
+		// it goes quiet. Never the key (a shared-cache key is everyone's) nor the
+		// cart id (a bearer secret).
+		console.info("[domain] cart mutation resolved a pre-#609 bare key", {
+			kind: bare.kind,
+			completed: bare.completed,
+		});
+		return { key: requestKey, recorded: bare };
+	}
 	return { key: scoped, recorded: null };
 }
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
 	addLine,
 	type CartDeps,
@@ -29,15 +29,20 @@ export interface CartStoreContractOptions {
 const USD = currency("USD");
 const PAST_TTL_MS = 16 * 60 * 1000; // > the 15-minute default hold TTL
 
-/** One first-add's store writes, in the use-case's order: claim, reserve, upsert. */
+/**
+ * One first-add's store writes, in the use-case's order: claim, reserve, upsert —
+ * under the request key scoped to its cart (#609), as `addLine` writes them.
+ * `bare` writes them under the unscoped key instead, as a release before #609 did.
+ */
 async function firstAddWrite(
 	h: CartStoreHarness,
 	cartId: string,
 	name: string,
 	productId: string | null,
 	key: string,
+	{ bare = false }: { bare?: boolean } = {},
 ) {
-	const k = idempotencyKey(key);
+	const k = bare ? idempotencyKey(key) : cartMutationKey(cartId, idempotencyKey(key));
 	await h.deps.cartStore.claimMutation({ key: k, cartId, kind: "add" });
 	const reserved = await h.deps.inventoryStore.reserve(name, 1, k);
 	if (!reserved.ok) throw new Error("seed reserve must succeed");
@@ -353,9 +358,13 @@ export function cartStoreContract(
 			await h.seedStock("SKU-1", 10);
 			const cartA = await createCart(h.deps, USD);
 			const cartB = await createCart(h.deps, USD);
-			const legacy = await firstAddWrite(h, cartA, "SKU-1", null, "pdp:legacy");
+			const legacy = await firstAddWrite(h, cartA, "SKU-1", null, "pdp:legacy", {
+				bare: true,
+			});
 			expect(await h.onHand("SKU-1")).toBe(9);
 
+			// The fallback says when it is used, with neither the key nor the cart id.
+			const info = vi.spyOn(console, "info").mockImplementation(() => {});
 			const replay = await addLine(
 				h.deps,
 				cartA,
@@ -366,6 +375,10 @@ export function cartStoreContract(
 			);
 			expect(replay.ok && replay.line.lineId).toBe(legacy.lineId);
 			expect(await h.onHand("SKU-1")).toBe(9);
+			expect(info.mock.calls).toEqual([
+				["[domain] cart mutation resolved a pre-#609 bare key", { kind: "add", completed: true }],
+			]);
+			info.mockClear();
 
 			const other = await addLine(
 				h.deps,
@@ -380,6 +393,9 @@ export function cartStoreContract(
 			expect(other.line.cartId).toBe(cartB);
 			expect(other.line.reservationId).not.toBe(legacy.reservationId);
 			expect(await h.onHand("SKU-1")).toBe(8);
+			// Another cart's bare record is not this cart's fallback: nothing logged.
+			expect(info).not.toHaveBeenCalled();
+			info.mockRestore();
 		});
 
 		test("a pre-#609 add left in flight resumes on its own cart's retry, on the hold it reserved", async () => {
