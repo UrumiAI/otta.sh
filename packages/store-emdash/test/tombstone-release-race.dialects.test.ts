@@ -19,10 +19,16 @@
  * tombstoned is freed by the lease (`CLAIM_ABANDON_AFTER_MS`), not held forever.
  */
 import { idempotencyKey, productId, sku, SkuConflictError } from "@urumi.ai/otta-domain";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { SKU_OWNERS_COLLECTION, type SkuOwnerDoc } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
-import { isUpdateWrite, onId, parkCall, withCollection } from "./helpers/fault-injection.js";
+import {
+	failCall,
+	isUpdateWrite,
+	onId,
+	parkCall,
+	withCollection,
+} from "./helpers/fault-injection.js";
 import { PRODUCT_COMMERCE_LAYOUT } from "./product-commerce-collections.js";
 import { makeProductCommerceHarness } from "./product-commerce-harness.js";
 
@@ -173,5 +179,51 @@ describeEachDialect("tombstone → release window", (ctx) => {
 		const claim = await claimOf("STALE-X");
 		expect(claim?.live).toBe(true);
 		expect(claim?.ownerId).toBe("prod-t");
+	});
+
+	test("applyVariantSync (#602): a claim release that fails AFTER the product write committed is logged and skipped, never thrown — the sync landed", async () => {
+		const h = makeProductCommerceHarness(bound.storage);
+		const declared = await h.store.upsertVariant(
+			{ productId: productId("prod-rs"), variantKey: "large", title: "Large" },
+			idempotencyKey("declare-rs"),
+		);
+		const priced = await h.store.updateVariantFields(
+			{ productId: productId("prod-rs"), variantKey: "large", sku: sku("REL-SKIP") },
+			idempotencyKey("sku-rs"),
+			declared.updatedAt.toISOString(),
+		);
+		expect(priced.ok).toBe(true);
+
+		const failing = failCall(
+			bound.collection<SkuOwnerDoc>(SKU_OWNERS_COLLECTION),
+			onId("REL-SKIP", isUpdateWrite),
+		);
+		const syncing = makeProductCommerceHarness(bound.storage, {
+			storageForStore: withCollection(bound.storage, SKU_OWNERS_COLLECTION, failing.collection),
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			await expect(
+				syncing.store.applyVariantSync({
+					productId: productId("prod-rs"),
+					contentUpdatedAt: "2026-07-10T01:00:00.000Z",
+					declares: [{ variantKey: "small", key: idempotencyKey("declare-rs-small") }],
+					orphanKey: (key) => idempotencyKey(`orphan-rs-${key}`),
+				}),
+			).resolves.toBeUndefined();
+			const lines = warn.mock.calls.map((args) => String(args[0]));
+			expect(lines.filter((line) => line.includes("applyVariantSync committed"))).toEqual([
+				expect.stringContaining("1 claim release(s) skipped"),
+			]);
+		} finally {
+			warn.mockRestore();
+		}
+
+		// The whole save landed: the declare and the orphan…
+		const doc = await h.products.get("prod-rs");
+		expect(doc?.variants["small"]?.orphanedAt).toBeNull();
+		expect(doc?.variants["large"]?.orphanedAt).not.toBeNull();
+		// …and the one thing skipped is the release, which the lease will cover.
+		expect((await claimOf("REL-SKIP"))?.live).toBe(true);
 	});
 });

@@ -32,9 +32,10 @@
  *  - *"a service that does not report a total does not get one invented"*. The
  *    absent-total case existed because a service older than INC-23 omitted the
  *    field. `#page` computes `total` with `countOrders` on every page it serves,
- *    so absent is now unreachable and a test for it could only assert against a
- *    fixture it invented itself. The rule it protected — never `?? 0` — survives
- *    where it can still be broken: the exact count is asserted below.
+ *    so absent is reachable only when that count THROWS — pinned in-process by
+ *    `admin-orders-count-failure.test.ts` (#601), which can inject the fault. The
+ *    rule it protected — never `?? 0` — is asserted there and by the exact count
+ *    below.
  *  - *"a secondary surface failing degrades to null"*. E-1's degradation was
  *    provoked by letting the stub 404 one of the four detail sub-requests. The
  *    four surfaces are now in-process reads against an order that exists, so

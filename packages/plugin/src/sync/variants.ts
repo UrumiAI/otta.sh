@@ -25,12 +25,11 @@
  * HOW THE DROPPED SET IS COMPUTED. A content hook carries only the document as
  * saved — em-dash's `ContentHookEvent` is `{content, collection, isNew}` and has
  * no "before" — so "which keys did this save stop declaring?" cannot be answered
- * from the event. It is answered by the commerce side instead: read the LIVE
- * variants of the product (`GET …/variants`, the public projection, which is
- * live rows only because this client sends no internal token) and orphan every
- * live key the repeater no longer carries. Already-orphaned rows are absent from
- * that read and so are never re-orphaned, which is exactly right — the orphan
- * transition is idempotent at the store too, but not paying for it is better.
+ * from the event. It is answered by the commerce side instead: the store reads
+ * the product once, applies the declares, and orphans every LIVE key the
+ * repeater no longer carries — all in the one write that read is committed
+ * against (`applyVariantSync`, #602). Already-orphaned rows are not live and so
+ * are never re-orphaned.
  *
  * SAME CHANNEL, SAME POSTURE AS THE PRODUCT TITLE. This rides the existing
  * `content:afterSave` / `content:afterPublish` hooks (no new hook, no new
@@ -45,11 +44,7 @@
  * presence axis applies only on a STRICTLY NEWER watermark.
  */
 import { isWellFormedText, toWellFormedText } from "@urumi.ai/otta-domain";
-import type {
-	ProductVariantSummaryWire,
-	ProductVariantWire,
-	UpsertProductVariantInput,
-} from "../product-commerce/commerce-client.js";
+import type { ApplyVariantSyncInput } from "../product-commerce/commerce-client.js";
 
 /**
  * The content field carrying the variant repeater.
@@ -331,25 +326,12 @@ export function deriveVariantOrphanKey(
 	return version === undefined || version === null ? base : `${base}:${String(version)}`;
 }
 
-/** The narrow slice of `CommerceClient` this sync uses — one method per WRITER
- *  plus the read that computes the drop set. Deliberately NOT the whole client:
- *  the two methods it omits are the admin edit (which owns sku and price) and
- *  everything else, so this module structurally cannot become a second writer of
- *  a commercial field. */
+/** The narrow slice of `CommerceClient` this sync uses — ONE method, the
+ *  batched CMS-sync writer (#602). Deliberately NOT the whole client: the admin
+ *  edit (which owns sku and price) and everything else are absent, so this module
+ *  structurally cannot become a second writer of a commercial field. */
 export interface VariantSyncClient {
-	listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]>;
-	upsertProductVariant(
-		productId: string,
-		variantKey: string,
-		input: UpsertProductVariantInput,
-		idempotencyKey: string,
-	): Promise<ProductVariantWire>;
-	deactivateProductVariant(
-		productId: string,
-		variantKey: string,
-		idempotencyKey: string,
-		contentUpdatedAt: string,
-	): Promise<void>;
+	applyProductVariantSync(productId: string, input: ApplyVariantSyncInput): Promise<void>;
 }
 
 export interface SyncVariantsInput {
@@ -371,10 +353,11 @@ export interface SyncVariantsInput {
  * called from inside a fire-and-forget content hook and must not fail a CMS
  * save, nor disturb the product-level sync it runs beside.
  *
- * ORDER: declare every key the repeater still carries, then read the live set,
- * then orphan what is no longer declared. Declaring first means a resurrect has
- * already landed before the drop set is read, so a key that was orphaned and is
- * now back cannot appear in it.
+ * ORDER: declare every key the repeater still carries, then orphan what is
+ * live and no longer declared — one store call, one read, one write (#602).
+ * Declaring first means a resurrect has already been applied before the drop
+ * set is computed, so a key that was orphaned and is now back cannot appear in
+ * it.
  *
  * NO WATERMARK ⇒ NO VARIANT SYNC, logged. The deactivate route REQUIRES a
  * watermark (presence has two opposing transitions arriving as independent
@@ -394,8 +377,7 @@ export interface SyncVariantsInput {
  *    A DELIBERATELY EMPTIED repeater (`[]`, present, zero rows) is a different
  *    fact and DOES orphan everything, which is the whole point of the
  *    distinction.
- *  - a row the read already reports as ORPHANED is skipped rather than
- *    re-dropped.
+ *  - a row that is already ORPHANED is skipped rather than re-dropped.
  */
 export async function syncVariants({
 	client,
@@ -436,64 +418,56 @@ export async function syncVariants({
 
 	const updatedAt = content["updatedAt"];
 	const version = content["version"];
+
+	// THE DROP PHASE IS WITHHELD when the repeater carried rows and not one of
+	// them yielded a usable key. "Every row is malformed" is a content problem;
+	// "there are no rows" is the merchant deleting the last size. Reading the
+	// first as the second would orphan a product's entire range over a bad
+	// import or a renamed sub-field — the same catastrophe the absent-field
+	// branch exists to avoid, one step further in.
+	if (rows.length > 0 && declared.length === 0) {
+		console.warn(
+			`[otta] ${hook}: product_id=${productId} declared ${rows.length} variant repeater row(s) and NONE carried a usable \`${VARIANT_KEY_SUBFIELD}\` — no variant was dropped. An intentionally emptied repeater (zero rows) is what retires every size.`,
+		);
+		// Nothing to declare and nothing to drop: not even the one write is owed.
+		return;
+	}
 	try {
-		for (const variant of declared) {
-			await client.upsertProductVariant(
-				productId,
-				variant.variantKey,
-				// The name cache (or an explicit clear) plus the ordering watermark,
-				// and NOTHING else. `sku` and `price` are absent from this input type
-				// by design — the sync cannot write them, so it can never race the
-				// admin's edit.
-				{
-					...(variant.title !== undefined ? { title: variant.title } : {}),
-					contentUpdatedAt: watermark,
-				},
-				deriveVariantDeclareKey(collection, productId, variant.variantKey, updatedAt, version),
-			);
-		}
-
-		// THE DROP PHASE IS WITHHELD when the repeater carried rows and not one of
-		// them yielded a usable key. "Every row is malformed" is a content problem;
-		// "there are no rows" is the merchant deleting the last size. Reading the
-		// first as the second would orphan a product's entire range over a bad
-		// import or a renamed sub-field — the same catastrophe the absent-field
-		// branch exists to avoid, one step further in.
-		if (rows.length > 0 && declared.length === 0) {
-			console.warn(
-				`[otta] ${hook}: product_id=${productId} declared ${rows.length} variant repeater row(s) and NONE carried a usable \`${VARIANT_KEY_SUBFIELD}\` — no variant was dropped. An intentionally emptied repeater (zero rows) is what retires every size.`,
-			);
-			return;
-		}
-
-		// The drop set: every LIVE variant this save stopped declaring.
-		const declaredKeys = new Set(declared.map((variant) => variant.variantKey));
-		const live = await client.listProductVariants(productId);
-		for (const row of live) {
-			if (declaredKeys.has(row.variantKey)) continue;
-			// Belt and braces. THE LOAD-BEARING FILTER IS THE SERVICE'S: this client
-			// sends no internal token, so it receives the public projection, which is
-			// live rows only. This line makes the invariant local, so re-orphaning
-			// does not silently start happening if that header choice ever changes
-			// three files away.
-			if (row.orphanedAt !== null) continue;
-			// DEACTIVATION, NEVER DELETION: the row keeps its sku, its price and its
-			// inventory, because an orphan may still hold stock and still sit on live
-			// order lines. Surfacing that state in the console is a later increment;
-			// this sets it.
-			await client.deactivateProductVariant(
-				productId,
-				row.variantKey,
-				deriveVariantOrphanKey(collection, productId, row.variantKey, updatedAt, version),
-				watermark,
-			);
-		}
+		// ONE STORE WRITE FOR THE WHOLE SAVE (#602). Declares first, then the drop
+		// set — every LIVE variant this save stopped declaring — computed by the
+		// store from the SAME read it commits against, so a resurrect has already
+		// landed before the drop set is taken and a key that was orphaned and is
+		// now back cannot appear in it. The per-row path this replaces cost a
+		// read-modify-write per size plus a stock-joined list; a 16-size product
+		// overran the Workers Free query budget and the sync was lost.
+		await client.applyProductVariantSync(productId, {
+			contentUpdatedAt: watermark,
+			// The name cache (or an explicit clear) per row, and NOTHING else. `sku`
+			// and `price` are absent from this input type by design — the sync
+			// cannot write them, so it can never race the admin's edit.
+			declares: declared.map((variant) => ({
+				variantKey: variant.variantKey,
+				...(variant.title !== undefined ? { title: variant.title } : {}),
+				idempotencyKey: deriveVariantDeclareKey(
+					collection,
+					productId,
+					variant.variantKey,
+					updatedAt,
+					version,
+				),
+			})),
+			// DEACTIVATION, NEVER DELETION: an orphan keeps its sku, its price and
+			// its inventory, because it may still hold stock and still sit on live
+			// order lines. An already-orphaned row is never re-dropped.
+			orphanIdempotencyKey: (variantKey) =>
+				deriveVariantOrphanKey(collection, productId, variantKey, updatedAt, version),
+		});
 	} catch (err) {
 		// Fire-and-forget, one line, same shape as the product sync's — including
-		// the honest caveat. A partial application is safe to re-run: every call on
-		// this channel is idempotent under its key and ordered by the watermark.
+		// the honest caveat. The write is all-or-nothing, and re-running the save
+		// is safe: every row is idempotent under its key and ordered by the watermark.
 		console.error(
-			`[otta] ${hook} variant sync failed for product_id=${productId} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved/published again:`,
+			`[otta] ${hook} variant sync failed for product_id=${productId} declares=${String(declared.length)} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved/published again:`,
 			err,
 		);
 	}

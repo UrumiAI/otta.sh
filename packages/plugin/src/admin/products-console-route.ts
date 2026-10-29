@@ -458,6 +458,7 @@ export function createProductsConsoleHandler(): RouteHandler<ProductsConsoleInpu
 			// missing admin token, a malformed response, a bug in this file — so the
 			// copy names the SYMPTOM and says the last possibility out loud rather
 			// than asserting a cause it does not know.
+			console.error("[otta] products console failed:", err);
 			return UNAVAILABLE;
 		}
 	};

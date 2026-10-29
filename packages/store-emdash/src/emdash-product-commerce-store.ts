@@ -33,10 +33,11 @@
  *   sku — an OR of which one half no index can serve — so it is resolved IN MEMORY
  *   over the rows the indexed axes narrowed;
  * - `lowStockThreshold` pairs each candidate with its `inventory` document. There
- *   is no join, so this is a read per candidate sku, memoized per call and issued
- *   in parallel per page. The port's "never an N+1 of per-row reads" is a
- *   statement about not making the CALLER pay a round trip per row, and that still
- *   holds; a document store cannot make it one statement.
+ *   is no join, so the matching set is resolved ONCE per request: the indexed
+ *   axes and `search` pick the candidates that carry a sku, and their stock is
+ *   read whichever way is cheaper — one `get` per distinct sku, or the whole
+ *   `inventory` collection paged into a map. A list and a count that overlap
+ *   share that one resolution (issue #600).
  *
  * The scan is bounded exactly as the order store's is: reaching the page ceiling
  * with rows still owed is a typed `ScanPageLimitError`, never a silently short
@@ -55,6 +56,7 @@ import {
 	SkuConflictError,
 	SkuHeldStockError,
 	SkuStockConflictError,
+	type ApplyVariantSyncInput,
 	type Clock,
 	type IdempotencyKey,
 	type ProductCommerce,
@@ -317,6 +319,8 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	readonly #retry: CasRetryOptions;
 	readonly #maxListPages: number;
 	readonly #claimAbandonAfterMs: number;
+	/** The low-stock resolutions running right now, by filter; see {@link #lowStockMatches}. */
+	readonly #lowStockInFlight = new Map<string, Promise<LowStockMatches>>();
 
 	constructor(options: EmdashProductCommerceStoreOptions) {
 		this.#products = collectionOf<ProductCommerceDoc>(options.storage, PRODUCT_COMMERCE_COLLECTION);
@@ -556,6 +560,15 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		// `limit + 1` is the port's own next-page probe: one row past the page decides
 		// whether `nextCursor` is a position or null.
 		const wanted = page.limit + 1;
+		if (filter.lowStockThreshold !== undefined) {
+			// Started before the first await, so a count issued beside this list joins it.
+			const { rows, onHand } = await this.#lowStockMatches(filter);
+			return pageOf(
+				rows.filter((doc) => isAfterCursor(doc, cursor)),
+				page.limit,
+				async (sku) => onHand.get(sku) ?? null,
+			);
+		}
 		const stock = this.#stockReader();
 		const keep = async (doc: ProductCommerceDoc): Promise<boolean> =>
 			isAfterCursor(doc, cursor) && (await matchesInMemory(doc, filter, stock));
@@ -567,22 +580,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			wanted,
 			keep,
 		);
-		// Sorted in CODE-UNIT order here, which is the adapter's total order; the scan
-		// drained past its boundary tie group, so this slice cannot drop a tied row the
-		// host's collation happened to order differently.
-		const merged = scanned.toSorted(byNewestFirst).slice(0, wanted);
-		const returned = merged.length > page.limit ? merged.slice(0, page.limit) : merged;
-		const last = returned.at(-1);
-		const nextCursor =
-			merged.length > page.limit && last !== undefined
-				? { createdAt: last.createdAt, productId: last.productId }
-				: null;
-		const products = await Promise.all(
-			returned.map(async (doc) =>
-				toProductSummary(doc, doc.sku === null ? null : await stock(doc.sku)),
-			),
-		);
-		return { products, nextCursor };
+		// The scan drained past its boundary tie group, so the code-unit slice in
+		// `pageOf` cannot drop a tied row the host's collation ordered differently.
+		return pageOf(scanned, page.limit, stock);
 	}
 
 	/**
@@ -599,6 +599,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		const where = productListWhere(filter, null);
 		if (filter.search === undefined && filter.lowStockThreshold === undefined) {
 			return this.#products.count(where);
+		}
+		if (filter.lowStockThreshold !== undefined) {
+			return (await this.#lowStockMatches(filter)).rows.length;
 		}
 		const stock = this.#stockReader();
 		const matched = await this.#scanProducts(
@@ -669,6 +672,90 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			seen.set(sku, read);
 			return read;
 		};
+	}
+
+	/**
+	 * Every row a `lowStockThreshold` filter accepts, and the stock it was decided
+	 * on — resolved once and shared by every call that overlaps it.
+	 *
+	 * The admin page issues its list and its count in parallel under one filter, so
+	 * they join one resolution, keyed by the filter. Joining a resolution that is
+	 * already running is indistinguishable from one started a moment earlier; once
+	 * it settles, or fails, the next call resolves afresh, so nothing is cached past
+	 * the calls that overlapped it.
+	 */
+	#lowStockMatches(filter: ProductListFilter): Promise<LowStockMatches> {
+		const key = lowStockKey(filter);
+		const running = this.#lowStockInFlight.get(key);
+		if (running !== undefined) return running;
+		const read = this.#resolveLowStock(filter).finally(() => {
+			if (this.#lowStockInFlight.get(key) === read) this.#lowStockInFlight.delete(key);
+		});
+		this.#lowStockInFlight.set(key, read);
+		return read;
+	}
+
+	/**
+	 * The candidates are the rows the indexed axes and `search` accept that carry a
+	 * sku — a row with none is unknown stock and never low, so it costs no read.
+	 * Their stock is then read the CHEAPER way: one `get` per distinct sku, or the
+	 * whole `inventory` collection paged at the ceiling into a map (as
+	 * `EmdashReportingStore.lowStock` reads it), decided against the collection's
+	 * `count()` read beside the candidate scan. Either way a sku with no document
+	 * has no entry, so it stays unknown.
+	 */
+	async #resolveLowStock(filter: ProductListFilter): Promise<LowStockMatches> {
+		const threshold = filter.lowStockThreshold ?? Number.NaN;
+		const [inventoryDocs, candidates] = await Promise.all([
+			this.#inventory.count(),
+			this.#scanProducts(
+				"lowStock",
+				productListWhere(filter, null),
+				{ createdAt: "desc" },
+				Number.POSITIVE_INFINITY,
+				async (doc) => doc.sku !== null && matchesSearch(doc, filter),
+			),
+		]);
+		const skus = [...new Set(candidates.flatMap((doc) => (doc.sku === null ? [] : [doc.sku])))];
+		const mapPages = Math.max(1, Math.ceil(inventoryDocs / LIST_PAGE_SIZE));
+		const onHand =
+			skus.length === 0
+				? new Map<string, number>()
+				: mapPages <= skus.length && mapPages <= this.#maxListPages
+					? await this.#readStockMap()
+					: await this.#readStockOf(skus);
+		const rows = candidates.filter((doc) => {
+			const count = doc.sku === null ? undefined : onHand.get(doc.sku);
+			return count !== undefined && count <= threshold;
+		});
+		return { rows, onHand };
+	}
+
+	/** Every sku's on-hand count, paged out of `inventory` at the page ceiling. */
+	async #readStockMap(): Promise<ReadonlyMap<string, number>> {
+		const onHand = new Map<string, number>();
+		let cursor: string | undefined;
+		for (let page = 0; page < this.#maxListPages; page++) {
+			const result = await this.#inventory.query({ limit: LIST_PAGE_SIZE, cursor });
+			for (const { id, data } of result.items) onHand.set(id, data.onHand);
+			if (!result.hasMore || result.cursor === undefined) return onHand;
+			cursor = result.cursor;
+		}
+		throw new ScanPageLimitError("lowStockMap", this.#maxListPages, onHand.size, "maxListPages");
+	}
+
+	/** The on-hand count of each of `skus` that has a document, a page of reads at a time. */
+	async #readStockOf(skus: readonly string[]): Promise<ReadonlyMap<string, number>> {
+		const onHand = new Map<string, number>();
+		for (let at = 0; at < skus.length; at += LIST_PAGE_SIZE) {
+			const batch = skus.slice(at, at + LIST_PAGE_SIZE);
+			const docs = await Promise.all(batch.map((sku) => this.#inventory.get(sku)));
+			docs.forEach((doc, i) => {
+				const sku = batch[i];
+				if (doc !== null && sku !== undefined) onHand.set(sku, doc.onHand);
+			});
+		}
+		return onHand;
 	}
 
 	// -- upsert: the CMS-sync / integrator channel -----------------------------
@@ -1434,6 +1521,174 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		});
 	}
 
+	/**
+	 * One CMS save's whole repeater projection in ONE compare-and-set on the
+	 * product document (#602). The variants are embedded in that document, so the
+	 * per-row path — a read-modify-write per declared size, then a stock-joined
+	 * list to compute the drop set, then a read-modify-write per dropped size —
+	 * spent its round trips re-reading the same revision. Here every declare and
+	 * every orphan is folded over ONE read, with exactly the guards `upsertVariant`
+	 * and `deactivateVariant` apply per row, and committed as one revision.
+	 *
+	 * THE DROP SET COMES FROM THAT SAME READ, after the declares have been folded
+	 * in, so a resurrected key is never dropped by the save that brought it back.
+	 * A lost compare-and-set re-reads and re-folds everything: a peer's write
+	 * between the read and the write is retried over, never overwritten.
+	 *
+	 * The sku side effects are the single-row methods' own, in their own order: a
+	 * resurrect re-claims (and heartbeats) its sku before the commit, an orphan
+	 * reads its claim before the commit and releases it at that revision after.
+	 * A save that changes nothing — a redelivery — commits nothing.
+	 */
+	async applyVariantSync(input: ApplyVariantSyncInput): Promise<void> {
+		if (typeof input.productId !== "string" || input.productId.length === 0) {
+			throw new MissingProductIdError();
+		}
+		for (const declare of input.declares) {
+			if (typeof declare.variantKey !== "string" || declare.variantKey.length === 0) {
+				throw new MissingVariantKeyError();
+			}
+		}
+		const { productId, contentUpdatedAt } = input;
+		const refOf = (variantKey: string): SkuOwnerRef => ({ kind: "variant", productId, variantKey });
+		await this.#cas<void>("applyVariantSync", async () => {
+			const current = await this.#products.getVersioned(productId);
+			// Nothing to declare and nothing live to drop.
+			if (current === null && input.declares.length === 0) return casDone(undefined);
+			const now = this.#clock.now().toISOString();
+			const doc =
+				current === null ? newShellProductDoc(productId, now) : normalizeProductDoc(current.value);
+			const variants: Record<string, ProductVariantDoc> = { ...doc.variants };
+			let changed = current === null;
+			const reclaimed: Array<{ hold: SkuHold; ref: SkuOwnerRef }> = [];
+
+			// 1. The declares, in order — `upsertVariant`'s guards, row by row.
+			for (const declare of input.declares) {
+				const existing = variants[declare.variantKey];
+				if (existing === undefined) {
+					variants[declare.variantKey] = newVariantDoc(
+						declare.variantKey,
+						declare.title ?? null,
+						declare.key,
+						contentUpdatedAt,
+						now,
+					);
+					changed = true;
+					continue;
+				}
+				if (existing.idempotencyKey === declare.key) continue;
+				if (existing.contentUpdatedAt !== null && contentUpdatedAt < existing.contentUpdatedAt) {
+					continue;
+				}
+				const resurrecting =
+					existing.orphanedAt !== null &&
+					(existing.contentUpdatedAt === null || contentUpdatedAt > existing.contentUpdatedAt);
+				let sku = existing.sku;
+				let price = existing.price;
+				if (resurrecting) {
+					if (sku !== null) {
+						const ref = refOf(declare.variantKey);
+						const hold = await this.#reclaimSku(sku, ref);
+						// Reused while it was gone: the size comes back without it.
+						if (hold === null) sku = null;
+						else reclaimed.push({ hold, ref });
+					}
+					if (price !== null) {
+						const productCurrency = resolveProductCurrency(
+							{ ...doc, variants },
+							declare.variantKey,
+						);
+						if (productCurrency !== null && productCurrency !== price.currency) price = null;
+					}
+				}
+				variants[declare.variantKey] = {
+					...existing,
+					title: declare.title !== undefined ? declare.title : existing.title,
+					sku,
+					price,
+					orphanedAt: resurrecting ? null : existing.orphanedAt,
+					idempotencyKey: declare.key,
+					contentUpdatedAt,
+					updatedAt: now,
+				};
+				changed = true;
+			}
+
+			// 2. The drop set, from this same read — `deactivateVariant`'s guards.
+			const releases: OwnClaim[] = [];
+			if (input.orphanKey !== null) {
+				const declared = new Set(input.declares.map((declare) => declare.variantKey));
+				for (const existing of Object.values(variants)) {
+					if (declared.has(existing.variantKey) || existing.orphanedAt !== null) continue;
+					const key = input.orphanKey(existing.variantKey);
+					if (existing.idempotencyKey === key) continue;
+					if (existing.contentUpdatedAt !== null && existing.contentUpdatedAt > contentUpdatedAt) {
+						continue;
+					}
+					// Read BEFORE the orphaning write, exactly as `deactivateVariant` does.
+					const claim =
+						existing.sku === null
+							? null
+							: await this.#readOwnClaim(existing.sku, refOf(existing.variantKey));
+					if (claim !== null) releases.push(claim);
+					variants[existing.variantKey] = {
+						...existing,
+						orphanedAt: now,
+						idempotencyKey: key,
+						contentUpdatedAt,
+						updatedAt: now,
+					};
+					changed = true;
+				}
+			}
+
+			if (!changed) return casDone(undefined);
+			// The re-assertion every resurrect owes before it commits (see `upsertVariant`).
+			for (const { hold, ref } of reclaimed) {
+				let held: boolean;
+				try {
+					held = await this.#heartbeatClaim(hold, ref, {
+						claimed: null,
+						createdTarget: null,
+						committed: false,
+						contended: 0,
+					});
+				} catch (err) {
+					if (!(err instanceof SkuConflictError)) throw err;
+					return CAS_RETRY;
+				}
+				if (!held) return CAS_RETRY;
+			}
+			const written = await this.#products.compareAndSet(productId, current?.revision ?? null, {
+				...doc,
+				variants,
+			});
+			if (!written.applied) return CAS_RETRY;
+			// COMMITTED. A release that fails now must not turn a landed sync into a
+			// thrown one — the caller would log it as lost and the merchant would
+			// re-save for nothing. An unreleased claim on an orphan is backed by
+			// nothing, so the lease (`CLAIM_ABANDON_AFTER_MS`) frees it for the next
+			// claimant: at worst one lease of refusals, never a sku held for good.
+			let skipped = 0;
+			let firstError: unknown = null;
+			for (const claim of releases) {
+				try {
+					await this.#releaseClaimAt(claim);
+				} catch (err) {
+					skipped++;
+					firstError ??= err;
+				}
+			}
+			if (skipped > 0) {
+				console.warn(
+					`[otta] applyVariantSync committed for product_id=${productId}; ${String(skipped)} claim release(s) skipped ` +
+						`(${firstError instanceof Error ? firstError.name : "unknown error"}) — the claim lease frees them`,
+				);
+			}
+			return casDone(undefined);
+		});
+	}
+
 	// -- the sku axis ----------------------------------------------------------
 
 	/**
@@ -1956,6 +2211,50 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 
 // -- predicates and projections ---------------------------------------------
 
+/** What one low-stock resolution found; see `#lowStockMatches`. */
+interface LowStockMatches {
+	/** Every row the whole filter accepts, in no particular order. */
+	readonly rows: readonly ProductCommerceDoc[];
+	/** The on-hand count the rows were decided on, by sku; absent is unknown. */
+	readonly onHand: ReadonlyMap<string, number>;
+}
+
+/** The filter axes a low-stock resolution depends on — equal keys, equal results. */
+function lowStockKey(filter: ProductListFilter): string {
+	return JSON.stringify([
+		filter.deleted === true,
+		filter.active ?? null,
+		filter.productKind ?? null,
+		filter.search ?? null,
+		filter.lowStockThreshold ?? null,
+	]);
+}
+
+/**
+ * One page of `rows` under `created_at DESC, product_id DESC` — sorted in
+ * CODE-UNIT order here, which is the adapter's total order — with the `limit + 1`
+ * row deciding whether `nextCursor` is a position or null.
+ */
+async function pageOf(
+	rows: readonly ProductCommerceDoc[],
+	limit: number,
+	stock: (sku: string) => Promise<number | null>,
+): Promise<ProductListResult> {
+	const merged = rows.toSorted(byNewestFirst).slice(0, limit + 1);
+	const returned = merged.length > limit ? merged.slice(0, limit) : merged;
+	const last = returned.at(-1);
+	const nextCursor =
+		merged.length > limit && last !== undefined
+			? { createdAt: last.createdAt, productId: last.productId }
+			: null;
+	const products = await Promise.all(
+		returned.map(async (doc) =>
+			toProductSummary(doc, doc.sku === null ? null : await stock(doc.sku)),
+		),
+	);
+	return { products, nextCursor };
+}
+
 /**
  * Validates `filter.lowStockThreshold` BEFORE any row is considered, via the
  * shared domain guard every adapter calls — so an empty store throws exactly like
@@ -2010,6 +2309,15 @@ function byNewestFirst(a: ProductCommerceDoc, b: ProductCommerceDoc): number {
 		: codeUnitDesc(a.createdAt, b.createdAt);
 }
 
+/** The `search` half of {@link matchesInMemory}; an absent `search` accepts every row. */
+function matchesSearch(doc: ProductCommerceDoc, filter: ProductListFilter): boolean {
+	if (filter.search === undefined) return true;
+	const needle = filter.search.toLowerCase();
+	const bySku = doc.sku !== null && doc.sku.toLowerCase() === needle;
+	const byTitle = doc.title !== null && doc.title.toLowerCase().includes(needle);
+	return bySku || byTitle;
+}
+
 /**
  * The two axes the filter algebra cannot express, applied to a document the
  * indexed axes already accepted.
@@ -2029,12 +2337,7 @@ async function matchesInMemory(
 	filter: ProductListFilter,
 	stock: (sku: string) => Promise<number | null>,
 ): Promise<boolean> {
-	if (filter.search !== undefined) {
-		const needle = filter.search.toLowerCase();
-		const bySku = doc.sku !== null && doc.sku.toLowerCase() === needle;
-		const byTitle = doc.title !== null && doc.title.toLowerCase().includes(needle);
-		if (!bySku && !byTitle) return false;
-	}
+	if (!matchesSearch(doc, filter)) return false;
 	if (filter.lowStockThreshold !== undefined) {
 		const onHand = doc.sku === null ? null : await stock(doc.sku);
 		if (onHand === null || onHand > filter.lowStockThreshold) return false;
