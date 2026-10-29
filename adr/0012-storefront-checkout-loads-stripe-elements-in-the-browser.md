@@ -3,6 +3,7 @@
 - Status: accepted
 - **Superseded in part by [ADR-0034](./0034-checkout-region-list-progressive-enhancement.md)** (2026-10-09): decision 2's fence gains a third and last exception — one external, first-party script on `/checkout` that swaps the state/province list.
 - **Superseded in part by [ADR-0039](./0039-add-to-cart-mints-a-key-per-submission.md)** (2026-10-21): decision 2's fence gains a fourth exception — one external, first-party script on `/products/<slug>` that mints the add-to-cart idempotency key per submission (issue #37).
+- **Refined by [ADR-0040](./0040-playground-chrome-is-outside-the-client-js-fence.md)** (2026-10-29): the fence is the storefront's; script that playground-build middleware injects into every page is outside it, under stated conditions.
 - Date: 2026-07-27
 - Amended: 2026-07-28 — decision 2's fence widened by exactly one component; see
   "Amendment (2026-07-28)" under Decision; clarified 2026-09-30 (HoldClock rename).
