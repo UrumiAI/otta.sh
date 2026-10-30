@@ -329,40 +329,59 @@ describe("reports builder: average order value with a bucket lacking revenueOrde
 	});
 });
 
-describe("reports builder: a folded series states its partial last week", () => {
-	// 365 days = 52 weeks + 1 day: the 53rd point covers ONE day, and without a
-	// word it reads as a cliff.
+describe("reports builder: a monthly series states its partial months", () => {
+	// Past 92 days the series is one point per calendar month (#572), and the period's
+	// first and last months are usually partial: without a word they read as a dip.
 	const YEAR = rangeOf("2025-10-21", "2026-10-20");
-	const revenue = [bucket("2026-10-20", 3000, 1)];
+	const revenue = [bucket("2026-10-01", 3000, 1)];
 
-	test("365 days → the sales and orders notes say the last point covers 1 day", () => {
+	test("365 days → the sales and orders notes say the first and last points are partial", () => {
 		const blocks = render({ range: YEAR, revenue, previousRevenue: [] });
 		expect(
 			sectionTexts(blocks, "reports:sales").some((t) =>
-				t.endsWith("One point per week; the last point covers 1 day."),
+				t.endsWith(
+					"One point per month. The first and last points cover only part of their month.",
+				),
 			),
 		).toBe(true);
 		expect(sectionTexts(blocks, "reports:orders")).toContain(
-			"Paid orders per week · 1 in this period. The last point covers 1 day.",
+			"Paid orders per month · 1 in this period. The first and last points cover only part of their month.",
 		);
 	});
 
-	test("93 days → the last point covers 2 days", () => {
-		const blocks = render({ range: rangeOf("2026-04-30", "2026-07-31"), previousRevenue: [] });
+	test("a period ending on a month's last day names only its first point", () => {
+		const blocks = render({ range: rangeOf("2025-12-30", "2026-07-31"), previousRevenue: [] });
 		expect(
 			sectionTexts(blocks, "reports:sales").some((t) =>
-				t.endsWith("One point per week; the last point covers 2 days."),
+				t.endsWith("One point per month. The first point covers only part of its month."),
 			),
 		).toBe(true);
 	});
 
-	test("whole weeks (364 days) and daily periods say nothing about a partial point", () => {
-		for (const range of [rangeOf("2025-10-22", "2026-10-20"), RANGE]) {
+	test("whole months and daily periods say nothing about a partial point", () => {
+		for (const range of [rangeOf("2025-11-01", "2026-10-31"), RANGE]) {
 			const texts = [
 				...sectionTexts(render({ range, revenue, previousRevenue: [] }), "reports:sales"),
 				...sectionTexts(render({ range, revenue, previousRevenue: [] }), "reports:orders"),
 			];
-			expect(texts.some((t) => t.includes("last point"))).toBe(false);
+			expect(texts.some((t) => t.includes("part of"))).toBe(false);
 		}
+	});
+});
+
+describe("reports builder: a long multi-currency period lists sales per month (#572)", () => {
+	test("the table's rows are months, and the note says so", () => {
+		const blocks = render({
+			range: rangeOf("2025-10-21", "2026-10-20"),
+			revenue: [bucket("2026-09-01", 3000, 1, "USD"), bucket("2026-09-01", 1000, 1, "EUR")],
+		});
+		const table = findBlocks(blocks, "table").find(
+			(b) => b.block_id === "reports:revenue-table",
+		) as { columns?: { label: string }[]; rows?: Record<string, unknown>[] } | undefined;
+		expect(table?.columns?.[0]?.label).toBe("Month");
+		expect(table?.rows?.map((r) => r.bucketStart)).toEqual(["2026-09", "2026-09"]);
+		expect(sectionTexts(blocks, "reports:sales").some((t) => t.includes("listed per month"))).toBe(
+			true,
+		);
 	});
 });

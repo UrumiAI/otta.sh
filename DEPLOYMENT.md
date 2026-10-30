@@ -907,12 +907,63 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all fourteen sweep legs: they share a store composition
-and a clock, and splitting them would only put fourteen rows in contention on the same documents. The
-seven scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
-`coupon-recount`, `stranded-holds`, `product-orphans`) and the sign-in challenge prune run at most
-every fifteen minutes inside that task (housekeeping: the scans read a page budget of a collection
-per run); a scan cut short by the budget carries on next tick until its pass is done.
+hook when it comes due. One task drives all sixteen sweep legs: they share a store composition
+and a clock, and splitting them would only put sixteen rows in contention on the same documents. The
+nine scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`coupon-recount`, `stranded-holds`, `product-orphans`, `prune-carts`, `product-reconcile`) and the
+sign-in challenge prune run at most every fifteen minutes inside that task (`product-reconcile`
+checks every fifteen minutes but starts a new pass only once a day on Free, every six hours on
+Paid — see below) (housekeeping: the scans read a page budget
+of a collection per run); a scan cut short by the budget carries on next tick until its pass is done.
+`prune-carts` (#39) deletes each cart that is active, has no lines, owes no hold work, was handed
+off to no order, and has not been written for 30 days (the cart cookie's lifetime), together with
+its `cart_create_keys` record. It pages the active carts at most once a day (its kv cursor,
+`cron:sweep:cursor:prune-carts`, records when the last pass finished) and deletes at most 50 carts a
+run. A run that reaches 50 is stamped and carries on at its next fifteen-minute cadence, not the
+next tick (it gets no second run in the tick either), so a backlog drains at most 50 carts a quarter
+hour. On the Workers Free preset it also deletes at most **300 carts a UTC day** (counted in the same
+cursor); once that is reached each cadence run is one kv read until the UTC day turns.
+A replay of a cart-create, rotation or re-currency key that hands out a fresh cookie also moves the
+cart's `updatedAt`, so no cart cookie outlives its cart's window. A cart is never deleted while an
+`order_keys` record names its storefront checkout (`checkout:<cartId>`); a headless client that
+checks out under a key of its own is not recognised by that guard (such a cart is still kept by
+having lines, or by being checked out). Known residuals, left as follow-ups:
+- **Legacy key records.** Carts minted before this release do not record their create key, so
+  their `cart_create_keys` record, if they have one, stays behind; a late replay of that key
+  re-creates the cart empty, now recording its key, and a later pass prunes both.
+- **`cart_mutation_index` locators.** A pruned cart's mutation-key locators are not deleted (one
+  key can be shared by many carts through a cached page, so a safe delete costs a read and a
+  guarded delete per key). A locator whose cart is gone already answers "no record".
+- **Digital-only carts.** A cart holding only digital lines (no hold) is never empty, so it is
+  never pruned, and no other sweep removes it.
+- **Carts replaced by a currency switch.** `replaceStaleCurrencyCart` releases the old cart's holds
+  but keeps its lines, so that cart is never empty and never pruned.
+
+**Draining a backlog writes rows.** Each declared index is an expression index over the whole
+shared `_plugin_storage` table (see "Deploying it builds one index" below), so every row carries an
+entry in each of Otta's 49 indexes, plus the table row, its composite primary key's autoindex and the
+host's own list index: writing or deleting one row is about 52 rows written on D1, and a pruned cart deletes two
+(the cart and its create-key record), about 104 with other plugins' indexes. That is why a Free budget caps the
+drain at 300 carts a day: about 31,000 rows written, under a third of D1 Free's 100,000 a day, which
+once spent fails every write (add-to-cart and checkout included) until the UTC reset. A store with
+N abandoned carts on its first day drains them in about N / 300 days on Free. On Workers Paid (a
+budget above 50) there is no daily cap (D1 bills rows written per million and has no daily
+ceiling). There a run deletes at most 50 carts and the leg's share stops it sooner (about 23 carts
+at the Paid preset, 600), so an idle store drains about 70 carts a cadence — about 7,000 a day,
+roughly 700,000 rows written; under sustained load a share-stopped run is not stamped and goes
+again the next minute, so the drain can reach about 70 carts a minute (around 10 million rows a
+day) until the backlog clears. These figures are derived from the index model, not measured on
+D1. Overlapping ticks can pass the day's cap by at most one run (50 carts).
+
+The cap keys off the **Background work per minute** setting, not the plan: 50 or less (every
+budget Workers Free can run) counts as Free. So a Workers Paid store left at 50 or below is capped
+at 300 carts a day too (choose the Paid preset to drain faster). A Free store that abandons more
+than 300 empty carts a day never fully catches up; the rest wait their turn, untouched.
+`product-reconcile` has a daily cap of its own on Free (200 repairs, about 31,000 rows written; see
+"Rows written, and the daily repair cap" below), and so does the Reports backfill (#572, below).
+All three together write about 83,000–88,000 rows a day, which leaves about 12,000–17,000 for the
+store's traffic.
+
 `stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
 nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
 read a run from then on. Deleting that key starts it again. `coupon-recount` sets a
@@ -927,7 +978,53 @@ table. On D1 that writes about one index row per plugin-storage row, every plugi
 and counts against the daily rows-written limit (100,000 on Free); on Postgres the plain `CREATE
 INDEX` holds writes to that table until it finishes. A large store on Workers Free should deploy
 well clear of its daily write ceiling (early in the UTC day, not after a sale), and a large
-Postgres store at a quiet hour. `product-orphans` soft-deletes a
+Postgres store at a quiet hour.
+
+**Deploying the Reports month cache (#572, [ADR-0041](./adr/0041-reporting-month-cache-and-product-lines.md))
+builds three indexes and starts a backfill.** `reporting-heal` lists the days whose top-products
+lines need building by a new `(productsDirty, date)` index on `reporting_daily`, counts a month's
+unstamped claims by `(appliedAt, date)` on `reporting_applied`, and reads `reporting_monthly` by
+`month`. EmDash builds all three on the first scheduled tick after the deploy, like the coupon
+index above: about three rows written per plugin-storage row, every plugin's rows included. A store
+with 30,000 rows writes about 90,000 on that tick. **Past about 33,000 plugin-storage rows the
+index build alone exceeds D1 Free's 100,000 rows written a day.** Once it does, every write fails
+until 00:00 UTC, and the build does not finish. EmDash retries the build once per new Worker
+process, so a store of 100,000 rows can hit the limit several days running. A Free store that size
+should move to Workers Paid before this deploy. Every later plugin-row write then costs three
+index rows more (about 52 rows in all).
+
+**On Workers Free (a budget of 50 or less) the deploy day is held.** The first tick that sees a new
+index layout records that UTC day in the sweep's tick state (`cron:sweep:cursor:state`). That day
+the three capped legs write nothing: the Reports backfill, `prune-carts` and `product-reconcile`
+each cost one kv read and wait their cadence. The day's rows written are left to the index build
+and the store's traffic. A store with no tick state yet (a fresh install) has nothing to index and
+is not held.
+
+From the next UTC day the backfill builds at most **100 days a day**, newest first: about 21,000
+rows written in two currencies, 16,000 in one. It goes back 800 days at most (the 400-day custom
+range and its previous period). Day documents only exist from the release that introduced them
+(about 2026-09-07), so a store upgrading now has about 55 of them: one capped day. A store with a
+year of them would build its trailing year in about four days, and 800 days in about eight. Until
+a day is built, a report reads that day's orders, as it did before #572. So long periods cost more
+queries, and can still be refused on Free, until the trailing year is built. Older days are always
+read from their orders. On Paid there is no daily cap and no held day; the backfill builds up to
+ten days a run, most minutes, while it has work. **On Free, deploy right after 00:00 UTC**, and
+never after a sale. A large Postgres store should deploy at a quiet hour.
+
+The dirty-day listing cannot use an index (EmDash compares numbers through a type guard no
+expression index matches). So each refresh run reads the day documents of those 800 days, up to
+800 per currency. That counts against rows read (5 million a day on Free), not rows written. A day
+the sweep can never build in one tick is marked unbuildable, logged once as `reporting <day>: too
+many orders to build its top-products lines`, and read from its orders from then on. On Free that
+is a current-shape day of more than 500 orders. A legacy-shape day (stored before the guarded
+rollup) also reads its claims, two or three per paid order, so on Free it is one of more than about
+100 orders: its order and claim pages together past four. A day whose build keeps running out of
+room though given the most a tick can is marked the same way after three runs in a row (a legacy
+day still absorbing its claims gets as many more runs as that takes). A day that only runs short
+because other legs used the tick is passed over until a tick has room for it, and the leg reports
+itself deferred, so it moves to the head of a later tick.
+
+`product-orphans` soft-deletes a
 commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
 soft delete was lost. It reads each live row's document through `ctx.content` (the
 `content:read` capability already declared) and is built for a CMS read that LIES: on the
@@ -957,6 +1054,119 @@ Workers Free preset, and about 7 on Paid. An orphan is tombstoned on the third p
 it: on Free, a 1000-product catalog's orphan went after about 900 ticks, and worst case it is up
 to about eighteen hours. The leg has no deadline, so it is never promoted ahead of other legs
 by aging.
+
+`product-reconcile` (#95) repairs a commerce row whose content sync was lost — every content hook
+is fire-and-forget, and since publish atomicity a save of live content sends nothing, so a lost
+publish no longer heals on the next save. It walks the CMS `products` collection through
+`ctx.content` (`content:read`, already declared), a hundred documents a page behind the host's own
+cursor (kept in `cron:sweep:cursor:product-reconcile`), reads each page's commerce rows, and
+nominates every **published** document whose row is missing, behind the content's `updatedAt`,
+carrying a different title, inactive, or out of step with the variant repeater, and every active
+row whose document is **not** published (a lost unpublish). Each nominated product is then
+repaired from a fresh read of its row and then its document: the publish hook's own sync (title,
+activation, variants) from the live content — which is what `ctx.content` returns: a pending draft
+lives in its revision, not the content columns — or a deactivation. Reading the row first means a
+publish or unpublish landing mid-walk is never overwritten with a stale page. It never activates
+a product its document read did not show published, never writes an unpublished product's title,
+never touches a tombstoned row, never overrules a newer lifecycle event (every flip is
+watermarked), writes no commercial field and touches no order.
+
+One window is left: a merchant unpublish (or republish) landing between the repair's document read
+and its activate (or deactivate) finds the row not yet flipped, so the hook's own flip is a no-op,
+and the repair's flip then leaves the product wrongly buyable (or wrongly unbuyable). So every
+repair is **checked** on the product's next visit — later in the same tick when the budget allows,
+else the next tick the leg runs — by the same row-then-document read: a repair that held is
+counted then; a document that moved meanwhile is repaired again at its own watermark; a repair
+that did not hold on an unchanged document is logged as an anomaly ("attempted and is still out of
+sync"), never as re-synced. The wrong state lasts until that visit, not until the next pass. The
+row-then-document ordering assumes both reads see the primary database (one D1 session); it must be
+revisited before D1 read replication (#490) is enabled. A product leaves the nominated set once its
+repair is checked or has failed, so a repair that cannot hold never pins the walk; one cut short by
+the tick's query ceiling three runs in a row is stepped past and logged. Either is tried again on
+the next pass.
+
+**Rows read, and the pass interval.** A pass is cheap in queries but not in D1 *rows read*:
+EmDash's `ContentRepository.findMany` runs an unbounded `COUNT(*) … WHERE deleted_at IS NULL` over
+the whole collection beside every page, so a pass over N products reads about
+**N·⌈N/100⌉ + 2N rows** (the counts, the pages, the commerce rows), plus a handful per product
+repaired. Each page is listed **once a pass**: a pass the budget stops part-way keeps the page's
+nominated products in its cursor document and resumes them by id, so the count is not paid again
+per tick of a long repair. For an in-sync catalogue:
+
+| Products | Rows read a pass | Share of D1 Free's 5M rows/day at one pass a day |
+|---:|---:|---:|
+| 1 000 | ~12 000 | 0.2% |
+| 3 000 | ~96 000 | 1.9% |
+| 5 000 | ~260 000 | 5.2% |
+| 10 000 | ~1 020 000 | 20% |
+| 20 000 | ~4 040 000 | 81% |
+
+**Above about 15 000 products, do not run the Free preset's interval on Workers Free**: one pass a
+day of 20 000 products reads about 4 million of the 5 million rows D1 Free allows, leaving the
+storefront almost nothing. Move the store to Workers Paid (and the Paid preset), or keep the
+catalogue on Free below that size.
+
+So passes are spaced **from the start of one to the start of the next**: 24 hours on Workers Free
+(any background-work setting below the Paid preset), 6 hours on Workers Paid. On Free, six-hourly
+passes of a 10 000-product catalogue would read four fifths of the day's allowance — and past it
+every D1 query (storefront, checkout, admin) fails until the UTC reset. On Paid, D1 includes 25
+billion rows read a month, so four passes a day are noise. Between passes the leg reads only its
+cursor document, every fifteen minutes. A pass that runs long cannot pull the next one closer, and
+an unfinished pass resumes every tick until it ends.
+
+Costs in queries: an in-sync page costs seven (the list's four, two row reads of fifty ids each —
+D1's 100-parameter bound — and the cursor write), and no commerce writes. Every visit to a
+nominated product reads five (recording the attempt, the row, the document); a repair adds the
+sync's six writes (eleven in all) or a deactivation's two (seven), and the visit that checks it is
+the five reads alone. The leg only starts when its floor fits — the entry's seven queries (the
+cursor read, the list, the row reads) plus one repair's eleven, of the roughly twenty-eight a Free
+tick can spend — so on a busy Free store, where the customer-facing legs take most of each tick,
+repairs run only on the quieter ticks. Measured on Free with the cursor's reads and writes counted,
+107 drifted products healed in 335 ticks — about 460 repairs a day at the leg's own pace — so a
+catalogue-wide outage of 1000 products would take about two and a half days; on the Workers Free
+preset the daily cap below holds it to 200 a day, about five days. "Publish changes" repairs a
+product at once.
+
+**Rows written, and the daily repair cap.** By the same index model as "Draining a backlog writes
+rows" above, every `_plugin_storage` document write is about 52 rows written (49 declared indexes
+since #572), and a repair's sync is about three document writes (the upsert, the activate, the
+variant write) plus its SKU claims — about **156 rows written a product**. At the leg's own pace (about 460 repairs a day) a first
+install over an existing catalogue, where every product has no commerce row, would write about
+70,000 rows a day for days on end, which beside `prune-carts` and the store's own traffic passes
+D1 Free's 100,000 a day, after which every write fails until the UTC reset. So on the Workers Free
+preset the leg makes at most **200 repairs a UTC day** (counted in its cursor document): about
+31,000 rows written. Only a repair's writes count — not the visit that checks it, not a product
+found in sync, not one its own hook synced first — and the count is kept when the tick's query
+ceiling stops a run part-way through a repair. Once the cap is reached the leg stops repairing,
+is stamped and runs only at its fifteen-minute cadence (one kv read, and the checks of the day's
+last repairs); the pass keeps its start, its page and its nominated products and carries on after
+00:00 UTC, so nothing is skipped. A first install over N products therefore heals in about
+**N / 200 days** on Free (a 1 000-product catalogue in five days; "Publish changes" repairs any one
+product at once). On Workers Paid there is no daily cap.
+
+Together the three capped legs bound the sweep's **daily rows written on Free** at about
+83,000–88,000: `prune-carts` about 31,000 (300 carts), `product-reconcile` about 31,000 (200
+repairs) and the Reports backfill about 16,000–21,000 (100 days). That leaves about 12,000–17,000 of
+D1 Free's 100,000 for the store's own traffic (carts, checkouts, orders, admin edits) and the
+sweep's own cursor and tick-state writes. On the deploy day of a new index layout all three write
+nothing (see "Deploying the Reports month cache" above). All three caps key off the **Background
+work per minute** setting the same way — 50 or less counts as Free — and all three are derived from
+the index model, not measured on D1. Overlapping ticks can pass the day's repair cap by at most one run's
+repairs.
+
+What it does not repair: a **leaked price** from before PR 1b (the sync carries no commercial
+field and the published content holds no price to compare against — re-price it in Pricing &
+inventory), a **leaked title written under the save key the live content derives** (a pending
+pre-fix draft at the same `updatedAt` and `version`: the upsert would replay it as a no-op, so
+none is sent — publishing the product again repairs it), and a **variant orphaned by a leaked
+draft** that the live repeater still declares (the orphan carries the draft's newer watermark and
+a declare resurrects only on a strictly newer one — publishing the product again brings it back).
+
+Logs: a product with no commerce row at all — every product, on a catalogue published before the
+plugin was installed — is a first sync, logged at info. Any other repair logs a
+`cron sweep product-reconcile` warning naming the product and why ("a lost publish sync", "a lost
+unpublish"); the leaked-title case above is said once a pass at info; reaching the Free daily
+repair cap is said once a day at info; a failed or no-op repair logs an error.
 
 **A dense block of real orphans is struck out like any rows,** five a minute at most. An example
 is a bulk delete of an import whose hooks were all lost. Measured with every read truthful:
@@ -1293,6 +1503,19 @@ the scheduled reconcile reaches a day only once it has closed. So after a rollba
 release, or a rollout that overlapped versions, treat today's report figures as provisional
 until then. Orders, stock and payments are unaffected — only the reporting rollup is.
 
+The month cache and top-products lines behind long Reports periods (#572,
+[ADR-0041](./adr/0041-reporting-month-cache-and-product-lines.md)) have the same exposure in
+another form. A Worker from before that release moves day documents without marking their month
+document or their product lines stale. So after a rollback past it, or a rollout that overlapped
+it, a long report can read a month or a day's top products that no longer match the day documents.
+A pre-#572 recompute is detected (the lines' `productsEpoch` stops matching) and that day is read
+from its orders, but a pre-#572 live event is not. The `reporting-heal` leg's verifier repairs
+these as it comes round: every built month is re-checked within hours, and every closed day's
+lines within days on a store with a year of history. Each repair logs `[otta] cron sweep
+reporting-heal ANOMALY reporting <month or day>: … was rebuilt`. Until those lines stop
+appearing, treat long-period figures (past 186 days) and top products as provisional. Short
+periods read the day documents directly and are covered by the paragraph above.
+
 The same rule covers the Stripe return scrub (PR #550). The 303 records the return in a cookie
 and the next request reads it, so in a gradual rollout the two can be served by different
 versions, and the order page can briefly show "awaiting payment" with **Complete payment** for an
@@ -1419,6 +1642,17 @@ storage adapter loads that from `/playground-media/playground-v1-<filename>`
 on the Worker's asset binding. See `CREDITS.txt` in that directory.
 The marketing site's "Try in Playground" link is
 `https://try.otta.sh/playground`.
+Each page also carries a small GitHub star prompt (`src/lib/playground-star.ts`,
+`public/scripts/playground-star.js`): a card in the corner, once per session,
+that collapses to a pill when dismissed. The page never waits on GitHub. The
+script asks the same-origin `/_otta/stars` for the count (the admin's CSP is
+`connect-src 'self'`), and the Worker fetches it from `api.github.com`
+unauthenticated, cached per colo for an hour (ten minutes after an error).
+GitHub's per-IP rate limit on shared Cloudflare egress is the usual reason the
+count is missing; the prompt then reads "Star", and the log shows
+`[otta-playground] github stars: HTTP 403`.
+This script is playground-only chrome the middleware injects, outside the storefront's
+client-JS fence on the terms in [ADR-0040](./adr/0040-playground-chrome-is-outside-the-client-js-fence.md).
 
 ```bash
 pnpm --filter @urumi.ai/otta-site-staging build:playground

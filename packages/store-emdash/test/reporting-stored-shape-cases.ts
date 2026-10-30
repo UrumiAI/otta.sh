@@ -239,21 +239,25 @@ export function reportingStoredShapeCases(bound: { readonly storage: StorageAcce
 		expect(done.documentsWritten).toBe(0);
 	});
 
-	test("a recompute leaves an exact LEGACY document alone, and migrates it when it has a correction", async () => {
+	test("a recompute migrates an exact LEGACY document to write its product lines, counting nothing as corrected", async () => {
 		const h = makeReportingHarness(bound.storage);
 		await legacyDay(h);
-		// Exact, and every claim already absorbed: forward-only means no rewrite for age alone.
+		// Exact, and every claim already absorbed — but a legacy document has no product
+		// lines (#572), so the recompute writes them, and the commit writes the current shape.
 		const idle = await h.store.reconcile(RANGE);
 		expect(idle.documentsWritten).toBe(0);
-		expect((await h.dailyRaw.get(BUCKET))?.stateCounts).toEqual({ paid: 1, pending: 1 });
+		const migrated = await h.dailyRaw.get(BUCKET);
+		expect(migrated?.stateCounts).toBeUndefined();
+		expect(migrated).toMatchObject({ epoch: 1, seq: 0, state_paid: 1, productsDirty: 0 });
+		expect(await h.daily.get(BUCKET)).toMatchObject({ stateCounts: { paid: 1, pending: 1 } });
 
-		// A lost rollup gives it something to commit, and the commit writes the current shape.
+		// A lost rollup gives it something to commit.
 		await h.moveOrderDocument("l2", "paid");
 		const healed = await h.store.reconcile(RANGE);
 		expect(healed.documentsWritten).toBe(1);
 		const raw = await h.dailyRaw.get(BUCKET);
 		expect(raw?.stateCounts).toBeUndefined();
-		expect(raw).toMatchObject({ epoch: 1, seq: 0, state_paid: 2, revenueCents: 5500 });
+		expect(raw).toMatchObject({ epoch: 2, seq: 0, state_paid: 2, revenueCents: 5500 });
 
 		// A delta after the migration lands on top of it.
 		await h.refundOrder("l2", 100);

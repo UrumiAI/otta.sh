@@ -23,7 +23,7 @@ import type {
 	TopProductWire,
 } from "./reporting-settings-surface.js";
 import {
-	MAX_DAILY_POINTS,
+	seriesGranularity,
 	ordersChart,
 	periodChange,
 	salesChart,
@@ -41,6 +41,7 @@ import {
 	type ReportPeriod,
 	type ResolvedRange,
 	resolveReportsRange,
+	shiftDay,
 } from "./reports-period.js";
 
 /** The admin Reports page's `admin.pages` manifest entry (§4.1): a Shopify-style
@@ -139,11 +140,15 @@ function absolutePeriod(range: Pick<ReportPeriod, "fromDay" | "toDay">): string 
  * The Reports page. Seven reads on the surface `makeAdminClients` hands over —
  * revenue, orders-by-status, top products (one read, ranked on the page), low stock
  * and settings for the period, plus revenue and orders-by-status for the
- * PREVIOUS period. All but top
- * products and low stock read the `reporting_daily` rollup (day documents, never
- * a per-order scan). Revenue and orders-by-status for one period are asked for at
- * once, so the store pages that period's documents ONCE for both (issue #572):
- * one rollup read per period, and the comparison costs one more.
+ * PREVIOUS period. All but low stock read the reporting rollup, never a per-order
+ * scan once the cron has built it (issue #572): day documents, or — for a period
+ * past `MAX_WEEKLY_DAYS` days, asked for by month — one document per whole
+ * month plus the days of the partial months at its ends. A period up to
+ * `MAX_DAILY_POINTS` days is charted by day, and up to `MAX_WEEKLY_DAYS` by
+ * week. Revenue, orders-by-status
+ * and top products for one period are asked for at once, so the store reads that
+ * period's documents ONCE for all three: one rollup read per period, and the
+ * comparison costs one more.
  *
  * Fails CLOSED: any error from a current-period read — including one raised while
  * the surface is CONSTRUCTED — renders the E-7 fail-closed banner rather than
@@ -165,7 +170,10 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 			// when that store is absent.
 			const { reporting: client } = await makeAdminClients(ctx);
 			const settingsRead = client.getSettings().catch(() => undefined);
-			const revenueRead = client.getRevenue(range, "day");
+			// A long period is charted by month, and asked for by month: the store then
+			// reads one document per whole month instead of its days (issue #572).
+			const interval = seriesGranularity(range.days) === "month" ? "month" : "day";
+			const revenueRead = client.getRevenue(range, interval);
 			const [revenue, statuses, top, low, settings, previousRevenue, previousStatuses] =
 				await Promise.all([
 					revenueRead,
@@ -178,7 +186,7 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 						),
 					),
 					settingsRead,
-					client.getRevenue(range.previous, "day").catch(() => undefined),
+					client.getRevenue(range.previous, interval).catch(() => undefined),
 					client.getOrdersByStatus(range.previous).catch(() => undefined),
 				]);
 			return buildReportsBlocks({
@@ -391,15 +399,16 @@ function salesSection(
 ): Block[] {
 	const note = "Net order totals of paid-and-later orders, by order date (UTC).";
 	if (multiCurrency) {
+		const monthly = seriesGranularity(data.range.days) === "month";
 		const table: TableBlock = {
 			type: "table",
 			block_id: "reports:revenue-table",
 			columns: [
-				{ key: "bucketStart", label: "Day" },
+				{ key: "bucketStart", label: monthly ? "Month" : "Day" },
 				{ key: "revenue", label: "Sales" },
 			],
 			rows: revenueBuckets.map((b) => ({
-				bucketStart: b.bucketStart.slice(0, 10),
+				bucketStart: b.bucketStart.slice(0, monthly ? 7 : 10),
 				revenue: formatMoney(toCents(b.revenueCents), toCurrency(b.currency), MONEY_LOCALE),
 			})),
 			page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
@@ -411,7 +420,9 @@ function salesSection(
 			blocks: [
 				{
 					type: "context",
-					text: "This period spans several currencies, so sales are listed per day in each one rather than charted on one axis. Days with no sales are omitted.",
+					text: monthly
+						? "This period spans several currencies, so sales are listed per month in each one rather than charted on one axis. Months with no sales are omitted."
+						: "This period spans several currencies, so sales are listed per day in each one rather than charted on one axis. Days with no sales are omitted.",
 				},
 				{
 					type: "context",
@@ -436,7 +447,7 @@ function salesSection(
 		omitPrevious || data.previousRevenue === undefined
 			? undefined
 			: timeBuckets(data.range.previous, data.previousRevenue, currency);
-	const points = pointsNote(data.range.days);
+	const points = pointsNote(data.range);
 	return section({
 		blockId: "reports:sales",
 		title: "Total sales over time",
@@ -477,22 +488,27 @@ function emptyPeriodCurrency(data: ReportsData, previousCurrencies: readonly str
 const CURRENCY_CODE = /^[A-Z]{3}$/;
 
 /**
- * How the over-time charts are bucketed, as a sentence. A folded series' LAST
- * point usually covers fewer than seven days (365 = 52 × 7 + 1), and drawn
- * without a word it reads as a cliff — so the note says how many it covers.
+ * How the over-time charts are bucketed, as a sentence. A monthly series' first
+ * and last points usually cover only part of a month, and drawn without a word
+ * they read as a dip — so the note says so.
  */
-function pointsNote(days: number): string {
-	if (days <= MAX_DAILY_POINTS) return "One point per day.";
-	const rest = partialLastPoint(days);
-	return rest === undefined
-		? "One point per week."
-		: `One point per week; the last point covers ${dayPhrase(rest)}.`;
+function pointsNote(range: Pick<ReportPeriod, "fromDay" | "toDay" | "days">): string {
+	const granularity = seriesGranularity(range.days);
+	if (granularity === "day") return "One point per day.";
+	if (granularity === "week") {
+		const rest = partialLastWeek(range.days);
+		return rest === undefined
+			? "One point per week."
+			: `One point per week; the last point covers ${dayPhrase(rest)}.`;
+	}
+	return `One point per month.${partialPointsNote(range)}`;
 }
 
-/** The days the LAST point of a weekly-folded series covers, or `undefined` when
- *  the series is daily or ends on a whole week. */
-function partialLastPoint(days: number): number | undefined {
-	if (days <= MAX_DAILY_POINTS) return undefined;
+/** The days the LAST point of a weekly-folded series covers, or `undefined` when the
+ *  series is not weekly or ends on a whole week. A short last week drawn without a
+ *  word reads as a cliff. */
+function partialLastWeek(days: number): number | undefined {
+	if (seriesGranularity(days) !== "week") return undefined;
 	const rest = days % 7;
 	return rest === 0 ? undefined : rest;
 }
@@ -501,12 +517,26 @@ function dayPhrase(days: number): string {
 	return days === 1 ? "1 day" : `${days} days`;
 }
 
+/** Which ends of a folded series cover only part of their week or month, as a sentence
+ *  (with its leading space), or "" when the period is whole months. */
+function partialPointsNote(range: Pick<ReportPeriod, "fromDay" | "toDay" | "days">): string {
+	if (seriesGranularity(range.days) !== "month") {
+		const rest = partialLastWeek(range.days);
+		return rest === undefined ? "" : ` The last point covers ${dayPhrase(rest)}.`;
+	}
+	const first = !range.fromDay.endsWith("-01");
+	const last = shiftDay(range.toDay, 1).slice(0, 7) === range.toDay.slice(0, 7);
+	if (first && last) return " The first and last points cover only part of their month.";
+	if (first) return " The first point covers only part of its month.";
+	if (last) return " The last point covers only part of its month.";
+	return "";
+}
+
 function ordersSection(data: ReportsData): Block[] {
 	const current: TimeSeries = timeBuckets(data.range, data.revenue, undefined);
 	const total = current.points.reduce((sum, p) => sum + p.orders, 0);
-	const unit = current.granularity === "day" ? "day" : "week";
-	const rest = current.granularity === "week" ? partialLastPoint(data.range.days) : undefined;
-	const partial = rest !== undefined ? ` The last point covers ${dayPhrase(rest)}.` : "";
+	const unit = current.granularity;
+	const partial = partialPointsNote(data.range);
 	return section({
 		blockId: "reports:orders",
 		title: "Orders over time",

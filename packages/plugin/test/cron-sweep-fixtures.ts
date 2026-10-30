@@ -226,8 +226,23 @@ export function fakeCms(
 					if (cms.listFailRate > 0 && cms.random() < cms.listFailRate) {
 						return { items: [], hasMore: false };
 					}
+					// The one listed product. With an `updatedAt` set for it, it carries that
+					// and a title, as a real published document does — what
+					// `product-reconcile` needs to sync it; without one it has no watermark,
+					// and the reconcile leaves it alone.
+					const listedAt = cms.updatedAt.get("listed");
 					return {
-						items: [{ id: "listed", type: collection, status: "published", data: {} }],
+						items: [
+							listedAt === undefined
+								? { id: "listed", type: collection, status: "published", data: {} }
+								: {
+										id: "listed",
+										type: collection,
+										status: "published",
+										updatedAt: listedAt,
+										data: { title: "CMS listed" },
+									},
+						],
 						hasMore: true,
 					};
 				},

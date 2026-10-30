@@ -817,7 +817,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(contextTexts(resubmitted)[0]).toBe(contextTexts(blocks)[0]);
 	});
 
-	test("the period select applies a preset at once, and a period past 92 days charts 7-day points", async () => {
+	test("the period select applies a preset at once, and a period past 92 days charts a point per month", async () => {
 		await seedStandardDefault();
 
 		const blocks = blocksOf(
@@ -841,12 +841,12 @@ describe("Reports admin page (workerd sandbox)", () => {
 		});
 		// No custom form for a preset.
 		expect(formFor(blocks, "reports:apply-range")).toBeUndefined();
-		// 365 days → 53 points of 7 days from the period's first day; the whole
-		// period's sales still add up.
+		// 365 days → a point per calendar month it touches (13, the first and last
+		// partial: #572); the whole period's sales still add up.
 		const points = salesPoints(blocks);
-		expect(points).toHaveLength(53);
+		expect(points).toHaveLength(13);
 		expect(points.reduce((sum, [, amount]) => sum + amount, 0)).toBe(8500);
-		expect(contextTexts(blocks).some((t) => t.includes("One point per week"))).toBe(true);
+		expect(contextTexts(blocks).some((t) => t.includes("One point per month"))).toBe(true);
 		expect(statItems(blocks)[0]?.description).toMatch(/previous 365 days$/);
 	});
 
@@ -903,6 +903,9 @@ describe("Reports admin page (workerd sandbox)", () => {
 		await seedOrder(`ord-lateday-${SFX}`, "2026-07-12T18:00:00.000Z", [
 			{ productId: "p9", title: "Late Sale", quantity: 2, unitPrice: 1500 },
 		]);
+		// Its day's rollup document (#572: top products reads a day through its document,
+		// scanning the orders of one whose product lines are not built, like this one).
+		await seedDay({ day: "2026-07-12" });
 
 		// The blank-console trap: an action id absent from REPORTS_ACTION_IDS
 		// falls through the dispatcher to its `{blocks: []}` fallback. This id
@@ -980,7 +983,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// no cap banner, and no E-7 shell from the domain's own refusal either.
 		const atCap = blocksOf(await reports({ from: "2026-01-01", to: "2027-02-04" }));
 		expect(findBlocks(atCap, "banner")).toHaveLength(0);
-		expect(salesPoints(atCap)).toHaveLength(58); // 400 days in 7-day points
+		expect(salesPoints(atCap)).toHaveLength(14); // 400 days: Jan 2026 – Feb 2027, by month
 	});
 
 	test("the low-stock group states the threshold its rows were selected by", async () => {
@@ -1189,7 +1192,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(seriesData(blocks, "reports:orders-chart")).toEqual([1, 0, 0, 0, 1]);
 	});
 
-	test("92 days is charted a point per day; one day more folds into 7-day points, and says so", async () => {
+	test("92 days is charted a point per day, 93 a point per week, and past 186 a point per month — and each says so", async () => {
 		await seedDay({ day: "2026-07-10", revenueCents: 3000, refundedCents: 250, refundEntries: 1 });
 		await seedDay({ day: "2026-07-11", revenueCents: 5500 });
 
@@ -1213,6 +1216,13 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(at93.points).toHaveLength(14);
 		expect(at93.points.filter(([, amount]) => amount > 0)).toEqual([["9 Jul", 8500, "$85.00"]]);
 		expect(at93.notes.some((t) => t.includes("One point per week"))).toBe(true);
+
+		// 187 days: 26 Jan, then February to July (#572); 10 + 11 Jul both fall in July.
+		const at187 = await render("2026-01-26", "2026-07-31");
+		expect(at187.points).toHaveLength(7);
+		// The comparison period reaches into 2025, so every label carries its year.
+		expect(at187.points.filter(([, amount]) => amount > 0)).toEqual([["Jul 2026", 8500, "$85.00"]]);
+		expect(at187.notes.some((t) => t.includes("One point per month"))).toBe(true);
 	});
 
 	test("a multi-currency window lists sales per day per currency instead of charting them, and the tiles that do not fit are named", async () => {
