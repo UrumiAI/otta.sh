@@ -43,6 +43,23 @@
 			}
 		},
 		{
+			"files": ["packages/plugin/src/**", "packages/store-emdash/src/**", "sites/*/src/**"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"paths": [
+							{
+								"name": "@urumi.ai/otta-domain",
+								"importNames": ["NOOP_LOGGER"],
+								"message": "Production code must wire a real logger (CONSOLE_LOGGER); NOOP_LOGGER is for tests (#662)"
+							}
+						]
+					}
+				]
+			}
+		},
+		{
 			"files": ["packages/domain/src/**/*.ts"],
 			"rules": {
 				"no-console": "error",
