@@ -93,7 +93,8 @@ const LAPSED_ORDERS = 50;
  *  one a minute (`cron-sweep-ceiling`). The floor leaves room for the cost table
  *  moving a call or two. Since #572 an expiry is 14 calls (its rollup event dirties
  *  the month document) and the rollup heal also keeps the month documents and
- *  product lines built: all 50 by tick 86 (0.58 a minute). */
+ *  product lines built; with the prune-carts and product-reconcile legs too (#658,
+ *  #657), all 50 by tick 82, and by tick 88 at the slowest start (0.57 a minute). */
 const MIN_EXPIRIES_PER_MINUTE = 0.55;
 const EXPIRY_WITHIN = Math.ceil(LAPSED_ORDERS / MIN_EXPIRIES_PER_MINUTE);
 /** Every leg with work does some of it inside this many ticks of the backlog. */

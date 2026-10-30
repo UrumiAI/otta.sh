@@ -941,10 +941,10 @@ having lines, or by being checked out). Known residuals, left as follow-ups:
 
 **Draining a backlog writes rows.** Each declared index is an expression index over the whole
 shared `_plugin_storage` table (see "Deploying it builds one index" below), so every row carries an
-entry in each of Otta's 46 indexes, plus the table row, its composite primary key's autoindex and the
-host's own list index: deleting one row is about 49 rows written on D1, and a pruned cart deletes two
-(the cart and its create-key record), about 98, call it 100 with other plugins' indexes. That is why a Free budget caps the
-drain at 300 carts a day: about 30,000 rows written, under a third of D1 Free's 100,000 a day, which
+entry in each of Otta's 49 indexes, plus the table row, its composite primary key's autoindex and the
+host's own list index: writing or deleting one row is about 52 rows written on D1, and a pruned cart deletes two
+(the cart and its create-key record), about 104 with other plugins' indexes. That is why a Free budget caps the
+drain at 300 carts a day: about 31,000 rows written, under a third of D1 Free's 100,000 a day, which
 once spent fails every write (add-to-cart and checkout included) until the UTC reset. A store with
 N abandoned carts on its first day drains them in about N / 300 days on Free. On Workers Paid (a
 budget above 50) there is no daily cap (D1 bills rows written per million and has no daily
@@ -977,7 +977,35 @@ table. On D1 that writes about one index row per plugin-storage row, every plugi
 and counts against the daily rows-written limit (100,000 on Free); on Postgres the plain `CREATE
 INDEX` holds writes to that table until it finishes. A large store on Workers Free should deploy
 well clear of its daily write ceiling (early in the UTC day, not after a sale), and a large
-Postgres store at a quiet hour. `product-orphans` soft-deletes a
+Postgres store at a quiet hour.
+
+**Deploying the Reports month cache (#572, [ADR-0041](./adr/0041-reporting-month-cache-and-product-lines.md))
+builds three indexes and starts a backfill.** `reporting-heal` lists the days whose top-products
+lines need building by a new `(productsDirty, date)` index on `reporting_daily`, counts a month's
+unstamped claims by `(appliedAt, date)` on `reporting_applied`, and reads `reporting_monthly` by
+`month`. EmDash builds all three on the first scheduled tick after the deploy, like the coupon
+index above: about three rows written per plugin-storage row, so a store with 30,000 rows writes
+about 90,000 on that tick, most of a Free day's 100,000. Every later plugin-row write then costs
+three index rows more (about 52 rows in all). On Workers Free (a budget of 50 or less) the
+backfill does not run on the deploy day. From the next UTC day it builds at most **100 days a
+day**, newest first: about 21,000 rows written in two currencies, 16,000 in one. It goes back
+800 days at most (the 400-day custom range and its previous period). So the trailing year is
+built in about four days and the whole 800 days in about eight. With the cart prune's and the
+product reconcile's caps running too, the store keeps about 18,000 rows a day for its own
+traffic. Until a day is built, a report reads that day's orders, as it did before #572. So long
+periods cost more queries and can still be refused on Free until the trailing year is built.
+Older days are always read from their orders. On Paid there is no daily cap; the backfill
+builds up to ten days a run, most minutes, while it has work. **On Free, deploy right after 00:00 UTC**, and
+never after a sale. A store past about 30,000 plugin-storage rows should expect the index build
+alone to come close to the day's limit. A large Postgres store should deploy at a quiet hour.
+The dirty-day listing cannot use an index (EmDash compares numbers through a type guard no
+expression index matches), so each refresh run reads the day documents of those 800 days, up to
+800 per currency. That counts against rows read (5 million a day on Free), not rows written. A
+day with more orders than one tick can read (on Free, more than 500) is marked unbuildable,
+logged once as `reporting <day>: too many orders to build its top-products lines`, and read from
+its orders from then on.
+
+`product-orphans` soft-deletes a
 commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
 soft delete was lost. It reads each live row's document through `ctx.content` (the
 `content:read` capability already declared) and is built for a CMS read that LIES: on the

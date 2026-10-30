@@ -1277,14 +1277,27 @@ export class EmdashReportingStore implements ReportingStore {
 	 * Closed days before `beforeDay` whose product lines need building, NEWEST first —
 	 * so the trailing year a report reads is built before older history: the dirty ones,
 	 * then the never-built ones (the upgrade backfill). At most `limit`, in at most two
-	 * queries. An unbuildable day (`PRODUCTS_UNBUILDABLE`) is not listed.
+	 * queries, each served by the `(productsDirty, date)` index. An unbuildable day
+	 * (`PRODUCTS_UNBUILDABLE`) is not listed.
+	 *
+	 * `notBefore` (a `YYYY-MM-DD`) leaves out days before it: the history floor past which
+	 * no report reads lines worth building. `unbuilt: false` lists only the dirty days —
+	 * what the sweep asks for once the day's backfill allowance is spent.
 	 */
-	async staleProductDays(beforeDay: string, limit: number): Promise<string[]> {
+	async staleProductDays(
+		beforeDay: string,
+		limit: number,
+		options: { notBefore?: string; unbuilt?: boolean } = {},
+	): Promise<string[]> {
 		const days = new Set<string>();
-		for (const dirty of [1, null]) {
+		const date =
+			options.notBefore === undefined
+				? { lt: beforeDay }
+				: { gte: options.notBefore, lt: beforeDay };
+		for (const dirty of options.unbuilt === false ? [1] : [1, null]) {
 			if (days.size >= limit) break;
 			const page = await this.#daily.query({
-				where: { productsDirty: dirty, date: { lt: beforeDay } },
+				where: { productsDirty: dirty, date },
 				orderBy: { date: "desc" },
 				limit: Math.min(PAGE_SIZE, limit),
 			});
@@ -1301,11 +1314,35 @@ export class EmdashReportingStore implements ReportingStore {
 	}
 
 	/**
+	 * The fewest reconcile page units ({@link EmdashReportingStoreOptions.maxReconcilePages})
+	 * a {@link rebuildDayProducts} of this day can spend, claims to absorb left out — what a
+	 * caller compares with the most it could ever give the build, to tell a day that is
+	 * merely unlucky this tick from one that can never be built. Two reads: the day's
+	 * documents and a count of its orders.
+	 *
+	 * A current-shape day is a page of its documents and a page per hundred orders. A day
+	 * with a legacy or tainted document is rebuilt by the full {@link reconcile}, which also
+	 * reads the day's claims in pages, and a day has at least one claim per order (its
+	 * creation), so that is as many pages again. A claim still to absorb costs one more unit
+	 * each, but absorbing is progress a later build keeps, so it is not counted here.
+	 */
+	async dayBuildPages(day: string): Promise<number> {
+		const docs = await this.#daily.query({ where: { date: day }, limit: PAGE_SIZE });
+		const orderPages = Math.ceil((await this.dayOrderCount(day)) / PAGE_SIZE);
+		const legacy = docs.items.some(({ data }) => !isCurrentReportingDailyDoc(data));
+		return 1 + orderPages + (legacy ? orderPages : 0);
+	}
+
+	/**
 	 * Mark a day's product lines unbuildable (`PRODUCTS_UNBUILDABLE`): the sweep could
 	 * not read its orders within the most a tick could give it. Each of the day's
 	 * documents whose lines are not clean is marked, guarded on the `epoch` and `seq`
-	 * just read, so a delta racing it wins and the day is simply listed again. Returns
-	 * how many were marked.
+	 * just read, so a delta racing it wins and the day is simply listed again. A legacy or
+	 * tainted document (which the build would have handed to the full {@link reconcile})
+	 * is marked by a revision compare-and-set instead, exactly as the delta path migrates
+	 * one: the mark is a field nothing else on that shape reads, and the first write that
+	 * migrates the document drops it, which lists the day again. Returns how many were
+	 * marked.
 	 */
 	async markProductsUnbuildable(day: string): Promise<number> {
 		const budget: PageBudget = {
@@ -1316,7 +1353,17 @@ export class EmdashReportingStore implements ReportingStore {
 		};
 		let marked = 0;
 		for (const { id, data } of await this.#queryDays(day, day, budget, "markProductsUnbuildable")) {
-			if (!isCurrentReportingDailyDoc(data) || storedProductLines(data) !== null) continue;
+			if (storedProductLines(data) !== null) continue;
+			if (!isCurrentReportingDailyDoc(data)) {
+				const held = await this.#daily.getVersioned(id);
+				if (held === null || isCurrentReportingDailyDoc(held.value)) continue;
+				const legacy = await this.#daily.compareAndSet(id, held.revision, {
+					...held.value,
+					productsDirty: PRODUCTS_UNBUILDABLE,
+				});
+				if (legacy.applied) marked++;
+				continue;
+			}
 			const written = await this.#daily.updateIf(id, {
 				where: { epoch: data.epoch, seq: data.seq },
 				set: { productsDirty: PRODUCTS_UNBUILDABLE },
@@ -1365,13 +1412,21 @@ export class EmdashReportingStore implements ReportingStore {
 		claimedBefore: string,
 		limit: number,
 	): Promise<{ stamped: number; more: boolean }> {
+		// No room for a single claim's read and write: look at none, and say there may be
+		// more, so the caller comes back rather than stamping past the budget it was given.
+		if (limit < 1) return { stamped: 0, more: true };
 		const now = this.#clock.now().toISOString();
 		// ONE page, read whole before anything is written: the writes change the field the
 		// query filters on, so paging on past them could skip claims. A stamped claim drops
 		// out of the filter, so the next call (the next run) starts on what is left.
 		const page = await this.#applied.query({
 			where: { date: day, appliedAt: null },
-			limit: Math.max(1, Math.min(PAGE_SIZE, limit)),
+			// Ordered on an indexed field, not left to the host's default (`created_at`):
+			// with that, SQLite (no statistics) walks the host's list index over every claim
+			// in the store to skip a sort, rather than search `(appliedAt, date)` for the
+			// day's few (`reporting-index-plan.test.ts`).
+			orderBy: { date: "asc" },
+			limit: Math.min(PAGE_SIZE, limit),
 		});
 		let stamped = 0;
 		for (const { id, data } of page.items) {
@@ -1391,21 +1446,36 @@ export class EmdashReportingStore implements ReportingStore {
 	 * Dirty months before `beforeMonth` (`YYYY-MM`), newest first, at most `limit`. Given
 	 * `touchedBefore`, a month touched at or after it is left out: it is settling, and
 	 * {@link rebuildMonth} would refuse it.
+	 *
+	 * Read by `month`, newest first, with `dirty` filtered here rather than by an index:
+	 * there is one document per calendar month, so a page of {@link PAGE_SIZE} is eight
+	 * years of them and this is one query on any store younger than that. It pages on
+	 * until `limit` dirty months are found or the months run out.
 	 */
 	async staleMonths(beforeMonth: string, limit: number, touchedBefore?: string): Promise<string[]> {
-		const page = await this.#monthly.query({
-			where: { dirty: 1, month: { lt: beforeMonth } },
-			orderBy: { month: "desc" },
-			limit: Math.min(PAGE_SIZE, limit),
-		});
-		return page.items
-			.filter(
-				({ data }) =>
+		const months: string[] = [];
+		let cursor: string | undefined;
+		for (;;) {
+			const page = await this.#monthly.query({
+				where: { month: { lt: beforeMonth } },
+				orderBy: { month: "desc" },
+				limit: PAGE_SIZE,
+				cursor,
+			});
+			for (const { data } of page.items) {
+				if (months.length >= limit) break;
+				if (data.dirty !== 1) continue;
+				if (
 					touchedBefore === undefined ||
 					data.touchedAt === undefined ||
-					data.touchedAt < touchedBefore,
-			)
-			.map(({ data }) => data.month);
+					data.touchedAt < touchedBefore
+				) {
+					months.push(data.month);
+				}
+			}
+			if (months.length >= limit || !page.hasMore || page.cursor === undefined) return months;
+			cursor = page.cursor;
+		}
 	}
 
 	/**

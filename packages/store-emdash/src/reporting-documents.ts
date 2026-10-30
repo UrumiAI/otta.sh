@@ -54,7 +54,7 @@ export const REPORTING_MONTHLY_COLLECTION = "reporting_monthly";
 
 /** One collection as the plugin descriptor declares it. */
 export interface ReportingCollectionIndexDeclaration {
-	readonly indexes?: readonly string[];
+	readonly indexes?: readonly (string | readonly string[])[];
 	readonly uniqueIndexes?: readonly string[];
 }
 
@@ -79,16 +79,30 @@ export interface ReportingCollectionIndexDeclaration {
  */
 export const REPORTING_COLLECTIONS: Readonly<Record<string, ReportingCollectionIndexDeclaration>> =
 	{
-		// `productsDirty` is what the rollup sweep finds a day whose product lines need
-		// building by (issue #572): `1` when an order of it entered or left the revenue
-		// set, absent on a document written before product lines existed.
-		[REPORTING_DAILY_COLLECTION]: { indexes: ["currency", "date", "productsDirty"] },
-		// `appliedAt` (issue #572): a month rebuild counts the month's claims still
-		// unstamped — events that may not have moved their day yet.
-		[REPORTING_APPLIED_COLLECTION]: { indexes: ["date", "orderId", "appliedAt"] },
-		// `month` is what a long window binds; `dirty` is what the sweep finds a month to
-		// rebuild by.
-		[REPORTING_MONTHLY_COLLECTION]: { indexes: ["month", "dirty"] },
+		// `(productsDirty, date)` is what the rollup sweep finds a day whose product lines
+		// need building by (issue #572): `productsDirty` is `1` when an order of the day
+		// entered or left the revenue set and absent on a document written before product
+		// lines existed, and the sweep lists them newest first below a date. A COMPOSITE,
+		// not a lone `productsDirty`: the host never runs `ANALYZE`, so SQLite (and D1)
+		// would plan `{ productsDirty: null, date < X } ORDER BY date DESC LIMIT 10` on the
+		// date range alone and read every day document in it, built or not; the composite
+		// reads only the unbuilt ones (`reporting-index-plan.test.ts` pins the plans). The
+		// dirty page (`productsDirty: 1`, a number) cannot use it — the host's numeric type
+		// guard matches no expression index — and is bounded by the sweep's history floor.
+		// Its fields are queryable on their own: the host folds a composite into the
+		// allow-list field by field.
+		[REPORTING_DAILY_COLLECTION]: { indexes: ["currency", "date", ["productsDirty", "date"]] },
+		// `(appliedAt, date)` (issue #572): a month rebuild counts the month's claims still
+		// unstamped (`appliedAt: null` over the month's dates) — events that may not have
+		// moved their day yet — and the claim heal lists and stamps them by day. The same
+		// composite reasoning as above: equality first, then the date range.
+		[REPORTING_APPLIED_COLLECTION]: { indexes: ["date", "orderId", ["appliedAt", "date"]] },
+		// `month` is what a long window binds and what the verifier walks in order. The
+		// sweep's dirty-month list reads the same index and filters `dirty` in memory: the
+		// collection holds one document per calendar month (about a hundred over eight
+		// years), so a `dirty` index would buy nothing but an index row on every
+		// `_plugin_storage` write, every plugin's included (DEPLOYMENT.md §5).
+		[REPORTING_MONTHLY_COLLECTION]: { indexes: ["month"] },
 	};
 
 /** The revenue-counting allow-list as a set — built once from the domain constant. */
