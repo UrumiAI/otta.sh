@@ -508,9 +508,11 @@ describe("a dense block of real orphans is struck out like any rows", () => {
 
 	// The tick at which the last orphan of each probe was tombstoned — measured 123
 	// and 379 on Free, 34 and 41 on Paid — pinned with a little room. Every read
-	// truthful; the per-tick cap (five) paces the block.
+	// truthful; the per-tick cap (five) paces the block. Re-measured with the #572
+	// month/lines refresh and the prune-carts and product-reconcile legs (#658, #657):
+	// 137 and 406 on Free, 34 and 41 on Paid — 60@30 pinned at 140.
 	const DENSE_DONE_BY: Record<string, number> = {
-		"60@30": 135,
+		"60@30": 140,
 		"60@600": 40,
 		"250@30": 420,
 		"250@600": 50,

@@ -47,8 +47,22 @@ const BLUE = "#4290F0";
 const MUTED = "#A3A3A3";
 
 /** Past this many days a day per point stops showing shape; the series folds into
- *  7-day groups instead (≤ 58 points at the 400-day cap). */
+ *  7-day groups instead, up to {@link MAX_WEEKLY_DAYS}. */
 export const MAX_DAILY_POINTS = 92;
+
+/** Past this many days the series folds into calendar months (≤ 15 points at the
+ *  400-day cap). A month is also the grain the store can read a long period at
+ *  cheaply — one document a month rather than a day document per day per currency
+ *  (issue #572) — so such a period's revenue is ASKED for by month too. Up to here a
+ *  week keeps the shape a month would flatten, and the day documents it is read from
+ *  still fit the query budget. */
+export const MAX_WEEKLY_DAYS = 186;
+
+/** How a period of this many days is charted. */
+export function seriesGranularity(days: number): "day" | "week" | "month" {
+	if (days <= MAX_DAILY_POINTS) return "day";
+	return days <= MAX_WEEKLY_DAYS ? "week" : "month";
+}
 
 // -- KPI deltas --------------------------------------------------------------
 
@@ -97,7 +111,7 @@ export interface TimePoint {
 }
 
 export interface TimeSeries {
-	granularity: "day" | "week";
+	granularity: "day" | "week" | "month";
 	points: TimePoint[];
 	/** False when any bucket came without `revenueOrderCount` — an older reader.
 	 *  The orders chart then states the gap instead of drawing zeros. */
@@ -105,14 +119,17 @@ export interface TimeSeries {
 }
 
 /**
- * The period's buckets as a continuous series: one point per day — or per 7-day
- * group from the period's first day past {@link MAX_DAILY_POINTS} — with every
- * empty point at zero.
+ * The period's buckets as a continuous series: one point per day — per 7-day group
+ * from the period's first day past {@link MAX_DAILY_POINTS}, per calendar month past
+ * {@link MAX_WEEKLY_DAYS} — with every empty point at zero.
  *
  * Zero-filling is this renderer's job: the report OMITS an empty period, and its
- * silence is exactly what says which points are zero. Groups start at the
- * period's own first day (not an ISO Monday), so a period and its equal-length
- * comparison fold into the same number of points, index for index.
+ * silence is exactly what says which points are zero. Groups start at the period's
+ * own first day (not an ISO Monday), so a period and its equal-length comparison fold
+ * into the same number of day or week points, index for index. A month point starts
+ * at the period's own first day when the period starts mid-month, so the first and
+ * last points cover only the days of them the period holds — and two equal-length
+ * periods can then differ by a point; {@link alignedPrevious} pairs them by their END.
  */
 export function timeBuckets(
 	period: Pick<ReportPeriod, "fromDay" | "toDay">,
@@ -120,21 +137,75 @@ export function timeBuckets(
 	currencyCode: string | undefined,
 ): TimeSeries {
 	const days = dayCount(period.fromDay, period.toDay);
-	const step = days > MAX_DAILY_POINTS ? 7 : 1;
+	const granularity = seriesGranularity(days);
+	const monthly = granularity === "month";
+	const step = granularity === "week" ? 7 : 1;
 	const points: TimePoint[] = [];
-	for (let offset = 0; offset < days; offset += step) {
-		points.push({ startDay: shiftDay(period.fromDay, offset), revenueCents: 0, orders: 0 });
+	if (monthly) {
+		for (let month = period.fromDay.slice(0, 7); month <= period.toDay.slice(0, 7);) {
+			const startDay = month === period.fromDay.slice(0, 7) ? period.fromDay : `${month}-01`;
+			points.push({ startDay, revenueCents: 0, orders: 0 });
+			month = nextMonth(month);
+		}
+	} else {
+		for (let offset = 0; offset < days; offset += step) {
+			points.push({ startDay: shiftDay(period.fromDay, offset), revenueCents: 0, orders: 0 });
+		}
 	}
 	let ordersKnown = true;
 	for (const bucket of buckets) {
-		const offset = dayCount(period.fromDay, bucket.bucketStart.slice(0, 10)) - 1;
-		const point = points[Math.floor(offset / step)];
-		if (offset < 0 || point === undefined) continue;
+		const day = bucket.bucketStart.slice(0, 10);
+		const offset = dayCount(period.fromDay, day) - 1;
+		const index = monthly ? monthsBetween(period.fromDay, day) : Math.floor(offset / step);
+		// A month bucket starts on the month's 1st, which may be before a period that
+		// starts mid-month: it still belongs to the first point.
+		const point = !monthly && offset < 0 ? undefined : points[index];
+		if (index < 0 || point === undefined) continue;
 		if (bucket.currency === currencyCode) point.revenueCents += bucket.revenueCents;
 		if (bucket.revenueOrderCount === undefined) ordersKnown = false;
 		else point.orders += bucket.revenueOrderCount;
 	}
-	return { granularity: step === 1 ? "day" : "week", points, ordersKnown };
+	return { granularity, points, ordersKnown };
+}
+
+/**
+ * The previous period's points, each with the index of the current point it is drawn
+ * against. Day and week series pair index for index. Monthly ones are paired by their
+ * END — the last month with the last month — because two equal-length periods can
+ * differ by a point when one starts on a month's first day and the other on the day
+ * before it: a previous series with an extra leading point folds it into its first
+ * paired one, and one with a point fewer starts one index in.
+ */
+export function alignedPrevious(
+	current: TimeSeries,
+	previous: TimeSeries,
+): { index: number; point: TimePoint }[] {
+	const shift = current.points.length - previous.points.length;
+	if (previous.granularity !== "month" || shift === 0) {
+		return previous.points.map((point, index) => ({ index, point }));
+	}
+	if (shift > 0) return previous.points.map((point, i) => ({ index: i + shift, point }));
+	const extra = -shift;
+	const head = previous.points.slice(0, extra + 1);
+	const merged: TimePoint = {
+		startDay: head[0]!.startDay,
+		revenueCents: head.reduce((sum, p) => sum + p.revenueCents, 0),
+		orders: head.reduce((sum, p) => sum + p.orders, 0),
+	};
+	return [merged, ...previous.points.slice(extra + 1)].map((point, index) => ({ index, point }));
+}
+
+/** The `YYYY-MM` after this one. */
+function nextMonth(month: string): string {
+	const [year, mon] = month.split("-").map(Number) as [number, number];
+	return new Date(Date.UTC(year, mon, 1)).toISOString().slice(0, 7);
+}
+
+/** Whole calendar months from the month of `fromDay` to the month of `day`. */
+function monthsBetween(fromDay: string, day: string): number {
+	const [fy, fm] = fromDay.split("-").map(Number) as [number, number];
+	const [y, m] = day.split("-").map(Number) as [number, number];
+	return (y - fy) * 12 + (m - fm);
 }
 
 // -- the money axis ----------------------------------------------------------
@@ -242,7 +313,7 @@ export function salesChart(args: {
 				tooltip: { trigger: "axis" },
 				xAxis: {
 					...CATEGORY_X,
-					data: current.points.map((p) => formatDay(p.startDay, withYear)),
+					data: current.points.map((p) => pointLabel(p.startDay, current.granularity, withYear)),
 					boundaryGap: false,
 					axisLabel: { interval: labelInterval(current.points.length) },
 				},
@@ -296,8 +367,8 @@ export function salesChart(args: {
 									z: 2,
 									color: MUTED,
 									lineStyle: { width: 2, type: "dashed" },
-									data: previous.points.map((p, i) => [
-										i,
+									data: alignedPrevious(current, previous).map(({ index, point: p }) => [
+										index,
 										p.revenueCents,
 										`${money(p.revenueCents)} · ${previousLabel(p.startDay, previous.granularity, withYear)}`,
 									]),
@@ -309,9 +380,29 @@ export function salesChart(args: {
 	};
 }
 
-function previousLabel(day: string, granularity: "day" | "week", withYear: boolean): string {
-	const label = formatDay(day, withYear);
-	return granularity === "day" ? label : `week of ${label}`;
+function previousLabel(
+	day: string,
+	granularity: "day" | "week" | "month",
+	withYear: boolean,
+): string {
+	const label = pointLabel(day, granularity, withYear);
+	return granularity === "week" ? `week of ${label}` : label;
+}
+
+const MONTH_FORMAT = new Intl.DateTimeFormat("en-GB", { timeZone: "UTC", month: "short" });
+const MONTH_YEAR_FORMAT = new Intl.DateTimeFormat("en-GB", {
+	timeZone: "UTC",
+	month: "short",
+	year: "numeric",
+});
+
+/** A point's label: its (first) day ("10 Jul"), or its month ("Jul 2026") on a monthly
+ *  series. */
+function pointLabel(day: string, granularity: "day" | "week" | "month", withYear: boolean): string {
+	if (granularity !== "month") return formatDay(day, withYear);
+	const at = new Date(`${day}T00:00:00.000Z`);
+	if (Number.isNaN(at.getTime())) return day;
+	return (withYear ? MONTH_YEAR_FORMAT : MONTH_FORMAT).format(at);
 }
 
 /** Room for the widest money tick label (≈7px a character at 12px). */
@@ -333,7 +424,9 @@ export function ordersChart(current: TimeSeries): ChartBlock {
 				tooltip: { trigger: "axis" },
 				xAxis: {
 					...CATEGORY_X,
-					data: current.points.map((p) => formatDay(p.startDay, crossesYear(current))),
+					data: current.points.map((p) =>
+						pointLabel(p.startDay, current.granularity, crossesYear(current)),
+					),
 					axisLabel: { interval: labelInterval(current.points.length) },
 				},
 				yAxis: {

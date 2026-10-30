@@ -382,6 +382,8 @@ export function createCronHandler(options: CommerceSweepOptions = {}): HookHandl
 export {
 	MAINTENANCE_LEG_INTERVAL_MS,
 	MAINTENANCE_LEGS,
+	REPORTING_SETTLE_MS,
+	REPORTING_VERIFY_CALLS,
 	runCommerceSweeps,
 	SWEEP_EMAIL_SEND_TIMEOUT_MS,
 	SWEEP_LEGS,

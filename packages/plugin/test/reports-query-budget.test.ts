@@ -1,4 +1,9 @@
-import { ORDERS_COLLECTION, type StorageAccess } from "@urumi.ai/otta-store-emdash";
+import {
+	EmdashReportingStore,
+	ORDERS_COLLECTION,
+	systemClock,
+	type StorageAccess,
+} from "@urumi.ai/otta-store-emdash";
 import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
@@ -20,9 +25,10 @@ import { commerceStorageLayout } from "./sandbox/storage-layout.js";
  * closed to "Reports are unavailable" (issue #572). The large-store case below
  * is the shape a reviewer measured: two currencies with a rollup document on
  * every day of both periods, and 3,000 orders in the period itself. It PINS the
- * plugin's own count (storage and kv calls) so it cannot regress. It is not a
- * proof of the budget: 365 days still costs 51, and the host adds its own
- * session and auth queries on top.
+ * plugin's own count (storage and kv calls) so it cannot regress: 12 for 365 days
+ * once the cron has built the month documents and product lines, whatever the
+ * order count, against 51 before. The host adds its own session and auth queries
+ * on top.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -107,12 +113,12 @@ async function seedPaid(
 
 async function measure(
 	storage: StorageAccess,
-	preset: "30d" | "90d" | "365d" = "365d",
+	preset: "30d" | "90d" | "365d" | { from: string; to: string } = "365d",
 ): Promise<{ counts: Counts; res: BlockResponse }> {
 	const { ctx, counts } = countedContext(storage);
 	const res = (await createReportsPageHandler()(
 		{
-			input: { preset },
+			input: typeof preset === "string" ? { preset } : preset,
 			request: { method: "POST", url: "/admin", headers: {} },
 		},
 		ctx,
@@ -140,11 +146,26 @@ describe("Reports page: storage-read budget over a 365-day range", () => {
 });
 
 /**
- * The plugin's queries per render on {@link largeStore}, storage and kv together.
- * Before revenue and statuses shared one rollup read per period (#572) these were
- * 12, 21 and 67. Lower a pin when a change improves it; never raise one.
+ * The plugin's queries per render on {@link largeStore}, storage and kv together,
+ * once the cron's rollup refresh has caught up (`settle`). Before revenue and
+ * statuses shared one rollup read per period (#572) these were 12, 21 and 67; after,
+ * 10, 17 and 51. Reading a long period's whole months from month documents, and top
+ * products from the rollups' product lines instead of the orders (#572), took them
+ * to these. Lower a pin when a change improves it; never raise one.
  */
-const PINNED_QUERIES = { "30d": 10, "90d": 17, "365d": 51 } as const;
+const PINNED_QUERIES = { "30d": 8, "90d": 10, "365d": 12 } as const;
+/** 186 days (the weekly cap), settled: its day documents, both periods. */
+const PINNED_WEEKLY_MAX_QUERIES = 14;
+
+/**
+ * The same renders on the same store BEFORE the refresh has run — every day's product
+ * lines still to build, no month document yet: the store just upgraded across #572.
+ * The figures are the same (pinned below); the reads cost what they did before.
+ */
+const PINNED_UNSETTLED_QUERIES = { "30d": 10, "90d": 17, "365d": 53 } as const;
+
+/** Workers Free's queries per invocation; the host's own session and auth reads come on top. */
+const WORKERS_FREE_QUERIES = 50;
 
 /** Orders in the 365-day period itself (the full product scan pages over these). */
 const PERIOD_ORDERS = 3000;
@@ -152,8 +173,8 @@ const PERIOD_ORDERS = 3000;
 const CURRENCIES = ["EUR", "USD"] as const;
 
 /**
- * Seeds one paid order: its document (what the top-products scan reads) and its
- * rollup event (what the revenue and status reads fold).
+ * Seeds one paid order: its document (what the top-products lines are built from)
+ * and its rollup event (what the day and month documents fold).
  */
 async function seedOrder(
 	storage: StorageAccess,
@@ -161,6 +182,7 @@ async function seedOrder(
 	orderId: string,
 	day: string,
 	currencyCode: string,
+	product: number,
 ): Promise<void> {
 	const createdAt = `${day}T10:00:00.000Z`;
 	await storage[ORDERS_COLLECTION]!.put(orderId, {
@@ -168,7 +190,14 @@ async function seedOrder(
 		currency: currencyCode,
 		state: "paid",
 		createdAt,
-		items: [{ productId: "p-1", title: "Mug", quantity: 1, unitPrice: 1000 }],
+		items: [
+			{
+				productId: `p-${product}`,
+				title: `Mug ${product}`,
+				quantity: 1 + product,
+				unitPrice: 1000,
+			},
+		],
 	});
 	await reporting.recordOrderEvent({
 		kind: "transition",
@@ -177,14 +206,14 @@ async function seedOrder(
 		currency: currencyCode,
 		fromState: null,
 		toState: "paid",
-		orderTotalCents: 1000,
+		orderTotalCents: 1000 * (1 + product),
 	});
 }
 
 /**
  * A two-currency store with a rollup document for EVERY day of the 365-day
  * period and the year before it, in both currencies, and {@link PERIOD_ORDERS}
- * orders in the period itself.
+ * orders in the period itself, over a dozen products.
  */
 async function largeStore(): Promise<StorageAccess> {
 	const storage = await freshStorage();
@@ -196,31 +225,86 @@ async function largeStore(): Promise<StorageAccess> {
 		// Day `i mod 365`, currency by lap: every day gets both currencies.
 		const day = shiftDay(period.fromDay, i % 365);
 		const code = CURRENCIES[Math.floor(i / 365) % 2]!;
-		await seedOrder(storage, reportingStore, `big-${i}`, day, code);
+		await seedOrder(storage, reportingStore, `big-${i}`, day, code, i % 12);
 	}
 	for (let d = 0; d < 365; d++) {
 		const day = shiftDay(previous.fromDay, d);
 		for (const code of CURRENCIES) {
-			await seedOrder(storage, reportingStore, `prev-${d}-${code}`, day, code);
+			await seedOrder(storage, reportingStore, `prev-${d}-${code}`, day, code, d % 12);
 		}
 	}
 	return storage;
 }
 
+/**
+ * What the cron's rollup refresh does, run to the end: build every closed day's
+ * product lines, then every past month's document (`refreshReportingRollups`).
+ */
+async function settle(storage: StorageAccess): Promise<void> {
+	const store = new EmdashReportingStore({ storage, clock: systemClock });
+	const today = new Date().toISOString().slice(0, 10);
+	for (let guard = 0; guard < 100; guard++) {
+		const days = await store.staleProductDays(today, 100);
+		if (days.length === 0) break;
+		for (const day of days) await store.rebuildDayProducts(day);
+	}
+	for (const month of await store.staleMonths(today.slice(0, 7), 100)) {
+		expect(await store.rebuildMonth(month)).toBe(true);
+	}
+	expect(await store.staleMonths(today.slice(0, 7), 100)).toEqual([]);
+}
+
 describe("Reports page: the query count on a large store is pinned (#572)", () => {
 	// One seed for every preset: a render only reads, so the cases cannot interfere.
 	let storage: StorageAccess;
+	const unsettled = new Map<string, string>();
 	beforeAll(async () => {
 		storage = await largeStore();
 	}, 300_000);
 
 	test.each(["30d", "90d", "365d"] as const)(
-		"%s does not regress past its pinned query count",
+		"%s before the rollup refresh has run: the old cost, and every figure",
 		async (preset) => {
 			const { counts, res } = await measure(storage, preset);
 			expect(JSON.stringify(res)).not.toContain("Reports are unavailable");
-			expect(counts.total).toBe(PINNED_QUERIES[preset]);
+			unsettled.set(preset, JSON.stringify(res));
+			expect(counts.total).toBe(PINNED_UNSETTLED_QUERIES[preset]);
 		},
 		60_000,
 	);
+
+	test.each(["30d", "90d", "365d"] as const)(
+		"%s once the refresh has run: its pinned count, and the same figures",
+		async (preset) => {
+			await settle(storage);
+			const { counts, res } = await measure(storage, preset);
+			expect(JSON.stringify(res)).not.toContain("Reports are unavailable");
+			// Not a figure moved: the month documents and product lines are the days and
+			// the orders they were built from.
+			expect(JSON.stringify(res)).toBe(unsettled.get(preset));
+			expect(counts.total).toBe(PINNED_QUERIES[preset]);
+		},
+		120_000,
+	);
+
+	test("365 days stays well inside the Workers Free budget, and its cost does not grow with orders", async () => {
+		await settle(storage);
+		const { counts } = await measure(storage, "365d");
+		// Comfortably under, with room for the host's own session and auth queries.
+		expect(counts.total).toBeLessThanOrEqual(20);
+		expect(counts.total).toBeLessThan(WORKERS_FREE_QUERIES);
+		// The orders are not paged at all for a period ending in a closed day... except
+		// today's, whose product lines are only ever built once it closes.
+		expect(counts.orderScans).toBeLessThanOrEqual(1);
+	}, 120_000);
+
+	// The longest period still charted by week (#572 review): it reads its day documents,
+	// two currencies a day, and stays inside the budget.
+	test("186 days, charted by week from its day documents, stays inside the Workers Free budget", async () => {
+		await settle(storage);
+		const today = new Date().toISOString().slice(0, 10);
+		const { counts } = await measure(storage, { from: shiftDay(today, -185), to: today });
+		expect(counts.total).toBe(PINNED_WEEKLY_MAX_QUERIES);
+		expect(counts.total).toBeLessThan(WORKERS_FREE_QUERIES);
+	}, 120_000);
 });
