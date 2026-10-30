@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { NOOP_LOGGER } from "../ports/logger.js";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import {
 	idempotencyKey,
@@ -186,6 +187,7 @@ function cancelWith(
 		{
 			orderStore: opts.orderStore ?? h.orderStore,
 			inventoryStore: opts.inventoryStore ?? h.inventoryStore,
+			logger: NOOP_LOGGER,
 			...(opts.isRetryable !== undefined ? { isRetryable: opts.isRetryable } : {}),
 		},
 		gateway,
@@ -259,7 +261,10 @@ function restockFailsFor(store: InventoryStore, failSku: string): InventoryStore
 async function stickRestock(h: CancelWithRefundHarness, id: OrderId): Promise<void> {
 	const broken = alwaysFailing(h.inventoryStore, "restock", new Error("stock row locked"));
 	for (let n = 0; n < CANCELLATION_RESTOCK_FLAG_AFTER; n++) {
-		await finishCancellationRestock({ orderStore: h.orderStore, inventoryStore: broken }, id);
+		await finishCancellationRestock(
+			{ orderStore: h.orderStore, inventoryStore: broken, logger: NOOP_LOGGER },
+			id,
+		);
 	}
 }
 
@@ -334,6 +339,7 @@ function resolveRefund(
 	return resolveUnverifiedRefund(
 		{
 			orderStore: deps.orderStore ?? h.orderStore,
+			logger: NOOP_LOGGER,
 			...(deps.inventory === false ? {} : { inventoryStore: h.inventoryStore }),
 		},
 		{ orderId: oid, refundKey: idempotencyKey(key), outcome, resolvedBy: "ops@shop" },
@@ -435,7 +441,9 @@ export function cancelWithRefundContract(
 			expect(order?.cancellation?.restocked).toBe(false);
 			// Declined ⇒ nothing is owed: no pending restock for a sweep to finish.
 			expect(order?.cancellation?.restockPending ?? null).toBeNull();
-			expect(await finishCancellationRestock(h, id)).toMatchObject({ restockedUnits: 0 });
+			expect(await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, id)).toMatchObject({
+				restockedUnits: 0,
+			});
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND);
 			expect(gw.refundCalls).toHaveLength(1);
 		});
@@ -579,7 +587,7 @@ export function cancelWithRefundContract(
 			expect(done?.cancellation?.restockPending ?? null).toBeNull();
 			// Every later path moves nothing more.
 			expect(await cancelWith(h, gw, id)).toMatchObject({ restockedUnits: 0 });
-			expect(await finishCancellationRestock(h, id)).toMatchObject({
+			expect(await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, id)).toMatchObject({
 				finished: false,
 				restockedUnits: 0,
 			});
@@ -599,7 +607,7 @@ export function cancelWithRefundContract(
 			// The completer and a replay under ANOTHER key race: the recorded key wins, so
 			// the units come back once, never twice.
 			const [swept, other] = await Promise.all([
-				finishCancellationRestock(h, id),
+				finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, id),
 				cancelWith(h, gw, id, { key: `cxl-other:${id}` }),
 			]);
 			expect(swept.finished || other.ok).toBe(true);
@@ -607,7 +615,7 @@ export function cancelWithRefundContract(
 			const done = await h.orderStore.getById(id);
 			expect(done?.cancellation?.restocked).toBe(true);
 			expect(done?.cancellation?.restockPending ?? null).toBeNull();
-			expect(await finishCancellationRestock(h, id)).toMatchObject({
+			expect(await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, id)).toMatchObject({
 				finished: false,
 				restockedUnits: 0,
 			});
@@ -634,7 +642,10 @@ export function cancelWithRefundContract(
 				},
 			});
 			const attempt = () =>
-				finishCancellationRestock({ orderStore: counting, inventoryStore: broken }, id);
+				finishCancellationRestock(
+					{ orderStore: counting, inventoryStore: broken, logger: NOOP_LOGGER },
+					id,
+				);
 
 			// Below the threshold: retried quietly.
 			for (let n = 1; n < CANCELLATION_RESTOCK_FLAG_AFTER; n++) {
@@ -658,7 +669,7 @@ export function cancelWithRefundContract(
 			// The inventory recovers: the units come back once and the flag clears itself.
 			expect(
 				await finishCancellationRestock(
-					{ orderStore: h.orderStore, inventoryStore: h.inventoryStore },
+					{ orderStore: h.orderStore, inventoryStore: h.inventoryStore, logger: NOOP_LOGGER },
 					id,
 				),
 			).toMatchObject({ finished: true, restockedUnits: QTY, failure: null });
@@ -701,7 +712,10 @@ export function cancelWithRefundContract(
 			const results = [];
 			for (let n = 0; n < CANCELLATION_RESTOCK_FLAG_AFTER; n++) {
 				results.push(
-					await finishCancellationRestock({ orderStore: h.orderStore, inventoryStore: broken }, id),
+					await finishCancellationRestock(
+						{ orderStore: h.orderStore, inventoryStore: broken, logger: NOOP_LOGGER },
+						id,
+					),
 				);
 			}
 			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe(
@@ -710,7 +724,7 @@ export function cancelWithRefundContract(
 			// What it would have said is handed back, so the sweep can report it.
 			expect(results.at(-1)?.flagSkipped).toContain("items could not be returned to stock");
 			// Landing later does not clear the foreign flag either.
-			await finishCancellationRestock(h, id);
+			await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, id);
 			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBe(
 				"settle: commit lost for reservation r-1",
 			);
@@ -741,7 +755,10 @@ export function cancelWithRefundContract(
 			const id = await seedOrder(h, "cxl-race-same-key");
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			await cancelWith(h, gw, id, { inventoryStore: failingOnce(h.inventoryStore, "restock") });
-			await Promise.all([finishCancellationRestock(h, id), cancelWith(h, gw, id)]);
+			await Promise.all([
+				finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, id),
+				cancelWith(h, gw, id),
+			]);
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND + QTY);
 			expect((await h.orderStore.getById(id))?.cancellation?.restockPending ?? null).toBeNull();
 		});
@@ -783,7 +800,7 @@ export function cancelWithRefundContract(
 			});
 			const old = await h.orderStore.getById(id);
 			expect(old?.cancellation).not.toHaveProperty("restockPending");
-			expect(await finishCancellationRestock(h, id)).toMatchObject({
+			expect(await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, id)).toMatchObject({
 				finished: false,
 				restockedUnits: 0,
 			});
@@ -797,13 +814,15 @@ export function cancelWithRefundContract(
 		test("the completer does nothing for an order with no pending restock", async () => {
 			const h = await makeHarness();
 			const paid = await seedOrder(h, "cxl-nothing-owed");
-			expect(await finishCancellationRestock(h, paid)).toMatchObject({
+			expect(await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, paid)).toMatchObject({
 				finished: false,
 				restockedUnits: 0,
 				restockSkipped: [],
 				failure: null,
 			});
-			expect(await finishCancellationRestock(h, toOrderId("cxl-none"))).toMatchObject({
+			expect(
+				await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, toOrderId("cxl-none")),
+			).toMatchObject({
 				finished: false,
 				restockedUnits: 0,
 				restockSkipped: [],
@@ -940,7 +959,7 @@ export function cancelWithRefundContract(
 			const h = await makeHarness();
 			const id = await seedOrder(h, "cxl-partial");
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(400),
 				currency: USD,
@@ -961,7 +980,7 @@ export function cancelWithRefundContract(
 			const id = await seedOrder(h, "cxl-inflight");
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			gw.setRefundResult({ ok: false, reason: "UNVERIFIED" });
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(400),
 				currency: USD,
@@ -1083,7 +1102,9 @@ export function cancelWithRefundContract(
 			expect(order?.reconciliationFlag).toContain("restocked nothing");
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND - QTY);
 			// Nothing is owed, so no later path returns them either.
-			expect(await finishCancellationRestock(h, id)).toMatchObject({ restockedUnits: 0 });
+			expect(await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, id)).toMatchObject({
+				restockedUnits: 0,
+			});
 			expect(await h.inventoryStore.getOnHand(skuOf(id))).toBe(ON_HAND - QTY);
 		});
 
@@ -1231,7 +1252,7 @@ export function cancelWithRefundContract(
 			expect(await cancelWith(h, gw, shipped)).toEqual({ ok: false, reason: "NOT_CANCELLABLE" });
 			const paid = await seedOrder(h, "cxl-blank");
 			const blank = await cancelOrderWithRefund(
-				{ orderStore: h.orderStore, inventoryStore: h.inventoryStore },
+				{ orderStore: h.orderStore, inventoryStore: h.inventoryStore, logger: NOOP_LOGGER },
 				gw,
 				{
 					orderId: paid,
@@ -1301,6 +1322,7 @@ export function cancelWithRefundContract(
 				{
 					orderStore: h.orderStore,
 					inventoryStore: failingOnce(h.inventoryStore, "restock"),
+					logger: NOOP_LOGGER,
 				},
 				{
 					orderId: oid,
@@ -1325,9 +1347,11 @@ export function cancelWithRefundContract(
 			expect(await h.inventoryStore.getOnHand(skuOf(oid))).toBe(ON_HAND);
 
 			// The sweep's entry point finishes it, once.
-			expect(await finishCancellationRestock(h, oid)).toMatchObject({ restockedUnits: QTY });
+			expect(await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, oid)).toMatchObject({
+				restockedUnits: QTY,
+			});
 			expect(await h.inventoryStore.getOnHand(skuOf(oid))).toBe(ON_HAND + QTY);
-			expect(await finishCancellationRestock(h, oid)).toMatchObject({
+			expect(await finishCancellationRestock({ ...h, logger: NOOP_LOGGER }, oid)).toMatchObject({
 				finished: false,
 				restockedUnits: 0,
 			});
@@ -1486,7 +1510,7 @@ export function cancelWithRefundContract(
 			// A plain cancel (another key, no refund leg) won while the refund was unknown.
 			expect(
 				await cancelOrder(
-					{ orderStore: h.orderStore },
+					{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 					{
 						orderId: oid,
 						reason: "other",

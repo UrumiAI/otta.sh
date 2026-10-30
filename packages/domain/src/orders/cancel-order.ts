@@ -2,7 +2,7 @@ import { cents } from "../money/cents.js";
 import { idempotencyKey as toIdempotencyKey } from "../money/ids.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
-import { NOOP_LOGGER, type Logger } from "../ports/logger.js";
+import type { Logger } from "../ports/logger.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import {
 	ReservationCommitLostError,
@@ -31,10 +31,9 @@ import {
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 
 export interface CancelOrderDeps {
-	/** Where this path's diagnostics go. Optional (no-op when absent) so the many
-	 *  narrow construction sites of the cancel/refund family need not wire it; every
-	 *  production composition root does. */
-	logger?: Logger;
+	/** Where this path's diagnostics go. Required, so a composition root that forgets
+	 *  to wire it is a compile error; tests pass `NOOP_LOGGER` or a `RecordingLogger`. */
+	logger: Logger;
 	orderStore: OrderStore;
 }
 
@@ -185,7 +184,7 @@ async function expediteIntentCancels(
 			});
 		}
 	} catch (err) {
-		(deps.logger ?? NOOP_LOGGER).error(
+		deps.logger.error(
 			`[domain] could not expedite the intent cancels of cancelled order ${orderId}`,
 			{
 				error: err instanceof Error ? err.message : String(err),
@@ -197,10 +196,9 @@ async function expediteIntentCancels(
 // -- cancelling an order that has been paid -----------------------------------
 
 export interface CancelOrderWithRefundDeps {
-	/** Where this path's diagnostics go. Optional (no-op when absent) so the many
-	 *  narrow construction sites of the cancel/refund family need not wire it; every
-	 *  production composition root does. */
-	logger?: Logger;
+	/** Where this path's diagnostics go. Required, so a composition root that forgets
+	 *  to wire it is a compile error; tests pass `NOOP_LOGGER` or a `RecordingLogger`. */
+	logger: Logger;
 	orderStore: OrderStore;
 	/** Where a cancellation returns sold units (`restock`, exactly-once per key). */
 	inventoryStore: InventoryStore;
@@ -444,10 +442,9 @@ function restockFlagPrefix(key: string): string {
 }
 
 export interface FinishCancellationRestockDeps {
-	/** Where this path's diagnostics go. Optional (no-op when absent) so the many
-	 *  narrow construction sites of the cancel/refund family need not wire it; every
-	 *  production composition root does. */
-	logger?: Logger;
+	/** Where this path's diagnostics go. Required, so a composition root that forgets
+	 *  to wire it is a compile error; tests pass `NOOP_LOGGER` or a `RecordingLogger`. */
+	logger: Logger;
 	orderStore: OrderStore;
 	inventoryStore: InventoryStore;
 }
@@ -723,7 +720,7 @@ export async function cancelOrderWithRefund(
 		const res = await cancelOrder(
 			{
 				orderStore: deps.orderStore,
-				...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+				logger: deps.logger,
 			},
 			cmd,
 		);
@@ -929,7 +926,7 @@ async function finishOwedRestock(
 	}
 	const run = await runOwedRestock(deps, order, pending, { countFailure: false });
 	if (run.failure !== null) {
-		(deps.logger ?? NOOP_LOGGER).error(
+		deps.logger.error(
 			`[domain] cancelled order ${order.id}: the restock did not finish; the sweep will finish it`,
 			{ error: run.failure },
 		);
@@ -1061,7 +1058,7 @@ async function refundForCancellation(
 				? { paymentEventStore: deps.paymentEventStore }
 				: {}),
 			...(deps.clock !== undefined ? { clock: deps.clock } : {}),
-			...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+			logger: deps.logger,
 		},
 		gateway,
 		{

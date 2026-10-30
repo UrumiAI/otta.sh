@@ -7,7 +7,7 @@ import { cancelOrder } from "../orders/cancel-order.js";
 import { expireOrders } from "../orders/expire-orders.js";
 import type { Order } from "../orders/model.js";
 import { settleOrder } from "../orders/settle-order.js";
-import type { Logger } from "../ports/logger.js";
+import { NOOP_LOGGER, type Logger } from "../ports/logger.js";
 import type { PaymentIntentRecord } from "../ports/order-store.js";
 import { RecordingLogger } from "./recording-logger.js";
 import { FakePaymentGateway } from "./fake-payment-gateway.js";
@@ -84,14 +84,14 @@ function sweep(
 	gateway: FakePaymentGateway,
 	now: Date,
 	options: Parameters<typeof cancelDueIntents>[1] = {},
-	logger?: Logger,
+	logger: Logger = NOOP_LOGGER,
 ) {
 	return cancelDueIntents(
 		{
 			orderStore: h.settleDeps.orderStore,
 			clock: { now: () => now },
 			gateways: () => ({ stripe: gateway }),
-			...(logger !== undefined ? { logger } : {}),
+			logger,
 		},
 		options,
 	);
@@ -166,7 +166,7 @@ export function intentCancelContract(
 			const gateway = new FakePaymentGateway({ id: "stripe" });
 			const s = await seedPendingOrder(h, "3");
 			const res = await cancelOrder(
-				{ orderStore: h.settleDeps.orderStore },
+				{ orderStore: h.settleDeps.orderStore, logger: NOOP_LOGGER },
 				{
 					orderId: s.order.id,
 					reason: "customer_request",
@@ -382,6 +382,7 @@ export function intentCancelContract(
 			const deps = (now: Date) => ({
 				orderStore: h.settleDeps.orderStore,
 				clock: { now: () => now },
+				logger: NOOP_LOGGER,
 				gateways: () => {
 					resolved++;
 					return { stripe: gateway };

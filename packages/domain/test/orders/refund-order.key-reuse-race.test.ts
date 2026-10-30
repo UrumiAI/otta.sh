@@ -1,6 +1,6 @@
 import { cents, currency as toCurrency } from "@urumi.ai/otta-domain";
 import { idempotencyKey, orderId as toOrderId, productId, sku } from "@urumi.ai/otta-domain";
-import { refundOrder } from "@urumi.ai/otta-domain";
+import { NOOP_LOGGER, refundOrder } from "@urumi.ai/otta-domain";
 import type { IdempotencyKey, PaymentMethod, RefundRecord } from "@urumi.ai/otta-domain";
 import {
 	CountingIdGen,
@@ -78,7 +78,7 @@ describe("refundOrder — key reuse surfaced by the store's duplicate outcome (#
 		const key = idempotencyKey("rf-race-gw");
 		const gw = new FakePaymentGateway({ id: "stripe" });
 		gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
-		await refundOrder({ orderStore }, gw, {
+		await refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, {
 			orderId: id,
 			amount: cents(400),
 			currency: USD,
@@ -87,7 +87,7 @@ describe("refundOrder — key reuse surfaced by the store's duplicate outcome (#
 		});
 		expect(gw.refundCalls).toHaveLength(1);
 
-		const res = await refundOrder({ orderStore }, gw, {
+		const res = await refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, {
 			orderId: id,
 			amount: cents(900),
 			currency: USD,
@@ -103,7 +103,7 @@ describe("refundOrder — key reuse surfaced by the store's duplicate outcome (#
 		const id = await seedPaid(orderStore, "ord-race-manual", "stripe");
 		const key = idempotencyKey("rf-race-manual");
 		const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
-		const first = await refundOrder({ orderStore }, gw, {
+		const first = await refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, {
 			orderId: id,
 			amount: cents(300),
 			currency: USD,
@@ -112,7 +112,7 @@ describe("refundOrder — key reuse surfaced by the store's duplicate outcome (#
 		});
 		expect(first.ok && first.recorded).toBe(true);
 
-		const res = await refundOrder({ orderStore }, gw, {
+		const res = await refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, {
 			orderId: id,
 			amount: cents(700),
 			currency: USD,
@@ -133,8 +133,8 @@ describe("refundOrder — key reuse surfaced by the store's duplicate outcome (#
 			refundedBy: "admin",
 			idempotencyKey: idempotencyKey("rf-race-same"),
 		};
-		await refundOrder({ orderStore }, gw, cmd);
-		const res = await refundOrder({ orderStore }, gw, cmd);
+		await refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, cmd);
+		const res = await refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, cmd);
 		expect(res.ok && res.duplicate).toBe(true);
 	});
 });

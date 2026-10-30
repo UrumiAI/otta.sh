@@ -9,6 +9,7 @@ import {
 	type RefundOrderDeps,
 	settleOrder,
 	sku as brandSku,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
@@ -33,6 +34,7 @@ describe("refundOrder revokes the order's entitlements on a FULL refund", () => 
 			entitlementStore: h.entitlementStore,
 			paymentEventStore: h.paymentEventStore,
 			clock: h.clock,
+			logger: NOOP_LOGGER,
 		};
 	});
 

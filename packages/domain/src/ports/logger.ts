@@ -9,7 +9,7 @@ export interface Logger {
 	error(message: string, fields?: Record<string, unknown>): void;
 }
 
-/** Discards everything: the default for a deps type whose `logger` is optional. */
+/** Discards everything: for tests and consumers that deliberately want no diagnostics (no deps type defaults to it). */
 export const NOOP_LOGGER: Logger = {
 	info: () => {},
 	warn: () => {},

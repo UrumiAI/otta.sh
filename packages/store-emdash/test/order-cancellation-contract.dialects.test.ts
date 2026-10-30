@@ -26,6 +26,7 @@ import {
 	transitionOrder,
 	type CreateOrderInput,
 	type OrderId,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import {
 	orderCancellationContract,
@@ -114,7 +115,7 @@ describeEachDialect("EmdashOrderStore cancellation", (ctx) => {
 			const results = await Promise.all(
 				Array.from({ length: N }, (_v, i) =>
 					cancelOrder(
-						{ orderStore: h.store },
+						{ orderStore: h.store, logger: NOOP_LOGGER },
 						{
 							orderId: id,
 							reason: "customer_request",
@@ -151,7 +152,7 @@ describeEachDialect("EmdashOrderStore cancellation", (ctx) => {
 			const id = await seedProcessing(h, "ord-cancel-vs-ship", "key-cancel-vs-ship");
 			const [cancelled, fulfilled] = await Promise.all([
 				cancelOrder(
-					{ orderStore: h.store },
+					{ orderStore: h.store, logger: NOOP_LOGGER },
 					{
 						orderId: id,
 						reason: "out_of_stock",

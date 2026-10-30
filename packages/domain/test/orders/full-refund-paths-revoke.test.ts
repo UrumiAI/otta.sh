@@ -15,6 +15,7 @@ import {
 	sku as brandSku,
 	transitionOrder,
 	transitionOrderAsAdmin,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import type { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
@@ -174,7 +175,7 @@ describe("every full-refund path revokes download access", () => {
 		async function unverified(order: Order, amount: number, key: string): Promise<void> {
 			h.stripeGw.setRefundResult({ ok: false, reason: "UNVERIFIED" });
 			const res = await refundOrder(
-				{ orderStore: h.orderStore, entitlementStore: h.entitlementStore },
+				{ orderStore: h.orderStore, entitlementStore: h.entitlementStore, logger: NOOP_LOGGER },
 				h.stripeGw,
 				{
 					orderId: order.id,
@@ -195,7 +196,12 @@ describe("every full-refund path revokes download access", () => {
 			store: EntitlementStore = h.entitlementStore,
 		) {
 			return resolveUnverifiedRefund(
-				{ orderStore: h.orderStore, inventoryStore: h.inventory, entitlementStore: store },
+				{
+					orderStore: h.orderStore,
+					inventoryStore: h.inventory,
+					entitlementStore: store,
+					logger: NOOP_LOGGER,
+				},
 				{ orderId: order.id, refundKey: idempotencyKey(key), outcome, resolvedBy: "carol" },
 			);
 		}
@@ -254,7 +260,12 @@ describe("every full-refund path revokes download access", () => {
 			gateway: FakePaymentGateway = h.stripeGw,
 		) {
 			return cancelOrderWithRefund(
-				{ orderStore: h.orderStore, inventoryStore: h.inventory, entitlementStore: store },
+				{
+					orderStore: h.orderStore,
+					inventoryStore: h.inventory,
+					entitlementStore: store,
+					logger: NOOP_LOGGER,
+				},
 				gateway,
 				{
 					orderId: order.id,
@@ -278,7 +289,7 @@ describe("every full-refund path revokes download access", () => {
 		test("after a partial refund, the cancel returns the rest and revokes", async () => {
 			const order = await paidDigital("o1");
 			await refundOrder(
-				{ orderStore: h.orderStore, entitlementStore: h.entitlementStore },
+				{ orderStore: h.orderStore, entitlementStore: h.entitlementStore, logger: NOOP_LOGGER },
 				h.stripeGw,
 				{
 					orderId: order.id,
@@ -342,7 +353,12 @@ describe("every full-refund path revokes download access", () => {
 				},
 			});
 			const res = await cancelOrderWithRefund(
-				{ orderStore: racing, inventoryStore: h.inventory, entitlementStore: h.entitlementStore },
+				{
+					orderStore: racing,
+					inventoryStore: h.inventory,
+					entitlementStore: h.entitlementStore,
+					logger: NOOP_LOGGER,
+				},
 				h.stripeGw,
 				{
 					orderId: order.id,
@@ -385,6 +401,7 @@ describe("every full-refund path revokes download access", () => {
 					orderStore: h.orderStore,
 					inventoryStore: h.inventory,
 					entitlementStore: h.entitlementStore,
+					logger: NOOP_LOGGER,
 				},
 				{
 					orderId: order.id,

@@ -175,8 +175,8 @@ export interface LatePaymentDeps {
 	orderStore: OrderStore;
 	paymentEventStore: PaymentEventStore;
 	clock: Clock;
-	/** Forwarded to the refund. Optional (no-op when absent). */
-	logger?: Logger;
+	/** Forwarded to the refund. Required (tests pass `NOOP_LOGGER` or a `RecordingLogger`). */
+	logger: Logger;
 }
 
 /** The captured money in question — a verified success, or (on a sweep resume)

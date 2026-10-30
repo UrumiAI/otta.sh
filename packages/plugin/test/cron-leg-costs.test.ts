@@ -593,7 +593,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 				if (cancelled || collection !== INVENTORY_COLLECTION || method !== "compareAndSet") return;
 				cancelled = true;
 				const res = await cancelOrder(
-					{ orderStore: peer.orderStore },
+					{ orderStore: peer.orderStore, logger: NOOP_LOGGER },
 					{
 						orderId: id,
 						reason: "customer_request",
@@ -836,6 +836,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			paymentEventStore: s.paymentEventStore,
 			inventoryStore: s.inventory,
 			clock: s.clock,
+			logger: NOOP_LOGGER,
 		};
 		const settled = await settleOrder(
 			settleDeps,
@@ -870,6 +871,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 					orderStore: s.orderStore,
 					paymentEventStore: s.paymentEventStore,
 					clock: { now: () => later },
+					logger: NOOP_LOGGER,
 					gateways: () => ({ stripe }),
 				},
 				{ limit: 1 },
@@ -899,6 +901,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 				paymentEventStore: s.paymentEventStore,
 				inventoryStore: s.inventory,
 				clock: s.clock,
+				logger: NOOP_LOGGER,
 			},
 			fake,
 			fake.webhook({
@@ -917,6 +920,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 					orderStore: s.orderStore,
 					paymentEventStore: s.paymentEventStore,
 					clock: { now: () => stale },
+					logger: NOOP_LOGGER,
 				},
 				{ limit: 1 },
 			),
@@ -961,6 +965,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 				{
 					orderStore: s.orderStore,
 					clock: { now: () => new Date() },
+					logger: NOOP_LOGGER,
 					gateways: () => ({ stripe }),
 				},
 				{ limit: 1, due },
@@ -1015,6 +1020,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 				{
 					orderStore: s.orderStore,
 					clock: { now: () => new Date() },
+					logger: NOOP_LOGGER,
 					gateways: () => ({ stripe }),
 				},
 				{ limit: 1, due },

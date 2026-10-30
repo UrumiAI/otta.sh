@@ -1,6 +1,6 @@
 import { cents, currency as toCurrency } from "@urumi.ai/otta-domain";
 import { idempotencyKey, orderId as toOrderId, productId, sku } from "@urumi.ai/otta-domain";
-import { refundOrder } from "@urumi.ai/otta-domain";
+import { NOOP_LOGGER, refundOrder } from "@urumi.ai/otta-domain";
 import type {
 	IdempotencyKey,
 	RefundInput,
@@ -135,9 +135,9 @@ describe("refundOrder — a same-key request never voids a reservation it did no
 				idempotencyKey: idempotencyKey("rf-same-key"),
 			};
 
-			const a = refundOrder({ orderStore }, gw, cmd);
+			const a = refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, cmd);
 			await gw.firstCallStarted;
-			const b = await refundOrder({ orderStore }, gw, cmd);
+			const b = await refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, cmd);
 			// B's own attempt issued nothing; the refund's fate is now "check the
 			// provider" — the row is held, not voided.
 			expect(b).toEqual({ ok: false, reason: "GATEWAY_UNVERIFIED" });

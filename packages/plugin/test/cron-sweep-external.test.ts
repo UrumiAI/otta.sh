@@ -14,7 +14,12 @@
  * turn (a tick budget of 3, 4, 5 … calls), then drains with a roomy tick, and counts
  * the provider calls.
  */
-import { orderId as toOrderId, settleOrder, type SendEmailInput } from "@urumi.ai/otta-domain";
+import {
+	NOOP_LOGGER,
+	orderId as toOrderId,
+	settleOrder,
+	type SendEmailInput,
+} from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
 	EmdashEntitlementStore,
@@ -161,6 +166,7 @@ describe("the ceiling inside a provider unit never repeats the provider call", (
 					paymentEventStore: new EmdashPaymentEventStore({ storage }),
 					inventoryStore: s.inventory,
 					clock: s.clock,
+					logger: NOOP_LOGGER,
 				},
 				stripe,
 				stripe.webhook({

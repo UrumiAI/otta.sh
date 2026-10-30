@@ -130,8 +130,10 @@ describe("bounded order expiry", () => {
 		// The orders after the failing one had their holds returned.
 		expect(h.inventory.onHand("SKU-2")).toBe(5);
 		expect(h.inventory.onHand("SKU-3")).toBe(5);
-		expect(h.logger.entries).toHaveLength(1);
-		expect(String(h.logger.entries[0]?.message)).toMatch(/releasing the holds of expired order/);
+		expect(h.expireLogger.entries).toHaveLength(1);
+		expect(String(h.expireLogger.entries[0]?.message)).toMatch(
+			/releasing the holds of expired order/,
+		);
 	});
 
 	test("a flip that throws for one order: it stays pending for the next run, the rest still expire", async () => {
@@ -142,8 +144,8 @@ describe("bounded order expiry", () => {
 		expect(result).toEqual({ count: 2, drained: true });
 		expect(await expiredCount(orders)).toBe(2);
 		expect((await h.orderStore.getById(orders[0]?.id ?? ("" as never)))?.state).toBe("pending");
-		expect(h.logger.entries).toHaveLength(1);
-		expect(String(h.logger.entries[0]?.message)).toMatch(/expiring order/);
+		expect(h.expireLogger.entries).toHaveLength(1);
+		expect(String(h.expireLogger.entries[0]?.message)).toMatch(/expiring order/);
 		// The next run picks it up.
 		expect(await expireOrdersBatch(h.expireDeps)).toEqual({ count: 1, drained: true });
 		expect(h.inventory.onHand("SKU-1")).toBe(5);
@@ -164,7 +166,7 @@ describe("bounded order expiry", () => {
 			allFailed: true,
 		});
 		expect(backoff.size).toBe(3);
-		expect(h.logger.entries).toHaveLength(3);
+		expect(h.expireLogger.entries).toHaveLength(3);
 		// While they all wait, nothing is attempted: no flag.
 		expect(await expireOrdersBatch(h.expireDeps, undefined, { backoff })).toEqual({
 			count: 0,
@@ -300,7 +302,7 @@ describe("bounded order expiry", () => {
 		).toEqual({ count: 1, drained: true });
 		expect((await h.orderStore.getById(ids[0] ?? ("" as never)))?.state).toBe("pending");
 		expect((await h.orderStore.getById(ids[1] ?? ("" as never)))?.state).toBe("expired");
-		expect(h.logger.entries).toEqual([]);
+		expect(h.expireLogger.entries).toEqual([]);
 	});
 
 	test("an error that stops the whole batch (the sweep's query ceiling) is rethrown, not logged as one order's failure (review round 3, A I2)", async () => {
@@ -316,7 +318,7 @@ describe("bounded order expiry", () => {
 				stopsBatch: (err) => err instanceof Error && err.name === "SweepQueryCeilingError",
 			}),
 		).rejects.toBe(ceiling);
-		expect(h.logger.entries).toEqual([]);
+		expect(h.expireLogger.entries).toEqual([]);
 		expect(backoff.size).toBe(0);
 		expect(await expiredCount(orders)).toBe(0);
 
@@ -328,7 +330,7 @@ describe("bounded order expiry", () => {
 				stopsBatch: (err) => err instanceof Error && err.name === "SweepQueryCeilingError",
 			}),
 		).rejects.toBe(ceiling);
-		expect(h.logger.entries).toEqual([]);
+		expect(h.expireLogger.entries).toEqual([]);
 	});
 
 	test("a unit failure logs the error's name, code and a short message with quoted values removed (review round 3, B I5)", async () => {
@@ -341,8 +343,8 @@ describe("bounded order expiry", () => {
 		);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(leaky);
 		await expireOrdersBatch(h.expireDeps);
-		expect(h.logger.entries).toHaveLength(1);
-		const logged = JSON.stringify(h.logger.entries[0]);
+		expect(h.expireLogger.entries).toHaveLength(1);
+		const logged = JSON.stringify(h.expireLogger.entries[0]);
 		expect(logged).toMatch(/DatabaseError/);
 		expect(logged).toMatch(/23505/);
 		expect(logged).toMatch(/duplicate key value/);
@@ -370,7 +372,7 @@ describe("bounded order expiry", () => {
 			}),
 		).rejects.toBe(ceiling);
 		expect(release).toHaveBeenCalledTimes(1);
-		expect(h.logger.entries).toEqual([]);
+		expect(h.expireLogger.entries).toEqual([]);
 	});
 
 	test("an email outside quotes is redacted from the log line (review round 3 polish, P-2)", async () => {
@@ -379,7 +381,7 @@ describe("bounded order expiry", () => {
 			new Error("insert failed for victim.person@example.com on orders"),
 		);
 		await expireOrdersBatch(h.expireDeps);
-		const logged = JSON.stringify(h.logger.entries[0]);
+		const logged = JSON.stringify(h.expireLogger.entries[0]);
 		expect(logged).toMatch(/insert failed for <value> on orders/);
 		expect(logged).not.toMatch(/victim|example\.com/);
 	});
@@ -390,7 +392,7 @@ describe("bounded order expiry", () => {
 			new Error('bad value "jane.doe-secret-without-closing-quote'),
 		);
 		await expireOrdersBatch(h.expireDeps);
-		const logged = JSON.stringify(h.logger.entries[0]);
+		const logged = JSON.stringify(h.expireLogger.entries[0]);
 		expect(logged).toMatch(/bad value <value>/);
 		expect(logged).not.toMatch(/jane|secret/);
 	});
@@ -405,7 +407,7 @@ describe("bounded order expiry", () => {
 			new Error(`"${"q".repeat(900)}" contact jane.doe${"z".repeat(200)}@example.com`),
 		);
 		await expireOrdersBatch(h.expireDeps);
-		const logged = JSON.stringify(h.logger.entries[0]);
+		const logged = JSON.stringify(h.expireLogger.entries[0]);
 		expect(logged).toMatch(/<value> contact <value>/);
 		expect(logged).not.toMatch(/jane|doe|zzz|example/);
 	});
@@ -416,7 +418,7 @@ describe("bounded order expiry", () => {
 			new Error("connection reset by peer"),
 		);
 		await expireOrdersBatch(h.expireDeps);
-		const logged = JSON.stringify(h.logger.entries[0]);
+		const logged = JSON.stringify(h.expireLogger.entries[0]);
 		expect(logged).toMatch(/connection reset by peer/);
 	});
 
@@ -436,8 +438,8 @@ describe("bounded order expiry", () => {
 		await expireOrdersBatch(h.expireDeps);
 		const elapsed = performance.now() - started;
 		expect(elapsed, `${elapsed.toFixed(1)} ms`).toBeLessThan(50);
-		expect(h.logger.entries).toHaveLength(3);
-		const logged = h.logger.entries.map((entry) => JSON.stringify(entry));
+		expect(h.expireLogger.entries).toHaveLength(3);
+		const logged = h.expireLogger.entries.map((entry) => JSON.stringify(entry));
 		for (const line of logged) expect(line.length).toBeLessThan(600);
 		expect(logged[1]).not.toMatch(/victim|example\.com/);
 		expect(logged[2]).toMatch(/value <value>/);

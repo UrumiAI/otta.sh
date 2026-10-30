@@ -16,6 +16,7 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { EmdashInventoryStore } from "@urumi.ai/otta-store-emdash";
@@ -94,7 +95,7 @@ async function cancelledWithRestockOwed(id: string, lineSku: string = DEFAULT_SK
 		},
 	});
 	const res = await cancelOrderWithRefund(
-		{ orderStore: h.stores.orderStore, inventoryStore: failingRestock },
+		{ orderStore: h.stores.orderStore, inventoryStore: failingRestock, logger: NOOP_LOGGER },
 		new FakePaymentGateway({ id: "stripe" }),
 		{
 			orderId: oid,

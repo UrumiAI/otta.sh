@@ -20,6 +20,7 @@ import {
 	createOrderFromCart,
 	idempotencyKey,
 	settleOrder,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import type { OrderHarness } from "./order-harness.js";
@@ -51,7 +52,7 @@ export function cancellationReleaseCase(makeHarness: () => OrderHarness): void {
 		expect(await full.onHand("SKU-CX-PEND"), "the checkout holds the units").toBe(3);
 
 		const res = await cancelOrder(
-			{ orderStore: full.store },
+			{ orderStore: full.store, logger: NOOP_LOGGER },
 			{
 				orderId: created.order.id,
 				reason: "customer_request",
@@ -100,7 +101,7 @@ export function cancellationReleaseCase(makeHarness: () => OrderHarness): void {
 		expect(await full.onHand("SKU-CX-PAID"), "committed stock is gone").toBe(3);
 
 		const res = await cancelOrder(
-			{ orderStore: full.store },
+			{ orderStore: full.store, logger: NOOP_LOGGER },
 			{
 				orderId: created.order.id,
 				reason: "customer_request",

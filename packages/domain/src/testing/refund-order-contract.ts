@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { NOOP_LOGGER } from "../ports/logger.js";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import { idempotencyKey, orderId as toOrderId, productId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
@@ -111,7 +112,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-full", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
@@ -142,7 +143,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-partial", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(300),
 				currency: USD,
@@ -161,7 +162,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-sum", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const first = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(600),
 				currency: USD,
@@ -169,7 +170,7 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-a"),
 			});
 			expect(first.ok && first.fullyRefunded).toBe(false);
-			const second = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const second = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(400),
 				currency: USD,
@@ -188,7 +189,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-over", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1001),
 				currency: USD,
@@ -205,7 +206,7 @@ export function refundOrderContract(
 			const id = await h.seedPaidOrder({ id: "ord-kwd", totalCents: 5000, currency: "KWD" });
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			const refund = (amount: number, key: string) =>
-				refundOrder({ orderStore: h.orderStore }, gw, {
+				refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(amount),
 					currency: KWD,
@@ -229,7 +230,7 @@ export function refundOrderContract(
 			// domain's step WHOLE. The fake gateway takes it; Stripe itself would refuse
 			// it (TERMINAL), so in practice such a remainder goes back manually.
 			const id2 = await h.seedPaidOrder({ id: "ord-kwd-odd", totalCents: 1234, currency: "KWD" });
-			const whole = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const whole = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id2,
 				amount: cents(1234),
 				currency: KWD,
@@ -239,7 +240,7 @@ export function refundOrderContract(
 			expect(whole.ok && whole.fullyRefunded).toBe(true);
 			// A USD refund of any minor-unit amount is unaffected.
 			const usd = await h.seedPaidOrder({ id: "ord-usd-any", totalCents: 1000 });
-			const any = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const any = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: usd,
 				amount: cents(1),
 				currency: USD,
@@ -259,7 +260,7 @@ export function refundOrderContract(
 			const id = await h.seedPaidOrder({ id: "ord-kwd-manual", totalCents: 5000, currency: "KWD" });
 			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
 			const refund = (amount: number, key: string) =>
-				refundOrder({ orderStore: h.orderStore }, gw, {
+				refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(amount),
 					currency: KWD,
@@ -294,7 +295,7 @@ export function refundOrderContract(
 					currency: "KWD",
 					gateway: x402,
 				});
-				const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+				const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(1234),
 					currency: KWD,
@@ -315,7 +316,7 @@ export function refundOrderContract(
 			const id = await h.seedPaidOrder({ id: "ord-short", totalCents: 1000, capturedCents: 700 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			// Up to captured is fine…
-			const ok = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const ok = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(700),
 				currency: USD,
@@ -326,7 +327,7 @@ export function refundOrderContract(
 			expect(ok.ok && ok.order.state).toBe("refunded");
 			// …a fresh order can't be refunded past captured even though total is higher.
 			const id2 = await h.seedPaidOrder({ id: "ord-short2", totalCents: 1000, capturedCents: 700 });
-			const over = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const over = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id2,
 				amount: cents(701),
 				currency: USD,
@@ -347,8 +348,8 @@ export function refundOrderContract(
 				refundedBy: "admin",
 				idempotencyKey: idempotencyKey("rf-idem"),
 			};
-			const first = await refundOrder({ orderStore: h.orderStore }, gw, cmd);
-			const replay = await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			const first = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
+			const replay = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
 			expect(first.ok && first.recorded).toBe(true);
 			expect(replay.ok).toBe(true);
 			if (replay.ok) {
@@ -364,7 +365,7 @@ export function refundOrderContract(
 			const id = await h.seedPaidOrder({ id: "ord-idem-amt", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			const key = idempotencyKey("rf-idem-amt");
-			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const first = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(500),
 				currency: USD,
@@ -372,7 +373,7 @@ export function refundOrderContract(
 				idempotencyKey: key,
 			});
 			expect(first.ok && first.recorded).toBe(true);
-			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const reused = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(800),
 				currency: USD,
@@ -392,7 +393,7 @@ export function refundOrderContract(
 			const b = await h.seedPaidOrder({ id: "ord-idem-b", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			const key = idempotencyKey("rf-idem-cross");
-			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const first = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: a,
 				amount: cents(500),
 				currency: USD,
@@ -400,7 +401,7 @@ export function refundOrderContract(
 				idempotencyKey: key,
 			});
 			expect(first.ok && first.recorded).toBe(true);
-			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const reused = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: b,
 				amount: cents(500),
 				currency: USD,
@@ -428,9 +429,9 @@ export function refundOrderContract(
 				refundedBy: "admin",
 				idempotencyKey: key,
 			};
-			const first = await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			const first = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
 			expect(first.ok && first.recorded).toBe(true);
-			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const reused = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				...cmd,
 				amount: cents(400),
 			});
@@ -446,7 +447,7 @@ export function refundOrderContract(
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
 			const key = idempotencyKey("rf-idem-resume");
-			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const first = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(400),
 				currency: USD,
@@ -457,7 +458,7 @@ export function refundOrderContract(
 			expect(gw.refundCalls).toHaveLength(1);
 
 			gw.setRefundResult({ ok: true, refundRef: "re_resume", amount: cents(400), currency: USD });
-			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const reused = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(900),
 				currency: USD,
@@ -471,7 +472,7 @@ export function refundOrderContract(
 			expect(held[0]?.status).toBe("reserved");
 			expect(held[0]?.amount).toBe(400);
 
-			const resumed = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const resumed = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(400),
 				currency: USD,
@@ -494,7 +495,7 @@ export function refundOrderContract(
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			gw.setRefundResult({ ok: false, reason: "UNVERIFIED" });
 			const key = idempotencyKey("rf-idem-unver");
-			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const first = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(400),
 				currency: USD,
@@ -502,7 +503,7 @@ export function refundOrderContract(
 				idempotencyKey: key,
 			});
 			expect(first).toEqual({ ok: false, reason: "GATEWAY_UNVERIFIED" });
-			const reused = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const reused = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(100),
 				currency: USD,
@@ -517,7 +518,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-manual", totalCents: 1000, gateway: "stripe" });
 			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
@@ -546,7 +547,7 @@ export function refundOrderContract(
 				reason: "PROVIDER_ALREADY_REFUNDED",
 				provider: { refunded: cents(350), captured: cents(1000) },
 			});
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
@@ -564,7 +565,7 @@ export function refundOrderContract(
 				reason: "PROVIDER_ALREADY_REFUNDED",
 				provider: { refunded: cents(1000), captured: cents(1000) },
 			});
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(650),
 				currency: USD,
@@ -581,7 +582,7 @@ export function refundOrderContract(
 			const id = await h.seedPaidOrder({ id: "ord-preflight-unknown", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(500),
 				currency: USD,
@@ -615,7 +616,7 @@ export function refundOrderContract(
 				reason: "PROVIDER_ALREADY_REFUNDED",
 				provider: { refunded: cents(1000), captured: cents(1000) },
 			});
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
@@ -662,7 +663,9 @@ export function refundOrderContract(
 				refundRef: "re_dash_1",
 				resolvedBy: "ops@example.test",
 			};
-			expect(await resolveUnverifiedRefund({ orderStore: h.orderStore }, cmd)).toMatchObject({
+			expect(
+				await resolveUnverifiedRefund({ orderStore: h.orderStore, logger: NOOP_LOGGER }, cmd),
+			).toMatchObject({
 				ok: true,
 				changed: true,
 				fullyRefunded: true,
@@ -679,7 +682,9 @@ export function refundOrderContract(
 			expect(await drain(h, sent)).toBe(1);
 			expect(sent.countByTemplate("order-refunded", id)).toBe(1);
 
-			expect(await resolveUnverifiedRefund({ orderStore: h.orderStore }, cmd)).toMatchObject({
+			expect(
+				await resolveUnverifiedRefund({ orderStore: h.orderStore, logger: NOOP_LOGGER }, cmd),
+			).toMatchObject({
 				ok: true,
 				changed: false,
 			});
@@ -690,7 +695,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const { id, key } = await unverifiedRefund(h, "ord-unv-noref", 400);
 			await resolveUnverifiedRefund(
-				{ orderStore: h.orderStore },
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 				{ orderId: id, refundKey: key, outcome: "confirmed", resolvedBy: "ops" },
 			);
 			const row = await h.orderStore.getRefundByIdempotencyKey(key);
@@ -709,7 +714,7 @@ export function refundOrderContract(
 				`refund 400 USD (key ${key}): the provider already shows it refunded but the ledger never finalized it — check the provider, then resolve the unverified refund in Money → Refunds. The provider shows 4.00 USD of 10.00 USD refunded.`,
 			);
 			await resolveUnverifiedRefund(
-				{ orderStore: h.orderStore },
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 				{ orderId: id, refundKey: key, outcome: "voided", resolvedBy: "ops" },
 			);
 			const after = await h.orderStore.getById(id);
@@ -738,7 +743,7 @@ export function refundOrderContract(
 				});
 				const gw = new FakePaymentGateway({ id: "stripe" });
 				gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
-				await refundOrder({ orderStore: h.orderStore }, gw, {
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(400),
 					currency: USD,
@@ -747,7 +752,7 @@ export function refundOrderContract(
 				});
 				expect((await h.orderStore.getById(id))?.reconciliationFlag).toContain(String(key));
 				await resolveUnverifiedRefund(
-					{ orderStore: h.orderStore },
+					{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 					{ orderId: id, refundKey: key, outcome, resolvedBy: "ops" },
 				);
 				const after = await h.orderStore.getById(id);
@@ -758,7 +763,7 @@ export function refundOrderContract(
 				const other = await unverifiedRefund(h, `ord-unv-flag-other-${outcome}`, 300);
 				await h.orderStore.flagReconciliation(other.id, "an unrelated anomaly");
 				await resolveUnverifiedRefund(
-					{ orderStore: h.orderStore },
+					{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 					{ orderId: other.id, refundKey: other.key, outcome, resolvedBy: "ops" },
 				);
 				expect((await h.orderStore.getById(other.id))?.reconciliationFlag).toBe(
@@ -779,7 +784,9 @@ export function refundOrderContract(
 				outcome: "voided" as const,
 				resolvedBy: "ops@example.test",
 			};
-			expect(await resolveUnverifiedRefund({ orderStore: h.orderStore }, cmd)).toMatchObject({
+			expect(
+				await resolveUnverifiedRefund({ orderStore: h.orderStore, logger: NOOP_LOGGER }, cmd),
+			).toMatchObject({
 				ok: true,
 				changed: true,
 			});
@@ -790,13 +797,15 @@ export function refundOrderContract(
 			expect(sumRefunds(await h.orderStore.listRefunds(id)), "capacity released").toBe(0);
 			expect((await h.orderStore.getById(id))?.state).toBe("paid");
 			expect(await drain(h, sent)).toBe(0);
-			expect(await resolveUnverifiedRefund({ orderStore: h.orderStore }, cmd)).toMatchObject({
+			expect(
+				await resolveUnverifiedRefund({ orderStore: h.orderStore, logger: NOOP_LOGGER }, cmd),
+			).toMatchObject({
 				ok: true,
 				changed: false,
 			});
 			// Capacity back: a fresh refund now fits.
 			const fresh = await refundOrder(
-				{ orderStore: h.orderStore },
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 				new FakePaymentGateway({ id: "stripe" }),
 				{
 					orderId: id,
@@ -826,7 +835,7 @@ export function refundOrderContract(
 			});
 			const resolve = (refundKey: string, outcome: "confirmed" | "voided") =>
 				resolveUnverifiedRefund(
-					{ orderStore: h.orderStore },
+					{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 					{ orderId: id, refundKey: idempotencyKey(refundKey), outcome, resolvedBy: "ops" },
 				);
 			expect(await resolve(reservedKey, "confirmed")).toEqual({
@@ -836,7 +845,7 @@ export function refundOrderContract(
 			expect(await resolve("rf-nope", "voided")).toEqual({ ok: false, reason: "REFUND_NOT_FOUND" });
 
 			const recorded = await refundOrder(
-				{ orderStore: h.orderStore },
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 				new FakePaymentGateway({ id: "stripe" }),
 				{
 					orderId: id,
@@ -856,7 +865,7 @@ export function refundOrderContract(
 			const other = await unverifiedRefund(h, "ord-unv-guard-other");
 			expect(
 				await resolveUnverifiedRefund(
-					{ orderStore: h.orderStore },
+					{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 					{ orderId: id, refundKey: other.key, outcome: "voided", resolvedBy: "ops" },
 				),
 			).toEqual({ ok: false, reason: "REFUND_NOT_FOUND" });
@@ -872,7 +881,7 @@ export function refundOrderContract(
 				reason: "PROVIDER_ALREADY_REFUNDED",
 				provider: { refunded: cents(1000), captured: cents(1000) },
 			});
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(500),
 				currency: USD,
@@ -926,7 +935,7 @@ export function refundOrderContract(
 				reason: "PROVIDER_ALREADY_REFUNDED",
 				provider: { refunded: cents(1000), captured: cents(1000) },
 			});
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(500),
 				currency: USD,
@@ -949,7 +958,7 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.state).toBe("paid");
 			// Capacity released ⇒ a FRESH full refund (distinct key) now succeeds.
 			const retry = await refundOrder(
-				{ orderStore: h.orderStore },
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 				new FakePaymentGateway({ id: "stripe" }),
 				{
 					orderId: id,
@@ -968,7 +977,7 @@ export function refundOrderContract(
 			const idT = await h.seedPaidOrder({ id: "ord-terminal", totalCents: 1000 });
 			const gwT = new FakePaymentGateway({ id: "stripe" });
 			gwT.setRefundResult({ ok: false, reason: "TERMINAL" });
-			const term = await refundOrder({ orderStore: h.orderStore }, gwT, {
+			const term = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gwT, {
 				orderId: idT,
 				amount: cents(400),
 				currency: USD,
@@ -983,7 +992,7 @@ export function refundOrderContract(
 			const idU = await h.seedPaidOrder({ id: "ord-unverified", totalCents: 1000 });
 			const gwU = new FakePaymentGateway({ id: "stripe" });
 			gwU.setRefundResult({ ok: false, reason: "UNVERIFIED" });
-			const unver = await refundOrder({ orderStore: h.orderStore }, gwU, {
+			const unver = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gwU, {
 				orderId: idU,
 				amount: cents(1000),
 				currency: USD,
@@ -1000,7 +1009,7 @@ export function refundOrderContract(
 			// The held capacity BLOCKS a second full refund (distinct key) — the ceiling
 			// is already consumed by the unverified row until a human re-checks.
 			const blocked = await refundOrder(
-				{ orderStore: h.orderStore },
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 				new FakePaymentGateway({ id: "stripe" }),
 				{
 					orderId: idU,
@@ -1013,7 +1022,7 @@ export function refundOrderContract(
 			expect(blocked).toEqual({ ok: false, reason: "REFUND_EXCEEDS_TOTAL" });
 			// A same-key replay of the unverified refund re-surfaces GATEWAY_UNVERIFIED
 			// (re-check the provider; NEVER a blind re-issue).
-			const replay = await refundOrder({ orderStore: h.orderStore }, gwU, {
+			const replay = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gwU, {
 				orderId: idU,
 				amount: cents(1000),
 				currency: USD,
@@ -1028,7 +1037,7 @@ export function refundOrderContract(
 			const id = await h.seedPaidOrder({ id: "ord-retry", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
 			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
-			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const first = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
@@ -1044,7 +1053,7 @@ export function refundOrderContract(
 			// Same key retry, gateway now succeeds → RESUMES the existing reservation
 			// (no second reserved row) and finalizes it, flipping → refunded.
 			gw.setRefundResult({ ok: true, refundRef: "re_resumed", amount: cents(1000), currency: USD });
-			const resumed = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const resumed = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
@@ -1072,10 +1081,12 @@ export function refundOrderContract(
 				refundedBy: "admin",
 				idempotencyKey: idempotencyKey(key),
 			};
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
-				ok: false,
-				reason: "GATEWAY_RETRYABLE",
-			});
+			expect(await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd)).toEqual(
+				{
+					ok: false,
+					reason: "GATEWAY_RETRYABLE",
+				},
+			);
 			return { id, gw, cmd };
 		}
 
@@ -1089,10 +1100,12 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const { id, gw, cmd } = await heldReservation(h, "ord-retry-manual", "r1");
 			gw.setRefundable(false);
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
-				ok: false,
-				reason: "GATEWAY_UNVERIFIED",
-			});
+			expect(await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd)).toEqual(
+				{
+					ok: false,
+					reason: "GATEWAY_UNVERIFIED",
+				},
+			);
 			const ledger = await h.orderStore.listRefunds(id);
 			expect(ledger.map((r) => r.status)).toEqual(["unverified"]);
 			expect(sumRefunds(ledger), "the capacity stays held").toBe(900);
@@ -1105,10 +1118,12 @@ export function refundOrderContract(
 			expect(gw.refundCalls, "no provider call on the manual path").toHaveLength(1);
 
 			// A replay takes the replay check's `unverified` answer — no second hold.
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
-				ok: false,
-				reason: "GATEWAY_UNVERIFIED",
-			});
+			expect(await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd)).toEqual(
+				{
+					ok: false,
+					reason: "GATEWAY_UNVERIFIED",
+				},
+			);
 			expect((await h.orderStore.listRefunds(id)).map((r) => r.status)).toEqual(["unverified"]);
 		});
 
@@ -1116,11 +1131,11 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const { id, gw, cmd } = await heldReservation(h, "ord-retry-manual-exit", "r1-exit");
 			gw.setRefundable(false);
-			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
 
 			// Before resolving, a different amount is refused by the held ceiling.
 			expect(
-				await refundOrder({ orderStore: h.orderStore }, gw, {
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 					...cmd,
 					amount: cents(100),
 					idempotencyKey: idempotencyKey("r1-exit-other"),
@@ -1128,13 +1143,13 @@ export function refundOrderContract(
 			).toEqual({ ok: false, reason: "REFUND_EXCEEDS_TOTAL" });
 
 			const resolved = await resolveUnverifiedRefund(
-				{ orderStore: h.orderStore },
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 				{ orderId: id, refundKey: cmd.idempotencyKey, outcome: "voided", resolvedBy: "ops" },
 			);
 			expect(resolved.ok).toBe(true);
 			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
 
-			const fresh = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const fresh = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				...cmd,
 				idempotencyKey: idempotencyKey("r1-exit-manual"),
 			});
@@ -1165,10 +1180,12 @@ export function refundOrderContract(
 				refundedBy: "admin",
 				idempotencyKey: idempotencyKey("r1-stale"),
 			};
-			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
 
 			const manual = new FakePaymentGateway({ id: "stripe", refundable: false });
-			expect(await refundOrder({ orderStore: h.orderStore }, manual, cmd, stale)).toEqual({
+			expect(
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, manual, cmd, stale),
+			).toEqual({
 				ok: false,
 				reason: "GATEWAY_RETRYABLE",
 			});
@@ -1176,7 +1193,9 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.reconciliationFlag).toBeNull();
 
 			// The retry reads the row, and the manual guard hands it to a person.
-			expect(await refundOrder({ orderStore: h.orderStore }, manual, cmd)).toEqual({
+			expect(
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, manual, cmd),
+			).toEqual({
 				ok: false,
 				reason: "GATEWAY_UNVERIFIED",
 			});
@@ -1207,7 +1226,12 @@ export function refundOrderContract(
 				}
 
 				const manual = new FakePaymentGateway({ id: "stripe", refundable: false });
-				const res = await refundOrder({ orderStore: h.orderStore }, manual, cmd, held);
+				const res = await refundOrder(
+					{ orderStore: h.orderStore, logger: NOOP_LOGGER },
+					manual,
+					cmd,
+					held,
+				);
 				if (settled === "recorded") {
 					expect(res).toMatchObject({
 						ok: true,
@@ -1250,7 +1274,7 @@ export function refundOrderContract(
 
 				const manual = new FakePaymentGateway({ id: "stripe", refundable: false });
 				const res = await refundOrder(
-					{ orderStore: h.orderStore },
+					{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 					manual,
 					{
 						orderId: id,
@@ -1279,19 +1303,25 @@ export function refundOrderContract(
 			};
 			const stale = await h.orderStore.readOrderLedger(id);
 			if (stale === null) throw new Error("seeded order has no ledger");
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toMatchObject({
+			expect(
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd),
+			).toMatchObject({
 				ok: true,
 				recorded: true,
 				duplicate: false,
 			});
 			// Seen by the replay read, and — through a ledger read before the first
 			// record — only by the store's own dedupe: both answer ok.
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toMatchObject({
+			expect(
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd),
+			).toMatchObject({
 				ok: true,
 				recorded: false,
 				duplicate: true,
 			});
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd, stale)).toMatchObject({
+			expect(
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd, stale),
+			).toMatchObject({
 				ok: true,
 				recorded: false,
 				duplicate: true,
@@ -1317,16 +1347,20 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-resume-already"),
 			};
 			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
-				ok: false,
-				reason: "GATEWAY_RETRYABLE",
-			});
+			expect(await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd)).toEqual(
+				{
+					ok: false,
+					reason: "GATEWAY_RETRYABLE",
+				},
+			);
 
 			gw.setRefundResult({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
-				ok: false,
-				reason: "GATEWAY_UNVERIFIED",
-			});
+			expect(await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd)).toEqual(
+				{
+					ok: false,
+					reason: "GATEWAY_UNVERIFIED",
+				},
+			);
 			const ledger = await h.orderStore.listRefunds(id);
 			expect(ledger.map((r) => r.status)).toEqual(["unverified"]);
 			expect(sumRefunds(ledger), "the capacity stays held").toBe(600);
@@ -1336,10 +1370,12 @@ export function refundOrderContract(
 
 			// And a further same-key replay asks the provider for nothing.
 			const calls = gw.refundCalls.length;
-			expect(await refundOrder({ orderStore: h.orderStore }, gw, cmd)).toEqual({
-				ok: false,
-				reason: "GATEWAY_UNVERIFIED",
-			});
+			expect(await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd)).toEqual(
+				{
+					ok: false,
+					reason: "GATEWAY_UNVERIFIED",
+				},
+			);
 			expect(gw.refundCalls).toHaveLength(calls);
 		});
 
@@ -1423,7 +1459,7 @@ export function refundOrderContract(
 				totals: { subtotal: cents(1000), total: cents(1000), currency: USD },
 			});
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: oid,
 				amount: cents(100),
 				currency: USD,
@@ -1458,11 +1494,11 @@ export function refundOrderContract(
 				refundedBy: "admin",
 				idempotencyKey: idempotencyKey("rf-mail-partial"),
 			};
-			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
 			expect(await drain(h, sent)).toBe(1);
 			expect(sent.countByTemplate("order-refund-issued", id)).toBe(1);
 			expect(sent.sends[0]?.data["noticeAmountCents"]).toBe(300);
-			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
 			expect(await drain(h, sent)).toBe(0);
 		});
 
@@ -1478,7 +1514,7 @@ export function refundOrderContract(
 				[200, "rf-mail-two-b"],
 				[500, "rf-mail-two-c"],
 			] as const) {
-				await refundOrder({ orderStore: h.orderStore }, gw, {
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(amount),
 					currency: USD,
@@ -1509,10 +1545,10 @@ export function refundOrderContract(
 				refundedBy: "admin",
 				idempotencyKey: idempotencyKey("rf-mail-held"),
 			};
-			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
 			expect(await drain(h, sent)).toBe(0);
 			gw.setRefundResult({ ok: true, refundRef: "re_held", amount: cents(400), currency: USD });
-			await refundOrder({ orderStore: h.orderStore }, gw, cmd);
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, cmd);
 			expect(await drain(h, sent)).toBe(1);
 			expect(sent.sends[0]?.data["noticeAmountCents"]).toBe(400);
 		});
@@ -1524,7 +1560,7 @@ export function refundOrderContract(
 			const sent = new FakeEmailSender();
 			await drain(h, sent);
 			sent.reset();
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(250),
 				currency: USD,
@@ -1543,7 +1579,7 @@ export function refundOrderContract(
 				const id = await h.seedPaidOrder({ id: `ord-mail-${purpose}`, totalCents: 1000 });
 				await drain(h, sent);
 				sent.reset();
-				await refundOrder({ orderStore: h.orderStore }, gw, {
+				await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(400),
 					currency: USD,
@@ -1564,7 +1600,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-cxl-gw", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
@@ -1583,7 +1619,7 @@ export function refundOrderContract(
 			expect(ledger).toHaveLength(1);
 			expect(ledger[0]).toMatchObject({ amount: 1000, purpose: "cancellation" });
 			// Its replay is the ordinary benign duplicate: no second provider call.
-			const replay = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const replay = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
@@ -1594,7 +1630,7 @@ export function refundOrderContract(
 			expect(replay).toMatchObject({ ok: true, duplicate: true });
 			expect(gw.refundCalls).toHaveLength(1);
 			// The ceiling still binds: the cancellation's refund consumed it.
-			const more = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const more = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(1),
 				currency: USD,
@@ -1608,7 +1644,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-cxl-man", totalCents: 800, gateway: "stripe" });
 			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const res = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(800),
 				currency: USD,
@@ -1625,7 +1661,7 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-purpose", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			await refundOrder({ orderStore: h.orderStore }, gw, {
+			await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(100),
 				currency: USD,
@@ -1639,15 +1675,19 @@ export function refundOrderContract(
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-guard", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
-			const wrongCurrency = await refundOrder({ orderStore: h.orderStore }, gw, {
-				orderId: id,
-				amount: cents(100),
-				currency: toCurrency("EUR"),
-				refundedBy: "admin",
-				idempotencyKey: idempotencyKey("rf-cur"),
-			});
+			const wrongCurrency = await refundOrder(
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
+				gw,
+				{
+					orderId: id,
+					amount: cents(100),
+					currency: toCurrency("EUR"),
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey("rf-cur"),
+				},
+			);
 			expect(wrongCurrency).toEqual({ ok: false, reason: "CURRENCY_MISMATCH" });
-			const noActor = await refundOrder({ orderStore: h.orderStore }, gw, {
+			const noActor = await refundOrder({ orderStore: h.orderStore, logger: NOOP_LOGGER }, gw, {
 				orderId: id,
 				amount: cents(100),
 				currency: USD,

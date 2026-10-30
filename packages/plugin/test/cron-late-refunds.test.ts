@@ -14,6 +14,7 @@ import {
 	productId as toProductId,
 	settleOrder,
 	sku as toSku,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -79,6 +80,7 @@ async function stuckLateRefund(id: string, gateway: FakePaymentGateway): Promise
 			paymentEventStore: h.stores.paymentEventStore,
 			inventoryStore: h.stores.inventory,
 			clock: h.stores.clock,
+			logger: NOOP_LOGGER,
 		},
 		gateway,
 		gateway.webhook({

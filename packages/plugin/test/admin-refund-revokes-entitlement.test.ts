@@ -22,6 +22,7 @@ import {
 	productId as toProductId,
 	refundOrder as refundOrderUseCase,
 	sku as toSku,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
@@ -192,6 +193,7 @@ describe("the console's re-click finishes a refund whose revoke never ran (issue
 				orderStore: harness.stores.orderStore,
 				paymentEventStore: harness.stores.paymentEventStore,
 				clock: harness.stores.clock,
+				logger: NOOP_LOGGER,
 			},
 			gateways.stripe,
 			{

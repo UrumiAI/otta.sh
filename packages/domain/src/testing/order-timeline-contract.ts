@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { NOOP_LOGGER } from "../ports/logger.js";
 import { cents, currency } from "../money/cents.js";
 import {
 	idempotencyKey,
@@ -157,7 +158,7 @@ export function orderTimelineContract(
 			const id = orderId("ord-audit-3");
 			await h.orderStore.createFromCart(pendingInput("ord-audit-3", "key-a3"));
 			await cancelOrder(
-				{ orderStore: h.orderStore },
+				{ orderStore: h.orderStore, logger: NOOP_LOGGER },
 				{
 					orderId: id,
 					reason: "customer_request",

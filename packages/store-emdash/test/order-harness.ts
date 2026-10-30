@@ -39,6 +39,7 @@ import {
 	productId as brandProductId,
 	type SettleDeps,
 	sku as brandSku,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import {
 	CountingIdGen,
@@ -278,6 +279,7 @@ export function makeOrderHarness(
 		paymentEventStore,
 		inventoryStore: inventory,
 		clock,
+		logger: NOOP_LOGGER,
 	};
 	const expireDeps: ExpireOrdersDeps = {
 		orderStore: store,
