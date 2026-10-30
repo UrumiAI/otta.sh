@@ -128,6 +128,12 @@
  * products reads about N·⌈N/100⌉ rows for the counts, N for the pages and N for the
  * commerce rows — about N²/100 + 2N — plus a handful per product repaired. Hence the
  * page size (100), the list-once rule above, and the pass interval.
+ *
+ * D1 ROWS WRITTEN, the other Free limit. A repair writes about 150 rows (see
+ * `RECONCILE_REPAIRS_PER_DAY_FREE`), so on Workers Free the leg makes at most 200
+ * repairs a UTC day, counted in the cursor document. A capped day keeps the pass
+ * exactly where it is — its start, its page, its nominated products — and the leg
+ * waits its cadence until 00:00 UTC.
  */
 import { InProcessCommerceClient } from "../commerce/in-process-commerce-client.js";
 import { ALLOWED_HOSTS } from "../manifest.js";
@@ -152,7 +158,10 @@ import {
 	CONTENT_READ_QUERIES,
 	isInvalidCursorError,
 } from "./content-reads.js";
-import { BACKGROUND_WORK_PRESETS } from "./background-work-setting.js";
+import {
+	BACKGROUND_WORK_PRESETS,
+	WORKERS_FREE_MAX_QUERY_BUDGET,
+} from "./background-work-setting.js";
 import type { SweepCursorStore } from "./sweep-cursor-store.js";
 import { isSweepQueryCeilingError, type LegBudget } from "./tick-budget.js";
 
@@ -217,6 +226,41 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
 	return queryBudget >= PAID_PRESET_QUERIES
 		? RECONCILE_PASS_INTERVAL_PAID_MS
 		: RECONCILE_PASS_INTERVAL_FREE_MS;
+}
+
+/**
+ * At most this many repairs a UTC day at any budget Workers Free can run
+ * (`WORKERS_FREE_MAX_QUERY_BUDGET`, 50, or less), counted in the leg's cursor
+ * document. D1 Free allows 100,000 rows written a day, and once a store passes it
+ * every write fails — add-to-cart and checkout included — until the UTC reset.
+ *
+ * What a repair writes, by DEPLOYMENT.md's index-row model: every `_plugin_storage`
+ * document write is about 49 rows written (the row, its primary-key autoindex, the
+ * host's list index and Otta's 46 declared expression indexes, none of them
+ * partial), and a sync is about three document writes (the upsert, the activate,
+ * the variant write) plus its sku claims — about 150 rows a product. 200 repairs is
+ * then about 30,000 rows written a day, which beside `prune-carts`' own cap
+ * (`ABANDONED_CARTS_PER_DAY_FREE`, about 30,000) leaves the store's traffic about
+ * 40,000. Without it a first install over an existing catalogue — every product
+ * without a row — heals at the leg's pace, about 460 repairs a day measured, about
+ * 70,000 rows written a day, for as many days as that takes. With it a catalogue of
+ * N products missing their rows heals in N / 200 days ("Publish changes" repairs any
+ * one product at once).
+ *
+ * Counted when a repair's writes are SENT (a sync or a deactivation) — not for a
+ * check visit, a product found in sync, or a plan the upsert would replay — and
+ * saved even when the tick's ceiling stops the run part-way through the writes.
+ * Overlapping ticks (each reads the count before either writes it) can pass the cap
+ * by one run's repairs. Paid has no daily rows-written limit, so a larger budget has
+ * no cap.
+ */
+export const RECONCILE_REPAIRS_PER_DAY_FREE = 200;
+
+/** The daily repair cap for a tick whose query budget is `queryBudget`: the Free
+ *  cap at any budget Workers Free can run, none above it — the threshold
+ *  `prune-carts`' daily cap uses (`ABANDONED_CARTS_CAPPED_BUDGET`). */
+export function reconcileRepairsDailyCap(queryBudget: number): number | null {
+	return queryBudget <= WORKERS_FREE_MAX_QUERY_BUDGET ? RECONCILE_REPAIRS_PER_DAY_FREE : null;
 }
 
 /**
@@ -387,7 +431,9 @@ interface RepairCheck {
  *  - `next`: the cursor past that page, or null when it is the last;
  *  - `interrupted`: how many runs in a row each pending product was cut short;
  *  - `passStartedAt`: when the pass in progress STARTED (null between passes), and
- *    `lastPassStartedAt`: when the last COMPLETED one did — what the next waits on. */
+ *    `lastPassStartedAt`: when the last COMPLETED one did — what the next waits on;
+ *  - `day` and `repairsToday`: the UTC day (`YYYY-MM-DD`) of the last repair sent,
+ *    and how many were sent that day (`RECONCILE_REPAIRS_PER_DAY_FREE`). */
 interface ReconcileState {
 	cursor: string | null;
 	pending: PendingRepair[];
@@ -395,6 +441,8 @@ interface ReconcileState {
 	interrupted: Record<string, number>;
 	passStartedAt: string | null;
 	lastPassStartedAt: string | null;
+	day: string | null;
+	repairsToday: number;
 }
 
 function parseCheck(value: unknown): RepairCheck | undefined {
@@ -425,6 +473,8 @@ function parseReconcileState(raw: string | null): ReconcileState {
 		interrupted: {},
 		passStartedAt: null,
 		lastPassStartedAt: null,
+		day: null,
+		repairsToday: 0,
 	};
 	if (raw === null || raw === "") return state;
 	try {
@@ -432,6 +482,7 @@ function parseReconcileState(raw: string | null): ReconcileState {
 		if (typeof parsed !== "object" || parsed === null) return state;
 		const { cursor, pending, next, interrupted, passStartedAt, lastPassStartedAt } =
 			parsed as Record<string, unknown>;
+		const { day, repairsToday } = parsed as Record<string, unknown>;
 		if (typeof cursor === "string" && cursor !== "") state.cursor = cursor;
 		if (typeof next === "string" && next !== "") state.next = next;
 		// A page in progress is kept only whole: without its `next` it cannot be left
@@ -456,6 +507,17 @@ function parseReconcileState(raw: string | null): ReconcileState {
 		}
 		state.passStartedAt = instant(passStartedAt);
 		state.lastPassStartedAt = instant(lastPassStartedAt);
+		// The day's count is kept only whole: a count without its day is no count.
+		if (
+			typeof day === "string" &&
+			/^\d{4}-\d{2}-\d{2}$/.test(day) &&
+			typeof repairsToday === "number" &&
+			Number.isSafeInteger(repairsToday) &&
+			repairsToday >= 0
+		) {
+			state.day = day;
+			state.repairsToday = repairsToday;
+		}
 		return state;
 	} catch {
 		return state;
@@ -525,6 +587,13 @@ function sayNoWrite(
  * stops part-way resumes the nominated products by id on the next tick, without
  * listing the page again, so the rows a pass reads do not grow with the number of
  * products it has to repair.
+ *
+ * A DAY'S REPAIRS ARE CAPPED on Workers Free (`timing.dailyRepairCap`,
+ * `RECONCILE_REPAIRS_PER_DAY_FREE`). Once the day's count reaches it, a product that
+ * still needs writes stays nominated and the run stops — after the checks of the
+ * repairs it already made, which write nothing — returning `waitsCadence`, so the leg
+ * is stamped and comes back at its cadence; the pass is never ended and no product
+ * is stepped past, and the walk resumes the same nominations after 00:00 UTC.
  */
 export async function reconcileProductCommerce(
 	ctx: PluginContext,
@@ -532,11 +601,17 @@ export async function reconcileProductCommerce(
 	content: ContentReadAccess,
 	cursors: SweepCursorStore,
 	budget: LegBudget,
-	timing: { readonly now: Date; readonly passIntervalMs: number },
+	timing: {
+		readonly now: Date;
+		readonly passIntervalMs: number;
+		/** The day's repair cap (`reconcileRepairsDailyCap`); none when absent. */
+		readonly dailyRepairCap?: number | null;
+	},
 ): Promise<{
 	count: number;
 	incomplete?: true;
 	notDue?: true;
+	waitsCadence?: true;
 	anomalies?: readonly string[];
 }> {
 	let saved = await cursors.read(PRODUCT_RECONCILE_CURSOR);
@@ -550,6 +625,20 @@ export async function reconcileProductCommerce(
 		if (last <= nowMs && nowMs - last < timing.passIntervalMs) return { count: 0, notDue: true };
 	}
 	state.passStartedAt ??= timing.now.toISOString();
+	// The day's count is the stored one only when it is today's.
+	const dailyCap = timing.dailyRepairCap ?? null;
+	const today = timing.now.toISOString().slice(0, 10);
+	const repairsBefore = state.day === today ? state.repairsToday : 0;
+	/** Repairs this run SENT writes for (not the ones it counts as held). */
+	let sent = 0;
+	const capReached = (): boolean => dailyCap !== null && repairsBefore + sent >= dailyCap;
+	/** Counted BEFORE the writes, so a run the ceiling stops in them keeps it. */
+	const countRepair = (): void => {
+		sent++;
+		state.day = today;
+		state.repairsToday = repairsBefore + sent;
+	};
+	let capped = false;
 	const save = async (): Promise<void> => {
 		const next = JSON.stringify(state);
 		if (next === saved) return;
@@ -647,6 +736,12 @@ export async function reconcileProductCommerce(
 					done();
 					continue;
 				}
+				// The day's repairs are spent: a product that still needs writes stays
+				// nominated for tomorrow. Checks (reads alone) still run.
+				if (nominated.check === undefined && capReached()) {
+					capped = true;
+					continue;
+				}
 				const cost =
 					nominated.check !== undefined
 						? PRODUCT_RECONCILE_CHECK_CALLS
@@ -724,6 +819,23 @@ export async function reconcileProductCommerce(
 						budget.stopped = true;
 						break walk;
 					}
+					// The day's cap, on the fresh plan too (a check that found its document
+					// moved): no visit counted against it, and nominated again as a repair,
+					// so it is not read again before tomorrow.
+					if (capReached()) {
+						state.interrupted[id] = interrupts;
+						if (interrupts === 0) delete state.interrupted[id];
+						state.pending = state.pending.map((entry) =>
+							entry.id !== id
+								? entry
+								: plan.kind === "deactivate"
+									? { id, deactivate: true as const }
+									: { id },
+						);
+						capped = true;
+						continue;
+					}
+					countRepair();
 					client ??= new InProcessCommerceClient(ctx);
 					const recorded = {
 						status: String(doc["status"]),
@@ -768,6 +880,9 @@ export async function reconcileProductCommerce(
 				}
 				done();
 			}
+			// Capped for the day: what is left waits for tomorrow — once the checks of
+			// this run's repairs (left pending as checks) have run.
+			if (capped && !state.pending.some((entry) => entry.check !== undefined)) break;
 			// A repair leaves its product pending, to be CHECKED: go round again while any
 			// is left, rather than stepping past the page.
 			if (state.pending.length > 0) continue;
@@ -779,10 +894,22 @@ export async function reconcileProductCommerce(
 	} finally {
 		await save();
 	}
-	if (!reachedEnd) budget.stopped = true;
+	// Said once a day, by the run whose repairs reached the cap.
+	if (dailyCap !== null && sent > 0 && capReached()) {
+		console.info(
+			`[otta] cron sweep product-reconcile: today's cap of ${String(dailyCap)} repairs is reached` +
+				" (Workers Free); the pass carries on after 00:00 UTC",
+		);
+	}
+	// Stopped by the cap alone, the leg waits its cadence (it is stamped, and not run
+	// again on the second pass). Stopped by the budget too, it goes again next tick:
+	// the checks left must not wait a cadence.
+	const waits = capped && !budget.stopped && !reachedEnd;
+	if (!reachedEnd && !waits) budget.stopped = true;
 	return {
 		count: repaired,
 		...(reachedEnd ? {} : { incomplete: true as const }),
+		...(waits ? { waitsCadence: true as const } : {}),
 		...(anomalies.length > 0 ? { anomalies } : {}),
 	};
 }

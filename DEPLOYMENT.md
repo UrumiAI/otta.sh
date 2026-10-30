@@ -959,6 +959,9 @@ The cap keys off the **Background work per minute** setting, not the plan: 50 or
 budget Workers Free can run) counts as Free. So a Workers Paid store left at 50 or below is capped
 at 300 carts a day too (choose the Paid preset to drain faster). A Free store that abandons more
 than 300 empty carts a day never fully catches up; the rest wait their turn, untouched.
+`product-reconcile` has a daily cap of its own on Free (200 repairs, about 30,000 rows written; see
+"Rows written, and the daily repair cap" below), so the two together leave about 40,000 rows a day
+for the store's traffic.
 
 `stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
 nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
@@ -1072,8 +1075,35 @@ the five reads alone. The leg only starts when its floor fits — the entry's se
 cursor read, the list, the row reads) plus one repair's eleven, of the roughly twenty-eight a Free
 tick can spend — so on a busy Free store, where the customer-facing legs take most of each tick,
 repairs run only on the quieter ticks. Measured on Free with the cursor's reads and writes counted,
-107 drifted products healed in 335 ticks, so a catalogue-wide outage of 1000 products takes about
-two and a half days. "Publish changes" repairs a product at once.
+107 drifted products healed in 335 ticks — about 460 repairs a day at the leg's own pace — so a
+catalogue-wide outage of 1000 products would take about two and a half days; on the Workers Free
+preset the daily cap below holds it to 200 a day, about five days. "Publish changes" repairs a
+product at once.
+
+**Rows written, and the daily repair cap.** By the same index model as "Draining a backlog writes
+rows" above, every `_plugin_storage` document write is about 49 rows written, and a repair's sync is
+about three document writes (the upsert, the activate, the variant write) plus its SKU claims —
+about **150 rows written a product**. At the leg's own pace (about 460 repairs a day) a first
+install over an existing catalogue, where every product has no commerce row, would write about
+70,000 rows a day for days on end, which beside `prune-carts` and the store's own traffic passes
+D1 Free's 100,000 a day, after which every write fails until the UTC reset. So on the Workers Free
+preset the leg makes at most **200 repairs a UTC day** (counted in its cursor document): about
+30,000 rows written. Only a repair's writes count — not the visit that checks it, not a product
+found in sync, not one its own hook synced first — and the count is kept when the tick's query
+ceiling stops a run part-way through a repair. Once the cap is reached the leg stops repairing,
+is stamped and runs only at its fifteen-minute cadence (one kv read, and the checks of the day's
+last repairs); the pass keeps its start, its page and its nominated products and carries on after
+00:00 UTC, so nothing is skipped. A first install over N products therefore heals in about
+**N / 200 days** on Free (a 1 000-product catalogue in five days; "Publish changes" repairs any one
+product at once). On Workers Paid there is no daily cap.
+
+Together the two capped legs bound the sweep's **daily rows written on Free** at about 60,000:
+`prune-carts` about 30,000 (300 carts) and `product-reconcile` about 30,000 (200 repairs), leaving
+about 40,000 of D1 Free's 100,000 for the store's own traffic (carts, checkouts, orders, admin
+edits) and the sweep's own cursor and tick-state writes. Both caps key off the **Background work
+per minute** setting the same way — 50 or less counts as Free — and both are derived from the index
+model, not measured on D1. Overlapping ticks can pass the day's repair cap by at most one run's
+repairs.
 
 What it does not repair: a **leaked price** from before PR 1b (the sync carries no commercial
 field and the published content holds no price to compare against — re-price it in Pricing &
@@ -1086,8 +1116,8 @@ a declare resurrects only on a strictly newer one — publishing the product aga
 Logs: a product with no commerce row at all — every product, on a catalogue published before the
 plugin was installed — is a first sync, logged at info. Any other repair logs a
 `cron sweep product-reconcile` warning naming the product and why ("a lost publish sync", "a lost
-unpublish"); the leaked-title case above is said once a pass at info; a failed or no-op repair
-logs an error.
+unpublish"); the leaked-title case above is said once a pass at info; reaching the Free daily
+repair cap is said once a day at info; a failed or no-op repair logs an error.
 
 **A dense block of real orphans is struck out like any rows,** five a minute at most. An example
 is a bulk delete of an import whose hooks were all lost. Measured with every read truthful:

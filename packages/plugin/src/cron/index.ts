@@ -64,7 +64,7 @@ import {
  *  reason to want it: EmDash 1.0.1's executor (`src/plugins/cron.ts`, `tick`) claims
  *  due rows and invokes their hooks ONE AFTER ANOTHER in a single scheduled event,
  *  each under its own timeout, and a timed-out hook is only raced, never cancelled
- *  (`src/plugins/hooks.ts`, `executeWithTimeout`) — it keeps running unobserved. Fifteen
+ *  (`src/plugins/hooks.ts`, `executeWithTimeout`) — it keeps running unobserved. Sixteen
  *  tasks could therefore hold the event for sixteen timeouts back to back. One task
  *  with its own time budget (`SWEEP_TICK_BUDGET_MS`) stops cleanly instead. */
 export const SWEEP_TASK_NAME = "commerce-sweeps";

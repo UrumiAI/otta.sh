@@ -50,7 +50,9 @@ import {
 	RECONCILE_PAGE_SIZE,
 	RECONCILE_PASS_INTERVAL_FREE_MS,
 	RECONCILE_PASS_INTERVAL_PAID_MS,
+	RECONCILE_REPAIRS_PER_DAY_FREE,
 	reconcilePassIntervalMs,
+	reconcileRepairsDailyCap,
 } from "../src/cron/product-reconcile.js";
 import {
 	CONTENT_LIST_QUERIES,
@@ -59,6 +61,7 @@ import {
 	LEG_QUERY_COSTS,
 	MAINTENANCE_LEG_INTERVAL_MS,
 } from "../src/cron/sweeps.js";
+import { SweepQueryCeilingError } from "../src/cron/tick-budget.js";
 import { deriveSaveIdempotencyKey } from "../src/sync/derive-idempotency-key.js";
 import {
 	createAfterPublishHandler,
@@ -1102,5 +1105,181 @@ describe("the flip window: a lifecycle event between the repair's document read 
 		// Still nominated, and this visit is not counted against it.
 		expect(last.pending?.map((entry) => entry.id)).toEqual(["p1"]);
 		expect(last.interrupted).toEqual({});
+	});
+});
+
+describe("the daily repair cap: on Workers Free a first-install heal cannot spend D1 Free's rows written", () => {
+	/** The leg's kv document, as the suite reads it back. */
+	interface Stored {
+		day?: string | null;
+		repairsToday?: number;
+		passStartedAt?: string | null;
+		pending?: { id: string }[];
+	}
+	const stored = async (cursors: SweepCursorStore): Promise<Stored> =>
+		JSON.parse((await cursors.read(PRODUCT_RECONCILE_CURSOR)) ?? "{}") as Stored;
+	const TODAY = NOW.toISOString().slice(0, 10);
+
+	test("the cap applies at any budget Workers Free can run (50 or less), and none above it", () => {
+		expect(RECONCILE_REPAIRS_PER_DAY_FREE).toBe(200);
+		expect(reconcileRepairsDailyCap(FREE)).toBe(RECONCILE_REPAIRS_PER_DAY_FREE);
+		expect(reconcileRepairsDailyCap(50)).toBe(RECONCILE_REPAIRS_PER_DAY_FREE);
+		expect(reconcileRepairsDailyCap(51)).toBeNull();
+		expect(reconcileRepairsDailyCap(PAID)).toBeNull();
+	});
+
+	test("on Free, the day's cap stops the repairs and the leg waits its cadence; the pass keeps its place and finishes the next UTC day", async () => {
+		const cms = new Cms();
+		const ids = ["p1", "p2", "p3"];
+		ids.forEach((id, i) => {
+			cms.put({
+				id,
+				title: `Product ${id}`,
+				updatedAt: T2,
+				createdAt: new Date(Date.parse(T3) - i * 1000).toISOString(),
+			});
+		});
+		const cursors = memoryCursors();
+		// One repair left of today's allowance.
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({ day: TODAY, repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE - 1 }),
+		);
+		const logged = vi.mocked(console.log);
+		let cappedAt: number | undefined;
+		for (let t = 0; t < 60; t++) {
+			logged.mockClear();
+			const outcome = leg(await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS }));
+			if (cappedAt === undefined && outcome.waitsCadence === true) {
+				cappedAt = t;
+				expect(outcome.incomplete).toBe(true);
+			} else if (cappedAt !== undefined && outcome.waitsCadence === true) {
+				// A capped cadence that does nothing is silent: no tick line every 15 minutes.
+				expect(outcome.count).toBe(0);
+				expect(logged.mock.calls.filter((args) => String(args[0]).includes("cron sweep"))).toEqual(
+					[],
+				);
+			}
+			if (cappedAt === t - 1) {
+				// Stamped: not run again before its cadence.
+				expect(outcome.notDue).toBe(true);
+			}
+		}
+		expect(cappedAt).toBeDefined();
+		const healed = [];
+		for (const id of ids) if ((await row(id)) !== null) healed.push(id);
+		expect(healed).toEqual(["p1"]);
+		// The pass is NOT finished: its start and the products left are kept.
+		const capped = await stored(cursors);
+		expect(capped).toMatchObject({ day: TODAY, repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE });
+		expect(capped.passStartedAt).not.toBeNull();
+		expect(capped.pending?.map((entry) => entry.id)).toEqual(["p2", "p3"]);
+
+		// After 00:00 UTC the count starts again and the pass resumes where it was.
+		const nextDay = Date.parse(`${TODAY}T00:00:00.000Z`) + 24 * 3_600_000 - NOW.getTime();
+		let finished = false;
+		for (let t = 0; t < 120 && !finished; t++) {
+			const outcome = leg(
+				await tick(cms, cursors, { budget: FREE, offsetMs: nextDay + t * MINUTE_MS }),
+			);
+			finished =
+				outcome.incomplete === undefined && outcome.deferred !== true && outcome.notDue !== true;
+		}
+		expect(finished).toBe(true);
+		for (const id of ids) expect(await row(id), id).toMatchObject({ active: true });
+		// Listed once for the whole pass: the capped day never skipped or re-listed a product.
+		expect(cms.pageLists).toBe(1);
+		const after = await stored(cursors);
+		expect(after).toMatchObject({ repairsToday: 2, passStartedAt: null });
+		expect(after.day).not.toBe(TODAY);
+		expect(errors).toEqual([]);
+	});
+
+	test("only a repair's writes count: not its check visit, not a product already in sync, not one its own hook synced first", async () => {
+		const cms = new Cms();
+		cms.put({ id: "p1", title: "One", updatedAt: T2, createdAt: T3 });
+		cms.put({ id: "p2", title: "Two", updatedAt: T2, createdAt: T2 });
+		await syncedRow("p3", "Three", T1);
+		cms.put({ id: "p3", title: "Three", updatedAt: T1, createdAt: T1 });
+		await syncedRow("p4", "Four", T1);
+		cms.put({ id: "p4", title: "Four", updatedAt: T1, createdAt: "2026-10-29T08:00:00.000Z" });
+		// p4 drifts in the list, and its own publish hook syncs it before the repair reads it.
+		cms.put({
+			id: "p4",
+			title: "Four renamed",
+			updatedAt: T2,
+			createdAt: "2026-10-29T08:00:00.000Z",
+		});
+		cms.afterList = async () => {
+			await createAfterPublishHandler()(
+				{
+					collection: "products",
+					content: { ...cms.docs.get("p4") },
+				} as unknown as ContentStateChangeEvent,
+				sweepContext(storage),
+			);
+		};
+		const cursors = memoryCursors();
+
+		const outcome = leg(await tick(cms, cursors));
+
+		expect(outcome).toMatchObject({ ok: true, count: 2 });
+		expect(outcome.incomplete).toBeUndefined();
+		expect(await stored(cursors)).toMatchObject({ day: TODAY, repairsToday: 2 });
+	});
+
+	test("a run the tick's ceiling stops part-way through a repair's writes still keeps the day's count", async () => {
+		const today = { day: TODAY, repairsToday: 7 };
+		let writes = 0;
+		const ceilingOnSecondWrite: StorageAccess = {};
+		for (const [name, collection] of Object.entries(storage)) {
+			ceilingOnSecondWrite[name] = new Proxy(collection, {
+				get(target, prop, receiver) {
+					const value: unknown = Reflect.get(target, prop, receiver);
+					if (typeof value !== "function") return value;
+					return (...args: unknown[]) => {
+						if (["put", "compareAndSet", "updateIf", "createIfAbsent"].includes(String(prop))) {
+							writes++;
+							if (writes === 2) throw new SweepQueryCeilingError(FREE, "product-reconcile");
+						}
+						return (value as (...a: unknown[]) => unknown).apply(target, args);
+					};
+				},
+			});
+		}
+		const doc = {
+			id: "p1",
+			status: "published",
+			updatedAt: T2,
+			version: 1,
+			data: { title: "Shirt" },
+		};
+		const base = memoryCursors();
+		await base.write(PRODUCT_RECONCILE_CURSOR, JSON.stringify(today));
+		const budget = {
+			stopped: false,
+			gate: () => () => true,
+			remainingQueries: () => 1000,
+		} as unknown as Parameters<typeof reconcileProductCommerce>[4];
+
+		await expect(
+			reconcileProductCommerce(
+				sweepContext(ceilingOnSecondWrite),
+				{ many: async () => new Map(), one: async () => undefined },
+				{
+					list: async () => ({ items: [doc], hasMore: false }),
+					get: async () => structuredClone(doc),
+				},
+				base,
+				budget,
+				{
+					now: NOW,
+					passIntervalMs: RECONCILE_PASS_INTERVAL_FREE_MS,
+					dailyRepairCap: RECONCILE_REPAIRS_PER_DAY_FREE,
+				},
+			),
+		).rejects.toBeInstanceOf(SweepQueryCeilingError);
+		expect(writes).toBeGreaterThanOrEqual(2);
+		expect(await stored(base)).toMatchObject({ day: TODAY, repairsToday: 8 });
 	});
 });

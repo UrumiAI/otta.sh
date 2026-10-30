@@ -227,7 +227,11 @@ import { checkoutIdempotencyKey } from "../storefront/checkout-view-model.js";
 import { deriveDeleteIdempotencyKey } from "../sync/derive-idempotency-key.js";
 import { PRODUCTS_COLLECTION } from "../sync/hooks.js";
 import type { ContentReadAccess, PluginContext } from "../types.js";
-import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
+import {
+	DEFAULT_BACKGROUND_WORK,
+	readBackgroundWork,
+	WORKERS_FREE_MAX_QUERY_BUDGET,
+} from "./background-work-setting.js";
 import type { SweepCursorStore } from "./sweep-cursor-store.js";
 import {
 	CONTENT_LIST_QUERIES,
@@ -241,6 +245,7 @@ import {
 	RECONCILE_IN_BATCH,
 	reconcilePassIntervalMs,
 	reconcileProductCommerce,
+	reconcileRepairsDailyCap,
 	type ReconcileRows,
 } from "./product-reconcile.js";
 import {
@@ -1092,7 +1097,8 @@ export interface SweepLegOutcome {
 	 *  per-tick batch — with work left over for the next tick. */
 	readonly incomplete?: boolean;
 	/** Present and true for a maintenance leg that stopped with work left at a RATE
-	 *  LIMIT of its own (`prune-carts`' per-run and daily delete caps), not for want
+	 *  LIMIT of its own (`prune-carts`' per-run and daily delete caps,
+	 *  `product-reconcile`'s daily repair cap), not for want
 	 *  of budget: it is stamped like a finished run and waits out its cadence, rather
 	 *  than running again on the very next tick as an `incomplete` scan does. */
 	readonly waitsCadence?: boolean;
@@ -2154,7 +2160,11 @@ export async function runCommerceSweeps(
 					content,
 					cursors,
 					legBudget,
-					{ now, passIntervalMs: reconcilePassIntervalMs(queryBudget) },
+					{
+						now,
+						passIntervalMs: reconcilePassIntervalMs(queryBudget),
+						dailyRepairCap: reconcileRepairsDailyCap(queryBudget),
+					},
 				);
 				if (legBudget.stopped) stoppedByBudget.add("product-reconcile");
 				return result;
@@ -2340,7 +2350,11 @@ function logTick(
 	stoppedAtCeiling: readonly SweepLeg[],
 ): void {
 	const busy = legs.some(
-		(entry) => entry.count > 0 || entry.incomplete === true || entry.ok === false,
+		(entry) =>
+			entry.count > 0 ||
+			// A leg waiting out a daily cap it already logged is not news (`logOutcome`).
+			(entry.incomplete === true && entry.waitsCadence !== true) ||
+			entry.ok === false,
 	);
 	if (!busy && deferred.length === 0 && stoppedAtCeiling.length === 0) return;
 	const spent = SWEEP_LEGS.filter((leg) => budget.queriesFor(leg) > 0).map(
@@ -2623,7 +2637,8 @@ function logOutcome(outcome: Omit<SweepLegOutcome, "queries">): void {
 		}
 		return;
 	}
-	// A leg waiting out a cap it already logged (prune-carts' spent day) is not news.
+	// A leg waiting out a cap it already logged (a spent day: prune-carts,
+	// product-reconcile) is not news.
 	const idle = outcome.count === 0 && outcome.waitsCadence === true;
 	if (!idle && (outcome.count > 0 || outcome.incomplete === true)) {
 		console.log(
@@ -4765,9 +4780,10 @@ export const ABANDONED_CARTS_PER_DAY_FREE = 300;
  * queries per invocation, so a Free store keeps the cap at a custom 31–50 too (above
  * the Free preset, a share-stopped run is never stamped and would otherwise drain a
  * couple of carts every minute, past D1 Free's rows-written allowance). A budget above
- * it can only run on Workers Paid.
+ * it can only run on Workers Paid. The same threshold as `product-reconcile`'s daily
+ * repair cap (`WORKERS_FREE_MAX_QUERY_BUDGET`).
  */
-export const ABANDONED_CARTS_CAPPED_BUDGET = 50;
+export const ABANDONED_CARTS_CAPPED_BUDGET = WORKERS_FREE_MAX_QUERY_BUDGET;
 
 /** The daily delete cap for a tick whose query budget is `queryBudget`: the Free
  *  cap at any budget Workers Free can run, none above it. */
