@@ -50,7 +50,8 @@ import {
 	SITE_ROUTES,
 	clientAddress,
 	clientNetwork,
-	rateLimitClassFor,
+	rateLimitedResponse,
+	rateLimitClassFor as rateLimitClassForRequest,
 	resetRateLimitLogForTests,
 } from "../src/lib/rate-limit.js";
 import { onRequest } from "../src/middleware.js";
@@ -62,6 +63,14 @@ const IP = "203.0.113.7";
 
 type Handler = (ctx: unknown, next: () => Promise<Response>) => Promise<Response>;
 const runMiddleware = onRequest as unknown as Handler;
+
+/** `rateLimitClassFor` with a plain request (no headers) unless one is given. */
+const classFor = (
+	method: string,
+	url: URL,
+	routePattern: string,
+	request: Pick<Request, "headers"> = new Request(url),
+) => rateLimitClassForRequest(method, url, routePattern, request);
 
 const plugin = (route: string) => `/_emdash/api/plugins/${OTTA_PLUGIN_ID}/${route}`;
 
@@ -135,35 +144,31 @@ describe("the protected route table", () => {
 	];
 
 	test.each(AUTH_SITE)("site POST %s is auth", (route) => {
-		expect(rateLimitClassFor("POST", new URL(route, SITE), route)).toBe("auth");
+		expect(classFor("POST", new URL(route, SITE), route)).toBe("auth");
 	});
 	test.each(WRITES_SITE)("site POST %s is writes", (route) => {
-		expect(rateLimitClassFor("POST", new URL(route, SITE), route)).toBe("writes");
+		expect(classFor("POST", new URL(route, SITE), route)).toBe("writes");
 	});
 	test.each(AUTH_PLUGIN)("plugin %s is auth", (route) => {
-		expect(rateLimitClassFor("POST", new URL(plugin(route), SITE), PLUGIN_MOUNT_PATTERN)).toBe(
-			"auth",
-		);
+		expect(classFor("POST", new URL(plugin(route), SITE), PLUGIN_MOUNT_PATTERN)).toBe("auth");
 	});
 	test.each(WRITES_PLUGIN)("plugin %s is writes", (route) => {
-		expect(rateLimitClassFor("POST", new URL(plugin(route), SITE), PLUGIN_MOUNT_PATTERN)).toBe(
-			"writes",
-		);
+		expect(classFor("POST", new URL(plugin(route), SITE), PLUGIN_MOUNT_PATTERN)).toBe("writes");
 	});
 
 	test("site GETs are never counted, even on a protected route — except /checkout/resume", () => {
 		for (const route of [...AUTH_SITE, ...WRITES_SITE]) {
 			if (route === "/checkout/resume") continue;
-			expect(rateLimitClassFor("GET", new URL(route, SITE), route)).toBeNull();
-			expect(rateLimitClassFor("HEAD", new URL(route, SITE), route)).toBeNull();
+			expect(classFor("GET", new URL(route, SITE), route)).toBeNull();
+			expect(classFor("HEAD", new URL(route, SITE), route)).toBeNull();
 		}
 	});
 
 	test("GET /checkout/resume counts (it dispatches the plugin's resume step), OPTIONS does not", () => {
 		const url = new URL("/checkout/resume?order=x", SITE);
-		expect(rateLimitClassFor("GET", url, "/checkout/resume")).toBe("auth");
-		expect(rateLimitClassFor("HEAD", url, "/checkout/resume")).toBe("auth");
-		expect(rateLimitClassFor("OPTIONS", url, "/checkout/resume")).toBeNull();
+		expect(classFor("GET", url, "/checkout/resume")).toBe("auth");
+		expect(classFor("HEAD", url, "/checkout/resume")).toBe("auth");
+		expect(classFor("OPTIONS", url, "/checkout/resume")).toBeNull();
 	});
 
 	test("GET/HEAD /checkout/resume that the handler answers without the plugin is NOT counted (#661)", () => {
@@ -172,19 +177,19 @@ describe("the protected route table", () => {
 		const sameSite = new Request(withOrder, { headers: { "sec-fetch-site": "same-origin" } });
 		for (const method of ["GET", "HEAD"]) {
 			// A third-party <img> must not burn the visitor's auth budget.
-			expect(rateLimitClassFor(method, withOrder, "/checkout/resume", crossSite)).toBeNull();
+			expect(classFor(method, withOrder, "/checkout/resume", crossSite)).toBeNull();
 			// Same-site with an order still counts.
-			expect(rateLimitClassFor(method, withOrder, "/checkout/resume", sameSite)).toBe("auth");
+			expect(classFor(method, withOrder, "/checkout/resume", sameSite)).toBe("auth");
 			// No order, or an empty/blank one: the handler redirects to the cart.
 			for (const search of ["", "?order=", "?order=%20%20"]) {
 				const url = new URL(`/checkout/resume${search}`, SITE);
-				expect(rateLimitClassFor(method, url, "/checkout/resume", new Request(url))).toBeNull();
+				expect(classFor(method, url, "/checkout/resume", new Request(url))).toBeNull();
 			}
 		}
 		// The POST (email form) is never exempted by these rules.
-		expect(rateLimitClassFor("POST", withOrder, "/checkout/resume", crossSite)).toBe("auth");
+		expect(classFor("POST", withOrder, "/checkout/resume", crossSite)).toBe("auth");
 		const bare = new URL("/checkout/resume", SITE);
-		expect(rateLimitClassFor("POST", bare, "/checkout/resume", new Request(bare))).toBe("auth");
+		expect(classFor("POST", bare, "/checkout/resume", new Request(bare))).toBe("auth");
 	});
 
 	test("a cross-site GET /checkout/resume reaches the endpoint without spending the budget (#661)", async () => {
@@ -203,9 +208,9 @@ describe("the protected route table", () => {
 	test("a plugin write route counts on ANY method but OPTIONS (EmDash dispatches GET with query input)", () => {
 		const url = new URL(plugin(STOREFRONT_CART_CREATE_ROUTE), SITE);
 		for (const method of ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]) {
-			expect(rateLimitClassFor(method, url, PLUGIN_MOUNT_PATTERN)).toBe("writes");
+			expect(classFor(method, url, PLUGIN_MOUNT_PATTERN)).toBe("writes");
 		}
-		expect(rateLimitClassFor("OPTIONS", url, PLUGIN_MOUNT_PATTERN)).toBeNull();
+		expect(classFor("OPTIONS", url, PLUGIN_MOUNT_PATTERN)).toBeNull();
 	});
 
 	test("plugin path spellings that still reach the route are matched", () => {
@@ -215,21 +220,17 @@ describe("the protected route table", () => {
 			`/_emdash/api/plugins/${OTTA_PLUGIN_ID}/storefront/%63art/create`,
 		];
 		for (const spelling of spellings) {
-			expect(rateLimitClassFor("POST", new URL(spelling, SITE), PLUGIN_MOUNT_PATTERN)).toBe(
-				"writes",
-			);
+			expect(classFor("POST", new URL(spelling, SITE), PLUGIN_MOUNT_PATTERN)).toBe("writes");
 		}
 	});
 
 	test("unprotected routes are never counted", () => {
 		const reads = [STOREFRONT_PRODUCT_ROUTE, STOREFRONT_CART_READ_ROUTE, "admin"];
 		for (const route of reads) {
-			expect(
-				rateLimitClassFor("POST", new URL(plugin(route), SITE), PLUGIN_MOUNT_PATTERN),
-			).toBeNull();
+			expect(classFor("POST", new URL(plugin(route), SITE), PLUGIN_MOUNT_PATTERN)).toBeNull();
 		}
 		expect(
-			rateLimitClassFor(
+			classFor(
 				"POST",
 				new URL(`/_emdash/api/plugins/other/${STOREFRONT_CART_CREATE_ROUTE}`, SITE),
 				PLUGIN_MOUNT_PATTERN,
@@ -240,7 +241,7 @@ describe("the protected route table", () => {
 			"/webhooks/stripe",
 			"/otta-admin/downloads/[productId]",
 		]) {
-			expect(rateLimitClassFor("POST", new URL(route, SITE), route)).toBeNull();
+			expect(classFor("POST", new URL(route, SITE), route)).toBeNull();
 		}
 	});
 });
@@ -317,11 +318,23 @@ function limitedPluginRouteConstants(): string[] {
 		.map(([name]) => name);
 }
 
+/**
+ * Lib helpers that dispatch a limited plugin route on a page's behalf, so a
+ * page calling one is a reference too. An EXPLICIT list, guarded below: the
+ * scan cannot follow calls in general, so a new lib file that references a
+ * limited constant must be added to LIB_DISPATCHERS (and its helper here) or
+ * the guard test fails. Limitation: only direct references by name are seen.
+ */
+const LIMITED_ROUTE_HELPERS = ["ensureCartId"];
+/** The lib files that reference a limited constant (the dispatch table, the
+ *  helper above, and the limiter's own table). */
+const LIB_DISPATCHERS = ["cart-actions.ts", "otta-api.ts", "rate-limit.ts"];
+
 /** Violations of the page-level default-deny, as readable lines: every page
  *  (`.ts` or `.astro`) that references a limited plugin route constant is in
  *  SITE_ROUTES or exempt, and `anyMethod` when it answers GET. */
 function pageCoverageViolations(pages = path.join(SRC, "pages")): string[] {
-	const names = limitedPluginRouteConstants();
+	const names = [...limitedPluginRouteConstants(), ...LIMITED_ROUTE_HELPERS];
 	const reference = new RegExp(String.raw`\b(${names.join("|")})\b`);
 	const problems: string[] = [];
 	for (const page of pageFiles(pages, PAGE_FILE)) {
@@ -354,6 +367,46 @@ describe("every write route is limited or explicitly exempt (default-deny)", () 
 	test("each page (.ts or .astro) dispatching a limited plugin route is limited or exempt, anyMethod if it answers GET (#661)", () => {
 		expect(limitedPluginRouteConstants().length).toBe(PLUGIN_ROUTES.size);
 		expect(pageCoverageViolations()).toEqual([]);
+	});
+
+	test("lib helpers that dispatch a limited route are listed (guard for the page scan)", () => {
+		const lib = path.join(SRC, "lib");
+		const names = limitedPluginRouteConstants();
+		const reference = new RegExp(String.raw`\b(${names.join("|")})\b`);
+		const referencing = readdirSync(lib)
+			.filter(
+				(file) =>
+					ENDPOINT_FILE.test(file) && reference.test(readFileSync(path.join(lib, file), "utf8")),
+			)
+			.toSorted();
+		expect(referencing).toEqual(LIB_DISPATCHERS);
+		const cartActions = readFileSync(path.join(lib, "cart-actions.ts"), "utf8");
+		for (const helper of LIMITED_ROUTE_HELPERS) {
+			expect(cartActions).toMatch(
+				new RegExp(String.raw`export\s+(async\s+)?function\s+${helper}\b`),
+			);
+		}
+	});
+
+	test("the page scan flags a GET on a non-anyMethod route and a page using a dispatching helper (#661)", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "rl-pages-"));
+		try {
+			mkdirSync(path.join(dir, "cart"));
+			writeFileSync(
+				path.join(dir, "cart", "add.ts"),
+				"import { STOREFRONT_CART_LINE_ADD_ROUTE } from '@urumi.ai/otta-plugin';\nexport const GET = () => STOREFRONT_CART_LINE_ADD_ROUTE;\nexport const POST = GET;\n",
+			);
+			writeFileSync(
+				path.join(dir, "mint.ts"),
+				"import { ensureCartId } from '../lib/cart-actions.js';\nexport const POST = (c) => ensureCartId(c, undefined);\n",
+			);
+			expect(pageCoverageViolations(dir).toSorted()).toEqual([
+				"/cart/add: answers GET but is not anyMethod",
+				"/mint: dispatches a limited plugin route; in neither map",
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("the page scan catches a GET endpoint and an .astro page that dispatch a limited route (#661)", () => {
@@ -679,6 +732,12 @@ describe("the middleware", () => {
 		);
 		expect(post.status).toBe(429);
 		expect(await post.text()).toContain('href="/cart"');
+	});
+
+	test("rateLimitedResponse escapes backTo in the href", async () => {
+		const html = await rateLimitedResponse("auth", '/x"><script>&').text();
+		expect(html).toContain('href="/x&quot;&gt;&lt;script&gt;&amp;"');
+		expect(html).not.toContain("<script>");
 	});
 
 	test("a cross-origin write is refused by the origin guard before it spends budget", async () => {

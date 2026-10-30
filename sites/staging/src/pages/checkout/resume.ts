@@ -10,7 +10,7 @@
  * repeat — the plugin replays the order's own checkout on its own key, so a
  * reload, a double click or a prefetch gets the same intent and creates nothing.
  * What it WRITES is the checkout stash, which is why a cross-site navigation is
- * sent to the order page instead (`isCrossSiteNavigation`).
+ * sent to the order page instead (`resumeGetReachesPlugin`).
  *
  * Then the ordinary pay step: `/checkout/pay` reads the stash and re-checks the
  * order with its unchanged guard (`lib/pay-guard.ts`).
@@ -26,10 +26,11 @@ import {
 } from "../../lib/cart-actions.js";
 import { setCheckoutCookie } from "../../lib/checkout-cookie.js";
 import {
-	isCrossSiteNavigation,
 	orderPathFor,
 	readResumeClientKey,
 	resumeEmailPath,
+	resumeGetReachesPlugin,
+	resumeOrderParam,
 	resumeOutcome,
 } from "../../lib/checkout-resume.js";
 import { PRIVATE_NO_STORE } from "../../lib/no-store.js";
@@ -75,11 +76,14 @@ function cookieProof(context: APIContext): { cartId?: string; sessionToken?: str
 }
 
 async function resumeFromLink(context: APIContext): Promise<Response> {
-	const orderId = context.url.searchParams.get("order")?.trim() ?? "";
-	if (orderId.length === 0) return seeOther(context, "/cart");
-
-	// Another site's link: the order page, where the buyer can press the button.
-	if (isCrossSiteNavigation(context.request)) return context.redirect(orderPathFor(orderId), 303);
+	const orderId = resumeOrderParam(context.url);
+	if (!resumeGetReachesPlugin(context.url, context.request)) {
+		// No order: the cart. Another site's link: the order page, where the
+		// buyer can press the button.
+		return orderId.length === 0
+			? seeOther(context, "/cart")
+			: context.redirect(orderPathFor(orderId), 303);
+	}
 
 	return dispatchResume(context, orderId, cookieProof(context));
 }

@@ -417,13 +417,16 @@ approximately, so treat the numbers as a ceiling on abuse, not an exact quota.
 **Optional: a WAF rule as well.** With a custom domain on a zone you control (issue #32), a
 Cloudflare WAF rate-limiting rule stops a flood before it runs the Worker at all, which the
 binding cannot (a refused request is still a Worker invocation). For example, Security → WAF →
-Rate limiting rules: match `(http.request.method eq "POST" and http.request.uri.path in
-{"/account/login/request" "/account/login/request/"}) or starts_with(http.request.uri.path,
-"/_emdash/api/plugins/otta/storefront/account/login/request")` — the plugin route has no method
-condition because EmDash dispatches it on GET too, and `starts_with` covers a trailing slash. This
-is a **partial first layer**, not the coverage the bindings give: it names only the sign-in request
-(add the other `auth` and `writes` routes the same way if you want them at the edge), and the
-bindings stay the complete limit. Count by IP, 10 requests per minute, action Block. Check your plan first: on the **Free**
+Rate limiting rules: match `http.request.uri.path in {"/account/login/request"
+"/account/login/request/"} or starts_with(http.request.uri.path,
+"/_emdash/api/plugins/otta/storefront/account/login/request")`. The expression has no method
+condition: Cloudflare allows only the path on **Free** (path, URI, query and host on **Pro**),
+and the plugin route answers GET too. This is a **partial first layer**, not the coverage the
+bindings give: it names only the sign-in request. Free allows 1 rate-limiting rule and Pro 2, so
+to cover more of the `auth` and `writes` routes at the edge, add them to the same expression. The
+edge matches the raw path while the site decodes it and collapses repeated slashes, so an encoded
+or `//` variant can get past the WAF; the bindings still catch it, and they stay the complete
+limit. Count by IP, 10 requests per minute, action Block. Check your plan first: on the **Free**
 plan, rate-limiting rules allow only a 10-second counting period (and few rules), so the
 equivalent there is about 2 requests per 10 seconds. Longer periods and more counting options
 need a paid plan. Keep the bindings too: they are versioned

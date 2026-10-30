@@ -20,8 +20,10 @@
  * `/checkout/resume`, whose GET (the order page's "Complete payment" link)
  * dispatches the same plugin resume step its POST does, so it counts on every
  * method but OPTIONS, as that step does on the plugin mount — except a GET/HEAD
- * the handler answers without the plugin (cross-site navigation, no `?order=`),
- * which is not counted. And the plugin's
+ * of that LINK the handler answers without the plugin (cross-site navigation,
+ * no `?order=`), which is not counted. (The plugin mount's GET still counts: it
+ * reaches the plugin, so a third-party `<img>` of it can spend the auth
+ * budget.) And the plugin's
  * public routes on the wire mount `/_emdash/api/plugins/otta/<route>`, matched
  * on the decoded path — on EVERY method but OPTIONS, because EmDash's plugin
  * dispatcher answers GET and HEAD too, reading the input from the query
@@ -67,7 +69,7 @@ import {
 	STOREFRONT_SHOPPER_STATE_ROUTE,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 } from "@urumi.ai/otta-plugin";
-import { isCrossSiteNavigation, orderPathFor } from "./checkout-resume.js";
+import { orderPathFor, resumeGetReachesPlugin, resumeOrderParam } from "./checkout-resume.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 import { SAFE_METHODS } from "./origin-guard.js";
 
@@ -180,23 +182,19 @@ function pluginRouteOf(url: URL): string | null {
 
 const RESUME_ROUTE = "/checkout/resume";
 
-/** The order id `/checkout/resume?order=` names, trimmed; "" when absent. */
-function resumeOrderParam(url: URL): string {
-	return url.searchParams.get("order")?.trim() ?? "";
-}
-
 /**
  * Pure decision (unit-tested): the class this request is counted in, or null.
- * `request` supplies the `Sec-Fetch-Site` header: a GET/HEAD `/checkout/resume`
- * that the handler answers without reaching the plugin (a cross-site
- * navigation, or no `?order=`) is not counted, so a third-party page cannot
- * spend a visitor's auth budget with `<img>` tags.
+ * A GET/HEAD of the site's `/checkout/resume` link that the handler answers
+ * without reaching the plugin (`resumeGetReachesPlugin`: a cross-site
+ * navigation, or no `?order=`) is not counted, so a third-party `<img>` of that
+ * link cannot spend a visitor's auth budget. The plugin mount is NOT covered:
+ * its GET reaches the plugin, so it still counts.
  */
 export function rateLimitClassFor(
 	method: string,
 	url: URL,
 	routePattern: string,
-	request?: Pick<Request, "headers">,
+	request: Pick<Request, "headers">,
 ): RateLimitClass | null {
 	const verb = method.toUpperCase();
 	const pluginRoute = pluginRouteOf(url);
@@ -208,8 +206,7 @@ export function rateLimitClassFor(
 	if (site === undefined) return null;
 	if (site.anyMethod === true ? verb === "OPTIONS" : SAFE_METHODS.has(verb)) return null;
 	if (routePattern === RESUME_ROUTE && SAFE_METHODS.has(verb)) {
-		if (resumeOrderParam(url) === "") return null;
-		if (request !== undefined && isCrossSiteNavigation(request)) return null;
+		if (!resumeGetReachesPlugin(url, request)) return null;
 	}
 	return site.cls;
 }
@@ -334,6 +331,14 @@ export function resetRateLimitLogForTests(): void {
 	lastFailureLog = Number.NEGATIVE_INFINITY;
 }
 
+function escapeHtml(text: string): string {
+	return text
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;");
+}
+
 const MESSAGE = "Too many requests. Please wait a minute and try again.";
 
 /** The 429: EmDash's JSON error envelope on the plugin mount (`backTo`
@@ -356,7 +361,7 @@ export function rateLimitedResponse(cls: RateLimitClass, backTo: string | null):
 		'<!doctype html><html lang="en"><head><meta charset="utf-8">' +
 		'<meta name="viewport" content="width=device-width, initial-scale=1">' +
 		`<title>Too many requests</title></head><body><main><p>${MESSAGE}</p>` +
-		`<p><a href="${backTo}">Go back</a></p></main></body></html>`;
+		`<p><a href="${escapeHtml(backTo)}">Go back</a></p></main></body></html>`;
 	return new Response(body, {
 		status: 429,
 		headers: { ...headers, "Content-Type": "text/html; charset=utf-8" },

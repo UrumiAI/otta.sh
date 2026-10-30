@@ -155,6 +155,22 @@ export function isCrossSiteNavigation(request: Pick<Request, "headers">): boolea
 	return request.headers.get("sec-fetch-site") === "cross-site";
 }
 
+/** The order id `/checkout/resume?order=` names, trimmed; "" when absent. */
+export function resumeOrderParam(url: URL): string {
+	return url.searchParams.get("order")?.trim() ?? "";
+}
+
+/**
+ * Does a GET of `/checkout/resume` reach the plugin's resume step? The
+ * handler's two early returns, in one place (the rate limiter reads it too, so
+ * it never counts a request the handler answers without the plugin): no (or
+ * blank) `?order=` goes to the cart, and a cross-site navigation goes to the
+ * order page.
+ */
+export function resumeGetReachesPlugin(url: URL, request: Pick<Request, "headers">): boolean {
+	return resumeOrderParam(url) !== "" && !isCrossSiteNavigation(request);
+}
+
 /**
  * What `/checkout/resume/email` shows for the order in its URL (QA2 N7), from the
  * same public order read the order page makes:
