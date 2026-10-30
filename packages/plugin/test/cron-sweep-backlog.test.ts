@@ -338,6 +338,10 @@ async function seedEveryLeg(): Promise<void> {
 		);
 	}
 
+	// product-reconcile: a published product whose first publish sync was lost — no
+	// commerce row at all (#95).
+	cms.updatedAt.set("listed", new Date(SETUP_NOW.getTime() - HOUR_MS).toISOString());
+
 	// late-refunds: an expired order paid late, whose refund hit a retryable failure.
 	const late = await placeOrder(
 		storage,
@@ -445,6 +449,9 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 				),
 			])
 		).every((doc) => doc === null),
+		"product-reconcile":
+			(await collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION).get("listed"))
+				?.active === true,
 		"late-refunds": stripe.refundCalls.length >= 1,
 	};
 }
@@ -596,6 +603,7 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			"stranded-holds",
 			"product-orphans",
 			"prune-carts",
+			"product-reconcile",
 		];
 		for (const moneyLeg of ["expire-orders", "hold-intents", "late-refunds"] as const) {
 			for (const chore of housekeeping) {

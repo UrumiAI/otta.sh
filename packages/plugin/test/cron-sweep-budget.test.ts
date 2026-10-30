@@ -131,7 +131,7 @@ describe("the sweep's schedule and timeout are pinned", () => {
 	test("the critical legs come first in the summary, expiry before the coupon sweeper, and only housekeeping is on the slow cadence", () => {
 		expect(SWEEP_LEGS.slice(0, 3)).toEqual([...CRITICAL_LEGS]);
 		expect(SWEEP_LEGS.indexOf("expire-orders")).toBeLessThan(SWEEP_LEGS.indexOf("coupon-orphans"));
-		// The seven scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
+		// The nine scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
 		// customer never waits on.
 		expect([...MAINTENANCE_LEGS].toSorted()).toEqual(
 			[
@@ -140,6 +140,7 @@ describe("the sweep's schedule and timeout are pinned", () => {
 				"order-sku-index",
 				"product-orphans",
 				"prune-carts",
+				"product-reconcile",
 				"prune-challenges",
 				"reporting-heal",
 				"sku-transfers",
@@ -1028,7 +1029,14 @@ describe("per-leg cadence", () => {
 			SWEEP_TASK_NAME,
 			at(MAINTENANCE_LEG_INTERVAL_MS),
 		);
-		for (const leg of MAINTENANCE_LEGS) expect(outcome(later, leg).notDue).toBeUndefined();
+		for (const leg of MAINTENANCE_LEGS) {
+			// Except `product-reconcile`, which spaces its PASSES from their start (the D1
+			// rows a pass reads, #657): its fifteen-minute check runs, and finds the next
+			// pass not due for hours yet.
+			if (leg === "product-reconcile") continue;
+			expect(outcome(later, leg).notDue).toBeUndefined();
+		}
+		expect(outcome(later, "product-reconcile")).toMatchObject({ ok: true, notDue: true, count: 0 });
 	}, 120_000);
 
 	test("a FAILED scan is stamped: it retries at its own cadence, not every minute", async () => {
@@ -1194,9 +1202,11 @@ function context(
 			},
 		},
 		storage: store,
-		// A CMS in which every product exists, so `product-orphans` runs (and is
-		// budgeted) like any scan here rather than reporting itself unwired.
-		content: fakeCms().access(),
+		// A CMS in which every product exists, so `product-orphans` and
+		// `product-reconcile` run (and are budgeted) like any scan here rather than
+		// reporting themselves unwired. Its calls are counted with the kv's, charged
+		// as the sweep charges them.
+		content: fakeCms().access(onKvCall),
 	} as unknown as PluginContext;
 }
 

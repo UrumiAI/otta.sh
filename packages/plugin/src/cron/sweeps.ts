@@ -1,5 +1,5 @@
 /**
- * The scheduled sweep: fifteen legs, one tick (INC-C4).
+ * The scheduled sweep: sixteen legs, one tick (INC-C4).
  *
  * WHY THIS FILE EXISTS AT ALL. ADR-0019 §7 says it plainly — the aggregates are
  * one document each, a coupling that spans two of them is made *idempotently
@@ -188,6 +188,7 @@ import {
 	EmdashReportingStore,
 	isScanPageLimitError,
 	ORDER_SKU_INDEX_COLLECTION,
+	normalizeProductDoc,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	type CouponDoc,
@@ -226,7 +227,27 @@ import { checkoutIdempotencyKey } from "../storefront/checkout-view-model.js";
 import { deriveDeleteIdempotencyKey } from "../sync/derive-idempotency-key.js";
 import { PRODUCTS_COLLECTION } from "../sync/hooks.js";
 import type { ContentReadAccess, PluginContext } from "../types.js";
-import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
+import {
+	DEFAULT_BACKGROUND_WORK,
+	readBackgroundWork,
+	WORKERS_FREE_MAX_QUERY_BUDGET,
+} from "./background-work-setting.js";
+import type { SweepCursorStore } from "./sweep-cursor-store.js";
+import {
+	CONTENT_LIST_QUERIES,
+	CONTENT_MISS_QUERIES,
+	CONTENT_READ_QUERIES,
+	isInvalidCursorError,
+} from "./content-reads.js";
+import {
+	PRODUCT_RECONCILE_ENTRY_QUERIES,
+	PRODUCT_RECONCILE_REPAIR_CALLS,
+	RECONCILE_IN_BATCH,
+	reconcilePassIntervalMs,
+	reconcileProductCommerce,
+	reconcileRepairsDailyCap,
+	type ReconcileRows,
+} from "./product-reconcile.js";
 import {
 	isSweepQueryCeilingError,
 	MAX_COMMIT_WINDOW,
@@ -237,7 +258,18 @@ import {
 	WHOLE_TICK,
 } from "./tick-budget.js";
 
-/** The fifteen legs in the order a SUMMARY lists them (and the order the sweep ran
+export {
+	CONTENT_LIST_QUERIES,
+	CONTENT_MISS_QUERIES,
+	CONTENT_READ_QUERIES,
+} from "./content-reads.js";
+export {
+	PRODUCT_RECONCILE_ENTRY_QUERIES,
+	PRODUCT_RECONCILE_REPAIR_CALLS,
+	RECONCILE_PAGE_SIZE,
+} from "./product-reconcile.js";
+
+/** The sixteen legs in the order a SUMMARY lists them (and the order the sweep ran
  *  them in before QA2 M2). The order a tick RUNS them in is `LEG_PRIORITY`, with
  *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
@@ -255,13 +287,14 @@ export const SWEEP_LEGS = [
 	"stranded-holds",
 	"product-orphans",
 	"prune-carts",
+	"product-reconcile",
 	"late-refunds",
 ] as const;
 
 export type SweepLeg = (typeof SWEEP_LEGS)[number];
 
 /**
- * The legs that run on the slow cadence rather than every tick: the seven that walk
+ * The legs that run on the slow cadence rather than every tick: the nine that walk
  * a collection (or a whole closed day) on every run, and the sign-in challenge
  * prune. The others find their work from a predicate that narrows as the work
  * completes, so an idle run is one empty query — cheap enough for every minute.
@@ -290,6 +323,10 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
 	// An abandoned cart is a month untouched before it is judged (#39); deleting it
 	// is storage hygiene, and its walk pages the active carts.
 	"prune-carts",
+	// A lost publish/unpublish sync (#95) has no deadline either: the recovery verb
+	// a merchant sees is still "Publish changes", and this is the repair nobody
+	// has to click. A pass walks the whole CMS catalogue, so it keeps the cadence.
+	"product-reconcile",
 ];
 
 /**
@@ -320,8 +357,12 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     call short of finishing, so the next, idle minute ran the heal again
  *     (`cron-late-refunds.test.ts`). After the orphan sweep, too, so a use the sweep
  *     frees this tick is not first seen as drift;
- *     `product-orphans` then, and `prune-carts` (#39) right after it: an empty
- *     cart a month untouched is nothing anyone waits on.
+ *     `product-orphans` then, `prune-carts` (#39) right after it: an empty
+ *     cart a month untouched is nothing anyone waits on — and `product-reconcile`
+ *     (#95) last of all. The reconcile runs after the orphan sweep so a row the
+ *     sweep tombstones this tick is not re-synced first (a repair never touches a
+ *     tombstone anyway), and last because its start floor is most of a Free tick:
+ *     a leg after it would rarely fit.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
  */
@@ -341,6 +382,7 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"coupon-recount",
 	"product-orphans",
 	"prune-carts",
+	"product-reconcile",
 ];
 
 /**
@@ -583,34 +625,15 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	"product-orphans": { time: 0.3, queries: 0.3 },
 	// Storage hygiene with a month's slack: a thin slice, its leftovers in the second pass.
 	"prune-carts": { time: 0.2, queries: 0.2 },
+	// A repair is a few writes, and an in-sync product costs nothing past its page:
+	// capped like the other scans so a catalogue-wide drift (a publish outage) heals
+	// over ticks without taking the tick from the legs a customer waits on.
+	"product-reconcile": { time: 0.3, queries: 0.3 },
 };
 
 /** The legs a customer waits on: the outbox and the two expiry legs. Each has a
  *  share, and the setting's floor is sized so each can always start. */
 export const CRITICAL_LEGS: readonly SweepLeg[] = ["order-emails", "expire-holds", "expire-orders"];
-
-/**
- * What ONE `ctx.content.get` costs, in D1 queries, on either EmDash path: the row
- * read, then — only when there IS a document — whether the collection has SEO
- * enabled and, when it does, the document's SEO row. So a miss is exactly ONE query
- * (trusted `findById` returns before the SEO reads; the sandbox bridge makes one
- * query, full stop) and a hit is at most THREE.
- *
- * The counting context charges it that way: `CONTENT_MISS_QUERIES` before the call
- * (so the ceiling refuses it whole) and the rest after a document comes back. The
- * leg always checks `CONTENT_READ_QUERIES` are left before a read, so the second
- * half always fits. A confirming re-read of a missing row therefore costs one query.
- */
-export const CONTENT_READ_QUERIES = 3;
-export const CONTENT_MISS_QUERIES = 1;
-
-/**
- * What ONE `ctx.content.list` is charged. EmDash's trusted `findMany` runs the page
- * query AND an unbounded `COUNT(*)` (in parallel — two queries), then, with any
- * item, whether the collection has SEO enabled and the page's SEO rows: four. The
- * sandbox bridge's `contentList` is one query; the worst case is charged.
- */
-export const CONTENT_LIST_QUERIES = 4;
 
 /**
  * The calls one orphan's soft delete makes, MEASURED at 4 (`cron-leg-costs.test.ts`):
@@ -718,6 +741,8 @@ export const ORPHAN_SUSPECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export const UNPROMOTED_LEGS: readonly SweepLeg[] = [
 	"product-orphans",
+	// #95: a lost sync's repair has no deadline (publishing repairs it at once).
+	"product-reconcile",
 	// #619: a correction already waits a settle window for its second look, so a few
 	// more ticks behind a backlog cost nothing; promoted, its turns took calls from the
 	// expiry under the midnight backlog (cron-sweep-backlog.test.ts).
@@ -802,6 +827,13 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// create-key record's versioned read and delete, and the cart's guarded delete:
 		// 5, measured. An unkeyed cart costs 3.
 		"prune-carts": { entry: 2, unit: PRUNE_CART_CALLS },
+		// entry and unit: see `PRODUCT_RECONCILE_ENTRY_QUERIES` and
+		// `PRODUCT_RECONCILE_REPAIR_CALLS` (product-reconcile.ts). A product already in
+		// sync costs nothing past its page.
+		"product-reconcile": {
+			entry: PRODUCT_RECONCILE_ENTRY_QUERIES,
+			unit: PRODUCT_RECONCILE_REPAIR_CALLS,
+		},
 		// entry: resolving the gateways — Stripe's two secret kv reads
 		// (`stripeGatewayFromCtx`), measured in cron-leg-costs.test.ts — once, and only
 		// when a unit needs them. A new gateway adds its own reads here. The due list
@@ -1065,7 +1097,8 @@ export interface SweepLegOutcome {
 	 *  per-tick batch — with work left over for the next tick. */
 	readonly incomplete?: boolean;
 	/** Present and true for a maintenance leg that stopped with work left at a RATE
-	 *  LIMIT of its own (`prune-carts`' per-run and daily delete caps), not for want
+	 *  LIMIT of its own (`prune-carts`' per-run and daily delete caps,
+	 *  `product-reconcile`'s daily repair cap), not for want
 	 *  of budget: it is stamped like a finished run and waits out its cadence, rather
 	 *  than running again on the very next tick as an `incomplete` scan does. */
 	readonly waitsCadence?: boolean;
@@ -1197,11 +1230,7 @@ export interface CommerceSweepOptions {
 	) => Promise<EmailSender | undefined>;
 }
 
-/** Where an advancing scan keeps its place between ticks. */
-export interface SweepCursorStore {
-	read(name: string): Promise<string | null>;
-	write(name: string, value: string): Promise<void>;
-}
+export type { SweepCursorStore } from "./sweep-cursor-store.js";
 
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_MAX_PAGES = 10;
@@ -2106,6 +2135,41 @@ export async function runCommerceSweeps(
 				return result;
 			});
 		},
+		"product-reconcile": async () => {
+			// Like `product-orphans`: without `ctx.content` there is no published content
+			// to reconcile against, and a row is never judged for want of a reader.
+			const content = ctx.content;
+			if (content === undefined) {
+				if (secondPass) return;
+				if (!isDue(state.lastRun["product-reconcile"], now)) {
+					record({ leg: "product-reconcile", ok: true, count: 0, notDue: true });
+				} else {
+					const outcome = { leg: "product-reconcile" as const, ok: true, count: 0, skipped: true };
+					record(outcome);
+					logOutcome(outcome);
+					state.lastRun["product-reconcile"] = nowIso;
+					stateChanged = true;
+				}
+				reached.add("product-reconcile");
+				return;
+			}
+			await run("product-reconcile", async (legBudget) => {
+				const result = await reconcileProductCommerce(
+					ctx,
+					reconcileRows(storage),
+					content,
+					cursors,
+					legBudget,
+					{
+						now,
+						passIntervalMs: reconcilePassIntervalMs(queryBudget),
+						dailyRepairCap: reconcileRepairsDailyCap(queryBudget),
+					},
+				);
+				if (legBudget.stopped) stoppedByBudget.add("product-reconcile");
+				return result;
+			});
+		},
 	};
 
 	// ── the order ─────────────────────────────────────────────────────────────
@@ -2286,7 +2350,11 @@ function logTick(
 	stoppedAtCeiling: readonly SweepLeg[],
 ): void {
 	const busy = legs.some(
-		(entry) => entry.count > 0 || entry.incomplete === true || entry.ok === false,
+		(entry) =>
+			entry.count > 0 ||
+			// A leg waiting out a daily cap it already logged is not news (`logOutcome`).
+			(entry.incomplete === true && entry.waitsCadence !== true) ||
+			entry.ok === false,
 	);
 	if (!busy && deferred.length === 0 && stoppedAtCeiling.length === 0) return;
 	const spent = SWEEP_LEGS.filter((leg) => budget.queriesFor(leg) > 0).map(
@@ -2569,7 +2637,8 @@ function logOutcome(outcome: Omit<SweepLegOutcome, "queries">): void {
 		}
 		return;
 	}
-	// A leg waiting out a cap it already logged (prune-carts' spent day) is not news.
+	// A leg waiting out a cap it already logged (a spent day: prune-carts,
+	// product-reconcile) is not news.
 	const idle = outcome.count === 0 && outcome.waitsCadence === true;
 	if (!idle && (outcome.count > 0 || outcome.incomplete === true)) {
 		console.log(
@@ -4009,12 +4078,6 @@ function cursorCount(value: unknown): number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
-/** The host's refusal of a page cursor it cannot decode. It does not export the
- *  class, so it is matched by name, like `StorageQueryError`. */
-function isInvalidCursorError(err: unknown): boolean {
-	return err instanceof Error && err.name === "InvalidCursorError";
-}
-
 /** Each order's adopted reservation ids on one inventory document, in order-id
  *  order (the order `stranded-holds` resumes a sku in). */
 function adoptedByOrder(doc: StrandedSkuView): [string, string[]][] {
@@ -4717,9 +4780,10 @@ export const ABANDONED_CARTS_PER_DAY_FREE = 300;
  * queries per invocation, so a Free store keeps the cap at a custom 31–50 too (above
  * the Free preset, a share-stopped run is never stamped and would otherwise drain a
  * couple of carts every minute, past D1 Free's rows-written allowance). A budget above
- * it can only run on Workers Paid.
+ * it can only run on Workers Paid. The same threshold as `product-reconcile`'s daily
+ * repair cap (`WORKERS_FREE_MAX_QUERY_BUDGET`).
  */
-export const ABANDONED_CARTS_CAPPED_BUDGET = 50;
+export const ABANDONED_CARTS_CAPPED_BUDGET = WORKERS_FREE_MAX_QUERY_BUDGET;
 
 /** The daily delete cap for a tick whose query budget is `queryBudget`: the Free
  *  cap at any budget Workers Free can run, none above it. */
@@ -5057,5 +5121,30 @@ async function pruneAbandonedCarts(
 	return {
 		...legResult(pruned, incomplete, anomalies),
 		...(capped ? { waitsCadence: true as const } : {}),
+	};
+}
+
+/** The commerce rows `product-reconcile` reads, over the tick's counted storage.
+ *  Documents are normalized the way the store reads them. */
+function reconcileRows(storage: AdapterStorageAccess): ReconcileRows {
+	const products = collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION);
+	return {
+		async many(ids) {
+			// Chunked: D1's 100-parameter bound (`RECONCILE_IN_BATCH`).
+			const rows = new Map<string, ProductCommerceDoc>();
+			for (let start = 0; start < ids.length; start += RECONCILE_IN_BATCH) {
+				const chunk = ids.slice(start, start + RECONCILE_IN_BATCH);
+				const found = await products.query({
+					where: { productId: { in: [...chunk] } },
+					limit: RECONCILE_IN_BATCH,
+				});
+				for (const { data } of found.items) rows.set(data.productId, normalizeProductDoc(data));
+			}
+			return rows;
+		},
+		async one(id) {
+			const doc = await products.get(id);
+			return doc === null ? undefined : normalizeProductDoc(doc);
+		},
 	};
 }
