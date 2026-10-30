@@ -124,8 +124,26 @@ describe("contentTableAnswers", () => {
 		expect(error).toHaveBeenCalledTimes(1);
 		// The probe never reached a table, so the log must not claim one is gone.
 		const message = String(error.mock.calls[0]?.[0]);
-		expect(message).toContain("could not confirm");
+		expect(message).toContain("and the probe could not confirm that content table");
 		expect(message).not.toContain("is missing");
+		expect(message).not.toContain("(the probe itself failed)");
+	});
+
+	// Postgres runs in CI, not here, so its wording is fed through the handle:
+	// the classifier must call it "missing", as emdash's isMissingTableError does.
+	it.each([
+		'relation "ec_products" does not exist',
+		'table "ec_products" does not exist',
+		"Table 'otta.ec_products' doesn't exist",
+	])("names a missing table when the database says: %s", async (wording) => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const failing = async (): Promise<never> => {
+			throw new Error(wording);
+		};
+		await expect(contentTableAnswers("products", failing, "product page")).resolves.toBe(false);
+		const message = String(error.mock.calls[0]?.[0]);
+		expect(message).toContain("is missing");
+		expect(message).not.toContain("could not confirm");
 	});
 
 	it("refuses a collection name that is not a plain identifier, without querying", async () => {

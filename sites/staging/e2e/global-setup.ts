@@ -55,6 +55,7 @@ import {
 	E2E_STARTS_STACK,
 	siteIsUp,
 } from "./harness.js";
+import { BothTablesError, CONTENT_TABLE, healLocalD1, PARKED_TABLE } from "./local-d1.js";
 import {
 	consumeServerStartedMarker,
 	provisionsE2ePlaceholders,
@@ -226,11 +227,34 @@ async function somethingListens(): Promise<boolean> {
 	}
 }
 
+/**
+ * #659: put back a products table an interrupted `dead-store.spec.ts` left
+ * parked, whatever specs this run includes, before anything reads the store.
+ * It only touches this worktree's local D1 file (`./local-d1.js`).
+ *
+ * BOTH TABLES PRESENT is loud only where a run is a gate (`OTTA_E2E_SEED=1` or
+ * `OTTA_E2E_REQUIRE_SITE=1`), as with the warm-up below. Elsewhere it warns:
+ * the live table is still in place, so the other specs grade a working store,
+ * and a local run of unrelated specs should not fail over leftover state that
+ * only a person can resolve. The dead-store spec itself always throws on it.
+ */
+function healDeadStoreSpec(): void {
+	try {
+		if (healLocalD1() === "healed") {
+			console.info(`[e2e] healed: renamed ${PARKED_TABLE} back to ${CONTENT_TABLE} (#659).`);
+		}
+	} catch (err) {
+		if (E2E_SEEDS || E2E_REQUIRES_SITE || !(err instanceof BothTablesError)) throw err;
+		console.warn(`[e2e] ${err.message}`);
+	}
+}
+
 export default async function globalSetup(): Promise<void> {
 	// #531: read (and remove) the marker first, whatever happens below. It exists
 	// only if Playwright ran the webServer command — not on a reused server.
 	const serverStartedByThisRun =
 		E2E_STARTS_STACK && consumeServerStartedMarker(serverStartedMarkerPath());
+	healDeadStoreSpec();
 	if (!(await somethingListens())) return;
 	const deadline = Date.now() + WARM_UP_BUDGET_MS;
 	try {
