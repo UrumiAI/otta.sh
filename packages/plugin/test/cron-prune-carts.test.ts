@@ -332,6 +332,9 @@ describe("prune-carts (#39)", () => {
 
 	test("on the Free preset a UTC day's deletes stop at its cap, and the capped leg waits its cadence", async () => {
 		expect(abandonedCartsDailyCap(30)).toBe(ABANDONED_CARTS_PER_DAY_FREE);
+		// A custom Free budget up to the platform's 50 keeps the cap (#658 review).
+		expect(abandonedCartsDailyCap(50)).toBe(ABANDONED_CARTS_PER_DAY_FREE);
+		expect(abandonedCartsDailyCap(51)).toBeNull();
 		expect(abandonedCartsDailyCap(600)).toBeNull();
 		const ids: string[] = [];
 		for (let i = 0; i < 4; i++) ids.push(await emptyCart(OLD));
