@@ -31,6 +31,8 @@ import {
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
+	CART_CREATE_KEYS_COLLECTION,
+	CARTS_COLLECTION,
 	collectionOf,
 	COUPONS_COLLECTION,
 	EmdashCouponStore,
@@ -59,7 +61,12 @@ import {
 	type SweepLeg,
 } from "../src/cron/index.js";
 import { BACKGROUND_WORK_KEY } from "../src/cron/background-work-setting.js";
-import { LEG_PRIORITY, MAINTENANCE_LEGS, UNPROMOTED_LEGS } from "../src/cron/sweeps.js";
+import {
+	ABANDONED_CART_TTL_MS,
+	LEG_PRIORITY,
+	MAINTENANCE_LEGS,
+	UNPROMOTED_LEGS,
+} from "../src/cron/sweeps.js";
 import {
 	adapters,
 	DAY_MS,
@@ -141,6 +148,9 @@ beforeAll(async () => {
 }, 300_000);
 
 /** Work in every leg, each through the adapters production uses. */
+/** The carts `prune-carts` must delete (#39), as `seedEveryLeg` minted them. */
+let abandonedCarts: string[] = [];
+
 async function seedEveryLeg(): Promise<void> {
 	const base = adapters(storage, SETUP_NOW);
 
@@ -306,6 +316,18 @@ async function seedEveryLeg(): Promise<void> {
 		await strandOrder(storage, placed.id, "cancelled", START);
 	}
 
+	// prune-carts (#39): three empty carts, keyed, untouched past the abandonment window.
+	const abandoned = adapters(storage, new Date(START.getTime() - ABANDONED_CART_TTL_MS - DAY_MS));
+	abandonedCarts = [];
+	for (let i = 0; i < 3; i++) {
+		abandonedCarts.push(
+			await abandoned.cartStore.create(
+				currency("USD"),
+				idempotencyKey(`create:abandoned-${String(i)}`),
+			),
+		);
+	}
+
 	// product-orphans: three products deleted in the CMS whose afterDelete was lost.
 	for (const id of ORPHANED_PRODUCTS) {
 		await products.upsert(
@@ -317,6 +339,10 @@ async function seedEveryLeg(): Promise<void> {
 			idempotencyKey(`upsert-${id}`),
 		);
 	}
+
+	// product-reconcile: a published product whose first publish sync was lost — no
+	// commerce row at all (#95).
+	cms.updatedAt.set("listed", new Date(SETUP_NOW.getTime() - HOUR_MS).toISOString());
 
 	// late-refunds: an expired order paid late, whose refund hit a retryable failure.
 	const late = await placeOrder(
@@ -417,6 +443,17 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 				),
 			)
 		).every((doc) => doc?.lifecycle === "deleted"),
+		"prune-carts": (
+			await Promise.all([
+				...abandonedCarts.map((id) => collectionOf(storage, CARTS_COLLECTION).get(id)),
+				...[0, 1, 2].map((i) =>
+					collectionOf(storage, CART_CREATE_KEYS_COLLECTION).get(`create:abandoned-${String(i)}`),
+				),
+			])
+		).every((doc) => doc === null),
+		"product-reconcile":
+			(await collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION).get("listed"))
+				?.active === true,
 		"late-refunds": stripe.refundCalls.length >= 1,
 	};
 }
@@ -567,6 +604,8 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			"coupon-recount",
 			"stranded-holds",
 			"product-orphans",
+			"prune-carts",
+			"product-reconcile",
 		];
 		for (const moneyLeg of ["expire-orders", "hold-intents", "late-refunds"] as const) {
 			for (const chore of housekeeping) {

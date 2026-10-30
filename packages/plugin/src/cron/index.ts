@@ -56,16 +56,16 @@ import {
 	type CommerceSweepSummary,
 } from "./sweeps.js";
 
-/** The task name this plugin registers. One task drives all thirteen legs: they share
- *  a store composition and a clock, and splitting them would buy nothing but thirteen
+/** The task name this plugin registers. One task drives all sixteen legs: they share
+ *  a store composition and a clock, and splitting them would buy nothing but sixteen
  *  rows contending on the same documents.
  *
  *  Splitting would NOT buy isolation from a slow leg either, which is the obvious
  *  reason to want it: EmDash 1.0.1's executor (`src/plugins/cron.ts`, `tick`) claims
  *  due rows and invokes their hooks ONE AFTER ANOTHER in a single scheduled event,
  *  each under its own timeout, and a timed-out hook is only raced, never cancelled
- *  (`src/plugins/hooks.ts`, `executeWithTimeout`) — it keeps running unobserved. Thirteen
- *  tasks could therefore hold the event for thirteen timeouts back to back. One task
+ *  (`src/plugins/hooks.ts`, `executeWithTimeout`) — it keeps running unobserved. Sixteen
+ *  tasks could therefore hold the event for sixteen timeouts back to back. One task
  *  with its own time budget (`SWEEP_TICK_BUDGET_MS`) stops cleanly instead. */
 export const SWEEP_TASK_NAME = "commerce-sweeps";
 

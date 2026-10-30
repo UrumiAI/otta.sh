@@ -7,7 +7,10 @@ import type {
 	HookHandler,
 	PluginContext,
 } from "../types.js";
-import type { UpsertProductCommerceInput } from "../product-commerce/commerce-client.js";
+import type {
+	CommerceClient,
+	UpsertProductCommerceInput,
+} from "../product-commerce/commerce-client.js";
 import { parseProductTitle } from "./parse-product-title.js";
 import {
 	deriveDeleteIdempotencyKey,
@@ -17,7 +20,7 @@ import {
 	deriveUnpublishIdempotencyKey,
 } from "./derive-idempotency-key.js";
 import { normalizeWatermark } from "./normalize-watermark.js";
-import { syncVariants } from "./variants.js";
+import { syncVariants, type VariantSyncClient, type VariantSyncOutcome } from "./variants.js";
 
 /**
  * ONE HOME PER FIELD (PR 1b) — what this module does, and no longer does.
@@ -166,7 +169,7 @@ export const PRODUCTS_COLLECTION = "products";
  * `status = "published"`), so a `content:afterSave` for a live product reports
  * it here.
  */
-const PUBLISHED_STATUS = "published";
+export const PUBLISHED_STATUS = "published";
 
 /**
  * True when this save staged a PENDING DRAFT over content that is currently
@@ -224,7 +227,7 @@ export function hasPendingDraft(content: Record<string, unknown>): boolean {
  * ADR-0013 argues for on the admin-edit side: the type first, the test second,
  * the prose third.
  */
-type SyncUpsertBody = Pick<
+export type SyncUpsertBody = Pick<
 	UpsertProductCommerceInput,
 	"title" | "titleRejection" | "contentUpdatedAt"
 >;
@@ -233,7 +236,7 @@ type SyncUpsertBody = Pick<
  *  record. There is no "skip" and no "invalid" arm any more: the body carries
  *  at most a title, so there is nothing left to reject and no reason to
  *  withhold the row. `titleProblem` is the caller's log line, never fatal. */
-interface DerivedContent {
+export interface DerivedContent {
 	body: SyncUpsertBody;
 	/** Why the body carries no `title`, when it doesn't — logged by the
 	 *  caller, NEVER fatal (see `parseProductTitle`). */
@@ -243,9 +246,10 @@ interface DerivedContent {
 /**
  * The single derive: content record → `product_commerce` upsert body.
  *
- * Both `content:afterSave` (for content that is NOT live) and
- * `content:afterPublish` (for content that is BECOMING live) go through here,
- * so the one projected field is defined once.
+ * `content:afterSave` (for content that is NOT live), `content:afterPublish`
+ * (for content that is BECOMING live) and the cron's `product-reconcile` sweep
+ * (for content that IS live and whose sync was lost, via `syncLiveProduct`) all
+ * go through here, so the one projected field is defined once.
  *
  * THE BODY IS TITLE-ONLY, AND IT ALWAYS APPLIES. No commercial field is read
  * from content any more (PR 1b — see the module header), so:
@@ -271,7 +275,7 @@ interface DerivedContent {
  *    header: the save hook returns a content bag, not a verdict, and a sandboxed
  *    hook's error is logged while the save proceeds).
  */
-function deriveContent(content: Record<string, unknown>): DerivedContent {
+export function deriveContent(content: Record<string, unknown>): DerivedContent {
 	// TITLE: read from `content.data.title` — the CONTENT's own field. One
 	// source of truth, so the storefront heading and the order line's snapshot
 	// cannot drift. Done here, in the SHARED derive, so both hooks carry it.
@@ -334,16 +338,23 @@ function deriveContent(content: Record<string, unknown>): DerivedContent {
  * lands at `content:afterPublish`, together with the content.
  *
  * Cost, stated plainly: a row stuck content-live-but-unpurchasable (an earlier
- * `activate` lost in transit) no longer heals on the merchant's next save,
- * because a save of live content now sends nothing. THE RECOVERY VERB IS
- * PUBLISH — one click on "Publish changes" re-derives and re-activates. There
- * is still no automatic repair (no reconcile cron).
+ * `activate` lost) no longer heals on the merchant's next save, because a save
+ * of live content now sends nothing. It heals from the cron's
+ * `product-reconcile` sweep (issue #95, `cron/sweeps.ts`), which re-derives
+ * every PUBLISHED product from its live content through `syncLiveProduct` —
+ * the publish path itself — and re-asserts `active`; or at once, by a click on
+ * "Publish changes".
  *
  * Fire-and-forget (plan §4): `afterSave` requires only `content:read` and must
- * never fail the CMS save. A network failure / non-2xx is logged, not thrown.
- * Honest guarantee (review N2): there is no reconcile cron yet — a failed sync
- * is LOST until the next human save re-fires this hook (the idempotent upsert
- * makes that replay safe).
+ * never fail the CMS save. A storage failure is logged, not thrown. What a lost
+ * save sync leaves behind depends on the product's state: for a PUBLISHED
+ * product the reconcile sweep re-derives the title (from the live content, at
+ * the next pass — at most a maintenance interval after it finishes its
+ * rotation) and re-asserts `active`; for a product that is NOT live (a draft)
+ * the sweep never writes the title — on a revision-supporting collection the
+ * content columns it can read are not the draft the merchant just saved — so
+ * that sync stays lost until the next save re-fires this hook (the idempotent
+ * upsert makes that replay safe). An inactive draft's title is not on sale.
  */
 export function createAfterSaveHandler(
 	allowedHosts: readonly string[] = ALLOWED_HOSTS,
@@ -432,7 +443,7 @@ export function createAfterSaveHandler(
 			});
 		} catch (err) {
 			console.error(
-				`[otta] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync (the title cache, and any variant this save declared or dropped) is lost until the product is saved/published again:`,
+				`[otta] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). If the product is published, the cron's product-reconcile sweep re-derives it from the live content on its next pass; a draft's sync (the title cache, and any variant this save declared or dropped) is lost until the product is saved/published again:`,
 				err,
 			);
 		}
@@ -674,8 +685,8 @@ async function readDocument(ctx: PluginContext, id: string, hook: string): Promi
  * same as `afterSave`/`afterDelete`: no manifest/capability change needed.
  *
  * Mirrors `createAfterSaveHandler`'s shape (collection guard, missing-id
- * guard, fire-and-forget failure handling — same honest "no reconcile cron
- * yet" caveat). Activation stays its own dedicated call and is never an
+ * guard, fire-and-forget failure handling; a lost sync is repaired by the cron's
+ * `product-reconcile` sweep). Activation stays its own dedicated call and is never an
  * `active` field on the upsert: `upsert` deliberately never touches
  * `active`/`deletedAt` (a stale/replayed sync must never reactivate a
  * soft-deleted row) — see the port doc / the service route's doc. The
@@ -706,11 +717,16 @@ async function readDocument(ctx: PluginContext, id: string, hook: string): Promi
  *
  * Honest consequences of failing closed: on a publish-of-pending-changes the
  * row is ALREADY active, so skipping the activate deactivates nothing — the
- * content goes live against the row as it stands, logged only. On a FIRST
- * publish the row may not exist at all, so the product is content-live and
- * listed but unbuyable — no commerce data joins to it — until it is published
- * again. Since `afterSave` no longer retries the flip for live content, the
- * recovery verb in both cases is PUBLISH, not save. No automatic repair exists.
+ * content goes live against the row as it stands (the stale title), logged. On
+ * a FIRST publish the row may not exist at all, so the product is content-live
+ * and listed but unbuyable — no commerce data joins to it. Since `afterSave` no
+ * longer retries the flip for live content, the save is not a recovery verb.
+ * Both states are REPAIRED by the cron's `product-reconcile` sweep (issue #95):
+ * it walks the published catalogue, finds the row missing, its watermark behind
+ * the content's, its title disagreeing with the live content, or its `active`
+ * flag disagreeing with the content's publish state, and runs this same sync
+ * (`syncLiveProduct`) from the live content. "Publish changes" still repairs it
+ * at once.
  *
  * Fire-and-forget throughout — this must never throw into the CMS publish path.
  */
@@ -722,71 +738,25 @@ export function createAfterPublishHandler(
 		const id = event.content["id"];
 		if (typeof id !== "string" || id.length === 0) return; // no CMS id — nothing to activate.
 
-		const updatedAt = event.content["updatedAt"];
 		// The ordering watermark the service gates on so a stale, out-of-order
 		// publish is a no-op (activate/deactivate are opposing flips on the same
 		// `active` flag — see the port doc). Normalized to strict
 		// Date.toISOString() form (the service validates it exactly, review F1).
 		// EmDash's publish() always carries a valid `updatedAt`; if it is somehow
 		// unparseable there is no watermark to gate the flip, so skip the sync
-		// (fire-and-forget, same honest "lost until next publish" caveat) rather
-		// than send an ungated flip that could re-latch out of order.
-		const watermark = normalizeWatermark(updatedAt);
+		// rather than send an ungated flip that could re-latch out of order. The
+		// reconcile sweep skips such a document too, for the same reason.
+		const watermark = normalizeWatermark(event.content["updatedAt"]);
 		if (watermark === undefined) {
 			console.error(
 				`[otta] content:afterPublish for product_id=${id} carried no parseable updatedAt watermark — activation skipped (lost until the product is published again).`,
 			);
 			return;
 		}
-		const key = derivePublishIdempotencyKey(event.collection, id, updatedAt);
-		// The title the publish makes live. Always applied — there is no
-		// validation arm left to reject it (PR 1b); only a TRANSPORT failure on
-		// the upsert blocks the activate.
-		const derived = deriveContent(event.content);
-		// NOT fatal (and NOT a reason to skip the activate): the publish proceeds,
-		// the row simply is not orderable until it has a title.
-		if (derived.titleProblem !== undefined) {
-			console.warn(
-				`[otta] content:afterPublish: product_id=${id} published WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
-			);
-		}
 		try {
-			const client = await makeCommerceClient(ctx);
-			try {
-				await client.upsertProductCommerce(
-					id,
-					// The title (when usable) + the PUBLISH watermark (the key is the
-					// save key-space keyed on the publish's bumped `updatedAt` +
-					// `version`, disjoint from the `:published:` activate key — see
-					// §2.9 on the single per-row idempotency_key column). `publish()`
-					// does write columns, so `updatedAt` still moves here; `version`
-					// is carried for key-space consistency with the afterSave call
-					// site. Unconditional since 1b: the upsert is also what
-					// GUARANTEES THE ROW EXISTS before the activate, which no-ops on
-					// an unknown id.
-					{ ...derived.body, contentUpdatedAt: watermark },
-					deriveSaveIdempotencyKey(event.collection, id, updatedAt, event.content["version"]),
-				);
-			} catch (err) {
-				// FAIL CLOSED — never flip a row live whose commerce we could
-				// not write. Distinct from the generic sync-failed line below so
-				// the skipped activation is visible in logs.
-				console.error(
-					`[otta] content:afterPublish: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation AND variant sync skipped (fail-closed). No reconcile cron exists yet — this sync is lost until the product is published again:`,
-					err,
-				);
-				return;
-			}
-			await client.activateProductCommerce(id, key, watermark);
-			// The repeater's projection, on the publish's own watermark — the same
-			// call `content:afterSave` makes, for the same reason it derives and
-			// upserts here: publish is the moment live content changes, and a
-			// pending-draft save deferred everything to this hook. It never throws,
-			// and a document with no repeater sends nothing.
-			await syncVariants({
-				client,
+			await syncLiveProduct(await makeCommerceClient(ctx), {
 				collection: event.collection,
-				productId: id,
+				id,
 				content: event.content,
 				watermark,
 				hook: "content:afterPublish",
@@ -794,11 +764,166 @@ export function createAfterPublishHandler(
 			});
 		} catch (err) {
 			console.error(
-				`[otta] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this activation (and any variant this publish declared or dropped) is lost until the product is saved/published again:`,
+				`[otta] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). The cron's product-reconcile sweep re-derives this activation (and any variant this publish declared or dropped) from the live content on its next pass; publishing again repairs it at once:`,
 				err,
 			);
 		}
 	};
+}
+
+/** The slice of the commerce client the live sync writes through. */
+export type LiveSyncClient = Pick<
+	CommerceClient,
+	"upsertProductCommerce" | "activateProductCommerce"
+> &
+	VariantSyncClient;
+
+export interface LiveSyncInput {
+	readonly collection: string;
+	readonly id: string;
+	/** The LIVE content record: `content:afterPublish`'s event content, or the
+	 *  reconcile sweep's `ctx.content` read of a published document. Never a
+	 *  draft-hydrated record — that is the leak publish atomicity closes. */
+	readonly content: Record<string, unknown>;
+	/** The normalized ordering watermark for every write (`normalize-watermark.ts`). */
+	readonly watermark: string;
+	/** Who is syncing, for the log lines. */
+	readonly hook: string;
+	readonly allowedHosts: readonly string[];
+	/** Errors that must propagate rather than be logged as a lost upsert: the
+	 *  cron tick's query ceiling, which is the tick's budget, not a storage fault. */
+	readonly rethrow?: (err: unknown) => boolean;
+}
+
+/** What a row must hold for {@link titleHeld}: written structurally so a caller
+ *  outside the sync (the reconcile sweep) can pass a stored document. */
+export interface TitleStateView {
+	readonly title: string | null;
+	readonly titleRejection?: string | null;
+}
+
+/**
+ * Whether `row` already holds the title state `body` would write
+ * (`resolveTitleWrite`'s rules: a rejection clears the title and records why; an
+ * ABSENT title says nothing, so any stored state holds it).
+ */
+export function titleHeld(body: SyncUpsertBody, row: TitleStateView): boolean {
+	if (body.titleRejection !== undefined) {
+		return row.title === null && (row.titleRejection ?? null) === body.titleRejection;
+	}
+	if (typeof body.title === "string") return row.title === body.title;
+	return true;
+}
+
+/**
+ * What one live sync did, for a caller that must tell a repair from a no-op (the
+ * reconcile sweep; the publish hook ignores it):
+ *  - `upsert-failed`: the upsert threw — logged; the activate and the variants were
+ *    skipped (fail-closed);
+ *  - otherwise the activate ran, and:
+ *    - `upsert` says only where the row the store returned stands against this
+ *      sync's watermark: `watermark-held` when it carries it, `watermark-outranked`
+ *      when it carries another (the row already outranks it, so the store returned
+ *      it untouched), `unknown` when no row came back. It is NOT "the write
+ *      applied": the client's row carries no title, so a same-key replay at the
+ *      same watermark reads as `watermark-held`. A caller that must know the write
+ *      held re-reads the row, as the reconcile sweep does;
+ *    - `variants` is `syncVariants`' own outcome (`failed` is a swallowed error).
+ */
+export type LiveSyncOutcome =
+	| { readonly kind: "upsert-failed" }
+	| {
+			readonly kind: "synced";
+			readonly upsert: "watermark-held" | "watermark-outranked" | "unknown";
+			readonly variants: VariantSyncOutcome;
+	  };
+
+/**
+ * THE LIVE SYNC — derive, upsert, activate, project the repeater — shared by
+ * `content:afterPublish` and the cron's `product-reconcile` sweep (issue #95),
+ * so the repair is the publish, not a second copy of it.
+ *
+ *  - The body is `deriveContent(content)`: the title only, never a commercial
+ *    field (PR 1b), so a repair can never put a price live.
+ *  - The upsert is keyed in the save key-space on the content's own `updatedAt`
+ *    + `version` (disjoint from the `:published:` activate key — §2.9 on the
+ *    single per-row idempotency_key column), and it is UNCONDITIONAL: it is
+ *    what guarantees the row exists before the activate, which no-ops on an
+ *    unknown id. `publish()` writes columns, so `updatedAt` moves on a publish.
+ *  - FAIL CLOSED: an upsert that throws skips the activate and the variants —
+ *    never make a row live whose commerce record could not be written. Logged
+ *    on its own line; the outcome says so.
+ *  - The activate is the dedicated, guarded flip (never an `active` field on
+ *    the upsert): it no-ops on a tombstone, so a publish — or a repair — can
+ *    never resurrect a soft-deleted product, and its watermark loses to any
+ *    newer lifecycle event (an unpublish that lands meanwhile wins).
+ *  - The repeater's projection runs last, never throws (except `rethrow`), and
+ *    sends nothing for a document with no repeater.
+ *
+ * Throws only what the activate throws (and `rethrow`): the caller logs.
+ */
+export async function syncLiveProduct(
+	client: LiveSyncClient,
+	input: LiveSyncInput,
+): Promise<LiveSyncOutcome> {
+	const { collection, id, content, watermark, hook, allowedHosts } = input;
+	const updatedAt = content["updatedAt"];
+	// The title the publish makes live. Always applied — there is no validation
+	// arm left to reject it (PR 1b); only a failed upsert blocks the activate.
+	const derived = deriveContent(content);
+	// NOT fatal (and NOT a reason to skip the activate): the publish proceeds,
+	// the row simply is not orderable until it has a title.
+	if (derived.titleProblem !== undefined) {
+		console.warn(
+			`[otta] ${hook}: product_id=${id} published WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
+		);
+	}
+	let upsert: "watermark-held" | "watermark-outranked" | "unknown";
+	try {
+		const row = await client.upsertProductCommerce(
+			id,
+			{ ...derived.body, contentUpdatedAt: watermark },
+			deriveSaveIdempotencyKey(collection, id, updatedAt, content["version"]),
+		);
+		// Read defensively: a client that returns no row must not throw past the
+		// fail-closed path below (the activate still needs the upsert to have run).
+		const returned = row as { contentUpdatedAt?: unknown } | null | undefined;
+		upsert =
+			returned === undefined || returned === null
+				? "unknown"
+				: returned.contentUpdatedAt === watermark
+					? "watermark-held"
+					: "watermark-outranked";
+	} catch (err) {
+		if (input.rethrow?.(err) === true) throw err;
+		// FAIL CLOSED — never flip a row live whose commerce we could not write.
+		// Distinct from the caller's generic sync-failed line so the skipped
+		// activation is visible in logs.
+		console.error(
+			`[otta] ${hook}: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation AND variant sync skipped (fail-closed). The cron's product-reconcile sweep retries it from the live content on its next pass; publishing again repairs it at once:`,
+			err,
+		);
+		return { kind: "upsert-failed" };
+	}
+	await client.activateProductCommerce(
+		id,
+		derivePublishIdempotencyKey(collection, id, updatedAt),
+		watermark,
+	);
+	// The repeater's projection, on the same watermark — the same call
+	// `content:afterSave` makes: publish is the moment live content changes, and a
+	// pending-draft save deferred everything to it.
+	const variants = await syncVariants({
+		client,
+		collection,
+		productId: id,
+		content,
+		watermark,
+		hook,
+		allowedHosts,
+		...(input.rethrow === undefined ? {} : { rethrow: input.rethrow }),
+	});
+	return { kind: "synced", upsert, variants };
 }
 
 /**
@@ -830,7 +955,10 @@ export function createAfterPublishHandler(
  * `content:read` to register (`packages/core/src/plugins/hooks.ts:285` —
  * `["content:afterUnpublish", "content:read"]`), same as
  * `afterSave`/`afterDelete`/`afterPublish`: no manifest/capability change
- * needed. Same fire-and-forget "no reconcile cron yet" caveat; the
+ * needed. Same fire-and-forget posture: a lost deactivation is repaired by the
+ * cron's `product-reconcile` sweep, which deactivates a live, active row whose
+ * document it reads as NOT published (at the document's own watermark, under
+ * this hook's key, so a newer publish still wins); the
  * service-side `deactivate` is itself the guard against touching a
  * soft-deleted row's tombstone.
  */
@@ -859,7 +987,7 @@ export function createAfterUnpublishHandler(
 			await (await makeCommerceClient(ctx)).deactivateProductCommerce(id, key, watermark);
 		} catch (err) {
 			console.error(
-				`[otta] content:afterUnpublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this deactivation is lost until the product is saved/unpublished again:`,
+				`[otta] content:afterUnpublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). The cron's product-reconcile sweep deactivates the row on its next pass; unpublishing again repairs it at once:`,
 				err,
 			);
 		}
