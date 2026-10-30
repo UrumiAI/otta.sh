@@ -139,6 +139,7 @@ describe("the sweep's schedule and timeout are pinned", () => {
 				"coupon-recount",
 				"order-sku-index",
 				"product-orphans",
+				"prune-carts",
 				"prune-challenges",
 				"reporting-heal",
 				"sku-transfers",

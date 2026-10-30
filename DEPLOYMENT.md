@@ -907,12 +907,57 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all fourteen sweep legs: they share a store composition
-and a clock, and splitting them would only put fourteen rows in contention on the same documents. The
-seven scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
-`coupon-recount`, `stranded-holds`, `product-orphans`) and the sign-in challenge prune run at most
-every fifteen minutes inside that task (housekeeping: the scans read a page budget of a collection
-per run); a scan cut short by the budget carries on next tick until its pass is done.
+hook when it comes due. One task drives all fifteen sweep legs: they share a store composition
+and a clock, and splitting them would only put fifteen rows in contention on the same documents. The
+eight scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`coupon-recount`, `stranded-holds`, `product-orphans`, `prune-carts`) and the sign-in challenge
+prune run at most every fifteen minutes inside that task (housekeeping: the scans read a page budget
+of a collection per run); a scan cut short by the budget carries on next tick until its pass is done.
+`prune-carts` (#39) deletes each cart that is active, has no lines, owes no hold work, was handed
+off to no order, and has not been written for 30 days (the cart cookie's lifetime), together with
+its `cart_create_keys` record. It pages the active carts at most once a day (its kv cursor,
+`cron:sweep:cursor:prune-carts`, records when the last pass finished) and deletes at most 50 carts a
+run. A run that reaches 50 is stamped and carries on at its next fifteen-minute cadence, not the
+next tick (it gets no second run in the tick either), so a backlog drains at most 50 carts a quarter
+hour. On the Workers Free preset it also deletes at most **300 carts a UTC day** (counted in the same
+cursor); once that is reached each cadence run is one kv read until the UTC day turns.
+A replay of a cart-create, rotation or re-currency key that hands out a fresh cookie also moves the
+cart's `updatedAt`, so no cart cookie outlives its cart's window. A cart is never deleted while an
+`order_keys` record names its storefront checkout (`checkout:<cartId>`); a headless client that
+checks out under a key of its own is not recognised by that guard (such a cart is still kept by
+having lines, or by being checked out). Known residuals, left as follow-ups:
+- **Legacy key records.** Carts minted before this release do not record their create key, so
+  their `cart_create_keys` record, if they have one, stays behind; a late replay of that key
+  re-creates the cart empty, now recording its key, and a later pass prunes both.
+- **`cart_mutation_index` locators.** A pruned cart's mutation-key locators are not deleted (one
+  key can be shared by many carts through a cached page, so a safe delete costs a read and a
+  guarded delete per key). A locator whose cart is gone already answers "no record".
+- **Digital-only carts.** A cart holding only digital lines (no hold) is never empty, so it is
+  never pruned, and no other sweep removes it.
+- **Carts replaced by a currency switch.** `replaceStaleCurrencyCart` releases the old cart's holds
+  but keeps its lines, so that cart is never empty and never pruned.
+
+**Draining a backlog writes rows.** Each declared index is an expression index over the whole
+shared `_plugin_storage` table (see "Deploying it builds one index" below), so every row carries an
+entry in each of Otta's 46 indexes, plus the table row, its composite primary key's autoindex and the
+host's own list index: deleting one row is about 49 rows written on D1, and a pruned cart deletes two
+(the cart and its create-key record), about 98, call it 100 with other plugins' indexes. That is why a Free budget caps the
+drain at 300 carts a day: about 30,000 rows written, under a third of D1 Free's 100,000 a day, which
+once spent fails every write (add-to-cart and checkout included) until the UTC reset. A store with
+N abandoned carts on its first day drains them in about N / 300 days on Free. On Workers Paid (a
+budget above 50) there is no daily cap (D1 bills rows written per million and has no daily
+ceiling). There a run deletes at most 50 carts and the leg's share stops it sooner (about 23 carts
+at the Paid preset, 600), so an idle store drains about 70 carts a cadence — about 7,000 a day,
+roughly 700,000 rows written; under sustained load a share-stopped run is not stamped and goes
+again the next minute, so the drain can reach about 70 carts a minute (around 10 million rows a
+day) until the backlog clears. These figures are derived from the index model, not measured on
+D1. Overlapping ticks can pass the day's cap by at most one run (50 carts).
+
+The cap keys off the **Background work per minute** setting, not the plan: 50 or less (every
+budget Workers Free can run) counts as Free. So a Workers Paid store left at 50 or below is capped
+at 300 carts a day too (choose the Paid preset to drain faster). A Free store that abandons more
+than 300 empty carts a day never fully catches up; the rest wait their turn, untouched.
+
 `stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
 nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
 read a run from then on. Deleting that key starts it again. `coupon-recount` sets a
