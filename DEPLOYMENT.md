@@ -1419,6 +1419,17 @@ storage adapter loads that from `/playground-media/playground-v1-<filename>`
 on the Worker's asset binding. See `CREDITS.txt` in that directory.
 The marketing site's "Try in Playground" link is
 `https://try.otta.sh/playground`.
+Each page also carries a small GitHub star prompt (`src/lib/playground-star.ts`,
+`public/scripts/playground-star.js`): a card in the corner, once per session,
+that collapses to a pill when dismissed. The page never waits on GitHub. The
+script asks the same-origin `/_otta/stars` for the count (the admin's CSP is
+`connect-src 'self'`), and the Worker fetches it from `api.github.com`
+unauthenticated, cached per colo for an hour (ten minutes after an error).
+GitHub's per-IP rate limit on shared Cloudflare egress is the usual reason the
+count is missing; the prompt then reads "Star", and the log shows
+`[otta-playground] github stars: HTTP 403`.
+This script is playground-only chrome the middleware injects, outside the storefront's
+client-JS fence on the terms in [ADR-0040](./adr/0040-playground-chrome-is-outside-the-client-js-fence.md).
 
 ```bash
 pnpm --filter @urumi.ai/otta-site-staging build:playground

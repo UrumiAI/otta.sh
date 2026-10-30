@@ -35,6 +35,7 @@ import {
 	withPlaygroundCreatedAt,
 	type PrepareResult,
 } from "./playground-commerce.js";
+import { STARS_PATH, starsResponse } from "./playground-star.js";
 
 declare const __OTTA_PLAYGROUND__: boolean;
 
@@ -58,6 +59,9 @@ export async function playgroundGate(context: APIContext): Promise<Response | nu
 	// fetches, and they dispatch with this same user.
 	context.locals.user = withPlaygroundCreatedAt(context.locals.user) as typeof context.locals.user;
 	const { request, url } = context;
+	if (url.pathname === STARS_PATH && (request.method === "GET" || request.method === "HEAD")) {
+		return starsResponse();
+	}
 	if (
 		!isPlaygroundDocument(
 			request.method,
