@@ -71,6 +71,8 @@ describe("contentTableAnswers", () => {
 		expect(message).toContain("[site-staging]");
 		expect(message).toContain("product page");
 		expect(message).toContain("ec_products");
+		expect(message).toContain("is missing");
+		expect(message).not.toContain("could not confirm");
 		expect(String(cause)).toMatch(/no such table/i);
 	});
 
@@ -120,6 +122,10 @@ describe("contentTableAnswers", () => {
 			false,
 		);
 		expect(error).toHaveBeenCalledTimes(1);
+		// The probe never reached a table, so the log must not claim one is gone.
+		const message = String(error.mock.calls[0]?.[0]);
+		expect(message).toContain("could not confirm");
+		expect(message).not.toContain("is missing");
 	});
 
 	it("refuses a collection name that is not a plain identifier, without querying", async () => {

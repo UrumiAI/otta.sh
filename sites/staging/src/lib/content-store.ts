@@ -66,6 +66,11 @@ export type ProbeDb = Pick<Kysely<any>, "selectNoFrom">;
  *  that is not a plain identifier; the probe holds itself to the same rule. */
 const COLLECTION_SLUG = /^[a-z][a-z0-9_]*$/;
 
+/** How SQLite/D1 ("no such table") and Postgres ("relation … does not exist")
+ *  word a missing table. Only picks the log wording; every failure is still an
+ *  outage. */
+const MISSING_TABLE = /no such table|relation "[^"]*" does not exist/i;
+
 /**
  * `true` when `collection`'s content table can be read — the caller's empty
  * answer is then genuine (a 404, an empty shop). `false` when it cannot — the
@@ -92,8 +97,14 @@ export async function contentTableAnswers(
 			.execute();
 		return true;
 	} catch (cause) {
+		// Name what the probe actually saw. A missing table is a fact; any other
+		// fault (no handle, a transient D1 error) only means the probe could not
+		// confirm the tables — the read's empty answer may even be a genuine 404.
+		const finding = MISSING_TABLE.test(String(cause))
+			? `content table "${table}" or an emdash system table it needs is missing`
+			: `could not confirm that content table "${table}" and the emdash system tables it needs are readable (the probe itself failed)`;
 		console.error(
-			`[site-staging] ${where}: the content read came back empty, but content table "${table}" or an emdash system table it needs cannot be read — treating it as a content-store outage, not a missing product (emdash's loader reports a missing table as "not found", issue #140):`,
+			`[site-staging] ${where}: the content read came back empty, and ${finding} — treating it as a content-store outage, not a missing product (emdash's loader reports a missing table as "not found", issue #140):`,
 			cause,
 		);
 		return false;
