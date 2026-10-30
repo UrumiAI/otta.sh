@@ -228,7 +228,6 @@ import { PRODUCTS_COLLECTION } from "../sync/hooks.js";
 import type { ContentReadAccess, PluginContext } from "../types.js";
 import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
 import {
-	COMMIT_WINDOW_EXEMPT_BUDGET,
 	isSweepQueryCeilingError,
 	MAX_COMMIT_WINDOW,
 	SweepQueryCeilingError,
@@ -4677,8 +4676,8 @@ export const ABANDONED_CART_PASS_INTERVAL_MS = DAY_MS;
 /**
  * At most this many carts deleted per RUN of the leg, whatever the budget allows. A
  * run that reaches it is stamped (`waitsCadence`) and the pass carries on at the
- * leg's next cadence, fifteen minutes on: a backlog drains at most 50 carts a quarter
- * hour (4,800 a day) instead of spending every tick's share on deletes. A run
+ * leg's next cadence, fifteen minutes on, instead of spending every tick's share on
+ * deletes. A run
  * stopped by this cap is not run again in the same tick — the second pass takes only
  * a leg its SHARE stopped — while a run its share stopped (on Free, after a cart or
  * two) is `incomplete` and goes again on the second pass or the next tick, under
@@ -4687,8 +4686,8 @@ export const ABANDONED_CART_PASS_INTERVAL_MS = DAY_MS;
 export const ABANDONED_CARTS_PER_RUN = 50;
 
 /**
- * At most this many carts deleted per UTC day on the Workers Free preset (a query
- * budget of `COMMIT_WINDOW_EXEMPT_BUDGET`, 30, or less), counted in the leg's kv
+ * At most this many carts deleted per UTC day at any budget Workers Free can run
+ * (`ABANDONED_CARTS_CAPPED_BUDGET`, 50, or less), counted in the leg's kv
  * cursor. D1 Free allows 100,000 rows written a day, and once a store passes it
  * every write fails — add-to-cart and checkout included — until the UTC reset.
  *
@@ -4706,14 +4705,26 @@ export const ABANDONED_CARTS_PER_RUN = 50;
  * by at most one run's deletes, `ABANDONED_CARTS_PER_RUN`.
  *
  * Paid has no daily rows-written limit (writes are billed per million), so a larger
- * budget has no daily cap and drains at `ABANDONED_CARTS_PER_RUN` a cadence.
+ * budget has no daily cap. Its drain is bounded only by the leg's share and
+ * `ABANDONED_CARTS_PER_RUN`: about 70 carts a cadence on an idle store, and up to
+ * about that a minute under load, when the second pass is cut short and the run is
+ * never stamped (DEPLOYMENT.md has the figures).
  */
 export const ABANDONED_CARTS_PER_DAY_FREE = 300;
 
+/**
+ * The largest query budget the daily cap applies to: Workers Free's limit of 50 D1
+ * queries per invocation, so a Free store keeps the cap at a custom 31–50 too (above
+ * the Free preset, a share-stopped run is never stamped and would otherwise drain a
+ * couple of carts every minute, past D1 Free's rows-written allowance). A budget above
+ * it can only run on Workers Paid.
+ */
+export const ABANDONED_CARTS_CAPPED_BUDGET = 50;
+
 /** The daily delete cap for a tick whose query budget is `queryBudget`: the Free
- *  cap at and below the Free preset, none above it. */
+ *  cap at any budget Workers Free can run, none above it. */
 export function abandonedCartsDailyCap(queryBudget: number): number | null {
-	return queryBudget <= COMMIT_WINDOW_EXEMPT_BUDGET ? ABANDONED_CARTS_PER_DAY_FREE : null;
+	return queryBudget <= ABANDONED_CARTS_CAPPED_BUDGET ? ABANDONED_CARTS_PER_DAY_FREE : null;
 }
 
 /** `prune-carts`' place in a pass, and when the last pass finished. */
