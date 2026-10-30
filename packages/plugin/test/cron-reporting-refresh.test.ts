@@ -22,6 +22,7 @@ import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { REPORTING_SETTLE_MS, SWEEP_TASK_NAME } from "../src/cron/index.js";
 import {
+	INDEX_LAYOUT,
 	REPORTING_BACKFILL_DAYS_PER_DAY_FREE,
 	REPORTING_LINES_HISTORY_DAYS,
 	runCommerceSweeps,
@@ -84,18 +85,17 @@ async function sweep(
 	});
 }
 
-/**
- * Cursors for a store past its deploy day. A refresh state that has never counted a
- * day spends a Free day's backfill allowance up front (the deploy day's rows written
- * go to the index build, DEPLOYMENT.md §5); a state from an earlier day does not.
- */
-async function pastDeployDay(): Promise<SweepCursorStore> {
-	const cursors = memoryCursors();
+/** Rewrite the tick's own state, as a release before this one (or the next UTC day)
+ *  would have left it. */
+async function editState(
+	cursors: SweepCursorStore,
+	edit: (state: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+	const raw = await cursors.read("state");
 	await cursors.write(
-		"reporting-refresh",
-		JSON.stringify({ builtOn: "2000-01-01", builtToday: 0 }),
+		"state",
+		JSON.stringify(edit(raw === null ? {} : (JSON.parse(raw) as Record<string, unknown>))),
 	);
-	return cursors;
 }
 
 function heal(summary: CommerceSweepSummary) {
@@ -115,7 +115,7 @@ describe("the verifier", () => {
 	test("repairs a clean month document and clean day lines that disagree with what they cache, and says so", async () => {
 		const a = await orderDaysAgo("verify-a", 40);
 		const b = await orderDaysAgo("verify-b", 80);
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		const months = [a.day.slice(0, 7), b.day.slice(0, 7)];
 		for (const month of months) expect(await monthly().get(month)).toMatchObject({ dirty: 0 });
@@ -154,7 +154,7 @@ describe("the verifier", () => {
 
 	test("takes turns with the caught-up walk on a Free-sized tick, and wraps its cursor at the end", async () => {
 		const a = await orderDaysAgo("wrap-a", 40);
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		const states: { month: string | null; day: string | null; verifyTurn: boolean }[] = [];
 		for (let run = 0; run < 6; run++) {
@@ -173,7 +173,7 @@ describe("the verifier", () => {
 	}, 120_000);
 
 	test("while an upgrade's backfill is pending, one run in four still goes to the walk or the verifier", async () => {
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		// Thirty stale days: a Free tick's refresh builds a couple a run, so the backfill
 		// stays pending across the runs below.
@@ -218,7 +218,7 @@ describe("the backfill does not wedge", () => {
 	test("a day too big to build in any tick is marked unbuildable and announced, and the days behind it are built", async () => {
 		// A first, roomy run settles every other leg's cadence, so the Free-sized ticks
 		// below are reporting-heal's.
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		const big = await orderDaysAgo("big", 20);
 		const older = await orderDaysAgo("older", 30);
@@ -264,6 +264,16 @@ async function seedBuiltToday(cursors: SweepCursorStore, builtToday: number): Pr
 	);
 }
 
+const productsDirtyOf = async (day: string) =>
+	(await daily().query({ where: { date: day }, limit: 10 })).items.map(
+		({ data }) => data.productsDirty,
+	);
+
+/** The UTC day `sweep` runs on. */
+function sweepDay(): string {
+	return new Date(Date.now() + REPORTING_SETTLE_MS + 60_000).toISOString().slice(0, 10);
+}
+
 /** The every-minute legs with nothing to do, so a tick's room is the heal's alone: the
  *  fixture's orders await payment, and `hold-intents` re-checks them every tick. */
 const QUIET: CommerceSweepOptions["legBodies"] = { "hold-intents": async () => 0 };
@@ -284,14 +294,18 @@ describe("the backfill does not wedge on the Free preset (#660 review)", () => {
 	/** A day the sweep could build with a tick of its own, and one it never could, between
 	 *  older days in other months: the big one is marked and announced, everything behind
 	 *  it is built, its months are rebuilt, and the leg stops being due every tick. */
-	async function expectUnwedged(shape: "current" | "legacy"): Promise<void> {
-		const cursors = await pastDeployDay();
+	async function expectUnwedged(
+		shape: "current" | "legacy",
+		orders = 600,
+		claimsPerOrder = 0,
+	): Promise<void> {
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		// 600 orders: seven pages (a page of its documents and six of orders), one more than
 		// the six a Free tick can give one build, and fewer than the eight the leg's whole
 		// share would buy — the gap the review found.
 		const big = await orderDaysAgo(`big-${shape}`, 20);
-		await cloneOrder(big.id, 599);
+		await cloneOrder(big.id, orders - 1);
 		const older = await orderDaysAgo(`older-${shape}`, 50);
 		const oldest = await orderDaysAgo(`oldest-${shape}`, 80);
 		if (shape === "legacy") {
@@ -309,7 +323,25 @@ describe("the backfill does not wedge on the Free preset (#660 review)", () => {
 				refundedCents: doc.refundedCents,
 				updatedAt: doc.updatedAt,
 			});
+		} // The claims the day's rollup events left: one per creation, transition and refund,
+		// absorbed or not. Every page of them costs the legacy build a unit.
+		const applied = collectionOf<ReportingAppliedDoc>(storage, REPORTING_APPLIED_COLLECTION);
+		for (let i = 0; i < orders * claimsPerOrder; i++) {
+			await applied.put(`legacy-claim-${String(i)}`, {
+				orderId: `${big.id}-clone-${String(i % orders)}`,
+				kind: "transition",
+				date: big.day,
+				currency: "USD",
+				fromState: null,
+				toState: "pending",
+				refundId: null,
+				amountCents: null,
+				claimedAt: "2026-01-01T00:00:00.000Z",
+				appliedAt: "2026-01-01T00:00:00.000Z",
+				absorbedAt: "2026-01-01T00:00:00.000Z",
+			});
 		}
+
 		let last: ReturnType<typeof heal> | undefined;
 		for (let run = 0; run < 16; run++) last = heal(await sweep(cursors, 30));
 
@@ -338,8 +370,15 @@ describe("the backfill does not wedge on the Free preset (#660 review)", () => {
 		await expectUnwedged("legacy");
 	}, 300_000);
 
+	test("and a 150-order legacy day with its 450 claims: their pages count, not one per order page", async () => {
+		// Sized as one claim page per order page (#660 round 2) it was 5 units, which fits,
+		// while the build spends 8 (its documents, two of orders, five of claims) — so it ran
+		// out on every run with the most a run can give it, and headed every batch.
+		await expectUnwedged("legacy", 150, 3);
+	}, 300_000);
+
 	test("a 500-order day — six pages, the most a Free tick gives one build — is built", async () => {
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		const edge = await orderDaysAgo("edge", 20);
 		await cloneOrder(edge.id, 499);
 		// A roomy run settles every other leg (the order's own sweeps included) and builds
@@ -352,16 +391,59 @@ describe("the backfill does not wedge on the Free preset (#660 review)", () => {
 		expect(docs.items.map(({ data }) => data.productsDirty)).toEqual([0]);
 		expect(errors.filter((l) => l.includes("too many orders"))).toEqual([]);
 	}, 300_000);
+
+	test("on ticks other legs keep busy, a 500-order day waits for room without wedging, and is built once the leg ages to the head", async () => {
+		const cursors = memoryCursors();
+		const edge = await orderDaysAgo("busy-edge", 20);
+		await cloneOrder(edge.id, 499);
+		await sweep(cursors);
+		const id = `USD:${edge.day}`;
+		await daily().put(id, { ...(await daily().get(id))!, productsDirty: 1 });
+		// An older day behind it, never built.
+		const older = await orderDaysAgo("busy-older", 30);
+		// Not QUIET: `hold-intents` re-checks the fixture's orders every tick, so the
+		// refresh never has the six units the day needs from the leg's ordinary place.
+		let deferred = 0;
+		for (let run = 0; run < 24; run++) {
+			if (heal(await sweep(cursors, 30)).deferred === true) deferred++;
+		}
+		// It passed the day over rather than spending each tick on it…
+		expect(deferred).toBeGreaterThan(0);
+		// …so the day behind it was built meanwhile, and the leg, deferred, aged to the head
+		// of a tick and built the day itself, without marking it.
+		expect(await productsDirtyOf(older.day)).toEqual([0]);
+		expect(await productsDirtyOf(edge.day)).toEqual([0]);
+		expect(errors.filter((l) => l.includes(edge.day))).toEqual([]);
+	}, 300_000);
+
+	test("a legacy day still absorbing its claims a few a run is built, not struck out", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		const day = await orderDaysAgo("absorbing", 20);
+		await cloneOrder(day.id, 59);
+		const doc = (await daily().get(`USD:${day.day}`))!;
+		// The first rollup's shape, and no claims at all: the build absorbs one per event.
+		await daily().put(`USD:${day.day}`, {
+			currency: doc.currency,
+			date: doc.date,
+			stateCounts: { pending: 60 },
+			revenueOrders: doc.revenueOrders,
+			revenueCents: doc.revenueCents,
+			refundEntries: doc.refundEntries,
+			refundedCents: doc.refundedCents,
+			updatedAt: doc.updatedAt,
+		});
+		for (let run = 0; run < 120 && (await productsDirtyOf(day.day))[0] !== 0; run++) {
+			await sweep(cursors, 30, QUIET);
+		}
+		expect(await productsDirtyOf(day.day)).toEqual([0]);
+		expect(errors.filter((l) => l.includes(day.day))).toEqual([]);
+	}, 300_000);
 });
 
 describe("the backfill's write volume", () => {
-	const productsDirtyOf = async (day: string) =>
-		(await daily().query({ where: { date: day }, limit: 10 })).items.map(
-			({ data }) => data.productsDirty,
-		);
-
 	test("on Free, a day's allowance spent stops the backfill but not a dirty day, and the leg waits its cadence", async () => {
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		const dirty = await orderDaysAgo("cap-dirty", 30);
 		const unbuilt = await orderDaysAgo("cap-unbuilt", 40);
@@ -379,7 +461,7 @@ describe("the backfill's write volume", () => {
 	}, 300_000);
 
 	test("the allowance is per UTC day, and a Paid budget has none", async () => {
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		const a = await orderDaysAgo("cap-reset", 40);
 		// Yesterday's count does not hold today's backfill back.
@@ -395,22 +477,26 @@ describe("the backfill's write volume", () => {
 		expect(await productsDirtyOf(b.day)).toEqual([0]);
 	}, 300_000);
 
-	test("on Free, the deploy day builds no backfill; the next UTC day does", async () => {
+	test("on Free, the deploy day of a new index layout builds no backfill; the next UTC day does", async () => {
 		const cursors = memoryCursors();
+		// A fresh store notes the layout and is not held: it has nothing to index.
 		await sweep(cursors, 30, QUIET);
 		const a = await orderDaysAgo("deploy-day", 40);
+		// The release before declared other indexes: this is its deploy day.
+		await editState(cursors, (state) => ({ ...state, indexLayout: "an older layout" }));
 		for (let run = 0; run < 6; run++) await sweep(cursors, 30, QUIET);
 		expect(await productsDirtyOf(a.day)).toEqual([undefined]);
-		const state = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
-		expect(state.builtToday).toBe(REPORTING_BACKFILL_DAYS_PER_DAY_FREE);
+		const state = JSON.parse((await cursors.read("state"))!) as Record<string, unknown>;
+		expect(state.indexLayout).toBe(INDEX_LAYOUT);
+		expect(state.indexBuildDay).toBe(sweepDay());
 		// The next UTC day.
-		await cursors.write("reporting-refresh", JSON.stringify({ ...state, builtOn: "2000-01-01" }));
+		await editState(cursors, (st) => ({ ...st, indexBuildDay: "2000-01-01" }));
 		for (let run = 0; run < 6; run++) await sweep(cursors, 30, QUIET);
 		expect(await productsDirtyOf(a.day)).toEqual([0]);
 	}, 300_000);
 
 	test("days past the history floor are not backfilled", async () => {
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		const ancient = await orderDaysAgo("ancient", REPORTING_LINES_HISTORY_DAYS + 5);
 		const recent = await orderDaysAgo("recent", REPORTING_LINES_HISTORY_DAYS - 5);
@@ -439,7 +525,7 @@ describe("a month held by a claim", () => {
 
 	test("a settled claim no recompute can prove is stamped, and the month is built in the same run", async () => {
 		const a = await orderDaysAgo("held-old", 40);
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		const month = a.day.slice(0, 7);
 		await claim("orphan-old", a.day, new Date(Date.now() - 2 * REPORTING_SETTLE_MS).toISOString());
@@ -452,7 +538,7 @@ describe("a month held by a claim", () => {
 
 	test("a young claim (an event in flight) leaves the month for a later run without keeping the leg due", async () => {
 		const a = await orderDaysAgo("held-young", 40);
-		const cursors = await pastDeployDay();
+		const cursors = memoryCursors();
 		await sweep(cursors);
 		const month = a.day.slice(0, 7);
 		// Young relative to the tick's clock, which `sweep` runs past the settle window.

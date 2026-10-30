@@ -1315,22 +1315,29 @@ export class EmdashReportingStore implements ReportingStore {
 
 	/**
 	 * The fewest reconcile page units ({@link EmdashReportingStoreOptions.maxReconcilePages})
-	 * a {@link rebuildDayProducts} of this day can spend, claims to absorb left out — what a
+	 * a {@link rebuildDayProducts} of this day spends, claims to absorb left out — what a
 	 * caller compares with the most it could ever give the build, to tell a day that is
-	 * merely unlucky this tick from one that can never be built. Two reads: the day's
-	 * documents and a count of its orders.
+	 * merely unlucky this tick from one that can never be built. `legacy` says the day has
+	 * a legacy or tainted document, which the build hands to the full {@link reconcile}.
 	 *
-	 * A current-shape day is a page of its documents and a page per hundred orders. A day
-	 * with a legacy or tainted document is rebuilt by the full {@link reconcile}, which also
-	 * reads the day's claims in pages, and a day has at least one claim per order (its
-	 * creation), so that is as many pages again. A claim still to absorb costs one more unit
-	 * each, but absorbing is progress a later build keeps, so it is not counted here.
+	 * A current-shape day is a page of its documents and a page per hundred orders: two
+	 * reads (the documents, a count of the orders). A legacy day also reads its claims in
+	 * pages, and every claim page costs a unit whether or not its claims are absorbed —
+	 * one claim per creation, transition and refund, so two or three per paid order — so
+	 * they are counted too: a third read, a count of the day's claims by `date`. A claim
+	 * still to absorb costs one more unit each, but absorbing is progress a later build
+	 * keeps, so it is not counted here; a caller must leave a legacy day at least one unit
+	 * past its pages for that progress. `claims` is the day's claim count (0 for a
+	 * current-shape day), which bounds how many builds that progress can take.
 	 */
-	async dayBuildPages(day: string): Promise<number> {
+	async dayBuildPages(day: string): Promise<{ pages: number; legacy: boolean; claims: number }> {
 		const docs = await this.#daily.query({ where: { date: day }, limit: PAGE_SIZE });
-		const orderPages = Math.ceil((await this.dayOrderCount(day)) / PAGE_SIZE);
+		// At least one page each: a scan reads one even when it comes back empty.
+		const orderPages = Math.max(1, Math.ceil((await this.dayOrderCount(day)) / PAGE_SIZE));
 		const legacy = docs.items.some(({ data }) => !isCurrentReportingDailyDoc(data));
-		return 1 + orderPages + (legacy ? orderPages : 0);
+		if (!legacy) return { pages: 1 + orderPages, legacy, claims: 0 };
+		const claims = await this.#applied.count({ date: day });
+		return { pages: 1 + orderPages + Math.max(1, Math.ceil(claims / PAGE_SIZE)), legacy, claims };
 	}
 
 	/**

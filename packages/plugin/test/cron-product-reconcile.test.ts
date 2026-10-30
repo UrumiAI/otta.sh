@@ -1120,6 +1120,32 @@ describe("the daily repair cap: on Workers Free a first-install heal cannot spen
 		JSON.parse((await cursors.read(PRODUCT_RECONCILE_CURSOR)) ?? "{}") as Stored;
 	const TODAY = NOW.toISOString().slice(0, 10);
 
+	test("on the deploy day of a new index layout a Free tick repairs nothing and waits its cadence; the next UTC day it repairs", async () => {
+		const cms = new Cms();
+		cms.put({ id: "p1", title: "Linen Shirt", updatedAt: T2, version: 3 });
+		const cursors = memoryCursors();
+		// The tick state the release before left: another index layout, so EmDash is
+		// building this one's indexes today and the day's rows written are theirs.
+		await cursors.write("state", JSON.stringify({ indexLayout: "an older layout" }));
+		// The tick's other legs are due too; the first run that reaches this leg is held.
+		let held: ReturnType<typeof leg> | undefined;
+		for (let t = 0; t < 10 && held === undefined; t++) {
+			const outcome = leg(await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS }));
+			if (outcome.deferred !== true) held = outcome;
+		}
+		expect(held).toMatchObject({ count: 0, waitsCadence: true });
+		expect(await row("p1")).toBeNull();
+		expect(await cursors.read(PRODUCT_RECONCILE_CURSOR)).toBeNull();
+		// The next UTC day.
+		let repaired = 0;
+		for (let t = 0; t < 10 && repaired === 0; t++) {
+			const offsetMs = (24 * 60 + t) * MINUTE_MS;
+			repaired += leg(await tick(cms, cursors, { budget: FREE, offsetMs })).count;
+		}
+		expect(repaired).toBe(1);
+		expect(await row("p1")).toMatchObject({ title: "Linen Shirt", active: true });
+	});
+
 	test("the cap applies at any budget Workers Free can run (50 or less), and none above it", () => {
 		expect(RECONCILE_REPAIRS_PER_DAY_FREE).toBe(200);
 		expect(reconcileRepairsDailyCap(FREE)).toBe(RECONCILE_REPAIRS_PER_DAY_FREE);

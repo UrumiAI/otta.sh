@@ -789,6 +789,12 @@ describeEachDialect("EmdashReportingStore month cache: the review's holes (#572)
 		});
 		expect(await h.store.staleProductDays(FUTURE_DAY, 10)).not.toContain("2026-05-18");
 		expect(await h.store.dayOrderCount("2026-05-18")).toBe(1);
+		// A page of its documents and one of orders; a current-shape day reads no claims.
+		expect(await h.store.dayBuildPages("2026-05-18")).toEqual({
+			pages: 2,
+			legacy: false,
+			claims: 0,
+		});
 		expect(await answers(h, may)).toEqual(await oracle(h, may));
 	});
 

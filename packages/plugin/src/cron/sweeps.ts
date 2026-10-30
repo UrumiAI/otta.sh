@@ -205,6 +205,7 @@ import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
 } from "../commerce/in-process-commerce-stores.js";
+import { COMMERCE_STORAGE_COLLECTIONS } from "../commerce/commerce-storage.js";
 import {
 	countTimeoutsAsAttempts,
 	EMAIL_AVAILABILITY_READS,
@@ -1330,7 +1331,10 @@ export async function runCommerceSweeps(
 		lateRefunds: lateRefundLimit,
 	};
 	const state = await readState(cursors);
-	let stateChanged = false;
+	let stateChanged = noteIndexLayout(state, state.existed === true, nowIso.slice(0, 10));
+	delete state.existed;
+	const indexBuildHold =
+		queryBudget <= WORKERS_FREE_MAX_QUERY_BUDGET && state.indexBuildDay === nowIso.slice(0, 10);
 	const legs: Omit<SweepLegOutcome, "queries">[] = [];
 	const deferredByBudget: SweepLeg[] = [];
 	const stoppedAtCeiling: SweepLeg[] = [];
@@ -2054,6 +2058,7 @@ export async function runCommerceSweeps(
 						options,
 						legBudget,
 						queryBudget,
+						indexBuildHold,
 					),
 			),
 		"coupon-orphans": async () =>
@@ -2093,7 +2098,7 @@ export async function runCommerceSweeps(
 					legBudget,
 					// The cursor write that records a run's place, even one the ceiling stopped.
 					() => budget.allowCommit(1),
-					abandonedCartsDailyCap(queryBudget),
+					indexBuildHold ? 0 : abandonedCartsDailyCap(queryBudget),
 				);
 				// Stopped by its share with carts left: a candidate for the second pass.
 				if (legBudget.stopped) stoppedByBudget.add("prune-carts");
@@ -2167,7 +2172,7 @@ export async function runCommerceSweeps(
 					{
 						now,
 						passIntervalMs: reconcilePassIntervalMs(queryBudget),
-						dailyRepairCap: reconcileRepairsDailyCap(queryBudget),
+						dailyRepairCap: indexBuildHold ? 0 : reconcileRepairsDailyCap(queryBudget),
 					},
 				);
 				if (legBudget.stopped) stoppedByBudget.add("product-reconcile");
@@ -2704,6 +2709,50 @@ interface SweepState {
 	/** The last few orders whose expiry flip threw, by id (#478): the durable half
 	 *  of the expiry back-off, and what the leg's alert counts. */
 	expiryFailures: Record<string, ExpiryFailure>;
+	/** The declared index layout (`INDEX_LAYOUT`) the last tick saw. */
+	indexLayout?: string;
+	/** The UTC day a tick first saw a new index layout: EmDash builds the new indexes
+	 *  that day (see `indexBuildHold`). */
+	indexBuildDay?: string;
+	/** Read only: whether a state was stored at all (a fresh install has none). */
+	existed?: boolean;
+}
+
+/**
+ * A fingerprint of every index Otta declares (`COMMERCE_STORAGE_COLLECTIONS`): EmDash
+ * builds a newly declared index on the first scheduled tick after the deploy, so a tick
+ * that finds a different one stored is on that deploy's day.
+ */
+export const INDEX_LAYOUT: string = (() => {
+	const text = JSON.stringify(
+		Object.entries(COMMERCE_STORAGE_COLLECTIONS)
+			.toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+			.map(([name, c]) => [name, c.indexes ?? [], c.uniqueIndexes ?? []]),
+	);
+	// FNV-1a, 32 bits: a short tag, not a security boundary.
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, "0");
+})();
+
+/**
+ * Whether today is an index-build day on Workers Free: the deploy day of a new index
+ * layout, at a budget of `WORKERS_FREE_MAX_QUERY_BUDGET` or less. On D1 the build writes
+ * about one row per `_plugin_storage` row PER new index, counted against Free's 100,000
+ * rows written a day, so the three capped legs — the reporting backfill, the cart prune
+ * and the product reconcile — spend nothing that UTC day and leave it to the build
+ * (DEPLOYMENT.md §5). Marked on the tick's own state (read every tick already), by the
+ * first tick that sees the new layout; a store with no state yet (a fresh install) has
+ * no history to build indexes over, and is not held.
+ */
+function noteIndexLayout(state: SweepState, existed: boolean, today: string): boolean {
+	if (state.indexLayout === INDEX_LAYOUT) return false;
+	state.indexLayout = INDEX_LAYOUT;
+	if (existed) state.indexBuildDay = today;
+	return true;
 }
 
 /** A lost or garbled state only makes every scan due and resets the streaks —
@@ -2712,15 +2761,20 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	const state: SweepState = { lastRun: {}, deferrals: {}, waits: {}, expiryFailures: {} };
 	const raw = await cursors.read(STATE_CURSOR);
 	if (raw === null) return state;
+	state.existed = true;
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return state;
-		const { lastRun, deferrals, waits, expiryFailures } = parsed as {
+		const { lastRun, deferrals, waits, expiryFailures, indexLayout, indexBuildDay } = parsed as {
 			lastRun?: unknown;
 			deferrals?: unknown;
 			waits?: unknown;
 			expiryFailures?: unknown;
+			indexLayout?: unknown;
+			indexBuildDay?: unknown;
 		};
+		if (typeof indexLayout === "string") state.indexLayout = indexLayout;
+		if (typeof indexBuildDay === "string") state.indexBuildDay = indexBuildDay;
 		state.expiryFailures = parseExpiryFailures(expiryFailures);
 		for (const leg of SWEEP_LEGS) {
 			const stamp = (lastRun as Record<string, unknown> | undefined)?.[leg];
@@ -3343,8 +3397,20 @@ async function healReportingRollups(
 	options: CommerceSweepOptions,
 	budget: LegBudget,
 	queryBudget: number,
-): Promise<{ count: number; incomplete?: true }> {
+	indexBuildHold: boolean,
+): Promise<{ count: number; incomplete?: true; deferred?: true; anomalies?: readonly string[] }> {
 	const closed = dayKey(new Date(now.getTime() - DAY_MS));
+	// The Free daily backfill cap, spent whole on the day a new index layout is built.
+	const dailyCap = indexBuildHold ? 0 : reportingBackfillDailyCap(queryBudget);
+	/** A refresh that passed over a day for want of room reports the leg deferred, so it
+	 *  ages to the head of a later tick (unless it has an anomaly to log). */
+	const refreshOutcome = (
+		count: number,
+		refreshed: { incomplete: boolean; anomalies: string[]; skippedShort: boolean },
+	) =>
+		refreshed.skippedShort && refreshed.anomalies.length === 0
+			? { ...legResult(count, true), deferred: true as const }
+			: legResult(count, refreshed.incomplete, refreshed.anomalies);
 	const floor = addDays(
 		closed,
 		-(options.reportingBackfillDays ?? DEFAULT_REPORTING_BACKFILL_DAYS),
@@ -3386,7 +3452,7 @@ async function healReportingRollups(
 			dayKey(now),
 			new Date(now.getTime() - REPORTING_SETTLE_MS).toISOString(),
 			anomalies,
-			queryBudget,
+			dailyCap,
 		);
 		await writeRefreshState(cursors, refresh, { ...state, verifyTurn: false, turn: 0 });
 		// The refresh still has work: due again next tick.
@@ -3400,6 +3466,7 @@ async function healReportingRollups(
 			refresh,
 			budget,
 			queryBudget,
+			dailyCap,
 		);
 		await writeRefreshState(cursors, refresh, {
 			...refreshed.state,
@@ -3409,7 +3476,7 @@ async function healReportingRollups(
 			verifyTurn: refresh.pending ? refresh.verifyTurn : false,
 			turn: refresh.pending ? refresh.turn + 1 : 0,
 		});
-		return legResult(refreshed.count, refreshed.incomplete, refreshed.anomalies);
+		return refreshOutcome(refreshed.count, refreshed);
 	}
 	// `YYYY-MM-DD` compares lexicographically exactly as it compares chronologically.
 	let from = saved === null ? floor : addDays(saved, 1);
@@ -3469,6 +3536,7 @@ async function healReportingRollups(
 		refresh,
 		budget,
 		queryBudget,
+		dailyCap,
 	);
 	await writeRefreshState(cursors, refresh, {
 		...refreshed.state,
@@ -3476,7 +3544,7 @@ async function healReportingRollups(
 		verifyTurn: caughtUp,
 		turn: 0,
 	});
-	return legResult(written + refreshed.count, refreshed.incomplete, refreshed.anomalies);
+	return refreshOutcome(written + refreshed.count, refreshed);
 }
 
 /** The refresh's own cursor: the verifier's walk, and whose turn it is. */
@@ -3500,11 +3568,16 @@ interface RefreshState {
 	builtToday: number;
 	/**
 	 * Days whose build ran out of room on a tick that could not give it the whole of
-	 * {@link reportingDayBuildUnits}, though it would fit in that: each is tried again
-	 * only on a tick that can, and passed over (not spent on) until then, so a loaded
-	 * tick goes to the days behind it instead.
+	 * {@link reportingDayBuildUnits}, though it would fit in that, with the units each
+	 * needs (`dayBuildPages`): each is tried again only on a tick that can give it that
+	 * many, and passed over (not spent on) until then, so a loaded tick goes to the days
+	 * behind it instead.
 	 */
-	short: string[];
+	short: { day: string; need: number }[];
+	/** Builds in a row that ran out of room though given the whole of
+	 *  {@link reportingDayBuildUnits}, by day: the backstop that marks a day the sizing
+	 *  got wrong (`REPORTING_BUILD_STRIKES`). */
+	strikes: { day: string; n: number }[];
 }
 
 /** While the refresh has work, one run in this many is the walk's or the verifier's. */
@@ -3522,6 +3595,7 @@ function parseRefreshState(raw: string | null): RefreshState {
 		builtOn: null,
 		builtToday: 0,
 		short: [],
+		strikes: [],
 	};
 	if (raw === null) return fresh;
 	try {
@@ -3538,15 +3612,29 @@ function parseRefreshState(raw: string | null): RefreshState {
 				typeof parsed.builtToday === "number" && parsed.builtToday >= 0
 					? Math.floor(parsed.builtToday)
 					: 0,
-			short: Array.isArray(parsed.short)
-				? parsed.short
-						.filter((day): day is string => typeof day === "string")
-						.slice(0, REPORTING_REFRESH_BATCH)
-				: [],
+			short: dayCounts(parsed.short, "need"),
+			strikes: dayCounts(parsed.strikes, "n"),
 		};
 	} catch {
 		return fresh;
 	}
+}
+
+/** A stored `{ day, <field> }[]`, garbled entries dropped, at most a batch of them. */
+function dayCounts<K extends string>(
+	raw: unknown,
+	field: K,
+): ({ day: string } & Record<K, number>)[] {
+	if (!Array.isArray(raw)) return [];
+	const out: ({ day: string } & Record<K, number>)[] = [];
+	for (const entry of raw as unknown[]) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const { day, [field]: n } = entry as Record<string, unknown>;
+		if (typeof day !== "string" || typeof n !== "number" || !Number.isInteger(n) || n < 0) continue;
+		out.push({ day, [field]: n } as { day: string } & Record<K, number>);
+		if (out.length >= REPORTING_REFRESH_BATCH) break;
+	}
+	return out;
 }
 
 /** One write, and only when something changed. */
@@ -3566,6 +3654,15 @@ function deferrable(err: unknown): boolean {
 
 /** How many stale days, and stale months, one run of the refresh lists. */
 const REPORTING_REFRESH_BATCH = 10;
+
+/**
+ * Runs in a row a day's build may run out of room though given the whole of
+ * {@link reportingDayBuildUnits} before it is marked unbuildable (#660 review). The
+ * sizing (`dayBuildPages`) marks a too-big day on its first failure; this is the
+ * backstop for a day it gets wrong, so no day can head every batch forever. A legacy
+ * day still absorbing its claims is allowed as many more runs as the absorbing takes.
+ */
+const REPORTING_BUILD_STRIKES = 3;
 
 /**
  * Calls a refresh turn makes before its first day build: the walk's and the refresh's
@@ -3616,12 +3713,14 @@ export const REPORTING_LINES_HISTORY_DAYS = 2 * MAX_REPORT_RANGE_DAYS;
  * index — about 52 rows. A day in one currency is three writes (the month touch before,
  * its day document, the touch after), in two currencies four: about 210 rows. 100 builds
  * is then about 21,000 rows written a day (16,000 in one currency). Not more: the
- * abandoned-cart prune (about 31,000) and the product reconcile (about 30,000) have
- * daily caps of their own on Free, and with all three running at once the store's own
- * traffic still keeps about 18,000 of D1 Free's 100,000. Newest first, the trailing year
- * a report reads is built in about four days and the {@link REPORTING_LINES_HISTORY_DAYS}
- * floor (at most 800 builds) in about eight, starting the UTC day after the deploy (see
- * `backfillAllowance`).
+ * abandoned-cart prune (about 31,000) and the product reconcile (about 31,000) have
+ * daily caps of their own on Free, and with all three running at once (about
+ * 83,000–88,000) the store's own traffic still keeps about 12,000–17,000 of D1 Free's
+ * 100,000. It builds newest first and starts the UTC day after the deploy
+ * (`indexBuildHold`). Day documents exist only from the release that introduced them
+ * (about 2026-09-07), so a store upgrading now has about 55 of them — one capped day. Only a store with a year of them would take about four days for the
+ * trailing year, and the {@link REPORTING_LINES_HISTORY_DAYS} floor (at most 800 builds)
+ * bounds it at about eight.
  * Overlapping ticks can pass the cap by at most one batch ({@link REPORTING_REFRESH_BATCH}).
  *
  * Paid has no daily rows-written limit (writes are billed per million), so a larger
@@ -3644,23 +3743,15 @@ export function reportingBackfillDailyCap(queryBudget: number): number | null {
 		: null;
 }
 
-/**
- * Day builds today's cap still allows (`null`: no cap). The stored count is today's only
- * when it was counted today.
- *
- * A refresh state that has never counted a day (`builtOn` null: the first run of a build
- * with the cap, which is the deploy of #572) on a capped budget spends the whole of
- * today's allowance up front: deploy day's rows written go to building the new indexes
- * (DEPLOYMENT.md §5), and the backfill starts at the next UTC midnight.
- */
-function backfillAllowance(state: RefreshState, today: string, queryBudget: number): number | null {
-	const cap = reportingBackfillDailyCap(queryBudget);
-	if (cap === null) return null;
-	if (state.builtOn === null) {
-		state.builtOn = today;
-		state.builtToday = cap;
-	}
-	return Math.max(0, cap - (state.builtOn === today ? state.builtToday : 0));
+/** Day builds today's cap (`dailyCap`, `null`: none) still allows. The stored count is
+ *  today's only when it was counted today. */
+function backfillAllowance(
+	state: RefreshState,
+	today: string,
+	dailyCap: number | null,
+): number | null {
+	if (dailyCap === null) return null;
+	return Math.max(0, dailyCap - (state.builtOn === today ? state.builtToday : 0));
 }
 
 /** Count one day build that wrote, against today's cap. */
@@ -3763,13 +3854,23 @@ async function refreshReportingRollups(
 	saved: RefreshState,
 	budget: LegBudget,
 	queryBudget: number,
-): Promise<{ count: number; incomplete: boolean; anomalies: string[]; state: RefreshState }> {
+	dailyCap: number | null,
+): Promise<{
+	count: number;
+	incomplete: boolean;
+	anomalies: string[];
+	state: RefreshState;
+	/** It passed over a day this tick had too little room for (see `RefreshState.short`). */
+	skippedShort: boolean;
+}> {
 	const state = { ...saved };
+	let skippedShort = false;
 	const done = (count: number, incomplete: boolean, anomalies: string[]) => ({
 		count,
 		incomplete,
 		anomalies,
 		state,
+		skippedShort,
 	});
 	const today = dayKey(now);
 	const thisMonth = today.slice(0, 7);
@@ -3794,7 +3895,7 @@ async function refreshReportingRollups(
 	// stored one only when it is today's. Spent, only the DIRTY days are listed — an
 	// order of theirs moved, and they are few — and the backfill waits for the UTC reset
 	// at the leg's cadence, not every tick.
-	const allowance = backfillAllowance(state, today, queryBudget);
+	const allowance = backfillAllowance(state, today, dailyCap);
 	const listLimit =
 		allowance === null || allowance === 0
 			? REPORTING_REFRESH_BATCH
@@ -3805,52 +3906,82 @@ async function refreshReportingRollups(
 		unbuilt: allowance !== 0,
 	});
 	let incomplete = days.length >= listLimit;
-	// A listed day is either built, marked, or still stale: `short` keeps only the last.
+	// A listed day is either built, marked, or still stale: `short` and `strikes` keep
+	// only the last.
 	const listed = new Set(days);
-	state.short = state.short.filter((day) => listed.has(day));
-	const unshort = (day: string): void => {
-		state.short = state.short.filter((d) => d !== day);
+	state.short = state.short.filter(({ day }) => listed.has(day));
+	state.strikes = state.strikes.filter(({ day }) => listed.has(day));
+	const settle = (day: string): void => {
+		state.short = state.short.filter((entry) => entry.day !== day);
+		state.strikes = state.strikes.filter((entry) => entry.day !== day);
+	};
+	const markUnbuildable = async (day: string, why: string): Promise<void> => {
+		// It would head every batch forever: skip it, loudly. A report scans its orders,
+		// as it always did; a delta that moves its lines lists it again.
+		await lister.markProductsUnbuildable(day);
+		settle(day);
+		anomalies.push(
+			`reporting ${day}: ${why} within one tick's query budget (${String(queryBudget)});` +
+				' reports scan that day instead. Raise "Background work per minute" (DEPLOYMENT.md §5)',
+		);
 	};
 	for (const day of days) {
-		if (!gate()) return done(count, true, anomalies);
-		const units = Math.min(buildUnits, reconcileUnitsFor(budget.remainingQueries()));
-		if (units < buildUnits && state.short.includes(day)) {
-			// It needs a tick with the whole build's room; this one goes to the days behind it.
+		// Out of room: the months and the verifier still get what is left.
+		if (!gate()) {
 			incomplete = true;
+			break;
+		}
+		const units = Math.min(buildUnits, reconcileUnitsFor(budget.remainingQueries()));
+		const known = state.short.find((entry) => entry.day === day);
+		if (known !== undefined && units < known.need) {
+			// Not enough room for THIS day: the tick goes to the days behind it, and the leg
+			// says it was deferred, so it ages to the head of a later tick and gets it.
+			incomplete = true;
+			skippedShort = true;
 			continue;
 		}
 		try {
 			const built = await boundedBy(units).rebuildDayProducts(day);
-			unshort(day);
+			settle(day);
 			count += built.written;
 			if (built.written > 0) noteDayBuilt(state, today);
 		} catch (err) {
 			if (!deferrable(err)) throw err;
-			if (isScanPageLimitError(err) && (await lister.dayBuildPages(day)) > buildUnits) {
-				// It would head every batch forever: skip it, loudly. A report scans its
-				// orders, as it always did; a delta that moves its lines lists it again.
-				await lister.markProductsUnbuildable(day);
-				unshort(day);
-				anomalies.push(
-					`reporting ${day}: too many orders to build its top-products lines within one` +
-						` tick's query budget (${String(queryBudget)}); reports scan that day instead.` +
-						' Raise "Background work per minute" (DEPLOYMENT.md §5)',
+			// Whatever happens below, the day is listed again next run unless it is marked;
+			// the days behind it, the months and the verifier are not held up by it.
+			incomplete = true;
+			if (!isScanPageLimitError(err)) continue; // lost a race
+			const size = await lister.dayBuildPages(day);
+			// A legacy day needs a unit past its pages to absorb a claim, or it never moves.
+			const need = size.legacy ? size.pages + 1 : size.pages;
+			if (need > buildUnits) {
+				await markUnbuildable(day, "too many orders to build its top-products lines");
+				continue;
+			}
+			if (units < buildUnits) {
+				// Short of budget this tick (another leg or the walk spent it).
+				if (known !== undefined) known.need = need;
+				else if (state.short.length < REPORTING_REFRESH_BATCH) state.short.push({ day, need });
+				continue;
+			}
+			// It had the whole build and still ran out. Absorbing a legacy day's claims, that
+			// is progress a later run keeps — but only so many runs' worth; otherwise the
+			// sizing got the day wrong. Either way, past that many runs in a row, it is marked.
+			const allowed =
+				err.operation === "absorbReportingClaims" && size.legacy
+					? Math.ceil(size.claims / Math.max(1, buildUnits - size.pages)) + REPORTING_BUILD_STRIKES
+					: REPORTING_BUILD_STRIKES;
+			const strike = state.strikes.find((entry) => entry.day === day);
+			const n = (strike?.n ?? 0) + 1;
+			if (n >= allowed) {
+				await markUnbuildable(
+					day,
+					`its top-products lines ran out of room ${String(n)} runs in a row, though given the most a run can`,
 				);
 				continue;
 			}
-			// Short of budget this tick (another leg or the walk spent it, or it ran out
-			// absorbing a legacy day's claims, which a later run keeps), or it lost a race:
-			// it is listed again next run. The days behind it, the months and the verifier
-			// are not held up by it.
-			if (
-				isScanPageLimitError(err) &&
-				units < buildUnits &&
-				!state.short.includes(day) &&
-				state.short.length < REPORTING_REFRESH_BATCH
-			) {
-				state.short.push(day);
-			}
-			incomplete = true;
+			if (strike !== undefined) strike.n = n;
+			else if (state.strikes.length < REPORTING_REFRESH_BATCH) state.strikes.push({ day, n });
 		}
 	}
 
@@ -3910,7 +4041,7 @@ async function refreshReportingRollups(
 			today,
 			settled,
 			anomalies,
-			queryBudget,
+			dailyCap,
 		);
 	}
 	return done(count, incomplete, anomalies);
@@ -3935,7 +4066,7 @@ async function verifyReportingRollups(
 	today: string,
 	settled: string,
 	anomalies: string[],
-	queryBudget: number,
+	dailyCap: number | null,
 ): Promise<number> {
 	const monthRoom = REPORTING_MONTH_BUILD_CALLS + 1;
 	const fits = (calls: number): boolean =>
@@ -3976,7 +4107,7 @@ async function verifyReportingRollups(
 		if (!fits(REPORTING_VERIFY_DAY_ROOM)) return;
 		// A re-check that finds a day never built builds it: backfill writes, under the same
 		// daily cap. Spent, the day re-checks wait for the UTC reset; the months do not.
-		if (backfillAllowance(next, today, queryBudget) === 0) return;
+		if (backfillAllowance(next, today, dailyCap) === 0) return;
 		// Newest first, as the backfill builds days: the trailing year a report reads is
 		// the first re-checked, and the walk wraps back to yesterday.
 		let day = await lister.dayBefore(saved.day, today);

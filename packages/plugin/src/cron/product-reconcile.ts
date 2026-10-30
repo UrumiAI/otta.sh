@@ -235,13 +235,16 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
  * every write fails — add-to-cart and checkout included — until the UTC reset.
  *
  * What a repair writes, by DEPLOYMENT.md's index-row model: every `_plugin_storage`
- * document write is about 49 rows written (the row, its primary-key autoindex, the
- * host's list index and Otta's 46 declared expression indexes, none of them
+ * document write is about 52 rows written (the row, its primary-key autoindex, the
+ * host's list index and Otta's 49 declared expression indexes, none of them
  * partial), and a sync is about three document writes (the upsert, the activate,
- * the variant write) plus its sku claims — about 150 rows a product. 200 repairs is
- * then about 30,000 rows written a day, which beside `prune-carts`' own cap
- * (`ABANDONED_CARTS_PER_DAY_FREE`, about 30,000) leaves the store's traffic about
- * 40,000. Without it a first install over an existing catalogue — every product
+ * the variant write) plus its sku claims — about 156 rows a product. 200 repairs is
+ * then about 31,000 rows written a day. Beside `prune-carts`' own cap
+ * (`ABANDONED_CARTS_PER_DAY_FREE`, about 31,000) and the reporting backfill's
+ * (`REPORTING_BACKFILL_DAYS_PER_DAY_FREE`, about 16,000–21,000), all three at once
+ * write about 83,000–88,000, which leaves the store's traffic about 12,000–17,000. On
+ * the deploy day of a new index layout all three spend nothing (`indexBuildHold`).
+ * Without it a first install over an existing catalogue — every product
  * without a row — heals at the leg's pace, about 460 repairs a day measured, about
  * 70,000 rows written a day, for as many days as that takes. With it a catalogue of
  * N products missing their rows heals in N / 200 days ("Publish changes" repairs any
@@ -624,6 +627,9 @@ export async function reconcileProductCommerce(
 		// A stamp from the future (a clock stepped back) does not hold the leg off.
 		if (last <= nowMs && nowMs - last < timing.passIntervalMs) return { count: 0, notDue: true };
 	}
+	// A cap of none (an index-build day on Free, `indexBuildHold` in sweeps.ts): one kv
+	// read, nothing walked or written, and the leg waits its cadence.
+	if (timing.dailyRepairCap === 0) return { count: 0, incomplete: true, waitsCadence: true };
 	state.passStartedAt ??= timing.now.toISOString();
 	// The day's count is the stored one only when it is today's.
 	const dailyCap = timing.dailyRepairCap ?? null;

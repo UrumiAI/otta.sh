@@ -29,6 +29,7 @@ import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { runCommerceSweeps, SWEEP_TASK_NAME } from "../src/cron/index.js";
 import {
+	INDEX_LAYOUT,
 	ABANDONED_CART_PASS_INTERVAL_MS,
 	ABANDONED_CART_TTL_MS,
 	ABANDONED_CARTS_PER_DAY_FREE,
@@ -72,12 +73,16 @@ beforeEach(async () => {
 }, 120_000);
 
 /** Cursors with every OTHER slow-cadence leg just run, so `prune-carts` is the
- *  tick's only scan. */
-async function onlyPruneCartsDue(): Promise<ReturnType<typeof memoryCursors>> {
+ *  tick's only scan — on a store whose indexes are already built (`INDEX_LAYOUT`;
+ *  a state without it is a deploy day's, see the index-build case). */
+async function onlyPruneCartsDue(
+	indexLayout: string = INDEX_LAYOUT,
+): Promise<ReturnType<typeof memoryCursors>> {
 	const cursors = memoryCursors();
 	await cursors.write(
 		"state",
 		JSON.stringify({
+			indexLayout,
 			lastRun: Object.fromEntries(
 				MAINTENANCE_LEGS.filter((leg) => leg !== "prune-carts").map((leg) => [
 					leg,
@@ -378,6 +383,36 @@ describe("prune-carts (#39)", () => {
 		}
 		expect(tomorrow).toBe(2);
 		for (const id of ids) expect(await carts().get(id)).toBeNull();
+	});
+
+	test("on the deploy day of a new index layout a Free tick deletes nothing and waits its cadence; the next UTC day it prunes", async () => {
+		const id = await emptyCart(OLD);
+		// The tick state the release before left: another index layout, so EmDash is
+		// building this one's indexes today and the day's rows written are theirs.
+		const cursors = await onlyPruneCartsDue("an older layout");
+		const counter: CallCounter = { calls: 0 };
+		expect(pruneLeg(await tick(cursors, { queryBudget: 30, counter }))).toMatchObject({
+			count: 0,
+			waitsCadence: true,
+		});
+		expect(await carts().get(id)).not.toBeNull();
+		const state = JSON.parse((await cursors.read("state"))!) as Record<string, unknown>;
+		expect(state).toMatchObject({
+			indexLayout: INDEX_LAYOUT,
+			indexBuildDay: NOW.toISOString().slice(0, 10),
+		});
+		// The next UTC day the cap is back.
+		const tomorrow = new Date(NOW.getTime() + DAY_MS);
+		await othersRunAt(cursors, tomorrow);
+		expect(pruneLeg(await tick(cursors, { now: tomorrow, queryBudget: 30 })).count).toBe(1);
+		expect(await carts().get(id)).toBeNull();
+	});
+
+	test("a Paid budget is not held on an index-build day", async () => {
+		const id = await emptyCart(OLD);
+		const cursors = await onlyPruneCartsDue("an older layout");
+		expect(pruneLeg(await tick(cursors, { queryBudget: 600 })).count).toBe(1);
+		expect(await carts().get(id)).toBeNull();
 	});
 
 	test("above the Free preset there is no daily cap", async () => {
