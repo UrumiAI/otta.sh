@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import { cents, currency as toCurrency } from "../money/cents.js";
 import { idempotencyKey, orderId as toOrderId, productId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
@@ -10,6 +10,7 @@ import { PROVIDER_REFUNDED_FLAG_PREFIX } from "../orders/provider-refunded-flag.
 import { dispatchOrderEmails } from "../orders/transition.js";
 import { FakeEmailSender } from "./fake-email-sender.js";
 import { FakePaymentGateway } from "./fake-payment-gateway.js";
+import { RecordingLogger } from "./recording-logger.js";
 
 const USD = toCurrency("USD");
 
@@ -898,8 +899,8 @@ export function refundOrderContract(
 					return gw.refund(input);
 				},
 			});
-			const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-			const res = await refundOrder({ orderStore: h.orderStore }, racing, {
+			const logger = new RecordingLogger();
+			const res = await refundOrder({ orderStore: h.orderStore, logger }, racing, {
 				orderId: id,
 				amount: cents(500),
 				currency: USD,
@@ -911,10 +912,9 @@ export function refundOrderContract(
 				"an anomaly raised meanwhile",
 			);
 			// The refused write is not dropped silently: it is logged, naming the order.
-			expect(warn.mock.calls.some((args) => String(args[0]).includes("flag not written"))).toBe(
-				true,
-			);
-			warn.mockRestore();
+			expect(
+				logger.entries.some((e) => e.level === "warn" && e.message.includes("flag not written")),
+			).toBe(true);
 		});
 
 		test("a gateway PROVIDER_ALREADY_REFUNDED fails closed — reservation voided, capacity released", async () => {

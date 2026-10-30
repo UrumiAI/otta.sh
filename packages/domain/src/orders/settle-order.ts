@@ -1,5 +1,6 @@
 import { idempotencyKey, type OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import type { Logger } from "../ports/logger.js";
 import type { ConfirmationResult } from "../ports/payment-gateway.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
@@ -16,6 +17,8 @@ export interface SettleDeps {
 	paymentEventStore: PaymentEventStore;
 	inventoryStore: InventoryStore;
 	clock: Clock;
+	/** Forwarded to a late-payment refund. Optional (no-op when absent). */
+	logger?: Logger;
 }
 
 export type SettleResult =

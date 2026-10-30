@@ -14,6 +14,7 @@
  * call, which no test here can see.
  */
 import {
+	NOOP_LOGGER,
 	cents,
 	currency,
 	customerId as toCustomerId,
@@ -311,6 +312,7 @@ async function expiryUnitCost(ids: readonly string[]): Promise<number> {
 				inventoryStore: s.inventory,
 				couponStore: s.couponStore,
 				clock: s.clock,
+				logger: NOOP_LOGGER,
 			},
 			new Date(),
 			{ due: ids.map((id) => toOrderId(id)) },

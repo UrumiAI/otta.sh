@@ -8,7 +8,7 @@ import {
 	reconcileCouponRedemptions,
 	type Order,
 } from "@urumi.ai/otta-domain";
-import { expect, test, vi } from "vitest";
+import { expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
 const FAR_FUTURE = "9999-12-31T00:00:00.000Z";
@@ -368,8 +368,7 @@ test("a failing holdsUseUnderKey read keeps the typed COUPON_EXHAUSTED refusal (
 	h.couponStore.holdsUseUnderKey = async () => {
 		throw new Error("storage unavailable");
 	};
-	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-	try {
+	{
 		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
 		const res = await createOrderFromCart(h.createDeps, {
 			cartId,
@@ -379,8 +378,10 @@ test("a failing holdsUseUnderKey read keeps the typed COUPON_EXHAUSTED refusal (
 			couponCode: "SAVE5",
 		});
 		expect(res).toEqual({ ok: false, reason: "COUPON_EXHAUSTED" });
-		expect(warn).toHaveBeenCalledTimes(1);
-	} finally {
-		warn.mockRestore();
+		expect(h.logger.entries).toHaveLength(1);
+		expect(h.logger.entries[0]).toMatchObject({
+			level: "warn",
+			fields: { error: { name: "Error", message: "storage unavailable" } },
+		});
 	}
 });

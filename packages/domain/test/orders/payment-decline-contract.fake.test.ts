@@ -7,6 +7,7 @@ import {
 	InMemoryInventoryStore,
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
+	RecordingLogger,
 	paymentDeclineContract,
 } from "@urumi.ai/otta-domain/testing";
 
@@ -26,7 +27,7 @@ paymentDeclineContract(
 				paymentEventStore: new InMemoryPaymentEventStore(),
 				clock,
 			},
-			expireDeps: { orderStore, inventoryStore, couponStore, clock },
+			expireDeps: { orderStore, inventoryStore, couponStore, clock, logger: new RecordingLogger() },
 			async holdForCheckout(sku, qty, key) {
 				// The fake's `adopt` accepts an unstamped hold, so a bare reserve is it.
 				const reserved = await inventoryStore.reserve(sku, qty, idempotencyKey(key));

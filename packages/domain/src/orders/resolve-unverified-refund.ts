@@ -1,6 +1,7 @@
 import { idempotencyKey as toIdempotencyKey } from "../money/ids.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
+import type { Logger } from "../ports/logger.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 import type { CancellationReason, Order, OrderState } from "./model.js";
 import type { OrderStore, RefundRecord } from "../ports/order-store.js";
@@ -128,6 +129,8 @@ export interface ResolveUnverifiedRefundDeps {
 	inventoryStore?: InventoryStore;
 	/** Forwarded to the resumed cancel — see `CancelOrderWithRefundDeps`. */
 	isRetryable?: (err: unknown) => boolean;
+	/** Forwarded to the resumed cancel. Optional (no-op when absent). */
+	logger?: Logger;
 	/**
 	 * Revokes the order's download entitlements when a CONFIRMED refund returned the
 	 * money in full (issue #376) — see {@link resolveUnverifiedRefund}'s
@@ -299,6 +302,7 @@ async function resumeCancellation(
 				orderStore: deps.orderStore,
 				inventoryStore: deps.inventoryStore,
 				...(deps.isRetryable !== undefined ? { isRetryable: deps.isRetryable } : {}),
+				...(deps.logger !== undefined ? { logger: deps.logger } : {}),
 			},
 			// No gateway: the refund is settled, so the resumed cancel never needs one.
 			null,

@@ -77,7 +77,6 @@ const command = (cartId: string) => ({
 
 describe("createOrderFromCart → TaxCalculator", () => {
 	test("a refusing calculator ⇒ TAX_UNAVAILABLE: no order, no redemption, holds untouched", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
 		const before = await h.cartStore.get(cartId);
 		const refusing: TaxCalculator = {
@@ -215,7 +214,6 @@ function switchable(): TaxCalculator & {
 describe("createOrderFromCart → TaxCalculator replay (issue #447)", () => {
 	for (const change of ["a different tax", "a throw", "a refusal"] as const) {
 		test(`the calculator answers ${change} before a same-key replay ⇒ the ORIGINAL order`, async () => {
-			vi.spyOn(console, "warn").mockImplementation(() => {});
 			const calc = switchable();
 			const cartId = await h.cartWith([
 				{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" },
@@ -244,7 +242,6 @@ describe("createOrderFromCart → TaxCalculator replay (issue #447)", () => {
 	}
 
 	test("a retry under the same key after TAX_UNAVAILABLE succeeds once the calculator answers", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const calc = switchable();
 		calc.mode = "throw";
 		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);

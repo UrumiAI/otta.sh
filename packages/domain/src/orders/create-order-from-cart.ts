@@ -12,6 +12,7 @@ import {
 import { resolveLineProductIds } from "../cart/line-products.js";
 import type { CartStore } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
+import type { Logger } from "../ports/logger.js";
 import type { CouponStore } from "../ports/coupon-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
@@ -59,6 +60,13 @@ export interface CreateOrderDeps {
 	/** The store's tax options (ADR-0032); absent ⇒ nothing saved (the upgrade rule). */
 	settings?: Pick<SettingsStore, "get">;
 	clock: Clock;
+	/**
+	 * Sink for the create-order diagnostics (intent failures with their
+	 * `providerStatus` / `providerCode`, lost intent-record writes). Required: the
+	 * construction sites are few and a silent default would hide a permanent
+	 * provider misconfiguration.
+	 */
+	logger: Logger;
 	idGen: IdGen;
 	/** Payment adapters keyed by method — the buyer's chosen gateway is resolved here. */
 	gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
@@ -223,7 +231,7 @@ export async function createOrderFromCart(
 			// throw is a bug and must keep propagating. The replayed order is
 			// untouched — nothing to release, nothing to roll back.
 			if (!(err instanceof PaymentIntentError)) throw err;
-			logIntentFailure(err, already.id);
+			logIntentFailure(deps, err, already.id);
 			return { ok: false, reason: intentFailureReason(err) };
 		}
 		await rememberIntent(deps, already, intent);
@@ -354,6 +362,7 @@ export async function createOrderFromCart(
 			taxRules: deps.taxRules,
 			couponStore: deps.couponStore,
 			clock: deps.clock,
+			logger: deps.logger,
 			...(deps.taxCalculator !== undefined ? { taxCalculator: deps.taxCalculator } : {}),
 			...(deps.settings !== undefined ? { settings: deps.settings } : {}),
 		},
@@ -500,18 +509,15 @@ function intentFailureReason(
  * code), so `PaymentIntentError.providerStatus` / `providerCode` are read, not
  * write-only: `PAYMENT_INTENT_FAILED` alone cannot tell an operator whether
  * Stripe was down (503) or the request was rejected (402 `card_declined`).
- * `console` is an ambient global, not an IO import — domain purity (no
- * pg/ctx/fetch) holds. DEFERRED (separate from the durable-anomaly deferral
- * below): the intended replacement is an INJECTED `Logger` port on
- * `CreateOrderDeps`, mirroring how `Clock` displaces ambient `Date.now()`, so
- * the domain states the diagnostic and the caller owns the sink. A DURABLE
+ * Logged through the INJECTED `deps.logger` (the domain states the diagnostic,
+ * the caller owns the sink). A DURABLE
  * anomaly (the `settle-order` COMMIT_LOST
  * treatment) would need a `paymentEventStore` in `CreateOrderDeps`, which
  * checkout does not have today; adding one is a deliberate follow-up, not a
  * drive-by widening of this use-case's dependency surface.
  */
-function logIntentFailure(err: PaymentIntentError, forOrder: OrderId): void {
-	console.error(`[domain] createIntent failed → ${intentFailureReason(err)}`, {
+function logIntentFailure(deps: CreateOrderDeps, err: PaymentIntentError, forOrder: OrderId): void {
+	deps.logger.error(`[domain] createIntent failed → ${intentFailureReason(err)}`, {
 		orderId: forOrder,
 		gateway: err.gateway,
 		retryable: err.retryable,
@@ -647,7 +653,7 @@ async function finalizeOrder(
 		return { ok: true, order, intent };
 	} catch (err) {
 		if (!(err instanceof PaymentIntentError)) throw err;
-		logIntentFailure(err, order.id);
+		logIntentFailure(deps, err, order.id);
 		return { ok: false, reason: intentFailureReason(err) };
 	}
 }
@@ -892,7 +898,7 @@ async function rememberIntent(
 			...(intent.customerRef !== undefined ? { customerRef: intent.customerRef } : {}),
 		});
 	} catch (err) {
-		console.error(
+		deps.logger.error(
 			`[domain] could not record payment intent ${intent.intentId} for order ${order.id}; it will not be cancelled if the order expires`,
 			{ error: err instanceof Error ? err.message : String(err) },
 		);
@@ -932,7 +938,7 @@ async function recordedCustomer(
 	try {
 		intents = await deps.orderStore.listPaymentIntents(order.id);
 	} catch (err) {
-		console.error(
+		deps.logger.error(
 			`[domain] could not read the recorded payment intents of order ${order.id}; the replay is refused, a retry reads again`,
 			{ error: err instanceof Error ? err.message : String(err) },
 		);

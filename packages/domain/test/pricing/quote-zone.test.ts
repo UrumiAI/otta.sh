@@ -1,3 +1,4 @@
+import { RecordingLogger } from "../../src/testing/recording-logger.js";
 import { beforeEach, describe, expect, test } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import type { ShippingRulesStore } from "../../src/ports/shipping-rules-store.js";
@@ -20,13 +21,15 @@ let shippingRules: InMemoryShippingRulesStore;
 let taxRules: InMemoryTaxRulesStore;
 let couponStore: InMemoryCouponStore;
 let deps: QuoteDeps;
+let logger: RecordingLogger;
 
 beforeEach(() => {
 	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
 	shippingRules = new InMemoryShippingRulesStore();
 	taxRules = new InMemoryTaxRulesStore();
 	couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
-	deps = { shippingRules, taxRules, couponStore, clock };
+	logger = new RecordingLogger();
+	deps = { shippingRules, taxRules, couponStore, clock, logger };
 });
 
 async function seedZone(spec: {

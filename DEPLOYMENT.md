@@ -319,6 +319,112 @@ cannot be retried in place:
 >
 > A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules.
 
+### 2.5 Per-IP rate limits (anonymous writes and sign-in)
+
+The storefront's writes are anonymous by design: anyone can create a cart, change it, place an
+order, or ask for a sign-in link. The site limits them per client IP with two Cloudflare
+[Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
+bindings, checked in its middleware (`sites/staging/src/lib/rate-limit.ts`, issues #91 and #29).
+**Set this up before you open customer sign-in to real customers:**
+[ADR-0004](./adr/0004-customer-auth-mechanism.md) makes per-IP limiting on the sign-in request a
+prerequisite, because the per-address throttle can be used to lock a customer out.
+
+Add the bindings to your `wrangler.local.jsonc` (the tracked template carries them commented
+out), then build and deploy as in §2.1:
+
+```jsonc
+"ratelimits": [
+	{ "name": "RATE_LIMIT_AUTH", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+	{ "name": "RATE_LIMIT_WRITES", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } },
+],
+```
+
+Each `namespace_id` is a string holding a positive integer, unique within your Cloudflare
+account. Two Workers that share one share its counters. `period` must be `10` or `60` seconds.
+The site sends that period as `Retry-After` from its own table (`RETRY_AFTER_SECONDS` in
+`sites/staging/src/lib/rate-limit.ts`), so a changed `period` needs that constant changed too;
+a changed `limit` needs nothing. Check Cloudflare's current plan availability for the binding
+before relying on it.
+
+| Binding | Limit | Routes (POST on the site, plus GET on `/checkout/resume`; any method but OPTIONS on the plugin mount) |
+|---|---|---|
+| `RATE_LIMIT_AUTH` | 10 / min | `/account/login/request`, `/account/verify/confirm`, `/checkout/resume`; plugin `storefront/account/login/request`, `storefront/account/login/verify`, `storefront/order/resume` |
+| `RATE_LIMIT_WRITES` | 60 / min | `/cart/add`, `/cart/update`, `/cart/remove`, `/cart/switch-currency`, `/checkout/place`, `/checkout/new-cart`; plugin `storefront/cart/create`, `storefront/cart/lines/{add,update,remove}`, `storefront/checkout/place`, `storefront/order/abandon` |
+
+The plugin routes are at `/_emdash/api/plugins/otta/<route>`. They are counted on GET too,
+because EmDash's plugin dispatcher runs a route for a GET as well, taking its input from the
+query string. `/checkout/resume` counts on GET as well, because its GET (the order page's
+"Complete payment" link) runs the same resume step.
+
+The key is the route class plus `CF-Connecting-IP`. An IPv6 client is keyed by its /64, and an
+IPv6 spelling of an IPv4 address (`::ffff:a.b.c.d`, `::a.b.c.d`, NAT64 `64:ff9b::a.b.c.d`) by
+that IPv4 address. If the zone uses **Pseudo IPv4: Overwrite headers**, `CF-Connecting-IP`
+holds a 240.0.0.0/4 stand-in for an IPv6 client; the site then keys on `CF-Connecting-IPv6`
+instead (and reads that header only then, so a client cannot choose its own key).
+
+Over the limit, the request is answered **429** with `Retry-After: 60`: EmDash's JSON error
+envelope (`{"success":false,"error":{"code":"RATE_LIMITED",…}}`) on the plugin mount, and a
+short HTML page with a "Go back" link on the site's form endpoints. The site's own pages call
+the plugin in-process, not over HTTP, so a shopper's add-to-cart counts once.
+
+**Check it works.** In a scratch copy of your config, set `RATE_LIMIT_WRITES`'s `limit` to `1`,
+run `wrangler dev`, and POST to `/cart/add` twice within a minute (for example
+`curl -si -X POST -d sku=x http://localhost:8787/cart/add` twice): the second answer is
+`429 Too Many Requests` with `Retry-After: 60`. Without the binding both pass, and the log shows
+`rate limiting is OFF for writes routes`. Put the real limit back before you deploy.
+
+**Without the bindings the site fails open:** every request passes, and the Worker logs
+`rate limiting is OFF for <class> routes` once per isolate. It also passes when a request has
+no `CF-Connecting-IP`, or when the binding call fails (logged at most once every five minutes,
+so an ongoing failure stays visible). Cloudflare counts per location and only
+approximately, so treat the numbers as a ceiling on abuse, not an exact quota.
+
+**What the per-IP key does and does not cover:**
+
+- **IPv6 allocations are often larger than a /64.** Many ISPs hand a subscriber a /56 or a
+  /48, which holds 256 or 65,536 /64s. A client with such a block can rotate through /64 keys.
+  6to4 addresses (`2002::/16`) are the same: each embeds an IPv4 address and carries a whole
+  /48 behind it. The limit still raises the cost of a flood, but treat it as a speed bump
+  against a determined attacker with IPv6, not a wall. A WAF rule (below) or Cloudflare's bot
+  products are the next layer.
+- **Many customers can share one address.** Mobile carriers' CGNAT, offices, schools and
+  public Wi-Fi put many people behind one IPv4 address. They then share one budget, and the
+  auth class is the tight one: ten sign-in requests a minute across the whole network. If real
+  customers report "Too many requests" on sign-in, raise `RATE_LIMIT_AUTH`'s `limit` in
+  `wrangler.local.jsonc` (for example to 30) and rebuild and deploy (§2.1 steps 4 and 5). Raise
+  `RATE_LIMIT_WRITES` the same way if busy shared networks hit the cart limit. The code needs no
+  change: the binding enforces the number, and the site only reads `Retry-After` from its own
+  table.
+
+**Deliberately not limited.** These public routes are left out on purpose:
+
+- **Reads** (plugin `storefront/product`, `storefront/list`, `storefront/cart/read`,
+  `storefront/checkout/summary`, `storefront/order`, `storefront/payment-config`,
+  `storefront/shopper-state`, and the site's GET pages). They create nothing and send no mail.
+  Flooding them costs the attacker as much as the store, and a limit there would throttle
+  crawlers and every page view behind a shared address. Cloudflare's own DDoS protection covers
+  volume.
+- **Session-holder routes** (plugin `storefront/account/orders`, `account/order`,
+  `account/addresses`, `account/me`, `account/logout`, and the site's `/account/logout`). They
+  answer only for a valid session token, so there is nothing to guess beyond the token itself.
+- **`entitlements/download`** and the site's download endpoint. Each download re-checks the
+  buyer's entitlement, and a buyer may fetch a file several times.
+- **The Stripe webhook** (`/webhooks/stripe` and plugin `webhooks/stripe/settle`). Stripe's
+  signature authenticates it, and refusing a genuine delivery would leave a paid order
+  unsettled.
+- **The admin and `/otta-admin/*`.** EmDash's own authentication guards them.
+
+**Optional: a WAF rule as well.** With a custom domain on a zone you control (issue #32), a
+Cloudflare WAF rate-limiting rule stops a flood before it runs the Worker at all, which the
+binding cannot (a refused request is still a Worker invocation). For example, Security → WAF →
+Rate limiting rules: match `http.request.method eq "POST" and (http.request.uri.path in
+{"/account/login/request" "/_emdash/api/plugins/otta/storefront/account/login/request"})`,
+counting by IP, 10 requests per minute, action Block. Check your plan first: on the **Free**
+plan, rate-limiting rules allow only a 10-second counting period (and few rules), so the
+equivalent there is about 2 requests per 10 seconds. Longer periods and more counting options
+need a paid plan. Keep the bindings too: they are versioned
+with the code and cover every route listed above.
+
 ## 3. Secrets & tokens checklist
 
 Two of these are **Worker secrets** on the site (`wrangler secret put`); the rest are
@@ -1326,6 +1432,17 @@ storage adapter loads that from `/playground-media/playground-v1-<filename>`
 on the Worker's asset binding. See `CREDITS.txt` in that directory.
 The marketing site's "Try in Playground" link is
 `https://try.otta.sh/playground`.
+Each page also carries a small GitHub star prompt (`src/lib/playground-star.ts`,
+`public/scripts/playground-star.js`): a card in the corner, once per session,
+that collapses to a pill when dismissed. The page never waits on GitHub. The
+script asks the same-origin `/_otta/stars` for the count (the admin's CSP is
+`connect-src 'self'`), and the Worker fetches it from `api.github.com`
+unauthenticated, cached per colo for an hour (ten minutes after an error).
+GitHub's per-IP rate limit on shared Cloudflare egress is the usual reason the
+count is missing; the prompt then reads "Star", and the log shows
+`[otta-playground] github stars: HTTP 403`.
+This script is playground-only chrome the middleware injects, outside the storefront's
+client-JS fence on the terms in [ADR-0040](./adr/0040-playground-chrome-is-outside-the-client-js-fence.md).
 
 ```bash
 pnpm --filter @urumi.ai/otta-site-staging build:playground

@@ -2,6 +2,7 @@ import { cents } from "../money/cents.js";
 import { idempotencyKey as toIdempotencyKey } from "../money/ids.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import { NOOP_LOGGER, type Logger } from "../ports/logger.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import {
 	ReservationCommitLostError,
@@ -30,6 +31,10 @@ import {
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 
 export interface CancelOrderDeps {
+	/** Where this path's diagnostics go. Optional (no-op when absent) so the many
+	 *  narrow construction sites of the cancel/refund family need not wire it; every
+	 *  production composition root does. */
+	logger?: Logger;
 	orderStore: OrderStore;
 }
 
@@ -180,15 +185,22 @@ async function expediteIntentCancels(
 			});
 		}
 	} catch (err) {
-		console.error(`[domain] could not expedite the intent cancels of cancelled order ${orderId}`, {
-			error: err instanceof Error ? err.message : String(err),
-		});
+		(deps.logger ?? NOOP_LOGGER).error(
+			`[domain] could not expedite the intent cancels of cancelled order ${orderId}`,
+			{
+				error: err instanceof Error ? err.message : String(err),
+			},
+		);
 	}
 }
 
 // -- cancelling an order that has been paid -----------------------------------
 
 export interface CancelOrderWithRefundDeps {
+	/** Where this path's diagnostics go. Optional (no-op when absent) so the many
+	 *  narrow construction sites of the cancel/refund family need not wire it; every
+	 *  production composition root does. */
+	logger?: Logger;
 	orderStore: OrderStore;
 	/** Where a cancellation returns sold units (`restock`, exactly-once per key). */
 	inventoryStore: InventoryStore;
@@ -432,6 +444,10 @@ function restockFlagPrefix(key: string): string {
 }
 
 export interface FinishCancellationRestockDeps {
+	/** Where this path's diagnostics go. Optional (no-op when absent) so the many
+	 *  narrow construction sites of the cancel/refund family need not wire it; every
+	 *  production composition root does. */
+	logger?: Logger;
 	orderStore: OrderStore;
 	inventoryStore: InventoryStore;
 }
@@ -704,7 +720,13 @@ export async function cancelOrderWithRefund(
 	if (order.state === "pending") {
 		// Nothing was sold and nothing captured: the plain cancel, which releases the
 		// held stock through the store's own release intent.
-		const res = await cancelOrder({ orderStore: deps.orderStore }, cmd);
+		const res = await cancelOrder(
+			{
+				orderStore: deps.orderStore,
+				...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+			},
+			cmd,
+		);
 		return res.ok
 			? { ...res, refund: null, restockedUnits: 0, restockSkipped: [], restockPending: false }
 			: res;
@@ -907,7 +929,7 @@ async function finishOwedRestock(
 	}
 	const run = await runOwedRestock(deps, order, pending, { countFailure: false });
 	if (run.failure !== null) {
-		console.error(
+		(deps.logger ?? NOOP_LOGGER).error(
 			`[domain] cancelled order ${order.id}: the restock did not finish; the sweep will finish it`,
 			{ error: run.failure },
 		);
@@ -1039,6 +1061,7 @@ async function refundForCancellation(
 				? { paymentEventStore: deps.paymentEventStore }
 				: {}),
 			...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+			...(deps.logger !== undefined ? { logger: deps.logger } : {}),
 		},
 		gateway,
 		{
