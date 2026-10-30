@@ -86,7 +86,7 @@ export const CART_COOKIE_PATH = "/";
  *  reasonable default for how long an anonymous cart pointer survives. The
  *  CART itself has no TTL (only its held LINES do, via `expiresAt`); an
  *  abandoned cart just accumulates no lines once its holds are swept. */
-const CART_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+export const CART_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 
 /** The cookie-setting INTENT descriptor a route returns in its JSON body —
  *  see the module doc's platform-verified deviation note. `path: "/"`

@@ -376,6 +376,23 @@ export async function skipWithoutProducts(testInfo: TestInfo, rowCount: number):
 }
 
 /**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when there is no local D1
+ * file with a products table to take away.
+ *
+ * `dead-store.spec.ts` (#659) is the first spec that mutates the local
+ * `.wrangler` state directly instead of going through the site; the helpers it
+ * uses live in `./local-d1.js`, and `global-setup.ts` heals what it may leave.
+ */
+export function skipWithoutLocalD1(testInfo: TestInfo, d1Dir: string, table: string): void {
+	const how =
+		`no local D1 file under ${d1Dir} has a "${table}" table. Seed the stack ` +
+		`(OTTA_E2E_SEED=1), or, if it is seeded, miniflare may have moved its D1 ` +
+		`layout and e2e/local-d1.ts needs the new path.`;
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
  * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no order on the stack
  * has anything left to refund.
  *

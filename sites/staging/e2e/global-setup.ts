@@ -55,6 +55,7 @@ import {
 	E2E_STARTS_STACK,
 	siteIsUp,
 } from "./harness.js";
+import { healOrWarn } from "./local-d1.js";
 import {
 	consumeServerStartedMarker,
 	provisionsE2ePlaceholders,
@@ -226,11 +227,25 @@ async function somethingListens(): Promise<boolean> {
 	}
 }
 
+/**
+ * #659: put back a products table an interrupted `dead-store.spec.ts` left
+ * parked, in every local D1 file of this worktree, whatever specs this run
+ * includes, before anything reads the store (`./local-d1.js`). A heal error
+ * fails only a gate run (`OTTA_E2E_SEED=1` / `OTTA_E2E_REQUIRE_SITE=1`), as the
+ * warm-up below does; anywhere else it is a warning, so a bare or unrelated run
+ * never fails over leftover local state. Product specs may skip until it is
+ * resolved. The dead-store spec itself always throws on it.
+ */
+function healDeadStoreSpec(): void {
+	healOrWarn(E2E_SEEDS || E2E_REQUIRES_SITE);
+}
+
 export default async function globalSetup(): Promise<void> {
 	// #531: read (and remove) the marker first, whatever happens below. It exists
 	// only if Playwright ran the webServer command — not on a reused server.
 	const serverStartedByThisRun =
 		E2E_STARTS_STACK && consumeServerStartedMarker(serverStartedMarkerPath());
+	healDeadStoreSpec();
 	if (!(await somethingListens())) return;
 	const deadline = Date.now() + WARM_UP_BUDGET_MS;
 	try {
