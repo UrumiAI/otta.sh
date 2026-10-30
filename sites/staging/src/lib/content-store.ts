@@ -67,6 +67,27 @@ export type ProbeDb = Pick<Kysely<any>, "selectNoFrom">;
 const COLLECTION_SLUG = /^[a-z][a-z0-9_]*$/;
 
 /**
+ * Does `cause` read as a missing table? Mirrors emdash's own
+ * `isMissingTableError` (`src/utils/db-errors.ts` in emdash@1.3.1, the helper
+ * its loader uses to swallow the fault): SQLite/D1 "no such table", Postgres
+ * `relation "x" does not exist` / `table "x" does not exist`, MySQL-style
+ * "doesn't exist". emdash does not export it, so it is restated here. It only
+ * picks the log wording; every failure is still an outage.
+ */
+function isMissingTable(cause: unknown): boolean {
+	const message = (
+		cause instanceof Error ? cause.message : typeof cause === "string" ? cause : ""
+	).toLowerCase();
+	if (message.includes("no such table")) return true;
+	// A Postgres `column "x" of relation "y" does not exist` matches too; harmless,
+	// since the probe selects only a literal and this only picks the log wording.
+	if (message.includes("does not exist") || message.includes("doesn't exist")) {
+		return message.includes("relation") || message.includes("table");
+	}
+	return false;
+}
+
+/**
  * `true` when `collection`'s content table can be read — the caller's empty
  * answer is then genuine (a 404, an empty shop). `false` when it cannot — the
  * caller's empty answer is an outage, and this has already logged it for the
@@ -92,8 +113,14 @@ export async function contentTableAnswers(
 			.execute();
 		return true;
 	} catch (cause) {
+		// Name what the probe actually saw. A missing table is a fact; any other
+		// fault (no handle, a transient D1 error) only means the probe could not
+		// confirm the tables — the read's empty answer may even be a genuine 404.
+		const finding = isMissingTable(cause)
+			? `content table "${table}" or an emdash system table it needs is missing`
+			: `the probe could not confirm that content table "${table}" and the emdash system tables it needs are readable`;
 		console.error(
-			`[site-staging] ${where}: the content read came back empty, but content table "${table}" or an emdash system table it needs cannot be read — treating it as a content-store outage, not a missing product (emdash's loader reports a missing table as "not found", issue #140):`,
+			`[site-staging] ${where}: the content read came back empty, and ${finding} — treating it as a content-store outage, not a missing product (emdash's loader reports a missing table as "not found", issue #140):`,
 			cause,
 		);
 		return false;
