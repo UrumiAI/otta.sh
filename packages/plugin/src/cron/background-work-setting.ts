@@ -40,6 +40,16 @@ export const BACKGROUND_WORK_KEY = "settings:backgroundWorkPerMinute";
 export const MIN_BACKGROUND_WORK = 30;
 export const MAX_BACKGROUND_WORK = 900;
 
+/**
+ * The largest query budget Workers Free can run: its 50 D1 queries per Worker
+ * invocation. A budget above it can only run on Workers Paid. It is the threshold
+ * of the sweep's DAILY write caps (`prune-carts`' `ABANDONED_CARTS_CAPPED_BUDGET`,
+ * `product-reconcile`'s `reconcileRepairsDailyCap`): D1 Free allows 100,000 rows
+ * written a day, and a store past it fails every write until the UTC reset, so a
+ * Free store keeps the caps at a custom 31–50 too.
+ */
+export const WORKERS_FREE_MAX_QUERY_BUDGET = 50;
+
 /** The two choices the form offers, named for the plans they fit. */
 export const BACKGROUND_WORK_PRESETS: readonly {
 	readonly value: number;

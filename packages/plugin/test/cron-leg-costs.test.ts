@@ -39,11 +39,18 @@ import {
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
+	CART_CREATE_KEYS_COLLECTION,
+	CARTS_COLLECTION,
 	collectionOf,
+	ORDER_KEYS_COLLECTION,
+	type CartCreateKeyDoc,
+	type CartDoc,
 	COUPONS_COLLECTION,
+	EmdashReportingStore,
 	INVENTORY_COLLECTION,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
+	REPORTING_DAILY_COLLECTION,
 	type CouponDoc,
 	type InventoryDoc,
 	type OrderDoc,
@@ -65,9 +72,15 @@ import {
 	legStartCalls,
 	MAINTENANCE_LEGS,
 	PRODUCT_ORPHAN_DELETE_CALLS,
+	REPORTING_LINES_BUILD_CALLS,
+	REPORTING_MONTH_BUILD_CALLS,
+	REPORTING_VERIFY_CALLS,
+	REPORTING_VERIFY_DAY_CALLS,
 	SWEEP_LEGS,
 	EMAIL_SEND_AND_RECORD_CALLS,
 	holdIntentCost,
+	PRUNE_CART_CALLS,
+	pruneAbandonedCart,
 	releaseStrandedOnSku,
 	strandedReleaseCost,
 	TICK_OVERHEAD_QUERIES,
@@ -271,7 +284,7 @@ async function placeOrder(
 /** What the two coupon cases measured (#598 review) — pinned, so a change that moves
  *  them shows up here and in `LEG_QUERY_COSTS` together. */
 const COUPON_ORPHAN_WORST_UNIT = 10;
-const EXPIRY_WITH_COUPON_UNIT = 20;
+const EXPIRY_WITH_COUPON_UNIT = 21;
 
 /** A live percentage coupon for a cost case; returns its id. */
 async function costCoupon(
@@ -435,8 +448,9 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 	// the same way on the base before the change: 22 (one line) and 40 (three lines on
 	// three SKUs).
 	test.each([
-		{ lines: 1, before: 22, ceiling: 13 },
-		{ lines: 3, before: 40, ceiling: 23 },
+		// +1 each since #572: the rollup event dirties its month document first.
+		{ lines: 1, before: 22, ceiling: 14 },
+		{ lines: 3, before: 40, ceiling: 24 },
 	])(
 		"expire-orders: a $lines-line order costs at most $ceiling calls (was $before)",
 		async ({ lines, ceiling }) => {
@@ -738,6 +752,30 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			(await collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION).get(placed.sku))?.onHand,
 		).toBe(10);
 		expect(used, `measured ${String(used)}`).toBe(LEG_QUERY_COSTS["stranded-holds"].unit);
+	});
+
+	test("prune-carts: one abandoned keyed cart, deleted with its create-key record (#39)", async () => {
+		const s = counted();
+		const cartId = await s.cartStore.create(currency("USD"), idempotencyKey("create:cost-prune"));
+		const wrapped = wrappedStorage();
+		const collections = {
+			carts: collectionOf<CartDoc>(wrapped, CARTS_COLLECTION),
+			createKeys: collectionOf<CartCreateKeyDoc>(wrapped, CART_CREATE_KEYS_COLLECTION),
+			orderKeys: collectionOf<unknown>(wrapped, ORDER_KEYS_COLLECTION),
+		};
+		// A cutoff after the cart's own clock: it is abandoned as of this measurement.
+		const cutoffMs = Date.now() + DAY_MS;
+		let outcome = "";
+		const used = await cost(async () => {
+			outcome = await pruneAbandonedCart(cartId, cutoffMs, collections);
+		});
+		expect(outcome).toBe("pruned");
+		expect(await collectionOf(storage, CARTS_COLLECTION).get(cartId)).toBeNull();
+		expect(
+			await collectionOf(storage, CART_CREATE_KEYS_COLLECTION).get("create:cost-prune"),
+		).toBeNull();
+		expect(used, `measured ${String(used)}`).toBe(PRUNE_CART_CALLS);
+		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["prune-carts"].unit);
 	});
 
 	test("stranded-holds: a sku held by a live order costs its order read alone", async () => {
@@ -1096,6 +1134,76 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			s.reportingStore.reconcile({ from: `${day}T00:00:00.000Z`, to: `${day}T23:59:59.999Z` }),
 		);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["reporting-heal"].unit);
+	});
+
+	// The rollup verifier (#572 review): one run re-checks two built months and one
+	// day's product lines, between a cursor read and a cursor write. Measured as the
+	// sweep runs it — the same store calls in the same order — over two currencies'
+	// documents, so a month's days are a full page.
+	test("reporting-heal: one verifier run fits REPORTING_VERIFY_CALLS", async () => {
+		const day = new Date().toISOString().slice(0, 10);
+		const month = day.slice(0, 7);
+		await placeOrder("verify-a", new Date(Date.now() + DAY_MS).toISOString());
+		await placeOrder("verify-b", new Date(Date.now() + DAY_MS).toISOString(), 2);
+		const raw = new EmdashReportingStore({ storage, clock: { now: () => new Date() } });
+		await raw.rebuildDayProducts(day);
+		expect(await raw.rebuildMonth(month)).toBe(true);
+		const store = new EmdashReportingStore({
+			storage: wrappedStorage(),
+			clock: { now: () => new Date() },
+		});
+		const used = await cost(async () => {
+			// The cursor read (a kv get).
+			counter.calls++;
+			const months = await store.monthsAfter(null, "2100-01", 2);
+			expect(months).toContain(month);
+			// Two months' rebuilds, as the sweep makes them (the second is this month again).
+			expect(await store.buildMonth(month)).toBe("unchanged");
+			expect(await store.buildMonth(month)).toBe("unchanged");
+			expect(await store.dayBefore(null, "2100-01-01")).not.toBeNull();
+			expect(await store.rebuildDayProducts(day)).toMatchObject({ repaired: 0 });
+			// The cursor write (a kv set).
+			counter.calls++;
+		});
+		expect(used).toBe(REPORTING_VERIFY_CALLS);
+	});
+
+	// The refresh's units, which its loops are admitted on (#572 review): on the Free
+	// preset the leg's share left after its walk is below a reconcile unit, so sizing
+	// them by the reconcile unit kept the refresh from ever running there.
+	test("reporting-heal: one day's lines built, one month built, one day re-checked", async () => {
+		const placed = await placeOrder("refresh-units", new Date(Date.now() + DAY_MS).toISOString());
+		const day = new Date().toISOString().slice(0, 10);
+		const month = day.slice(0, 7);
+		const order = (await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).get(placed.id))!;
+		const orderCurrency = order.currency;
+		const store = new EmdashReportingStore({
+			storage: wrappedStorage(),
+			clock: { now: () => new Date() },
+		});
+		// Its lines are dirty, in one currency: the build writes them.
+		const docs = collectionOf<{ currency: string; productsDirty?: number }>(
+			storage,
+			REPORTING_DAILY_COLLECTION,
+		);
+		const page = await docs.query({ where: { date: day }, limit: 10 });
+		for (const { id, data } of page.items) {
+			if (data.currency === orderCurrency) await docs.put(id, { ...data, productsDirty: 1 });
+			else await docs.delete(id);
+		}
+		const built = await cost(async () => {
+			expect(await store.rebuildDayProducts(day)).toMatchObject({ written: 1 });
+		});
+		expect(built).toBe(REPORTING_LINES_BUILD_CALLS);
+		const monthBuilt = await cost(async () => {
+			expect(await store.buildMonth(month)).toBe("built");
+		});
+		expect(monthBuilt).toBe(REPORTING_MONTH_BUILD_CALLS);
+		const checked = await cost(async () => {
+			expect(await store.dayBefore(null, "2100-01-01")).not.toBeNull();
+			expect(await store.rebuildDayProducts(day)).toMatchObject({ written: 0 });
+		});
+		expect(checked).toBe(REPORTING_VERIFY_DAY_CALLS);
 	});
 });
 

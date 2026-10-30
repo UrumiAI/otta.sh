@@ -216,6 +216,21 @@ export interface CartDoc {
 	 * read and changes no answer.
 	 */
 	holdExpiresAt: string | null;
+	/**
+	 * The store key a KEYED create minted this cart under (`create:…`, `rotate:…`,
+	 * `recurrency:…`): the id of its `cart_create_keys` record. Absent on a cart an
+	 * unkeyed create minted, and on every cart minted before the field existed.
+	 *
+	 * It is here because nothing else maps a cart back to its key record: that
+	 * collection is reached by id alone and declares no index (an index would be one
+	 * more expression index over the host's whole shared storage table, written on
+	 * every row of every plugin). The abandoned-cart prune (issue #39) reads it to
+	 * delete the record with the cart, so a late replay of the key cannot re-create
+	 * the pruned cart id. Written once, in the create-if-absent that writes the cart;
+	 * every later write spreads the document, so it is never lost. Never part of the
+	 * port's `Cart`: a key is a bearer secret and leaves the store only as a doc id.
+	 */
+	createKey?: string;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -230,8 +245,13 @@ export interface CartMutationIndexDoc {
 	cartId: string;
 }
 
-/** A fresh cart. */
-export function newCartDoc(cartId: string, currency: Currency, now: string): CartDoc {
+/** A fresh cart; `createKey` only for a keyed create (see {@link CartDoc.createKey}). */
+export function newCartDoc(
+	cartId: string,
+	currency: Currency,
+	now: string,
+	createKey?: string,
+): CartDoc {
 	return {
 		cartId,
 		state: "active",
@@ -240,6 +260,7 @@ export function newCartDoc(cartId: string, currency: Currency, now: string): Car
 		lines: {},
 		mutations: {},
 		holdExpiresAt: null,
+		...(createKey === undefined ? {} : { createKey }),
 		createdAt: now,
 		updatedAt: now,
 	};

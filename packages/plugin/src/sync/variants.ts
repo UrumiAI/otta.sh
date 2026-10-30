@@ -35,10 +35,12 @@
  * `content:afterSave` / `content:afterPublish` hooks (no new hook, no new
  * capability, no new host), over `ctx.http` to the commerce service, and it is
  * FIRE-AND-FORGET: a failure is logged and never thrown into the CMS save path.
- * There is still no reconcile job anywhere in the repo, so a failed variant sync
- * — presence and name alike — is lost until the product is saved or published
- * again, with the same "the idempotent upsert makes that replay safe" caveat the
- * product title carries. PUBLISH IS THE STRONGER VERB, and on a
+ * For a PUBLISHED product a failed variant sync — presence and name alike — is
+ * re-run by the cron's `product-reconcile` sweep (issue #95), which compares the
+ * live repeater with the stored variants and, on drift, runs the publish's own
+ * sync from the live content. A draft's is lost until the product is saved or
+ * published again, with the same "the idempotent upsert makes that replay safe"
+ * caveat the product title carries. PUBLISH IS THE STRONGER VERB, and on a
  * revision-supporting collection it is sometimes the only one that works: a
  * draft-only save can leave `updatedAt` frozen, and the resurrect half of the
  * presence axis applies only on a STRICTLY NEWER watermark.
@@ -326,6 +328,107 @@ export function deriveVariantOrphanKey(
 	return version === undefined || version === null ? base : `${base}:${String(version)}`;
 }
 
+/**
+ * What one document's repeater asks of the variant sync — the ONE reading both
+ * `syncVariants` and the reconcile sweep's {@link variantsDrift} act on, so the
+ * two guards on the destructive drop phase cannot diverge:
+ *  - `absent`: the document declares no repeater — nothing is sent, nothing drifts;
+ *  - `unusable`: a field that is present but not an array — a content problem;
+ *  - `no-usable-key`: rows, and not one yielding a key — a content problem, NOT the
+ *    merchant deleting every size, so nothing is declared and nothing dropped;
+ *  - `declares`: the keys to declare (possibly none: a deliberately emptied
+ *    repeater, which orphans every live size).
+ */
+export type RepeaterDeclares =
+	| { readonly kind: "absent" }
+	| { readonly kind: "unusable"; readonly problem: string }
+	| { readonly kind: "no-usable-key"; readonly rows: number; readonly problems: readonly string[] }
+	| {
+			readonly kind: "declares";
+			readonly declared: readonly DeclaredVariant[];
+			readonly problems: readonly string[];
+	  };
+
+export function readRepeaterDeclares(content: Record<string, unknown>): RepeaterDeclares {
+	const read = readVariantRows(content);
+	if (read.kind !== "rows") return read;
+	const { declared, problems } = parseVariantRepeater(read.rows);
+	if (read.rows.length > 0 && declared.length === 0) {
+		return { kind: "no-usable-key", rows: read.rows.length, problems };
+	}
+	return { kind: "declares", declared, problems };
+}
+
+/** What {@link variantsDrift} reads of one stored variant: written structurally so
+ *  the sync module does not name the store adapter's document type. */
+export interface StoredVariantView {
+	readonly variantKey: string;
+	readonly title: string | null;
+	readonly orphanedAt: string | null;
+	readonly contentUpdatedAt: string | null;
+}
+
+/**
+ * Whether the live repeater and a product's stored variants disagree in a way
+ * `syncVariants` at watermark `at` would change — the reconcile sweep's test for a
+ * lost variant sync. `watermark` is the content's own; `at` is the watermark the
+ * sync would be written at (never older than it). Drift is:
+ *  - a declared key with no stored variant;
+ *  - a declared key that is ORPHANED at a watermark older than the content's (the
+ *    resurrect a declare makes needs a STRICTLY newer watermark, so a key orphaned
+ *    at the content's own watermark or later — a leaked draft that dropped it — is
+ *    not drift: no sync could bring it back);
+ *  - a stale name on a live declared key, when the sync's watermark reaches it;
+ *  - a LIVE stored variant the repeater no longer declares, when it reaches it.
+ * The same conservative readings `syncVariants` takes (`readRepeaterDeclares`): no
+ * repeater, an unusable one, or rows none of which yields a key, say nothing.
+ */
+export function variantsDrift(
+	content: Record<string, unknown>,
+	stored: Readonly<Record<string, StoredVariantView>>,
+	watermark: string,
+	at: string,
+): boolean {
+	const read = readRepeaterDeclares(content);
+	if (read.kind !== "declares") return false;
+	const reaches = (storedAt: string | null): boolean => storedAt === null || at >= storedAt;
+	const keys = new Set<string>();
+	for (const variant of read.declared) {
+		keys.add(variant.variantKey);
+		const current = stored[variant.variantKey];
+		if (current === undefined) return true;
+		if (current.orphanedAt !== null) {
+			if (current.contentUpdatedAt === null || watermark > current.contentUpdatedAt) return true;
+			continue;
+		}
+		if (
+			variant.title !== undefined &&
+			current.title !== variant.title &&
+			reaches(current.contentUpdatedAt)
+		) {
+			return true;
+		}
+	}
+	return Object.values(stored).some(
+		(current) =>
+			current.orphanedAt === null &&
+			!keys.has(current.variantKey) &&
+			reaches(current.contentUpdatedAt),
+	);
+}
+
+/**
+ * What one `syncVariants` call did, for a caller that must tell a repair from a
+ * no-op (the reconcile sweep):
+ *  - `absent`: the document declares no repeater — nothing was owed;
+ *  - `withheld`: a repeater the sync could not act on (unusable, no usable key, or
+ *    no watermark) — logged, nothing sent;
+ *  - `applied`: the one store write returned (which may itself have been a
+ *    watermark or replay no-op — the caller re-reads to know);
+ *  - `failed`: the write threw, and was logged and swallowed.
+ */
+export type VariantSyncOutcome = "absent" | "withheld" | "applied" | "failed";
+
 /** The narrow slice of `CommerceClient` this sync uses — ONE method, the
  *  batched CMS-sync writer (#602). Deliberately NOT the whole client: the admin
  *  edit (which owns sku and price) and everything else are absent, so this module
@@ -346,6 +449,9 @@ export interface SyncVariantsInput {
 	 *  it, exactly as the product sync's lines do. */
 	hook: string;
 	allowedHosts: readonly string[];
+	/** Errors that must propagate rather than be logged as a lost sync: the cron
+	 *  tick's query ceiling (`syncLiveProduct`'s caller in the reconcile sweep). */
+	rethrow?: (err: unknown) => boolean;
 }
 
 /**
@@ -387,27 +493,26 @@ export async function syncVariants({
 	watermark,
 	hook,
 	allowedHosts,
-}: SyncVariantsInput): Promise<void> {
-	const read = readVariantRows(content);
+	rethrow,
+}: SyncVariantsInput): Promise<VariantSyncOutcome> {
+	const read = readRepeaterDeclares(content);
 	// THE LIVE CATALOGUE'S PATH: no repeater, no requests, no behavior change.
-	if (read.kind === "absent") return;
+	if (read.kind === "absent") return "absent";
 	if (read.kind === "unusable") {
 		console.warn(
 			`[otta] ${hook}: product_id=${productId} variant repeater problem — ${read.problem}. No variant was declared and NOTHING was dropped: a value this sync cannot read is not evidence that a size was removed.`,
 		);
-		return;
+		return "withheld";
 	}
-	const rows = read.rows;
 
 	if (watermark === undefined) {
 		console.error(
-			`[otta] ${hook} for product_id=${productId} carried no parseable updatedAt watermark — variant sync skipped (the orphan transition requires one). No reconcile cron exists yet — this sync is lost until the product is saved/published again.`,
+			`[otta] ${hook} for product_id=${productId} carried no parseable updatedAt watermark — variant sync skipped (the orphan transition requires one). This sync is lost until the product is saved/published again.`,
 		);
-		return;
+		return "withheld";
 	}
 
-	const { declared, problems } = parseVariantRepeater(rows);
-	for (const problem of problems) {
+	for (const problem of read.problems) {
 		// NOT fatal, and never a reason to withhold the other rows. Logged because
 		// a size that silently fails to appear in Pricing & inventory is otherwise
 		// unexplainable from the merchant's side.
@@ -416,22 +521,24 @@ export async function syncVariants({
 		);
 	}
 
-	const updatedAt = content["updatedAt"];
-	const version = content["version"];
-
 	// THE DROP PHASE IS WITHHELD when the repeater carried rows and not one of
 	// them yielded a usable key. "Every row is malformed" is a content problem;
 	// "there are no rows" is the merchant deleting the last size. Reading the
 	// first as the second would orphan a product's entire range over a bad
 	// import or a renamed sub-field — the same catastrophe the absent-field
 	// branch exists to avoid, one step further in.
-	if (rows.length > 0 && declared.length === 0) {
+	if (read.kind === "no-usable-key") {
 		console.warn(
-			`[otta] ${hook}: product_id=${productId} declared ${rows.length} variant repeater row(s) and NONE carried a usable \`${VARIANT_KEY_SUBFIELD}\` — no variant was dropped. An intentionally emptied repeater (zero rows) is what retires every size.`,
+			`[otta] ${hook}: product_id=${productId} declared ${String(read.rows)} variant repeater row(s) and NONE carried a usable \`${VARIANT_KEY_SUBFIELD}\` — no variant was dropped. An intentionally emptied repeater (zero rows) is what retires every size.`,
 		);
 		// Nothing to declare and nothing to drop: not even the one write is owed.
-		return;
+		return "withheld";
 	}
+	const { declared } = read;
+
+	const updatedAt = content["updatedAt"];
+	const version = content["version"];
+
 	try {
 		// ONE STORE WRITE FOR THE WHOLE SAVE (#602). Declares first, then the drop
 		// set — every LIVE variant this save stopped declaring — computed by the
@@ -462,13 +569,16 @@ export async function syncVariants({
 			orphanIdempotencyKey: (variantKey) =>
 				deriveVariantOrphanKey(collection, productId, variantKey, updatedAt, version),
 		});
+		return "applied";
 	} catch (err) {
+		if (rethrow?.(err) === true) throw err;
 		// Fire-and-forget, one line, same shape as the product sync's — including
 		// the honest caveat. The write is all-or-nothing, and re-running the save
 		// is safe: every row is idempotent under its key and ordered by the watermark.
 		console.error(
-			`[otta] ${hook} variant sync failed for product_id=${productId} declares=${String(declared.length)} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved/published again:`,
+			`[otta] ${hook} variant sync failed for product_id=${productId} declares=${String(declared.length)} (host allowlist: ${allowedHosts.join(", ")}). A published product's variants are re-synced by the cron's product-reconcile sweep on its next pass; otherwise this sync is lost until the product is saved/published again:`,
 			err,
 		);
+		return "failed";
 	}
 }

@@ -66,6 +66,7 @@ import {
 } from "../src/cron/index.js";
 import {
 	AGING_TICKS,
+	LEG_PRIORITY,
 	ORPHAN_MAX_READ_FAILURES,
 	ORPHAN_STRIKES,
 	ORPHAN_TOMBSTONES_PER_DAY,
@@ -507,9 +508,11 @@ describe("a dense block of real orphans is struck out like any rows", () => {
 
 	// The tick at which the last orphan of each probe was tombstoned — measured 123
 	// and 379 on Free, 34 and 41 on Paid — pinned with a little room. Every read
-	// truthful; the per-tick cap (five) paces the block.
+	// truthful; the per-tick cap (five) paces the block. Re-measured with the #572
+	// month/lines refresh and the prune-carts and product-reconcile legs (#658, #657):
+	// 137 and 406 on Free, 34 and 41 on Paid — 60@30 pinned at 140.
 	const DENSE_DONE_BY: Record<string, number> = {
-		"60@30": 135,
+		"60@30": 140,
 		"60@600": 40,
 		"250@30": 420,
 		"250@600": 50,
@@ -1290,7 +1293,12 @@ describe("intermittent CMS failures never tombstone a live product (seeded)", ()
 describe("scheduling and logging", () => {
 	test("never promoted: however long it waits, product-orphans does not jump the queue or the starvation guard", () => {
 		const waits = { "product-orphans": STARVING_TICKS * 10 };
-		expect(tickOrder(waits).at(-1)).toBe("product-orphans");
+		// It keeps its own place, with `prune-carts` (#39), unpromoted too, right after it.
+		const order = tickOrder(waits);
+		expect(order.indexOf("product-orphans")).toBe(LEG_PRIORITY.indexOf("product-orphans"));
+		expect(order[order.indexOf("product-orphans") + 1]).toBe("prune-carts");
+		// …and `product-reconcile` (#95) is last of all.
+		expect(order.at(-1)).toBe("product-reconcile");
 		expect(starvingLeg(waits)).toBeUndefined();
 		// While an ordinary leg that waited is promoted as before.
 		expect(tickOrder({ "coupon-orphans": AGING_TICKS })[0]).toBe("coupon-orphans");

@@ -7,6 +7,9 @@
 - Superseded in part by: [ADR-0039](./0039-add-to-cart-mints-a-key-per-submission.md)
   (2026-10-21) — decision 5 ("nothing else"): the product page gains one script, for the
   add-to-cart key.
+- Read with: [ADR-0040](./0040-playground-chrome-is-outside-the-client-js-fence.md)
+  (2026-10-29) — "third and last" counts the storefront's allowlist; the playground build's
+  injected chrome is outside the fence and is not an exception.
 
 ## Context
 

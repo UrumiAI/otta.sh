@@ -19,7 +19,11 @@
  * letter cannot step around it), on non-safe methods only — except
  * `/checkout/resume`, whose GET (the order page's "Complete payment" link)
  * dispatches the same plugin resume step its POST does, so it counts on every
- * method but OPTIONS, as that step does on the plugin mount. And the plugin's
+ * method but OPTIONS, as that step does on the plugin mount — except a GET/HEAD
+ * of that LINK the handler answers without the plugin (cross-site navigation,
+ * no `?order=`), which is not counted. (The plugin mount's GET still counts: it
+ * reaches the plugin, so a third-party `<img>` of it can spend the auth
+ * budget.) And the plugin's
  * public routes on the wire mount `/_emdash/api/plugins/otta/<route>`, matched
  * on the decoded path — on EVERY method but OPTIONS, because EmDash's plugin
  * dispatcher answers GET and HEAD too, reading the input from the query
@@ -65,6 +69,7 @@ import {
 	STOREFRONT_SHOPPER_STATE_ROUTE,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 } from "@urumi.ai/otta-plugin";
+import { orderPathFor, resumeGetReachesPlugin, resumeOrderParam } from "./checkout-resume.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 import { SAFE_METHODS } from "./origin-guard.js";
 
@@ -175,11 +180,21 @@ function pluginRouteOf(url: URL): string | null {
 	return path.slice(PLUGIN_MOUNT.length).replace(/\/+$/, "");
 }
 
-/** Pure decision (unit-tested): the class this request is counted in, or null. */
+const RESUME_ROUTE = "/checkout/resume";
+
+/**
+ * Pure decision (unit-tested): the class this request is counted in, or null.
+ * A GET/HEAD of the site's `/checkout/resume` link that the handler answers
+ * without reaching the plugin (`resumeGetReachesPlugin`: a cross-site
+ * navigation, or no `?order=`) is not counted, so a third-party `<img>` of that
+ * link cannot spend a visitor's auth budget. The plugin mount is NOT covered:
+ * its GET reaches the plugin, so it still counts.
+ */
 export function rateLimitClassFor(
 	method: string,
 	url: URL,
 	routePattern: string,
+	request: Pick<Request, "headers">,
 ): RateLimitClass | null {
 	const verb = method.toUpperCase();
 	const pluginRoute = pluginRouteOf(url);
@@ -190,6 +205,9 @@ export function rateLimitClassFor(
 	const site = SITE_ROUTES.get(routePattern);
 	if (site === undefined) return null;
 	if (site.anyMethod === true ? verb === "OPTIONS" : SAFE_METHODS.has(verb)) return null;
+	if (routePattern === RESUME_ROUTE && SAFE_METHODS.has(verb)) {
+		if (!resumeGetReachesPlugin(url, request)) return null;
+	}
 	return site.cls;
 }
 
@@ -313,6 +331,14 @@ export function resetRateLimitLogForTests(): void {
 	lastFailureLog = Number.NEGATIVE_INFINITY;
 }
 
+function escapeHtml(text: string): string {
+	return text
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;");
+}
+
 const MESSAGE = "Too many requests. Please wait a minute and try again.";
 
 /** The 429: EmDash's JSON error envelope on the plugin mount (`backTo`
@@ -335,11 +361,21 @@ export function rateLimitedResponse(cls: RateLimitClass, backTo: string | null):
 		'<!doctype html><html lang="en"><head><meta charset="utf-8">' +
 		'<meta name="viewport" content="width=device-width, initial-scale=1">' +
 		`<title>Too many requests</title></head><body><main><p>${MESSAGE}</p>` +
-		`<p><a href="${backTo}">Go back</a></p></main></body></html>`;
+		`<p><a href="${escapeHtml(backTo)}">Go back</a></p></main></body></html>`;
 	return new Response(body, {
 		status: 429,
 		headers: { ...headers, "Content-Type": "text/html; charset=utf-8" },
 	});
+}
+
+/** Where a site route's 429 "Go back" points: a resume goes back to its order
+ *  page (the shopper came from there), else the route's own `backTo`. */
+function siteBackTo(routePattern: string, url: URL): string {
+	if (routePattern === RESUME_ROUTE) {
+		const order = resumeOrderParam(url);
+		if (order !== "") return orderPathFor(order);
+	}
+	return SITE_ROUTES.get(routePattern)?.backTo ?? "/";
 }
 
 /** The middleware's whole check: the 429 for a request over its class's
@@ -349,7 +385,7 @@ export async function enforceRateLimit(
 	env: Record<string, unknown> | undefined,
 ): Promise<Response | null> {
 	const { request, url, routePattern } = context;
-	const cls = rateLimitClassFor(request.method, url, routePattern);
+	const cls = rateLimitClassFor(request.method, url, routePattern, request);
 	if (cls === null) return null;
 	const limiter = limiterFrom(env, cls);
 	if (limiter === undefined) {
@@ -374,7 +410,8 @@ export async function enforceRateLimit(
 		}
 		return null;
 	}
-	const backTo =
-		pluginRouteOf(url) === null ? (SITE_ROUTES.get(routePattern)?.backTo ?? "/") : null;
-	return rateLimitedResponse(cls, backTo);
+	return rateLimitedResponse(
+		cls,
+		pluginRouteOf(url) === null ? siteBackTo(routePattern, url) : null,
+	);
 }

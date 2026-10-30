@@ -59,6 +59,7 @@ import {
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	REPORTING_DAILY_COLLECTION,
+	REPORTING_MONTHLY_COLLECTION,
 	systemClock,
 	uuidIdGen,
 	type CouponDoc,
@@ -71,6 +72,7 @@ import {
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	MAINTENANCE_LEGS,
+	REPORTING_SETTLE_MS,
 	runCommerceSweeps,
 	SWEEP_LEGS,
 	SWEEP_SCHEDULE,
@@ -799,6 +801,48 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		await sweepInProcess({ cursors: freshCursors() });
 		const settled = await daily.query({ where: { date: day }, limit: 10 });
 		expect(settled.items).toEqual(healed);
+	}, 180_000);
+
+	test("reporting-heal backfills the product lines and the month document of a day written before #572", async () => {
+		// A day document as a store upgraded across #572 holds it: counters, no product
+		// lines, and no month document for its month. A past month, so the refresh may
+		// build it (the current month is never covered whole).
+		const when = new Date(Date.now() - 70 * DAY_MS);
+		const day = when.toISOString().slice(0, 10);
+		const month = day.slice(0, 7);
+		const daily = collectionOf<Record<string, unknown>>(storage, REPORTING_DAILY_COLLECTION);
+		const monthly = collectionOf<Record<string, unknown>>(storage, REPORTING_MONTHLY_COLLECTION);
+		await daily.put(`GBP:${day}`, {
+			currency: "GBP",
+			date: day,
+			epoch: 0,
+			seq: 0,
+			revenueOrders: 1,
+			revenueCents: 1234,
+			refundEntries: 0,
+			refundedCents: 0,
+			state_paid: 1,
+			updatedAt: when.toISOString(),
+		});
+		expect(await monthly.get(month)).toBeNull();
+
+		await sweepInProcess({ cursors: freshCursors() });
+
+		// The lines are built from the day's orders (it has none in GBP: none). Building
+		// them touched the month, so it waits out the settle window (a writer between its
+		// two touches may not have written its day yet) and is rebuilt by a later run —
+		// clean, from its days, carrying the day's counters.
+		expect(await daily.get(`GBP:${day}`)).toMatchObject({ productsDirty: 0, products: [] });
+		expect(await monthly.get(month)).toMatchObject({ month, dirty: 1 });
+		await sweepInProcess({
+			cursors: freshCursors(),
+			now: new Date(Date.now() + REPORTING_SETTLE_MS + 60_000),
+		});
+		expect(await monthly.get(month)).toMatchObject({
+			month,
+			dirty: 0,
+			currencies: { GBP: { revenueCents: 1234, revenueOrders: 1, products: [] } },
+		});
 	}, 180_000);
 
 	test("coupon-orphans releases a claimed-but-unapplied redemption and frees the customer's slot", async () => {

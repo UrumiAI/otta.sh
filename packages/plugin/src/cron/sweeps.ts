@@ -1,5 +1,5 @@
 /**
- * The scheduled sweep: fourteen legs, one tick (INC-C4).
+ * The scheduled sweep: sixteen legs, one tick (INC-C4).
  *
  * WHY THIS FILE EXISTS AT ALL. ADR-0019 §7 says it plainly — the aggregates are
  * one document each, a coupling that spans two of them is made *idempotently
@@ -160,6 +160,7 @@ import {
 	expireOrdersBatch,
 	finishCancellationRestock,
 	idempotencyKey as toIdempotencyKey,
+	MAX_REPORT_RANGE_DAYS,
 	orderHoldingRedemption,
 	orderId as toOrderId,
 	productId as toProductId,
@@ -175,15 +176,21 @@ import {
 	type OutboxEmail,
 } from "@urumi.ai/otta-domain";
 import {
+	CART_CREATE_KEYS_COLLECTION,
 	CARTS_COLLECTION,
 	collectionOf,
+	ORDER_KEYS_COLLECTION,
+	type CartCreateKeyDoc,
+	type CartDoc,
 	INVENTORY_COLLECTION,
 	normalizeInventoryDoc,
 	COUPON_REDEMPTIONS_COLLECTION,
 	COUPONS_COLLECTION,
 	EmdashReportingStore,
 	isScanPageLimitError,
+	isStorageContentionError,
 	ORDER_SKU_INDEX_COLLECTION,
+	normalizeProductDoc,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	type CouponDoc,
@@ -198,6 +205,7 @@ import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
 } from "../commerce/in-process-commerce-stores.js";
+import { COMMERCE_STORAGE_COLLECTIONS } from "../commerce/commerce-storage.js";
 import {
 	countTimeoutsAsAttempts,
 	EMAIL_AVAILABILITY_READS,
@@ -218,11 +226,33 @@ import {
 } from "../payments/resolve-payment-gateways.js";
 import { CONSOLE_LOGGER } from "../logging/console-logger.js";
 import type { StripeGatewayOptions } from "../payments/stripe-wiring.js";
+import { checkoutIdempotencyKey } from "../storefront/checkout-view-model.js";
 import { deriveDeleteIdempotencyKey } from "../sync/derive-idempotency-key.js";
 import { PRODUCTS_COLLECTION } from "../sync/hooks.js";
 import type { ContentReadAccess, PluginContext } from "../types.js";
-import { DEFAULT_BACKGROUND_WORK, readBackgroundWork } from "./background-work-setting.js";
 import {
+	DEFAULT_BACKGROUND_WORK,
+	readBackgroundWork,
+	WORKERS_FREE_MAX_QUERY_BUDGET,
+} from "./background-work-setting.js";
+import type { SweepCursorStore } from "./sweep-cursor-store.js";
+import {
+	CONTENT_LIST_QUERIES,
+	CONTENT_MISS_QUERIES,
+	CONTENT_READ_QUERIES,
+	isInvalidCursorError,
+} from "./content-reads.js";
+import {
+	PRODUCT_RECONCILE_ENTRY_QUERIES,
+	PRODUCT_RECONCILE_REPAIR_CALLS,
+	RECONCILE_IN_BATCH,
+	reconcilePassIntervalMs,
+	reconcileProductCommerce,
+	reconcileRepairsDailyCap,
+	type ReconcileRows,
+} from "./product-reconcile.js";
+import {
+	COMMIT_WINDOW_EXEMPT_BUDGET,
 	isSweepQueryCeilingError,
 	MAX_COMMIT_WINDOW,
 	SweepQueryCeilingError,
@@ -232,7 +262,18 @@ import {
 	WHOLE_TICK,
 } from "./tick-budget.js";
 
-/** The fourteen legs in the order a SUMMARY lists them (and the order the sweep ran
+export {
+	CONTENT_LIST_QUERIES,
+	CONTENT_MISS_QUERIES,
+	CONTENT_READ_QUERIES,
+} from "./content-reads.js";
+export {
+	PRODUCT_RECONCILE_ENTRY_QUERIES,
+	PRODUCT_RECONCILE_REPAIR_CALLS,
+	RECONCILE_PAGE_SIZE,
+} from "./product-reconcile.js";
+
+/** The sixteen legs in the order a SUMMARY lists them (and the order the sweep ran
  *  them in before QA2 M2). The order a tick RUNS them in is `LEG_PRIORITY`, with
  *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
@@ -249,13 +290,15 @@ export const SWEEP_LEGS = [
 	"coupon-recount",
 	"stranded-holds",
 	"product-orphans",
+	"prune-carts",
+	"product-reconcile",
 	"late-refunds",
 ] as const;
 
 export type SweepLeg = (typeof SWEEP_LEGS)[number];
 
 /**
- * The legs that run on the slow cadence rather than every tick: the seven that walk
+ * The legs that run on the slow cadence rather than every tick: the nine that walk
  * a collection (or a whole closed day) on every run, and the sign-in challenge
  * prune. The others find their work from a predicate that narrows as the work
  * completes, so an idle run is one empty query — cheap enough for every minute.
@@ -281,6 +324,13 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
 	// minutes (the storefront lists from the CMS); what it blocks — the sku, a
 	// tidy Pricing & inventory list — can wait for the slow cadence.
 	"product-orphans",
+	// An abandoned cart is a month untouched before it is judged (#39); deleting it
+	// is storage hygiene, and its walk pages the active carts.
+	"prune-carts",
+	// A lost publish/unpublish sync (#95) has no deadline either: the recovery verb
+	// a merchant sees is still "Publish changes", and this is the repair nobody
+	// has to click. A pass walks the whole CMS catalogue, so it keeps the cadence.
+	"product-reconcile",
 ];
 
 /**
@@ -311,7 +361,12 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     call short of finishing, so the next, idle minute ran the heal again
  *     (`cron-late-refunds.test.ts`). After the orphan sweep, too, so a use the sweep
  *     frees this tick is not first seen as drift;
- *     `product-orphans` is last of all, the leg nothing else waits on.
+ *     `product-orphans` then, `prune-carts` (#39) right after it: an empty
+ *     cart a month untouched is nothing anyone waits on — and `product-reconcile`
+ *     (#95) last of all. The reconcile runs after the orphan sweep so a row the
+ *     sweep tombstones this tick is not re-synced first (a repair never touches a
+ *     tombstone anyway), and last because its start floor is most of a Free tick:
+ *     a leg after it would rarely fit.
  *
  * `SWEEP_LEGS` stays the summary's listing order; this is the run order.
  */
@@ -330,6 +385,8 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"stranded-holds",
 	"coupon-recount",
 	"product-orphans",
+	"prune-carts",
+	"product-reconcile",
 ];
 
 /**
@@ -570,34 +627,17 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// A CMS read per row: under a long walk it must not take the tick from the legs
 	// a customer waits on. Its leftovers come back to it in the second pass.
 	"product-orphans": { time: 0.3, queries: 0.3 },
+	// Storage hygiene with a month's slack: a thin slice, its leftovers in the second pass.
+	"prune-carts": { time: 0.2, queries: 0.2 },
+	// A repair is a few writes, and an in-sync product costs nothing past its page:
+	// capped like the other scans so a catalogue-wide drift (a publish outage) heals
+	// over ticks without taking the tick from the legs a customer waits on.
+	"product-reconcile": { time: 0.3, queries: 0.3 },
 };
 
 /** The legs a customer waits on: the outbox and the two expiry legs. Each has a
  *  share, and the setting's floor is sized so each can always start. */
 export const CRITICAL_LEGS: readonly SweepLeg[] = ["order-emails", "expire-holds", "expire-orders"];
-
-/**
- * What ONE `ctx.content.get` costs, in D1 queries, on either EmDash path: the row
- * read, then — only when there IS a document — whether the collection has SEO
- * enabled and, when it does, the document's SEO row. So a miss is exactly ONE query
- * (trusted `findById` returns before the SEO reads; the sandbox bridge makes one
- * query, full stop) and a hit is at most THREE.
- *
- * The counting context charges it that way: `CONTENT_MISS_QUERIES` before the call
- * (so the ceiling refuses it whole) and the rest after a document comes back. The
- * leg always checks `CONTENT_READ_QUERIES` are left before a read, so the second
- * half always fits. A confirming re-read of a missing row therefore costs one query.
- */
-export const CONTENT_READ_QUERIES = 3;
-export const CONTENT_MISS_QUERIES = 1;
-
-/**
- * What ONE `ctx.content.list` is charged. EmDash's trusted `findMany` runs the page
- * query AND an unbounded `COUNT(*)` (in parallel — two queries), then, with any
- * item, whether the collection has SEO enabled and the page's SEO rows: four. The
- * sandbox bridge's `contentList` is one query; the worst case is charged.
- */
-export const CONTENT_LIST_QUERIES = 4;
 
 /**
  * The calls one orphan's soft delete makes, MEASURED at 4 (`cron-leg-costs.test.ts`):
@@ -608,6 +648,11 @@ export const CONTENT_LIST_QUERIES = 4;
  * ceiling is for.
  */
 export const PRODUCT_ORPHAN_DELETE_CALLS = 4;
+
+/** One abandoned cart's prune at worst (`pruneAbandonedCart`): the checkout-key
+ *  read, the cart's versioned read, its create-key record's versioned read and
+ *  guarded delete, and the cart's guarded delete. */
+export const PRUNE_CART_CALLS = 5;
 
 /** One coupon's recount at worst (`EmdashCouponStore.recountUses`): the coupon read,
  *  its in-flight and applied counts, and the correcting write. */
@@ -700,10 +745,14 @@ export const ORPHAN_SUSPECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export const UNPROMOTED_LEGS: readonly SweepLeg[] = [
 	"product-orphans",
+	// #95: a lost sync's repair has no deadline (publishing repairs it at once).
+	"product-reconcile",
 	// #619: a correction already waits a settle window for its second look, so a few
 	// more ticks behind a backlog cost nothing; promoted, its turns took calls from the
 	// expiry under the midnight backlog (cron-sweep-backlog.test.ts).
 	"coupon-recount",
+	// #39: a cart a month abandoned can wait a few more ticks behind any backlog.
+	"prune-carts",
 ];
 
 /** The most one row's reads can cost: `ORPHAN_READS_PER_STRIKE - 1` misses, then a
@@ -715,9 +764,9 @@ const ORPHAN_ROW_READ_QUERIES =
  * What a leg's calls cost before its first checked unit (`entry`) and per unit
  * (`unit`), in storage/kv/egress calls. MEASURED — `cron-leg-costs.test.ts` runs
  * one real unit of each leg through the counting context against SQLite and
- * fails if any exceeds its figure here (one order expiry is 13 calls since QA2 M2,
- * 22 before: the guarded flip, the email locator, the rollup delta, the batched
- * hold release and the intent stamp); they matter only until a loop has seen a real unit, after which
+ * fails if any exceeds its figure here (one order expiry is 14 calls since #572 —
+ * 13 since QA2 M2, 22 before: the guarded flip, the email locator, the rollup delta
+ * and its month bump, the batched hold release and the intent stamp); they matter only until a loop has seen a real unit, after which
  * its gate uses the slowest observed. Without them a leg's first unit — and its
  * unchecked entry reads — would always be admitted, and on Workers Free one
  * `hold-intents` row alone is a third of the budget. `expire-holds` adds two calls
@@ -737,12 +786,13 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		"order-emails": { entry: EMAIL_AVAILABILITY_READS, unit: 4 + EMAIL_SEND_AND_RECORD_CALLS },
 		"expire-holds": { entry: 2, unit: 14 },
 		// The flip, the email locator, the rollup delta, the batched hold release and
-		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22). A bigger order
-		// costs more, and the gate learns it from the first unit it sees. So does one
-		// with a coupon applied: its `releaseByOrder` is two indexed scans (by the
-		// order's id and by its creation key, #598) plus the release — 20, measured in
+		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22), and 14 since the
+		// rollup event dirties its month document first (#572). A bigger order costs
+		// more, and the gate learns it from the first unit it sees. So does one with a
+		// coupon applied: its `releaseByOrder` is two indexed scans (by the order's id
+		// and by its creation key, #598) plus the release — 21, measured in
 		// cron-leg-costs.test.ts.
-		"expire-orders": { entry: 1, unit: 13 },
+		"expire-orders": { entry: 1, unit: 14 },
 		"hold-intents": { entry: 1, unit: 14 },
 		// entry: the two arms' first page reads; unit: one delete.
 		"prune-challenges": { entry: 2, unit: 1 },
@@ -776,6 +826,18 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		"product-orphans": {
 			entry: 2 + CONTENT_LIST_QUERIES,
 			unit: ORPHAN_ROW_READ_QUERIES + CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS,
+		},
+		// entry: the cursor read and the first page of active carts. unit: one abandoned
+		// cart (`pruneAbandonedCart`) — its checkout-key read, its versioned read, its
+		// create-key record's versioned read and delete, and the cart's guarded delete:
+		// 5, measured. An unkeyed cart costs 3.
+		"prune-carts": { entry: 2, unit: PRUNE_CART_CALLS },
+		// entry and unit: see `PRODUCT_RECONCILE_ENTRY_QUERIES` and
+		// `PRODUCT_RECONCILE_REPAIR_CALLS` (product-reconcile.ts). A product already in
+		// sync costs nothing past its page.
+		"product-reconcile": {
+			entry: PRODUCT_RECONCILE_ENTRY_QUERIES,
+			unit: PRODUCT_RECONCILE_REPAIR_CALLS,
 		},
 		// entry: resolving the gateways — Stripe's two secret kv reads
 		// (`stripeGatewayFromCtx`), measured in cron-leg-costs.test.ts — once, and only
@@ -1039,6 +1101,12 @@ export interface SweepLegOutcome {
 	/** Present and true for a leg that STOPPED EARLY — out of budget, or at its
 	 *  per-tick batch — with work left over for the next tick. */
 	readonly incomplete?: boolean;
+	/** Present and true for a maintenance leg that stopped with work left at a RATE
+	 *  LIMIT of its own (`prune-carts`' per-run and daily delete caps,
+	 *  `product-reconcile`'s daily repair cap), not for want
+	 *  of budget: it is stamped like a finished run and waits out its cadence, rather
+	 *  than running again on the very next tick as an `incomplete` scan does. */
+	readonly waitsCadence?: boolean;
 	/** The failure message, when `ok` is false. */
 	readonly error?: string;
 	/** Loud, human-readable markers a leg wants surfaced (a genuinely lost hold).
@@ -1167,11 +1235,7 @@ export interface CommerceSweepOptions {
 	) => Promise<EmailSender | undefined>;
 }
 
-/** Where an advancing scan keeps its place between ticks. */
-export interface SweepCursorStore {
-	read(name: string): Promise<string | null>;
-	write(name: string, value: string): Promise<void>;
-}
+export type { SweepCursorStore } from "./sweep-cursor-store.js";
 
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_MAX_PAGES = 10;
@@ -1200,6 +1264,7 @@ const COUPON_RECOUNT_CURSOR = "coupon-recount";
 const PRODUCT_ORPHAN_CURSOR = "product-orphans";
 const REPORTING_CURSOR = "reporting-heal";
 const STRANDED_HOLDS_CURSOR = "stranded-holds";
+const PRUNE_CARTS_CURSOR = "prune-carts";
 /** One JSON document — each scan's last completion, each leg's consecutive
  *  deferrals — so the cadence costs one read per tick, and a write only when
  *  something changed. */
@@ -1266,7 +1331,10 @@ export async function runCommerceSweeps(
 		lateRefunds: lateRefundLimit,
 	};
 	const state = await readState(cursors);
-	let stateChanged = false;
+	let stateChanged = noteIndexLayout(state, state.existed === true, nowIso.slice(0, 10));
+	delete state.existed;
+	const indexBuildHold =
+		queryBudget <= WORKERS_FREE_MAX_QUERY_BUDGET && state.indexBuildDay === nowIso.slice(0, 10);
 	const legs: Omit<SweepLegOutcome, "queries">[] = [];
 	const deferredByBudget: SweepLeg[] = [];
 	const stoppedAtCeiling: SweepLeg[] = [];
@@ -1434,8 +1502,9 @@ export async function runCommerceSweeps(
 			clearDeferral(leg);
 			logOutcome(outcome);
 			// A scan cut short is NOT stamped: it resumes on the very next tick, from
-			// its cursor, rather than waiting out another interval.
-			if (maintenance && outcome.incomplete !== true) {
+			// its cursor, rather than waiting out another interval — unless what cut it
+			// short is a rate limit of its own (`waitsCadence`).
+			if (maintenance && (outcome.incomplete !== true || outcome.waitsCadence === true)) {
 				state.lastRun[leg] = nowIso;
 				stateChanged = true;
 			}
@@ -1490,7 +1559,10 @@ export async function runCommerceSweeps(
 			const outcome = { leg, ok: true, ...result, count: result.count };
 			record(outcome);
 			logOutcome(outcome);
-			if (MAINTENANCE_LEGS.includes(leg) && outcome.incomplete !== true) {
+			if (
+				MAINTENANCE_LEGS.includes(leg) &&
+				(outcome.incomplete !== true || outcome.waitsCadence === true)
+			) {
 				state.lastRun[leg] = nowIso;
 				stateChanged = true;
 			}
@@ -1986,6 +2058,7 @@ export async function runCommerceSweeps(
 						options,
 						legBudget,
 						queryBudget,
+						indexBuildHold,
 					),
 			),
 		"coupon-orphans": async () =>
@@ -2013,6 +2086,22 @@ export async function runCommerceSweeps(
 				);
 				// Stopped by its share with skus left: a candidate for the second pass.
 				if (legBudget.stopped) stoppedByBudget.add("stranded-holds");
+				return result;
+			}),
+		"prune-carts": async () =>
+			await run("prune-carts", async (legBudget) => {
+				const result = await pruneAbandonedCarts(
+					storage,
+					now,
+					cursors,
+					options,
+					legBudget,
+					// The cursor write that records a run's place, even one the ceiling stopped.
+					() => budget.allowCommit(1),
+					indexBuildHold ? 0 : abandonedCartsDailyCap(queryBudget),
+				);
+				// Stopped by its share with carts left: a candidate for the second pass.
+				if (legBudget.stopped) stoppedByBudget.add("prune-carts");
 				return result;
 			}),
 		"product-orphans": async () => {
@@ -2052,6 +2141,41 @@ export async function runCommerceSweeps(
 				// Stopped by its share with rows left: a candidate for the second pass,
 				// which hands it whatever the tick has left once every leg has had a turn.
 				if (legBudget.stopped) stoppedByBudget.add("product-orphans");
+				return result;
+			});
+		},
+		"product-reconcile": async () => {
+			// Like `product-orphans`: without `ctx.content` there is no published content
+			// to reconcile against, and a row is never judged for want of a reader.
+			const content = ctx.content;
+			if (content === undefined) {
+				if (secondPass) return;
+				if (!isDue(state.lastRun["product-reconcile"], now)) {
+					record({ leg: "product-reconcile", ok: true, count: 0, notDue: true });
+				} else {
+					const outcome = { leg: "product-reconcile" as const, ok: true, count: 0, skipped: true };
+					record(outcome);
+					logOutcome(outcome);
+					state.lastRun["product-reconcile"] = nowIso;
+					stateChanged = true;
+				}
+				reached.add("product-reconcile");
+				return;
+			}
+			await run("product-reconcile", async (legBudget) => {
+				const result = await reconcileProductCommerce(
+					ctx,
+					reconcileRows(storage),
+					content,
+					cursors,
+					legBudget,
+					{
+						now,
+						passIntervalMs: reconcilePassIntervalMs(queryBudget),
+						dailyRepairCap: indexBuildHold ? 0 : reconcileRepairsDailyCap(queryBudget),
+					},
+				);
+				if (legBudget.stopped) stoppedByBudget.add("product-reconcile");
 				return result;
 			});
 		},
@@ -2236,7 +2360,11 @@ function logTick(
 	stoppedAtCeiling: readonly SweepLeg[],
 ): void {
 	const busy = legs.some(
-		(entry) => entry.count > 0 || entry.incomplete === true || entry.ok === false,
+		(entry) =>
+			entry.count > 0 ||
+			// A leg waiting out a daily cap it already logged is not news (`logOutcome`).
+			(entry.incomplete === true && entry.waitsCadence !== true) ||
+			entry.ok === false,
 	);
 	if (!busy && deferred.length === 0 && stoppedAtCeiling.length === 0) return;
 	const spent = SWEEP_LEGS.filter((leg) => budget.queriesFor(leg) > 0).map(
@@ -2519,10 +2647,17 @@ function logOutcome(outcome: Omit<SweepLegOutcome, "queries">): void {
 		}
 		return;
 	}
-	if (outcome.count > 0 || outcome.incomplete === true) {
+	// A leg waiting out a cap it already logged (a spent day: prune-carts,
+	// product-reconcile) is not news.
+	const idle = outcome.count === 0 && outcome.waitsCadence === true;
+	if (!idle && (outcome.count > 0 || outcome.incomplete === true)) {
 		console.log(
 			`[otta] cron sweep ${outcome.leg} ${String(outcome.count)}` +
-				(outcome.incomplete === true ? " (more next tick)" : ""),
+				(outcome.incomplete !== true
+					? ""
+					: outcome.waitsCadence === true
+						? " (more at its next run)"
+						: " (more next tick)"),
 		);
 	}
 	for (const anomaly of outcome.anomalies ?? []) {
@@ -2575,6 +2710,50 @@ interface SweepState {
 	/** The last few orders whose expiry flip threw, by id (#478): the durable half
 	 *  of the expiry back-off, and what the leg's alert counts. */
 	expiryFailures: Record<string, ExpiryFailure>;
+	/** The declared index layout (`INDEX_LAYOUT`) the last tick saw. */
+	indexLayout?: string;
+	/** The UTC day a tick first saw a new index layout: EmDash builds the new indexes
+	 *  that day (see `indexBuildHold`). */
+	indexBuildDay?: string;
+	/** Read only: whether a state was stored at all (a fresh install has none). */
+	existed?: boolean;
+}
+
+/**
+ * A fingerprint of every index Otta declares (`COMMERCE_STORAGE_COLLECTIONS`): EmDash
+ * builds a newly declared index on the first scheduled tick after the deploy, so a tick
+ * that finds a different one stored is on that deploy's day.
+ */
+export const INDEX_LAYOUT: string = (() => {
+	const text = JSON.stringify(
+		Object.entries(COMMERCE_STORAGE_COLLECTIONS)
+			.toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+			.map(([name, c]) => [name, c.indexes ?? [], c.uniqueIndexes ?? []]),
+	);
+	// FNV-1a, 32 bits: a short tag, not a security boundary.
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, "0");
+})();
+
+/**
+ * Whether today is an index-build day on Workers Free: the deploy day of a new index
+ * layout, at a budget of `WORKERS_FREE_MAX_QUERY_BUDGET` or less. On D1 the build writes
+ * about one row per `_plugin_storage` row PER new index, counted against Free's 100,000
+ * rows written a day, so the three capped legs — the reporting backfill, the cart prune
+ * and the product reconcile — spend nothing that UTC day and leave it to the build
+ * (DEPLOYMENT.md §5). Marked on the tick's own state (read every tick already), by the
+ * first tick that sees the new layout; a store with no state yet (a fresh install) has
+ * no history to build indexes over, and is not held.
+ */
+function noteIndexLayout(state: SweepState, existed: boolean, today: string): boolean {
+	if (state.indexLayout === INDEX_LAYOUT) return false;
+	state.indexLayout = INDEX_LAYOUT;
+	if (existed) state.indexBuildDay = today;
+	return true;
 }
 
 /** A lost or garbled state only makes every scan due and resets the streaks —
@@ -2583,15 +2762,20 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	const state: SweepState = { lastRun: {}, deferrals: {}, waits: {}, expiryFailures: {} };
 	const raw = await cursors.read(STATE_CURSOR);
 	if (raw === null) return state;
+	state.existed = true;
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return state;
-		const { lastRun, deferrals, waits, expiryFailures } = parsed as {
+		const { lastRun, deferrals, waits, expiryFailures, indexLayout, indexBuildDay } = parsed as {
 			lastRun?: unknown;
 			deferrals?: unknown;
 			waits?: unknown;
 			expiryFailures?: unknown;
+			indexLayout?: unknown;
+			indexBuildDay?: unknown;
 		};
+		if (typeof indexLayout === "string") state.indexLayout = indexLayout;
+		if (typeof indexBuildDay === "string") state.indexBuildDay = indexBuildDay;
 		state.expiryFailures = parseExpiryFailures(expiryFailures);
 		for (const leg of SWEEP_LEGS) {
 			const stamp = (lastRun as Record<string, unknown> | undefined)?.[leg];
@@ -3214,13 +3398,87 @@ async function healReportingRollups(
 	options: CommerceSweepOptions,
 	budget: LegBudget,
 	queryBudget: number,
-): Promise<{ count: number; incomplete?: true }> {
+	indexBuildHold: boolean,
+): Promise<{ count: number; incomplete?: true; deferred?: true; anomalies?: readonly string[] }> {
 	const closed = dayKey(new Date(now.getTime() - DAY_MS));
+	// The Free daily backfill cap, spent whole on the day a new index layout is built.
+	const dailyCap = indexBuildHold ? 0 : reportingBackfillDailyCap(queryBudget);
+	/** A refresh that passed over a day for want of room reports the leg deferred, so it
+	 *  ages to the head of a later tick (unless it has an anomaly to log). */
+	const refreshOutcome = (
+		count: number,
+		refreshed: { incomplete: boolean; anomalies: string[]; skippedShort: boolean },
+	) =>
+		refreshed.skippedShort && refreshed.anomalies.length === 0
+			? { ...legResult(count, true), deferred: true as const }
+			: legResult(count, refreshed.incomplete, refreshed.anomalies);
 	const floor = addDays(
 		closed,
 		-(options.reportingBackfillDays ?? DEFAULT_REPORTING_BACKFILL_DAYS),
 	);
 	const saved = await cursors.read(REPORTING_CURSOR);
+	const refresh = parseRefreshState(await cursors.read(REPORTING_REFRESH_CURSOR));
+	// TAKING TURNS (#572 review). On the Workers Free preset this leg has about nine
+	// calls a run, and the walk, the month/lines refresh and the verifier do not fit in
+	// one. Once the walk has caught up (the closed day is already reconciled), its only
+	// job is re-checking that day, and it alternates with the verifier. While the
+	// refresh has work left (an upgrade's backfill) the refresh takes three runs in
+	// four and the fourth is that alternation's, so neither the re-check nor the
+	// verifier stops for the length of a backfill. A newly closed day is always walked.
+	const caughtUp = saved !== null && saved >= closed;
+	const maintenanceTurn = !refresh.pending || refresh.turn >= REPORTING_PENDING_TURNS - 1;
+	const mode: "walk" | "refresh" | "verify" = !caughtUp
+		? "walk"
+		: !maintenanceTurn
+			? "refresh"
+			: refresh.verifyTurn
+				? refresh.pending
+					? "verify"
+					: "refresh"
+				: "walk";
+	if (mode === "verify") {
+		const state = { ...refresh };
+		const anomalies: string[] = [];
+		const lister = new EmdashReportingStore({ storage, clock: stores.clock });
+		const repaired = await verifyReportingRollups(
+			lister,
+			() =>
+				new EmdashReportingStore({
+					storage,
+					clock: stores.clock,
+					maxReconcilePages: reconcileUnitsFor(budget.remainingQueries()),
+				}),
+			state,
+			budget,
+			dayKey(now),
+			new Date(now.getTime() - REPORTING_SETTLE_MS).toISOString(),
+			anomalies,
+			dailyCap,
+		);
+		await writeRefreshState(cursors, refresh, { ...state, verifyTurn: false, turn: 0 });
+		// The refresh still has work: due again next tick.
+		return legResult(repaired, true, anomalies);
+	}
+	if (mode === "refresh") {
+		const refreshed = await refreshReportingRollups(
+			storage,
+			stores,
+			now,
+			refresh,
+			budget,
+			queryBudget,
+			dailyCap,
+		);
+		await writeRefreshState(cursors, refresh, {
+			...refreshed.state,
+			pending: refreshed.incomplete,
+			// A refresh turn inside a backfill counts towards the maintenance turn; one
+			// outside it is the verifier's half of the alternation.
+			verifyTurn: refresh.pending ? refresh.verifyTurn : false,
+			turn: refresh.pending ? refresh.turn + 1 : 0,
+		});
+		return refreshOutcome(refreshed.count, refreshed);
+	}
 	// `YYYY-MM-DD` compares lexicographically exactly as it compares chronologically.
 	let from = saved === null ? floor : addDays(saved, 1);
 	if (from < floor) from = floor;
@@ -3271,7 +3529,617 @@ async function healReportingRollups(
 	// One write for the walk, naming the last day FINISHED: a cut-short walk
 	// resumes at the first day it did not reach.
 	if (finished !== null) await cursors.write(REPORTING_CURSOR, finished);
-	return legResult(written, incomplete);
+	if (incomplete) return legResult(written, incomplete);
+	const refreshed = await refreshReportingRollups(
+		storage,
+		stores,
+		now,
+		refresh,
+		budget,
+		queryBudget,
+		dailyCap,
+	);
+	await writeRefreshState(cursors, refresh, {
+		...refreshed.state,
+		pending: refreshed.incomplete,
+		verifyTurn: caughtUp,
+		turn: 0,
+	});
+	return refreshOutcome(written + refreshed.count, refreshed);
+}
+
+/** The refresh's own cursor: the verifier's walk, and whose turn it is. */
+const REPORTING_REFRESH_CURSOR = "reporting-refresh";
+
+interface RefreshState {
+	/** The last month and day the verifier re-checked. */
+	month: string | null;
+	day: string | null;
+	/** Whether the verifier's day goes before its months this run. */
+	dayFirst: boolean;
+	/** The last refresh left work: the walk, once caught up, steps aside. */
+	pending: boolean;
+	/** The walk ran last time and has caught up: this run is the verifier's. */
+	verifyTurn: boolean;
+	/** Refresh runs since the last walk-or-verifier turn, while the refresh has work. */
+	turn: number;
+	/** The UTC day {@link builtToday} counts for (`YYYY-MM-DD`), or `null`. */
+	builtOn: string | null;
+	/** Day lines built on {@link builtOn}: the Free daily backfill cap's count. */
+	builtToday: number;
+	/**
+	 * Days whose build ran out of room on a tick that could not give it the whole of
+	 * {@link reportingDayBuildUnits}, though it would fit in that, with the units each
+	 * needs (`dayBuildPages`): each is tried again only on a tick that can give it that
+	 * many, and passed over (not spent on) until then, so a loaded tick goes to the days
+	 * behind it instead.
+	 */
+	short: { day: string; need: number }[];
+	/** Builds in a row that ran out of room though given the whole of
+	 *  {@link reportingDayBuildUnits}, by day: the backstop that marks a day the sizing
+	 *  got wrong (`REPORTING_BUILD_STRIKES`). */
+	strikes: { day: string; n: number }[];
+}
+
+/** While the refresh has work, one run in this many is the walk's or the verifier's. */
+const REPORTING_PENDING_TURNS = 4;
+
+/** The refresh state; a lost or garbled one starts the verifier's walk again. */
+function parseRefreshState(raw: string | null): RefreshState {
+	const fresh: RefreshState = {
+		month: null,
+		day: null,
+		dayFirst: false,
+		pending: false,
+		verifyTurn: false,
+		turn: 0,
+		builtOn: null,
+		builtToday: 0,
+		short: [],
+		strikes: [],
+	};
+	if (raw === null) return fresh;
+	try {
+		const parsed = JSON.parse(raw) as Partial<Record<keyof RefreshState, unknown>>;
+		return {
+			month: typeof parsed.month === "string" ? parsed.month : null,
+			day: typeof parsed.day === "string" ? parsed.day : null,
+			dayFirst: parsed.dayFirst === true,
+			pending: parsed.pending === true,
+			verifyTurn: parsed.verifyTurn === true,
+			turn: typeof parsed.turn === "number" && parsed.turn >= 0 ? Math.floor(parsed.turn) : 0,
+			builtOn: typeof parsed.builtOn === "string" ? parsed.builtOn : null,
+			builtToday:
+				typeof parsed.builtToday === "number" && parsed.builtToday >= 0
+					? Math.floor(parsed.builtToday)
+					: 0,
+			short: dayCounts(parsed.short, "need"),
+			strikes: dayCounts(parsed.strikes, "n"),
+		};
+	} catch {
+		return fresh;
+	}
+}
+
+/** A stored `{ day, <field> }[]`, garbled entries dropped, at most a batch of them. */
+function dayCounts<K extends string>(
+	raw: unknown,
+	field: K,
+): ({ day: string } & Record<K, number>)[] {
+	if (!Array.isArray(raw)) return [];
+	const out: ({ day: string } & Record<K, number>)[] = [];
+	for (const entry of raw as unknown[]) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const { day, [field]: n } = entry as Record<string, unknown>;
+		if (typeof day !== "string" || typeof n !== "number" || !Number.isInteger(n) || n < 0) continue;
+		out.push({ day, [field]: n } as { day: string } & Record<K, number>);
+		if (out.length >= REPORTING_REFRESH_BATCH) break;
+	}
+	return out;
+}
+
+/** One write, and only when something changed. */
+async function writeRefreshState(
+	cursors: SweepCursorStore,
+	before: RefreshState,
+	after: RefreshState,
+): Promise<void> {
+	if (JSON.stringify(before) === JSON.stringify(after)) return;
+	await cursors.write(REPORTING_REFRESH_CURSOR, JSON.stringify(after));
+}
+
+/** A refresh unit that ran out of budget or lost its race: the work is still there next tick. */
+function deferrable(err: unknown): boolean {
+	return isScanPageLimitError(err) || isStorageContentionError(err);
+}
+
+/** How many stale days, and stale months, one run of the refresh lists. */
+const REPORTING_REFRESH_BATCH = 10;
+
+/**
+ * Runs in a row a day's build may run out of room though given the whole of
+ * {@link reportingDayBuildUnits} before it is marked unbuildable (#660 review). The
+ * sizing (`dayBuildPages`) marks a too-big day on its first failure; this is the
+ * backstop for a day it gets wrong, so no day can head every batch forever. A legacy
+ * day still absorbing its claims is allowed as many more runs as the absorbing takes.
+ */
+const REPORTING_BUILD_STRIKES = 3;
+
+/**
+ * Calls a refresh turn makes before its first day build: the walk's and the refresh's
+ * cursor reads, and the stale-days listing (a page of dirty days, then one of unbuilt
+ * ones). Measured in cron-reporting-refresh.test.ts, which builds a day at exactly
+ * {@link reportingDayBuildUnits} on the Free preset.
+ */
+const REPORTING_REFRESH_ENTRY_CALLS = 4;
+
+/**
+ * The reconcile page units ONE day's lines build is given, at most — what the refresh
+ * really has on a tick of its own: the leg's share of the budget (of the units' part of
+ * it, once the commit window is kept out) less {@link REPORTING_REFRESH_ENTRY_CALLS},
+ * as {@link reconcileUnitsFor} turns calls into units. On the Workers Free preset (30)
+ * that is 6: a day of up to 500 orders.
+ *
+ * The build is capped at it and a day is judged unbuildable against it — the SAME
+ * number, so a day either fits a tick of its own or is marked and announced (#660
+ * review: judged against the whole share, 8 units, a 600-order day was neither built
+ * nor marked, headed every batch, and no month was rebuilt again).
+ */
+export function reportingDayBuildUnits(queryBudget: number): number {
+	const share = LEG_SHARES["reporting-heal"]?.queries ?? 1;
+	const unitQueries =
+		queryBudget > COMMIT_WINDOW_EXEMPT_BUDGET ? queryBudget - MAX_COMMIT_WINDOW : queryBudget;
+	return reconcileUnitsFor(Math.floor(unitQueries * share) - REPORTING_REFRESH_ENTRY_CALLS);
+}
+
+/**
+ * How far back the backfill builds day lines: the longest period a report reads, the
+ * 400-day custom range ({@link MAX_REPORT_RANGE_DAYS}), and the previous period it is
+ * compared with. An older day keeps being read from its orders, as it always was; a
+ * custom range that far back is rare, and building it would cost every store its whole
+ * history in rows written (DEPLOYMENT.md §5).
+ */
+export const REPORTING_LINES_HISTORY_DAYS = 2 * MAX_REPORT_RANGE_DAYS;
+
+/**
+ * At most this many day lines built per UTC day at any budget Workers Free can run
+ * ({@link REPORTING_BACKFILL_CAPPED_BUDGET}, 50, or less), counted in the refresh state.
+ * D1 Free allows 100,000 rows written a day, and once a store passes it every write
+ * fails — add-to-cart and checkout included — until the UTC reset.
+ *
+ * What a build writes, by DEPLOYMENT.md's index-row model: every declared index is an
+ * expression index over the whole shared `_plugin_storage` table, so a document write
+ * costs about one row per index Otta declares (`COMMERCE_STORAGE_COLLECTIONS`: 49 with
+ * #572's three) plus the table row, its primary key's autoindex and the host's list
+ * index — about 52 rows. A day in one currency is three writes (the month touch before,
+ * its day document, the touch after), in two currencies four: about 210 rows. 100 builds
+ * is then about 21,000 rows written a day (16,000 in one currency). Not more: the
+ * abandoned-cart prune (about 31,000) and the product reconcile (about 31,000) have
+ * daily caps of their own on Free, and with all three running at once (about
+ * 83,000–88,000) the store's own traffic still keeps about 12,000–17,000 of D1 Free's
+ * 100,000. It builds newest first and starts the UTC day after the deploy
+ * (`indexBuildHold`). Day documents exist only from the release that introduced them
+ * (about 2026-09-07), so a store upgrading now has about 55 of them — one capped day. Only a store with a year of them would take about four days for the
+ * trailing year, and the {@link REPORTING_LINES_HISTORY_DAYS} floor (at most 800 builds)
+ * bounds it at about eight.
+ * Overlapping ticks can pass the cap by at most one batch ({@link REPORTING_REFRESH_BATCH}).
+ *
+ * Paid has no daily rows-written limit (writes are billed per million), so a larger
+ * budget has no cap.
+ */
+export const REPORTING_BACKFILL_DAYS_PER_DAY_FREE = 100;
+
+/**
+ * The largest query budget the daily backfill cap applies to: any budget Workers Free
+ * can run (`WORKERS_FREE_MAX_QUERY_BUDGET`, 50), the same threshold as the
+ * abandoned-cart prune's daily cap. A budget above it can only run on Workers Paid.
+ */
+export const REPORTING_BACKFILL_CAPPED_BUDGET = WORKERS_FREE_MAX_QUERY_BUDGET;
+
+/** The daily backfill cap for a tick whose query budget is `queryBudget`: the Free cap
+ *  at any budget Workers Free can run, none above it. */
+export function reportingBackfillDailyCap(queryBudget: number): number | null {
+	return queryBudget <= REPORTING_BACKFILL_CAPPED_BUDGET
+		? REPORTING_BACKFILL_DAYS_PER_DAY_FREE
+		: null;
+}
+
+/** Day builds today's cap (`dailyCap`, `null`: none) still allows. The stored count is
+ *  today's only when it was counted today. */
+function backfillAllowance(
+	state: RefreshState,
+	today: string,
+	dailyCap: number | null,
+): number | null {
+	if (dailyCap === null) return null;
+	return Math.max(0, dailyCap - (state.builtOn === today ? state.builtToday : 0));
+}
+
+/** Count one day build that wrote, against today's cap. */
+function noteDayBuilt(state: RefreshState, today: string): void {
+	if (state.builtOn !== today) {
+		state.builtOn = today;
+		state.builtToday = 0;
+	}
+	state.builtToday++;
+}
+
+/**
+ * How long after its last touch a month may be rebuilt, and how long a claim may sit
+ * unstamped before the refresh treats it as a crash residue. A writer touches a month
+ * before and after its day write. The longest-lived writer is a Cron Trigger
+ * invocation — this sweep's own expiry leg writes live rollup events — whose wall time
+ * Cloudflare allows up to 15 minutes; a request is far shorter. Twenty minutes is that
+ * and a margin, so a touch older than it has no write still to land. Only WHEN to
+ * rebuild or heal depends on it: the recompute itself is safe against a live event
+ * whatever the clock says.
+ */
+export const REPORTING_SETTLE_MS = 20 * 60_000;
+
+/** Clean closed months the verifier rebuilds per run, round robin, room allowing. */
+const REPORTING_VERIFY_MONTHS = 2;
+
+/**
+ * The refresh's unit costs, measured in cron-leg-costs.test.ts, which each of its
+ * loops is admitted on — sized to the unit rather than to the leg's reconcile unit,
+ * because on the Workers Free preset this leg's share left after its walk is smaller
+ * than a reconcile unit and the refresh would otherwise never run there.
+ *
+ * A one-currency day's lines rebuilt: a page of its documents, a page of its orders,
+ * the month touch before, the guarded write, the touch after.
+ */
+export const REPORTING_LINES_BUILD_CALLS = 5;
+
+/** A month rebuilt: its document, its unstamped-claim count, a page of its days, the
+ *  guarded write. A clean month that still matches its days skips the write. */
+export const REPORTING_MONTH_BUILD_CALLS = 4;
+
+/** The refresh state ({@link REPORTING_REFRESH_CURSOR}), read once and written once a run. */
+const REPORTING_VERIFY_CURSOR_CALLS = 2;
+
+/** A verifier day: the next day, then its lines' re-check — a page of its documents and
+ *  a page of its orders; a repair adds the two touches and a write per currency. */
+export const REPORTING_VERIFY_DAY_CALLS = 3;
+
+/** Room a day re-check is admitted on: itself and a two-currency repair. */
+const REPORTING_VERIFY_DAY_ROOM = REPORTING_VERIFY_DAY_CALLS + 4;
+
+/**
+ * What one full verifier run costs when it finds nothing wrong — the cursor, a page of
+ * months, {@link REPORTING_VERIFY_MONTHS} month rebuilds that write nothing, and a day
+ * re-check — measured in cron-leg-costs.test.ts. A tight tick does as much of it as fits
+ * (a month or the day, alternating which goes first), so the walk advances on every
+ * preset.
+ */
+export const REPORTING_VERIFY_CALLS =
+	REPORTING_VERIFY_CURSOR_CALLS +
+	1 +
+	REPORTING_VERIFY_MONTHS * (REPORTING_MONTH_BUILD_CALLS - 1) +
+	REPORTING_VERIFY_DAY_CALLS;
+
+/**
+ * THE MONTH GRAIN AND THE TOP-PRODUCTS LINES (issue #572; ADR-0041), after the heal's
+ * walk.
+ *
+ * A long Reports period reads a clean `reporting_monthly` document for each whole
+ * month instead of its days, and top products from the product lines the day and
+ * month documents carry instead of scanning orders. Both are BUILT, so this keeps
+ * them built:
+ *
+ * 1. CLOSED DAYS WHOSE LINES ARE STALE, NEWEST first (so the trailing year a report
+ *    reads is built before older history): dirty ones (an order of the day entered or
+ *    left the revenue set) and never-built ones. The never-built ones are the UPGRADE
+ *    BACKFILL: nothing reads them wrong in the meantime (a report scans an unbuilt day's
+ *    orders, as it always did), it only reads them dearer. Building a day dirties its
+ *    month. A day whose orders are more than this leg could EVER read in one tick is
+ *    marked unbuildable and announced, rather than heading every batch forever.
+ * 2. DIRTY MONTHS before the current one (which a long period never covers whole) that
+ *    have settled, rebuilt from their days. A month held off by a claim a crash left
+ *    unstamped gets that claim's day recomputed and its settled claims stamped; one
+ *    that is STILL held is announced and left for the next run, not retried every tick.
+ * 3. THE VERIFIER, on a run with nothing else left to do: a cache trusted forever is
+ *    only as good as every writer that ever touched its days, and some cannot be made
+ *    to (a build older than #572 during a rollback; a writer that dies at the wrong
+ *    instant). So it rebuilds {@link REPORTING_VERIFY_MONTHS} CLEAN closed months and
+ *    re-checks one closed day's lines per run, round robin from a cursor, and announces
+ *    any repair as an anomaly. At the slow cadence that re-checks every month within
+ *    hours and a year of days within days.
+ *
+ * Found work left undone keeps the leg due next tick rather than at the slow cadence:
+ * the backfill drains at the budget's pace.
+ */
+async function refreshReportingRollups(
+	storage: AdapterStorageAccess,
+	stores: InProcessCommerceStores,
+	now: Date,
+	saved: RefreshState,
+	budget: LegBudget,
+	queryBudget: number,
+	dailyCap: number | null,
+): Promise<{
+	count: number;
+	incomplete: boolean;
+	anomalies: string[];
+	state: RefreshState;
+	/** It passed over a day this tick had too little room for (see `RefreshState.short`). */
+	skippedShort: boolean;
+}> {
+	const state = { ...saved };
+	let skippedShort = false;
+	const done = (count: number, incomplete: boolean, anomalies: string[]) => ({
+		count,
+		incomplete,
+		anomalies,
+		state,
+		skippedShort,
+	});
+	const today = dayKey(now);
+	const thisMonth = today.slice(0, 7);
+	const settled = new Date(now.getTime() - REPORTING_SETTLE_MS).toISOString();
+	const lister = new EmdashReportingStore({ storage, clock: stores.clock });
+	const boundedBy = (units: number): EmdashReportingStore =>
+		new EmdashReportingStore({ storage, clock: stores.clock, maxReconcilePages: units });
+	const bounded = (): EmdashReportingStore =>
+		boundedBy(reconcileUnitsFor(budget.remainingQueries()));
+	// A day build is capped at the units a tick of its own could give it, and judged
+	// against the same number (see `reportingDayBuildUnits`).
+	const buildUnits = reportingDayBuildUnits(queryBudget);
+	const anomalies: string[] = [];
+	let count = 0;
+
+	// No room to even LOOK is not unfinished work: the refresh runs again at the leg's
+	// cadence. Only work found and left undone keeps the leg due next tick.
+	if (!budget.canStart(2, REPORTING_LINES_BUILD_CALLS)) {
+		return done(count, false, anomalies);
+	}
+	// The Free daily cap (`REPORTING_BACKFILL_DAYS_PER_DAY_FREE`): a day's count is the
+	// stored one only when it is today's. Spent, only the DIRTY days are listed — an
+	// order of theirs moved, and they are few — and the backfill waits for the UTC reset
+	// at the leg's cadence, not every tick.
+	const allowance = backfillAllowance(state, today, dailyCap);
+	const listLimit =
+		allowance === null || allowance === 0
+			? REPORTING_REFRESH_BATCH
+			: Math.min(REPORTING_REFRESH_BATCH, allowance);
+	const gate = budget.gate(0, REPORTING_LINES_BUILD_CALLS);
+	const days = await lister.staleProductDays(today, listLimit, {
+		notBefore: addDays(today, -REPORTING_LINES_HISTORY_DAYS),
+		unbuilt: allowance !== 0,
+	});
+	let incomplete = days.length >= listLimit;
+	// A listed day is either built, marked, or still stale: `short` and `strikes` keep
+	// only the last.
+	const listed = new Set(days);
+	state.short = state.short.filter(({ day }) => listed.has(day));
+	state.strikes = state.strikes.filter(({ day }) => listed.has(day));
+	const settle = (day: string): void => {
+		state.short = state.short.filter((entry) => entry.day !== day);
+		state.strikes = state.strikes.filter((entry) => entry.day !== day);
+	};
+	const markUnbuildable = async (day: string, why: string): Promise<void> => {
+		// It would head every batch forever: skip it, loudly. A report scans its orders,
+		// as it always did; a delta that moves its lines lists it again.
+		await lister.markProductsUnbuildable(day);
+		settle(day);
+		anomalies.push(
+			`reporting ${day}: ${why} within one tick's query budget (${String(queryBudget)});` +
+				' reports scan that day instead. Raise "Background work per minute" (DEPLOYMENT.md §5)',
+		);
+	};
+	for (const day of days) {
+		// Out of room: the months and the verifier still get what is left.
+		if (!gate()) {
+			incomplete = true;
+			break;
+		}
+		const units = Math.min(buildUnits, reconcileUnitsFor(budget.remainingQueries()));
+		const known = state.short.find((entry) => entry.day === day);
+		if (known !== undefined && units < known.need) {
+			// Not enough room for THIS day: the tick goes to the days behind it, and the leg
+			// says it was deferred, so it ages to the head of a later tick and gets it.
+			incomplete = true;
+			skippedShort = true;
+			continue;
+		}
+		try {
+			const built = await boundedBy(units).rebuildDayProducts(day);
+			settle(day);
+			count += built.written;
+			if (built.written > 0) noteDayBuilt(state, today);
+		} catch (err) {
+			if (!deferrable(err)) throw err;
+			// Whatever happens below, the day is listed again next run unless it is marked;
+			// the days behind it, the months and the verifier are not held up by it.
+			incomplete = true;
+			if (!isScanPageLimitError(err)) continue; // lost a race
+			const size = await lister.dayBuildPages(day);
+			// A legacy day needs a unit past its pages to absorb a claim, or it never moves.
+			const need = size.legacy ? size.pages + 1 : size.pages;
+			if (need > buildUnits) {
+				await markUnbuildable(day, "too many orders to build its top-products lines");
+				continue;
+			}
+			if (units < buildUnits) {
+				// Short of budget this tick (another leg or the walk spent it).
+				if (known !== undefined) known.need = need;
+				else if (state.short.length < REPORTING_REFRESH_BATCH) state.short.push({ day, need });
+				continue;
+			}
+			// It had the whole build and still ran out. Absorbing a legacy day's claims, that
+			// is progress a later run keeps — but only so many runs' worth; otherwise the
+			// sizing got the day wrong. Either way, past that many runs in a row, it is marked.
+			const allowed =
+				err.operation === "absorbReportingClaims" && size.legacy
+					? Math.ceil(size.claims / Math.max(1, buildUnits - size.pages)) + REPORTING_BUILD_STRIKES
+					: REPORTING_BUILD_STRIKES;
+			const strike = state.strikes.find((entry) => entry.day === day);
+			const n = (strike?.n ?? 0) + 1;
+			if (n >= allowed) {
+				await markUnbuildable(
+					day,
+					`its top-products lines ran out of room ${String(n)} runs in a row, though given the most a run can`,
+				);
+				continue;
+			}
+			if (strike !== undefined) strike.n = n;
+			else if (state.strikes.length < REPORTING_REFRESH_BATCH) state.strikes.push({ day, n });
+		}
+	}
+
+	if (!budget.canStart(1, REPORTING_MONTH_BUILD_CALLS)) return done(count, incomplete, anomalies);
+	const monthGate = budget.gate(0, REPORTING_MONTH_BUILD_CALLS);
+	const months = await lister.staleMonths(thisMonth, REPORTING_REFRESH_BATCH, settled);
+	if (months.length >= REPORTING_REFRESH_BATCH) incomplete = true;
+	for (const month of months) {
+		if (!monthGate()) return done(count, true, anomalies);
+		try {
+			const outcome = await bounded().buildMonth(month, { touchedBefore: settled });
+			if (outcome !== "held") {
+				if (outcome === "built" || outcome === "repaired") count++;
+				continue;
+			}
+			// Held off by an unstamped claim. A young one is an event in flight: it settles
+			// by itself, and the month is rebuilt on a later run. An old one is a crash
+			// residue: recompute its day (absorbing what the orders prove) and stamp the
+			// claims that recompute could not prove, then try once more.
+			const stuck = await lister.unstampedClaimDays(month, settled, 5);
+			if (stuck.length === 0) continue;
+			for (const day of stuck) {
+				if (!monthGate(LEG_QUERY_COSTS["reporting-heal"].unit)) {
+					return done(count, true, anomalies);
+				}
+				await bounded().reconcile({ from: `${day}T00:00:00.000Z`, to: `${day}T23:59:59.999Z` });
+				// A read and a write per claim, out of what the leg has left; the rest next run.
+				const stamping = await lister.stampSettledClaims(
+					day,
+					settled,
+					Math.floor((budget.remainingQueries() - 2) / 2),
+				);
+				if (stamping.more) incomplete = true;
+			}
+			if (!monthGate()) return done(count, true, anomalies);
+			const retried = await bounded().buildMonth(month, { touchedBefore: settled });
+			if (retried === "built" || retried === "repaired") count++;
+			else if (retried === "held") {
+				// Backed off, not retried every tick: the next run (at the cadence) looks again.
+				anomalies.push(
+					`reporting ${month}: a rollup claim stays unstamped after its day (${stuck.join(", ")})` +
+						" was recomputed; the month is read from its days until it settles",
+				);
+			}
+		} catch (err) {
+			if (!deferrable(err)) throw err;
+			return done(count, true, anomalies);
+		}
+	}
+
+	if (!incomplete) {
+		count += await verifyReportingRollups(
+			lister,
+			bounded,
+			state,
+			budget,
+			today,
+			settled,
+			anomalies,
+			dailyCap,
+		);
+	}
+	return done(count, incomplete, anomalies);
+}
+
+/**
+ * THE VERIFIER (issue #572 review): rebuild the next {@link REPORTING_VERIFY_MONTHS}
+ * built months and re-check the next closed day's product lines, from a cursor that
+ * wraps. A rebuild of a clean month whose sums still match its days writes nothing; one
+ * that does not match is repaired (guarded on `gen`, like any rebuild) and announced. A
+ * day's lines are rebuilt from its orders the same way. Each unit is admitted only if it
+ * (and a repair) still fits, and the day and the months take turns going first, so a
+ * tick with room for one unit still advances both walks over successive runs. A unit
+ * that runs out of budget or loses a race is skipped, not retried: the cursor moves
+ * on, and the walk comes back round. Returns how many documents it repaired.
+ */
+async function verifyReportingRollups(
+	lister: EmdashReportingStore,
+	bounded: () => EmdashReportingStore,
+	next: RefreshState,
+	budget: LegBudget,
+	today: string,
+	settled: string,
+	anomalies: string[],
+	dailyCap: number | null,
+): Promise<number> {
+	const monthRoom = REPORTING_MONTH_BUILD_CALLS + 1;
+	const fits = (calls: number): boolean =>
+		budget.canStart(0, calls + REPORTING_VERIFY_CURSOR_CALLS / 2);
+	if (!fits(REPORTING_VERIFY_CURSOR_CALLS / 2 + Math.min(monthRoom, REPORTING_VERIFY_DAY_ROOM))) {
+		return 0;
+	}
+	const saved = { month: next.month, day: next.day };
+	next.dayFirst = !next.dayFirst;
+	let repaired = 0;
+
+	const verifyMonths = async (): Promise<void> => {
+		if (!fits(1 + monthRoom)) return;
+		const thisMonth = today.slice(0, 7);
+		let months = await lister.monthsAfter(saved.month, thisMonth, REPORTING_VERIFY_MONTHS);
+		if (months.length === 0 && saved.month !== null) {
+			if (!fits(1 + monthRoom)) return;
+			months = await lister.monthsAfter(null, thisMonth, REPORTING_VERIFY_MONTHS);
+		}
+		for (const month of months) {
+			if (!fits(monthRoom)) return;
+			next.month = month;
+			try {
+				const outcome = await bounded().buildMonth(month, { touchedBefore: settled });
+				if (outcome === "repaired") {
+					repaired++;
+					anomalies.push(
+						`reporting ${month}: the month document disagreed with its days and was rebuilt`,
+					);
+				}
+			} catch (err) {
+				if (!deferrable(err)) throw err;
+			}
+		}
+	};
+
+	const verifyDay = async (): Promise<void> => {
+		if (!fits(REPORTING_VERIFY_DAY_ROOM)) return;
+		// A re-check that finds a day never built builds it: backfill writes, under the same
+		// daily cap. Spent, the day re-checks wait for the UTC reset; the months do not.
+		if (backfillAllowance(next, today, dailyCap) === 0) return;
+		// Newest first, as the backfill builds days: the trailing year a report reads is
+		// the first re-checked, and the walk wraps back to yesterday.
+		let day = await lister.dayBefore(saved.day, today);
+		if (day === null && saved.day !== null) {
+			if (!fits(REPORTING_VERIFY_DAY_ROOM)) return;
+			day = await lister.dayBefore(null, today);
+		}
+		if (day === null) return;
+		next.day = day;
+		try {
+			const result = await bounded().rebuildDayProducts(day);
+			if (result.written > 0) noteDayBuilt(next, today);
+			if (result.repaired > 0) {
+				repaired += result.repaired;
+				anomalies.push(
+					`reporting ${day}: top-products lines disagreed with the day's orders and were rebuilt`,
+				);
+			}
+		} catch (err) {
+			if (!deferrable(err)) throw err;
+		}
+	};
+
+	if (next.dayFirst) {
+		await verifyDay();
+		await verifyMonths();
+	} else {
+		await verifyMonths();
+		await verifyDay();
+	}
+	return repaired;
 }
 
 /**
@@ -3953,12 +4821,6 @@ function cursorCount(value: unknown): number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
-/** The host's refusal of a page cursor it cannot decode. It does not export the
- *  class, so it is matched by name, like `StorageQueryError`. */
-function isInvalidCursorError(err: unknown): boolean {
-	return err instanceof Error && err.name === "InvalidCursorError";
-}
-
 /** Each order's adopted reservation ids on one inventory document, in order-id
  *  order (the order `stranded-holds` resumes a sku in). */
 function adoptedByOrder(doc: StrandedSkuView): [string, string[]][] {
@@ -4592,4 +5454,440 @@ function parseMarks(raw: unknown, nowMs: number, ttlMs: number): Record<string, 
 		marks[id] = { n, at };
 	}
 	return marks;
+}
+
+/**
+ * How long an empty cart must sit untouched (`updatedAt`) before `prune-carts`
+ * deletes it (issue #39). Thirty days: the cart cookie's own lifetime
+ * (`CART_COOKIE_MAX_AGE_SECONDS`). The cookie is issued only by the cart-create
+ * route — a fresh create, or a REPLAY of a `create:`, `rotate:` or `recurrency:`
+ * key, which answers an existing cart — and the store's keyed create moves an
+ * active cart's `updatedAt` on every replay. So each cookie issued is matched by a
+ * write at least as recent, and a cart untouched this long has no live cookie naming
+ * it: the prune never pulls a cart out from under a shopper. (If a stale cookie did
+ * come back, the site already treats `CART_NOT_FOUND` as "drop the cookie, mint
+ * afresh".) A test pins the window at or above the cookie's lifetime, and the store
+ * suite pins the replay's write.
+ */
+export const ABANDONED_CART_TTL_MS = 30 * DAY_MS;
+
+/**
+ * How long a FINISHED pass over the active carts rests before the next one. The
+ * window is a month, so a day's delay in noticing a cart costs nothing, while
+ * re-reading every active cart every fifteen minutes would cost a busy Free store a
+ * real share of its ticks. A resting run is one kv read.
+ */
+export const ABANDONED_CART_PASS_INTERVAL_MS = DAY_MS;
+
+/**
+ * At most this many carts deleted per RUN of the leg, whatever the budget allows. A
+ * run that reaches it is stamped (`waitsCadence`) and the pass carries on at the
+ * leg's next cadence, fifteen minutes on, instead of spending every tick's share on
+ * deletes. A run
+ * stopped by this cap is not run again in the same tick — the second pass takes only
+ * a leg its SHARE stopped — while a run its share stopped (on Free, after a cart or
+ * two) is `incomplete` and goes again on the second pass or the next tick, under
+ * the same cap counted afresh. So one tick deletes fewer than twice this.
+ */
+export const ABANDONED_CARTS_PER_RUN = 50;
+
+/**
+ * At most this many carts deleted per UTC day at any budget Workers Free can run
+ * (`ABANDONED_CARTS_CAPPED_BUDGET`, 50, or less), counted in the leg's kv
+ * cursor. D1 Free allows 100,000 rows written a day, and once a store passes it
+ * every write fails — add-to-cart and checkout included — until the UTC reset.
+ *
+ * What a delete writes, by DEPLOYMENT.md's index-row model: EmDash builds every
+ * declared index as an expression index over the whole shared `_plugin_storage`
+ * table with no `WHERE`, so every row carries an entry in each — Otta declares 49
+ * (`COMMERCE_STORAGE_COLLECTIONS`, since #572) — plus the table row itself, the autoindex of its
+ * composite primary key, and the host's own `idx_plugin_storage_list`. A deleted row
+ * is therefore about 52 rows written, and a pruned cart deletes two (the cart, and
+ * its `cart_create_keys` record): about 104 with other plugins' indexes. 300 carts is then about 31,000 rows written a
+ * day — under a third of the Free allowance, leaving the store's own traffic the
+ * rest; the leg's cursor and the tick-state writes add a few thousand more on a
+ * day the cap is reached. A backlog of N abandoned carts drains in N / 300 days.
+ * Overlapping ticks (each reads the count before either writes it) can pass the cap
+ * by at most one run's deletes, `ABANDONED_CARTS_PER_RUN`.
+ *
+ * Paid has no daily rows-written limit (writes are billed per million), so a larger
+ * budget has no daily cap. Its drain is bounded only by the leg's share and
+ * `ABANDONED_CARTS_PER_RUN`: about 70 carts a cadence on an idle store, and up to
+ * about that a minute under load, when the second pass is cut short and the run is
+ * never stamped (DEPLOYMENT.md has the figures).
+ */
+export const ABANDONED_CARTS_PER_DAY_FREE = 300;
+
+/**
+ * The largest query budget the daily cap applies to: Workers Free's limit of 50 D1
+ * queries per invocation, so a Free store keeps the cap at a custom 31–50 too (above
+ * the Free preset, a share-stopped run is never stamped and would otherwise drain a
+ * couple of carts every minute, past D1 Free's rows-written allowance). A budget above
+ * it can only run on Workers Paid. The same threshold as `product-reconcile`'s daily
+ * repair cap (`WORKERS_FREE_MAX_QUERY_BUDGET`).
+ */
+export const ABANDONED_CARTS_CAPPED_BUDGET = WORKERS_FREE_MAX_QUERY_BUDGET;
+
+/** The daily delete cap for a tick whose query budget is `queryBudget`: the Free
+ *  cap at any budget Workers Free can run, none above it. */
+export function abandonedCartsDailyCap(queryBudget: number): number | null {
+	return queryBudget <= ABANDONED_CARTS_CAPPED_BUDGET ? ABANDONED_CARTS_PER_DAY_FREE : null;
+}
+
+/** `prune-carts`' place in a pass, and when the last pass finished. */
+interface PruneCartsCursor {
+	/** The host's keyset cursor for the page the pass is in; null for the first. */
+	readonly cursor: string | null;
+	/** The last cart on that page judged and left in place; null for none yet. A
+	 *  resume re-reads the page and carries on after this id (a cart pruned after it
+	 *  is gone from the re-read, so nothing unjudged lies between). Not a count of
+	 *  judged rows: a row that leaves the page between runs (pruned, checked out,
+	 *  deleted by an overlapping tick) would shift a count and pass over an unjudged
+	 *  cart. If this row itself has left, the page is judged again from its start —
+	 *  a live cart costs nothing to judge, a cart already pruned is no longer on it,
+	 *  and only a candidate kept last time is tried again. (Not the
+	 *  host's own `(created_at, id)` keyset: a query item carries the id and the
+	 *  document, not the row's `created_at`, so the plugin cannot build one, only
+	 *  resume from the host's.) */
+	readonly after: string | null;
+	/** When the last pass reached the end; null while one is under way. */
+	readonly passDoneAt: string | null;
+}
+
+/** The carts deleted on one UTC day (`YYYY-MM-DD`), for the Free daily cap. Kept
+ *  beside the place and never reset by a pass ending or a cursor refused. */
+interface PruneCartsDay {
+	readonly day: string | null;
+	readonly deletedToday: number;
+}
+
+const PRUNE_CARTS_START: PruneCartsCursor = { cursor: null, after: null, passDoneAt: null };
+const PRUNE_CARTS_NO_DAY: PruneCartsDay = { day: null, deletedToday: 0 };
+const PRUNE_CARTS_START_SERIALIZED = serializePruneCarts(PRUNE_CARTS_START, PRUNE_CARTS_NO_DAY);
+
+function serializePruneCarts(place: PruneCartsCursor, day: PruneCartsDay): string {
+	return JSON.stringify({
+		cursor: place.cursor,
+		after: place.after,
+		passDoneAt: place.passDoneAt,
+		day: day.day,
+		deletedToday: day.deletedToday,
+	});
+}
+
+function parsePruneCartsCursor(raw: string | null): PruneCartsCursor & PruneCartsDay {
+	const empty = { ...PRUNE_CARTS_START, ...PRUNE_CARTS_NO_DAY };
+	if (raw === null || raw === "") return empty;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== "object" || parsed === null) return empty;
+		const p = parsed as Record<string, unknown>;
+		return {
+			cursor: cursorText(p.cursor),
+			after: cursorText(p.after),
+			passDoneAt: cursorText(p.passDoneAt),
+			day: cursorText(p.day),
+			deletedToday: cursorCount(p.deletedToday),
+		};
+	} catch {
+		return empty;
+	}
+}
+
+/** What `prune-carts` reads of a cart and a create-key record, written structurally so
+ *  `pruneAbandonedCart`'s exported signature keeps `@urumi.ai/otta-store-emdash`'s
+ *  document types out of the plugin's emitted declarations (the same rule as
+ *  {@link releaseStrandedOnSku}; `bundle-imports.test.ts`). `lines` and `mutations`
+ *  are optional because a document an earlier build wrote may lack them
+ *  (`normalizeCartDoc`). */
+interface PrunableCartView {
+	readonly state: string;
+	readonly orderId: string | null;
+	readonly lines?: Readonly<Record<string, unknown>>;
+	readonly mutations?: Readonly<
+		Record<string, { readonly completed: boolean; readonly abandoned?: boolean }>
+	>;
+	readonly holdExpiresAt: string | null;
+	readonly createKey?: string;
+	readonly createdAt: string;
+	readonly updatedAt?: string;
+}
+interface PrunableCreateKeyView {
+	readonly cartId: string;
+}
+/** The calls `pruneAbandonedCart` makes on one collection. */
+interface PruneCollection<T> {
+	get(id: string): Promise<T | null>;
+	getVersioned(id: string): Promise<{ readonly value: T; readonly revision: string } | null>;
+	compareAndDelete(id: string, expectedRevision: string): Promise<{ readonly applied: boolean }>;
+}
+
+/**
+ * Whether a cart, as stored, is one `prune-carts` may delete: ACTIVE (a checked-out
+ * cart is its order's), handed off to no order, with NO line (a digital line has no
+ * hold, so no sweep would ever reap it — it stays the shopper's), owing no hold work
+ * (`holdExpiresAt` null, and no add claimed and neither completed nor abandoned —
+ * that claim is the crash marker the hold sweep follows to a dangling hold), and
+ * untouched since `cutoffMs`. A cart carries no customer at all — sessions and
+ * customers hold no cart id — so every cart is anonymous to the store, and this is
+ * the whole of "abandoned".
+ */
+function isAbandonedCart(doc: PrunableCartView, cutoffMs: number): boolean {
+	if (doc.state !== "active" || doc.orderId !== null) return false;
+	if (Object.keys(doc.lines ?? {}).length > 0) return false;
+	if (doc.holdExpiresAt !== null) return false;
+	for (const record of Object.values(doc.mutations ?? {})) {
+		if (!record.completed && record.abandoned !== true) return false;
+	}
+	const touched = Date.parse(doc.updatedAt ?? doc.createdAt);
+	return Number.isFinite(touched) && touched <= cutoffMs;
+}
+
+/**
+ * `prune-carts`' unit: delete one abandoned cart and its create-key record. Says
+ * whether the cart is gone (`pruned`), or stays (`kept`).
+ *
+ * 1. A cart an order was placed from is never touched. An order needs lines, so an
+ *    empty active cart with an order behind it is rare (a checkout whose holds were
+ *    lost leaves one), but the storefront's checkout key is `checkout:<cartId>`
+ *    (`checkoutIdempotencyKey`), so one read of its `order_keys` record says. ONLY
+ *    that key is recognised: a headless client that checks out under a key of its
+ *    own leaves no record this read can find, and such a cart is guarded only by
+ *    what step 2 judges (an order needs lines, and a placed cart is `checked_out`).
+ * 2. The cart is re-read VERSIONED and judged again: the page was a snapshot.
+ * 3. Its create-key record goes FIRST, and only while the record still names this
+ *    cart (a guarded delete on the revision read). Key first, so a crash or the
+ *    tick's ceiling between the two leaves a cart the next pass finds again, never a
+ *    record no pass can find (the cart is the only way to it). A cart minted before
+ *    `createKey` existed has none to read: its record, if any, stays, and a late
+ *    replay of that key re-creates the id, empty — #582's accepted residual, and that
+ *    cart is pruned in its turn.
+ * 4. The cart's own delete is guarded on the revision judged, so a shopper's write in
+ *    between keeps it. Then the record is already gone and a replay of that key mints
+ *    a new cart; the shopper holding this one is unaffected.
+ *
+ * The cart's `cart_mutation_index` locators are left: each is a key a shared cached
+ * page may have handed to many carts, so deleting one safely costs a read and a
+ * guarded delete, per key, and a locator whose cart is gone already answers "no
+ * record" (`recordedMutation`).
+ *
+ * Exported for `cron-leg-costs.test.ts`, which measures it.
+ */
+export async function pruneAbandonedCart(
+	cartId: string,
+	cutoffMs: number,
+	collections: {
+		readonly carts: PruneCollection<PrunableCartView>;
+		readonly createKeys: PruneCollection<PrunableCreateKeyView>;
+		readonly orderKeys: Pick<PruneCollection<unknown>, "get">;
+	},
+): Promise<"pruned" | "kept"> {
+	const { carts, createKeys, orderKeys } = collections;
+	if ((await orderKeys.get(checkoutIdempotencyKey(cartId))) !== null) return "kept";
+	const current = await carts.getVersioned(cartId);
+	if (current === null) return "kept";
+	if (!isAbandonedCart(current.value, cutoffMs)) return "kept";
+	const key = current.value.createKey;
+	if (typeof key === "string" && key !== "") {
+		const record = await createKeys.getVersioned(key);
+		if (record !== null && record.value.cartId === cartId) {
+			await createKeys.compareAndDelete(key, record.revision);
+		}
+	}
+	const deleted = await carts.compareAndDelete(cartId, current.revision);
+	return deleted.applied ? "pruned" : "kept";
+}
+
+/**
+ * ABANDONED CARTS (issue #39): delete each empty, anonymous cart nobody has touched
+ * for `ABANDONED_CART_TTL_MS`, with its `cart_create_keys` record.
+ *
+ * WHY IT IS OWED. A cart is minted on a shopper's first add and nothing removed
+ * one: the hold sweep reaps a lapsed line and leaves the cart, empty, for good, and
+ * every checkout mints a replacement cart that most shoppers never fill. Each is a
+ * document (and, keyed, a key record) a store keeps forever.
+ *
+ * DISCOVERY. Nothing on a cart says "empty and old" in an index — `carts` declares
+ * `state` and `holdExpiresAt` — so the leg pages the ACTIVE carts in the host's own
+ * `(createdAt, id)` order by its keyset cursor and judges each document in hand
+ * (`isAbandonedCart`): a live cart costs nothing past its share of a page. A
+ * candidate costs a unit (`PRUNE_CART_CALLS`, at most). A pass that reaches the end
+ * rests for `ABANDONED_CART_PASS_INTERVAL_MS`; one the budget cuts short keeps its
+ * place (the page's cursor and the last cart on it judged) and
+ * carries on next tick. A cursor the host refuses starts the pass again.
+ *
+ * BOUNDED: by the leg's share of the tick, its gate per unit, `maxPages` pages and
+ * `ABANDONED_CARTS_PER_RUN` deletes a run. IDEMPOTENT: every delete is guarded, a
+ * cart already gone is skipped, and a run interrupted anywhere is finished by the
+ * next. A cart whose prune throws (anything but the tick's ceiling) is logged and
+ * stepped past; the next pass tries it again.
+ */
+async function pruneAbandonedCarts(
+	storage: AdapterStorageAccess,
+	now: Date,
+	cursors: SweepCursorStore,
+	options: CommerceSweepOptions,
+	budget: LegBudget,
+	allowCursorWrite: () => void,
+	dailyCap: number | null,
+): Promise<{
+	count: number;
+	incomplete?: true;
+	waitsCadence?: true;
+	anomalies?: readonly string[];
+}> {
+	const raw = await cursors.read(PRUNE_CARTS_CURSOR);
+	const saved = parsePruneCartsCursor(raw);
+	if (saved.passDoneAt !== null) {
+		const rested = now.getTime() - Date.parse(saved.passDoneAt);
+		// A stamp ahead of now (a clock step) is not a reason to rest forever.
+		if (rested >= 0 && rested < ABANDONED_CART_PASS_INTERVAL_MS) return { count: 0 };
+	}
+	// The Free preset's daily cap (`ABANDONED_CARTS_PER_DAY_FREE`): a day's count is
+	// the stored one only when it is today's.
+	const today = now.toISOString().slice(0, 10);
+	const deletedBefore = saved.day === today ? saved.deletedToday : 0;
+	const runLimit =
+		dailyCap === null
+			? ABANDONED_CARTS_PER_RUN
+			: Math.min(ABANDONED_CARTS_PER_RUN, Math.max(0, dailyCap - deletedBefore));
+	// Today's allowance is spent: one kv read, and the leg waits its cadence.
+	// Logged once, by the run that reached the cap (below), not at every cadence after.
+	if (runLimit === 0) return { count: 0, incomplete: true, waitsCadence: true };
+	const collections = {
+		carts: collectionOf<CartDoc>(storage, CARTS_COLLECTION),
+		createKeys: collectionOf<CartCreateKeyDoc>(storage, CART_CREATE_KEYS_COLLECTION),
+		orderKeys: collectionOf<unknown>(storage, ORDER_KEYS_COLLECTION),
+	};
+	const cutoffMs = now.getTime() - ABANDONED_CART_TTL_MS;
+	const limit = options.pageSize ?? DEFAULT_PAGE_SIZE;
+	const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
+	const unit = LEG_QUERY_COSTS["prune-carts"].unit;
+	let place: PruneCartsCursor = { cursor: saved.cursor, after: saved.after, passDoneAt: null };
+	const anomalies: string[] = [];
+	let pruned = 0;
+	let incomplete = true;
+	let capped = false;
+	// Even when the run throws, its progress is kept: a run stopped at the ceiling
+	// may still record its place, and the day's count its deletes. No write when
+	// nothing moved: the place read back, or a fresh start where nothing was stored.
+	const savePlace = async (): Promise<void> => {
+		const day: PruneCartsDay =
+			pruned > 0
+				? { day: today, deletedToday: deletedBefore + pruned }
+				: { day: saved.day, deletedToday: saved.deletedToday };
+		const serialized = serializePruneCarts(place, day);
+		if (serialized === (raw ?? PRUNE_CARTS_START_SERIALIZED)) return;
+		allowCursorWrite();
+		await cursors.write(PRUNE_CARTS_CURSOR, serialized);
+	};
+	try {
+		walk: for (let pages = 0; pages < maxPages; pages++) {
+			// Room for the page and one cart's prune after it.
+			if (!budget.canStart(1, unit)) {
+				budget.stopped = true;
+				break;
+			}
+			let page: Awaited<ReturnType<typeof collections.carts.query>>;
+			try {
+				page = await collections.carts.query({
+					where: { state: "active" },
+					limit,
+					...(place.cursor === null ? {} : { cursor: place.cursor }),
+				});
+			} catch (err) {
+				if (place.cursor !== null && isInvalidCursorError(err)) {
+					console.warn("[otta] cron sweep prune-carts: its cursor was refused; starting over");
+					place = PRUNE_CARTS_START;
+				}
+				throw err;
+			}
+			// Created after the page read, so the read cannot leave the cap short of a unit.
+			const gate = budget.gate(0, unit);
+			const at = place.after === null ? -1 : page.items.findIndex((i) => i.id === place.after);
+			for (const item of page.items.slice(at + 1)) {
+				if (!isAbandonedCart(item.data, cutoffMs)) {
+					place = { ...place, after: item.id };
+					continue;
+				}
+				// The run's cap (per run, and what is left of the Free day's) before the
+				// budget's gate: a capped run waits its cadence, a gated one goes again.
+				if (pruned >= runLimit) {
+					capped = true;
+					break walk;
+				}
+				if (!gate()) break walk;
+				let outcome: "pruned" | "kept";
+				try {
+					outcome = await pruneAbandonedCart(item.id, cutoffMs, collections);
+				} catch (err) {
+					if (isSweepQueryCeilingError(err)) throw err;
+					console.error(
+						`[otta] cron sweep prune-carts: cart ${item.id} FAILED, stepped past:`,
+						err,
+					);
+					anomalies.push(
+						`cart ${item.id}: prune failed, passed over until next pass: ` +
+							(err instanceof Error ? err.message : String(err)),
+					);
+					outcome = "kept";
+				}
+				// A pruned cart is gone from a re-read of the page, so it is no anchor:
+				// the last cart judged and LEFT is.
+				if (outcome === "pruned") pruned++;
+				else place = { ...place, after: item.id };
+			}
+			if (!page.hasMore || page.cursor === undefined) {
+				place = { ...PRUNE_CARTS_START, passDoneAt: now.toISOString() };
+				incomplete = false;
+				break;
+			}
+			place = { cursor: page.cursor, after: null, passDoneAt: null };
+		}
+	} catch (err) {
+		// The run's own error is what it reports; a cursor write failing after it is
+		// only logged (the place is lost, and the next run judges those carts again).
+		try {
+			await savePlace();
+		} catch (writeErr) {
+			console.error("[otta] cron sweep prune-carts: its cursor write FAILED:", writeErr);
+		}
+		throw err;
+	}
+	await savePlace();
+	if (capped && dailyCap !== null && deletedBefore + pruned >= dailyCap) {
+		console.info(
+			`[otta] cron sweep prune-carts: today's cap of ${String(dailyCap)} deletes is reached` +
+				" (Workers Free preset); it carries on after 00:00 UTC",
+		);
+	}
+	return {
+		...legResult(pruned, incomplete, anomalies),
+		...(capped ? { waitsCadence: true as const } : {}),
+	};
+}
+
+/** The commerce rows `product-reconcile` reads, over the tick's counted storage.
+ *  Documents are normalized the way the store reads them. */
+function reconcileRows(storage: AdapterStorageAccess): ReconcileRows {
+	const products = collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION);
+	return {
+		async many(ids) {
+			// Chunked: D1's 100-parameter bound (`RECONCILE_IN_BATCH`).
+			const rows = new Map<string, ProductCommerceDoc>();
+			for (let start = 0; start < ids.length; start += RECONCILE_IN_BATCH) {
+				const chunk = ids.slice(start, start + RECONCILE_IN_BATCH);
+				const found = await products.query({
+					where: { productId: { in: [...chunk] } },
+					limit: RECONCILE_IN_BATCH,
+				});
+				for (const { data } of found.items) rows.set(data.productId, normalizeProductDoc(data));
+			}
+			return rows;
+		},
+		async one(id) {
+			const doc = await products.get(id);
+			return doc === null ? undefined : normalizeProductDoc(doc);
+		},
+	};
 }
