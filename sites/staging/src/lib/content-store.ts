@@ -79,6 +79,8 @@ function isMissingTable(cause: unknown): boolean {
 		cause instanceof Error ? cause.message : typeof cause === "string" ? cause : ""
 	).toLowerCase();
 	if (message.includes("no such table")) return true;
+	// A Postgres `column "x" of relation "y" does not exist` matches too; harmless,
+	// since the probe selects only a literal and this only picks the log wording.
 	if (message.includes("does not exist") || message.includes("doesn't exist")) {
 		return message.includes("relation") || message.includes("table");
 	}

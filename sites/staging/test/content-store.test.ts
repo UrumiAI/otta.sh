@@ -129,8 +129,8 @@ describe("contentTableAnswers", () => {
 		expect(message).not.toContain("(the probe itself failed)");
 	});
 
-	// Postgres runs in CI, not here, so its wording is fed through the handle:
-	// the classifier must call it "missing", as emdash's isMissingTableError does.
+	// Postgres's wording, fed through a stub handle; the site does not run on
+	// Postgres today. It must read as "missing", as emdash's isMissingTableError does.
 	it.each([
 		'relation "ec_products" does not exist',
 		'table "ec_products" does not exist',
