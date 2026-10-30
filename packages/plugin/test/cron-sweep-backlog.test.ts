@@ -28,6 +28,7 @@ import {
 	settleOrder,
 	sku as toSku,
 	type SendEmailInput,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
@@ -362,6 +363,7 @@ async function seedEveryLeg(): Promise<void> {
 			paymentEventStore: new EmdashPaymentEventStore({ storage }),
 			inventoryStore: now.inventory,
 			clock: now.clock,
+			logger: NOOP_LOGGER,
 		},
 		stripe,
 		stripe.webhook({

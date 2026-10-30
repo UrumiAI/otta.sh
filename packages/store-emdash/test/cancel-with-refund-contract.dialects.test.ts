@@ -22,6 +22,7 @@ import {
 	productId,
 	sku,
 	type InventoryStore,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { cancelWithRefundContract, FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { expect, test } from "vitest";
@@ -108,7 +109,7 @@ describeEachDialect("EmdashOrderStore cancel with refund: a pending restock is i
 			},
 		});
 		const res = await cancelOrderWithRefund(
-			{ orderStore: h.store, inventoryStore: flaky },
+			{ orderStore: h.store, inventoryStore: flaky, logger: NOOP_LOGGER },
 			new FakePaymentGateway({ id: "stripe" }),
 			{
 				orderId: id,
@@ -125,7 +126,10 @@ describeEachDialect("EmdashOrderStore cancel with refund: a pending restock is i
 		expect(await h.inventory.getOnHand("SKU-cxl-indexed")).toBe(10);
 
 		expect(
-			await finishCancellationRestock({ orderStore: h.store, inventoryStore: h.inventory }, id),
+			await finishCancellationRestock(
+				{ orderStore: h.store, inventoryStore: h.inventory, logger: NOOP_LOGGER },
+				id,
+			),
 		).toMatchObject({ finished: true, restockedUnits: 2 });
 		const done = await orders.get(id);
 		expect(done?.cancellation?.restockPending ?? null).toBeNull();

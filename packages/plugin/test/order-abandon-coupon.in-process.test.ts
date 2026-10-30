@@ -19,6 +19,7 @@ import {
 	currency,
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -92,7 +93,7 @@ describe("abandonCartOrder — the abandoned order's coupon use (#596)", () => {
 		// The abandon's own cancel — same command, same key — and then the crash:
 		// the release never ran.
 		const cancelled = await cancelOrder(
-			{ orderStore: harness.stores.orderStore },
+			{ orderStore: harness.stores.orderStore, logger: NOOP_LOGGER },
 			{
 				orderId: toOrderId(orderId),
 				reason: "customer_request",
@@ -115,7 +116,7 @@ describe("abandonCartOrder — the abandoned order's coupon use (#596)", () => {
 	test("an order the ADMIN cancelled keeps its coupon use — the abandon only undoes its own cancel", async () => {
 		const { cartId, orderId } = await placeWithCoupon();
 		const cancelled = await cancelOrder(
-			{ orderStore: harness.stores.orderStore },
+			{ orderStore: harness.stores.orderStore, logger: NOOP_LOGGER },
 			{
 				orderId: toOrderId(orderId),
 				reason: "customer_request",

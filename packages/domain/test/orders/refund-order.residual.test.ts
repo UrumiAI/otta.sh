@@ -1,6 +1,6 @@
 import { cents, currency as toCurrency } from "@urumi.ai/otta-domain";
 import { idempotencyKey, orderId as toOrderId, productId, sku } from "@urumi.ai/otta-domain";
-import { refundOrder } from "@urumi.ai/otta-domain";
+import { NOOP_LOGGER, refundOrder } from "@urumi.ai/otta-domain";
 import type { FinalizeRefundStoreResult } from "@urumi.ai/otta-domain";
 import {
 	CountingIdGen,
@@ -82,13 +82,17 @@ describe("refundOrder — issued-but-unrecorded residual (ADR-0008)", () => {
 		const id = await seedPaid(orderStore, "ord-residual");
 		const gw = new FakePaymentGateway({ id: "stripe" });
 
-		const res = await refundOrder({ orderStore, paymentEventStore, clock }, gw, {
-			orderId: id,
-			amount: cents(1000),
-			currency: USD,
-			refundedBy: "admin",
-			idempotencyKey: idempotencyKey("rf-residual"),
-		});
+		const res = await refundOrder(
+			{ orderStore, paymentEventStore, clock, logger: NOOP_LOGGER },
+			gw,
+			{
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-residual"),
+			},
+		);
 
 		// The DISTINCT reason — never confusable with a clean pre-issuance rejection.
 		expect(res).toEqual({ ok: false, reason: "REFUND_ISSUED_UNRECORDED" });
@@ -109,7 +113,7 @@ describe("refundOrder — issued-but-unrecorded residual (ADR-0008)", () => {
 		const id = await seedPaid(orderStore, "ord-residual2");
 		const gw = new FakePaymentGateway({ id: "stripe" });
 
-		const res = await refundOrder({ orderStore }, gw, {
+		const res = await refundOrder({ orderStore, logger: NOOP_LOGGER }, gw, {
 			orderId: id,
 			amount: cents(1000),
 			currency: USD,
@@ -164,13 +168,17 @@ describe("refundOrder — concurrent same-key double-issue (ADR-0008)", () => {
 		const key = idempotencyKey("rf-dup");
 		const gw = racingGateway(orderStore, key, { finalizeRef: "re_same", returnRef: "re_same" });
 
-		const res = await refundOrder({ orderStore, paymentEventStore, clock }, gw, {
-			orderId: id,
-			amount: cents(1000),
-			currency: USD,
-			refundedBy: "admin",
-			idempotencyKey: key,
-		});
+		const res = await refundOrder(
+			{ orderStore, paymentEventStore, clock, logger: NOOP_LOGGER },
+			gw,
+			{
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			},
+		);
 
 		// The loser sees a SUCCESS shaped like a replay — recorded:false,
 		// duplicate:true — never a false-positive REFUND_UNRECORDED.
@@ -199,13 +207,17 @@ describe("refundOrder — concurrent same-key double-issue (ADR-0008)", () => {
 		// with no ledger row: NEVER benign.
 		const gw = racingGateway(orderStore, key, { finalizeRef: "re_other", returnRef: "re_mine" });
 
-		const res = await refundOrder({ orderStore, paymentEventStore, clock }, gw, {
-			orderId: id,
-			amount: cents(1000),
-			currency: USD,
-			refundedBy: "admin",
-			idempotencyKey: key,
-		});
+		const res = await refundOrder(
+			{ orderStore, paymentEventStore, clock, logger: NOOP_LOGGER },
+			gw,
+			{
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			},
+		);
 
 		expect(res).toEqual({ ok: false, reason: "REFUND_ISSUED_UNRECORDED" });
 		const anomalies = paymentEventStore.anomalies();

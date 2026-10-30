@@ -2228,6 +2228,7 @@ export async function runCommerceSweeps(
 							orderStore: stores.orderStore,
 							paymentEventStore: stores.paymentEventStore,
 							clock: { now: () => now },
+							logger: CONSOLE_LOGGER,
 						},
 						{ shouldContinue: escalation.gate(0, LATE_REFUND_ESCALATION_UNIT) },
 					),

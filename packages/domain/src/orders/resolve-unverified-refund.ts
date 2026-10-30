@@ -129,8 +129,8 @@ export interface ResolveUnverifiedRefundDeps {
 	inventoryStore?: InventoryStore;
 	/** Forwarded to the resumed cancel — see `CancelOrderWithRefundDeps`. */
 	isRetryable?: (err: unknown) => boolean;
-	/** Forwarded to the resumed cancel. Optional (no-op when absent). */
-	logger?: Logger;
+	/** Forwarded to the resumed cancel. Required (tests pass `NOOP_LOGGER` or a `RecordingLogger`). */
+	logger: Logger;
 	/**
 	 * Revokes the order's download entitlements when a CONFIRMED refund returned the
 	 * money in full (issue #376) — see {@link resolveUnverifiedRefund}'s
@@ -302,7 +302,7 @@ async function resumeCancellation(
 				orderStore: deps.orderStore,
 				inventoryStore: deps.inventoryStore,
 				...(deps.isRetryable !== undefined ? { isRetryable: deps.isRetryable } : {}),
-				...(deps.logger !== undefined ? { logger: deps.logger } : {}),
+				logger: deps.logger,
 			},
 			// No gateway: the refund is settled, so the resumed cancel never needs one.
 			null,

@@ -50,8 +50,16 @@ export interface OrderHarness {
 	stripeGw: FakePaymentGateway;
 	/** A Stripe-id gateway that cannot refund (`refundable:false`): the manual / record-only path. */
 	manualGw: FakePaymentGateway;
-	/** Records what the create-order path logs; the same instance is `createDeps.logger`. */
+	/** Records what the create-order path logs; the same instance is `createDeps.logger`.
+	 *  The cart, expiry and settle deps each have their own recorder below, so an exact
+	 *  assertion on one use-case's entries is not coupled to another's. */
 	logger: RecordingLogger;
+	/** Records what the cart use-cases log; the same instance is `cartDeps.logger`. */
+	cartLogger: RecordingLogger;
+	/** Records what the settle path logs; the same instance is `settleDeps.logger`. */
+	settleLogger: RecordingLogger;
+	/** Records what the expiry sweep logs; the same instance is `expireDeps.logger`. */
+	expireLogger: RecordingLogger;
 	createDeps: CreateOrderDeps;
 	cartDeps: CartDeps;
 	settleDeps: SettleDeps;
@@ -108,7 +116,10 @@ export function makeOrderHarness(): OrderHarness {
 	const manualGw = new FakePaymentGateway({ id: "stripe", refundable: false });
 
 	const logger = new RecordingLogger();
-	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock, logger };
+	const cartLogger = new RecordingLogger();
+	const settleLogger = new RecordingLogger();
+	const expireLogger = new RecordingLogger();
+	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock, logger: cartLogger };
 	const createDeps: CreateOrderDeps = {
 		orderStore,
 		cartStore,
@@ -128,13 +139,14 @@ export function makeOrderHarness(): OrderHarness {
 		paymentEventStore,
 		inventoryStore: inventory,
 		clock,
+		logger: settleLogger,
 	};
 	const expireDeps: ExpireOrdersDeps = {
 		orderStore,
 		inventoryStore: inventory,
 		couponStore,
 		clock,
-		logger,
+		logger: expireLogger,
 	};
 
 	/** A seeded product is a SELLABLE one: published through the same publish-gate
@@ -161,6 +173,9 @@ export function makeOrderHarness(): OrderHarness {
 		stripeGw,
 		manualGw,
 		logger,
+		cartLogger,
+		settleLogger,
+		expireLogger,
 		createDeps,
 		cartDeps,
 		settleDeps,

@@ -45,6 +45,7 @@ import {
 	type RawConfirmation,
 	type RefundInput,
 	type RefundResult,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { buildRefundSeed, FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -209,7 +210,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 		const keys = Array.from({ length: N }, (_v, i) => `rf-full-${String(i)}`);
 		const results = await Promise.all(
 			keys.map((key, i) =>
-				refundOrder({ orderStore: h.store }, gw, {
+				refundOrder({ orderStore: h.store, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(1000), // each caller wants the WHOLE ceiling
 					currency: USD,
@@ -257,7 +258,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			const keys = Array.from({ length: M }, (_v, i) => `rf-part-${String(loop)}-${String(i)}`);
 			const results = await Promise.all(
 				keys.map((key, i) =>
-					refundOrder({ orderStore: h.store }, gw, {
+					refundOrder({ orderStore: h.store, logger: NOOP_LOGGER }, gw, {
 						orderId: id,
 						amount: cents(100),
 						currency: USD,
@@ -290,7 +291,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 		const key = idempotencyKey("rf-idem-race");
 		const results = await Promise.all(
 			Array.from({ length: M }, (_v, i) =>
-				refundOrder({ orderStore: h.store }, gw, {
+				refundOrder({ orderStore: h.store, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(400),
 					currency: USD,
@@ -330,7 +331,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			const keys = Array.from({ length: N }, (_v, i) => `rf-gw-full-${String(loop)}-${String(i)}`);
 			const results = await Promise.all(
 				keys.map((key, i) =>
-					refundOrder({ orderStore: h.store }, gw, {
+					refundOrder({ orderStore: h.store, logger: NOOP_LOGGER }, gw, {
 						orderId: id,
 						amount: cents(1000), // each wants the WHOLE ceiling
 						currency: USD,
@@ -384,7 +385,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			const keys = Array.from({ length: M }, (_v, i) => `rf-gw-part-${String(loop)}-${String(i)}`);
 			const results = await Promise.all(
 				keys.map((key, i) =>
-					refundOrder({ orderStore: h.store }, gw, {
+					refundOrder({ orderStore: h.store, logger: NOOP_LOGGER }, gw, {
 						orderId: id,
 						amount: cents(100),
 						currency: USD,
@@ -465,14 +466,14 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			// asserts the arbiter never lets Σ(active) exceed the ceiling regardless of
 			// which leg voided.
 			const [a, b] = await Promise.all([
-				refundOrder({ orderStore: h.store }, gw, {
+				refundOrder({ orderStore: h.store, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(1000),
 					currency: USD,
 					refundedBy: "admin-a",
 					idempotencyKey: idempotencyKey(`rf-gw-void-${String(loop)}-a`),
 				}),
-				refundOrder({ orderStore: h.store }, gw, {
+				refundOrder({ orderStore: h.store, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(1000),
 					currency: USD,
@@ -501,13 +502,17 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			// After a released (voided) reservation, a FRESH refund can reclaim the
 			// capacity — proving the void truly released it.
 			if (activeSum === 0) {
-				const reclaim = await refundOrder({ orderStore: h.store }, new LatencyRefundGateway(0), {
-					orderId: id,
-					amount: cents(1000),
-					currency: USD,
-					refundedBy: "admin-reclaim",
-					idempotencyKey: idempotencyKey(`rf-gw-void-${String(loop)}-reclaim`),
-				});
+				const reclaim = await refundOrder(
+					{ orderStore: h.store, logger: NOOP_LOGGER },
+					new LatencyRefundGateway(0),
+					{
+						orderId: id,
+						amount: cents(1000),
+						currency: USD,
+						refundedBy: "admin-reclaim",
+						idempotencyKey: idempotencyKey(`rf-gw-void-${String(loop)}-reclaim`),
+					},
+				);
 				expect(
 					reclaim.ok && reclaim.fullyRefunded,
 					`loop ${String(loop)}: voided capacity reclaimable`,
@@ -532,7 +537,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 				gateway: "stripe",
 			});
 			const [refund, cancel] = await Promise.all([
-				refundOrder({ orderStore: h.store }, gw, {
+				refundOrder({ orderStore: h.store, logger: NOOP_LOGGER }, gw, {
 					orderId: id,
 					amount: cents(1000), // a FULL refund → would flip to refunded
 					currency: USD,
@@ -540,7 +545,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 					idempotencyKey: idempotencyKey(`rf-vs-${String(loop)}`),
 				}),
 				cancelOrder(
-					{ orderStore: h.store },
+					{ orderStore: h.store, logger: NOOP_LOGGER },
 					{
 						orderId: id,
 						reason: "customer_request",

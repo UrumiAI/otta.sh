@@ -20,7 +20,7 @@
  * Postgres-only (`process.env.PG_CONNECTION_STRING`): SQLite serializes every
  * write, so it cannot race.
  */
-import { orderId as toOrderId, settleOrder } from "@urumi.ai/otta-domain";
+import { NOOP_LOGGER, orderId as toOrderId, settleOrder } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
@@ -98,6 +98,7 @@ describe.skipIf(!PG)("stranded-holds against a racing settle [postgres]", () => 
 						paymentEventStore: s.paymentEventStore,
 						inventoryStore: s.inventory,
 						clock: s.clock,
+						logger: NOOP_LOGGER,
 					},
 					gateway,
 					gateway.webhook({

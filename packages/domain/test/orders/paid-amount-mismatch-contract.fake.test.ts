@@ -27,6 +27,7 @@ paidAmountMismatchContract(
 				entitlementStore: new InMemoryEntitlementStore({ idGen: new CountingIdGen("ent"), clock }),
 				paymentEventStore,
 				clock,
+				logger: new RecordingLogger(),
 			},
 			expireDeps: { orderStore, inventoryStore, couponStore, clock, logger: new RecordingLogger() },
 			async holdForCheckout(sku, qty, key) {

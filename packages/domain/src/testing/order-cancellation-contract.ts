@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { NOOP_LOGGER } from "../ports/logger.js";
 import { cents, currency } from "../money/cents.js";
 import {
 	idempotencyKey,
@@ -84,7 +85,7 @@ function cancel(
 	}> = {},
 ) {
 	return cancelOrder(
-		{ orderStore: h.store },
+		{ orderStore: h.store, logger: NOOP_LOGGER },
 		{
 			orderId: id,
 			reason: over.reason ?? "customer_request",

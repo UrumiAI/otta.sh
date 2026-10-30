@@ -1,4 +1,5 @@
 import { cents, currency as brandCurrency } from "../money/cents.js";
+import { NOOP_LOGGER } from "../ports/logger.js";
 import {
 	idempotencyKey,
 	orderId as brandOrderId,
@@ -90,6 +91,7 @@ export function buildGatewayHarness(config: GatewayHarnessConfig): PaymentGatewa
 		paymentEventStore,
 		inventoryStore: inventory,
 		clock,
+		logger: NOOP_LOGGER,
 	};
 
 	let n = 0;

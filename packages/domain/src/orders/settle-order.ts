@@ -17,8 +17,8 @@ export interface SettleDeps {
 	paymentEventStore: PaymentEventStore;
 	inventoryStore: InventoryStore;
 	clock: Clock;
-	/** Forwarded to a late-payment refund. Optional (no-op when absent). */
-	logger?: Logger;
+	/** Forwarded to a late-payment refund. Required (tests pass `NOOP_LOGGER` or a `RecordingLogger`). */
+	logger: Logger;
 }
 
 export type SettleResult =

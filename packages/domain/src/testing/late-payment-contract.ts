@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { NOOP_LOGGER } from "../ports/logger.js";
 import { cents, currency } from "../money/cents.js";
 import { idempotencyKey, orderId, productId, reservationId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
@@ -159,6 +160,7 @@ function retryDeps(h: LatePaymentHarness, gateway: PaymentGateway) {
 		orderStore: h.settleDeps.orderStore,
 		paymentEventStore: h.settleDeps.paymentEventStore,
 		clock: h.settleDeps.clock,
+		logger: NOOP_LOGGER,
 		gateways: () => ({ stripe: gateway }),
 	};
 }
@@ -667,7 +669,7 @@ export function latePaymentContract(
 			const s = await seedPendingOrder(h, "7");
 			await settleOrder(h.settleDeps, gateway, succeeded(gateway, s, "evt_7"));
 			const cancelled = await cancelOrder(
-				{ orderStore: h.settleDeps.orderStore },
+				{ orderStore: h.settleDeps.orderStore, logger: NOOP_LOGGER },
 				{
 					orderId: s.order.id,
 					reason: "customer_request",
@@ -748,7 +750,9 @@ export function latePaymentContract(
 				resolvedBy: "ops@shop",
 			};
 
-			expect(await resolveUnverifiedRefund({ orderStore: store }, cmd)).toMatchObject({
+			expect(
+				await resolveUnverifiedRefund({ orderStore: store, logger: NOOP_LOGGER }, cmd),
+			).toMatchObject({
 				ok: true,
 				changed: true,
 				followUp: { purpose: "late-payment", outcome: "finished" },
@@ -774,7 +778,9 @@ export function latePaymentContract(
 			]);
 			expect(gateway.refundCalls).toHaveLength(1);
 
-			expect(await resolveUnverifiedRefund({ orderStore: store }, cmd)).toMatchObject({
+			expect(
+				await resolveUnverifiedRefund({ orderStore: store, logger: NOOP_LOGGER }, cmd),
+			).toMatchObject({
 				ok: true,
 				changed: false,
 			});
@@ -787,7 +793,7 @@ export function latePaymentContract(
 
 			expect(
 				await resolveUnverifiedRefund(
-					{ orderStore: store },
+					{ orderStore: store, logger: NOOP_LOGGER },
 					{ orderId: s.order.id, refundKey: key, outcome: "voided", resolvedBy: "ops@shop" },
 				),
 			).toMatchObject({
@@ -808,7 +814,7 @@ export function latePaymentContract(
 			await store.flagReconciliation(s.order.id, "an unrelated anomaly");
 			expect(
 				await resolveUnverifiedRefund(
-					{ orderStore: store },
+					{ orderStore: store, logger: NOOP_LOGGER },
 					{ orderId: s.order.id, refundKey: key, outcome: "voided", resolvedBy: "ops@shop" },
 				),
 			).toMatchObject({

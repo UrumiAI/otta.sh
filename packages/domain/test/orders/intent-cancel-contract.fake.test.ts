@@ -27,6 +27,7 @@ intentCancelContract(
 				entitlementStore: new InMemoryEntitlementStore({ idGen: new CountingIdGen("ent"), clock }),
 				paymentEventStore: new InMemoryPaymentEventStore(),
 				clock,
+				logger: new RecordingLogger(),
 			},
 			expireDeps: { orderStore, inventoryStore, couponStore, clock, logger: new RecordingLogger() },
 			async holdForCheckout(sku, qty, key) {

@@ -61,6 +61,7 @@ import {
 	refundOrder,
 	type Order,
 	type RecordRefundInput,
+	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
 import { buildRefundSeed, FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { expect, test } from "vitest";
@@ -156,7 +157,7 @@ function reserveInput(orderId: string, key: string, amount: number): RecordRefun
 /** The admin's cancel of a pending order, through the real use-case. */
 async function cancel(h: OrderHarness, orderId: string): Promise<void> {
 	const res = await cancelOrder(
-		{ orderStore: h.store },
+		{ orderStore: h.store, logger: NOOP_LOGGER },
 		{
 			orderId: orderId as never,
 			reason: "customer_request",
@@ -1012,7 +1013,7 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect(ledger.filter((r) => r.status === "voided")).toHaveLength(1);
 		// Released for real: a fresh full refund now reaches the ceiling and flips.
 		const reclaim = await refundOrder(
-			{ orderStore: clean.store },
+			{ orderStore: clean.store, logger: NOOP_LOGGER },
 			new FakePaymentGateway({ id: "stripe" }),
 			{
 				orderId: reserveInput("ord-rf-void", key, 1000).orderId,
