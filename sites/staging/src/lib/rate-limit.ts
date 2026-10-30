@@ -19,7 +19,9 @@
  * letter cannot step around it), on non-safe methods only — except
  * `/checkout/resume`, whose GET (the order page's "Complete payment" link)
  * dispatches the same plugin resume step its POST does, so it counts on every
- * method but OPTIONS, as that step does on the plugin mount. And the plugin's
+ * method but OPTIONS, as that step does on the plugin mount — except a GET/HEAD
+ * the handler answers without the plugin (cross-site navigation, no `?order=`),
+ * which is not counted. And the plugin's
  * public routes on the wire mount `/_emdash/api/plugins/otta/<route>`, matched
  * on the decoded path — on EVERY method but OPTIONS, because EmDash's plugin
  * dispatcher answers GET and HEAD too, reading the input from the query
@@ -65,6 +67,7 @@ import {
 	STOREFRONT_SHOPPER_STATE_ROUTE,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 } from "@urumi.ai/otta-plugin";
+import { isCrossSiteNavigation, orderPathFor } from "./checkout-resume.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 import { SAFE_METHODS } from "./origin-guard.js";
 
@@ -175,11 +178,25 @@ function pluginRouteOf(url: URL): string | null {
 	return path.slice(PLUGIN_MOUNT.length).replace(/\/+$/, "");
 }
 
-/** Pure decision (unit-tested): the class this request is counted in, or null. */
+const RESUME_ROUTE = "/checkout/resume";
+
+/** The order id `/checkout/resume?order=` names, trimmed; "" when absent. */
+function resumeOrderParam(url: URL): string {
+	return url.searchParams.get("order")?.trim() ?? "";
+}
+
+/**
+ * Pure decision (unit-tested): the class this request is counted in, or null.
+ * `request` supplies the `Sec-Fetch-Site` header: a GET/HEAD `/checkout/resume`
+ * that the handler answers without reaching the plugin (a cross-site
+ * navigation, or no `?order=`) is not counted, so a third-party page cannot
+ * spend a visitor's auth budget with `<img>` tags.
+ */
 export function rateLimitClassFor(
 	method: string,
 	url: URL,
 	routePattern: string,
+	request?: Pick<Request, "headers">,
 ): RateLimitClass | null {
 	const verb = method.toUpperCase();
 	const pluginRoute = pluginRouteOf(url);
@@ -190,6 +207,10 @@ export function rateLimitClassFor(
 	const site = SITE_ROUTES.get(routePattern);
 	if (site === undefined) return null;
 	if (site.anyMethod === true ? verb === "OPTIONS" : SAFE_METHODS.has(verb)) return null;
+	if (routePattern === RESUME_ROUTE && SAFE_METHODS.has(verb)) {
+		if (resumeOrderParam(url) === "") return null;
+		if (request !== undefined && isCrossSiteNavigation(request)) return null;
+	}
 	return site.cls;
 }
 
@@ -342,6 +363,16 @@ export function rateLimitedResponse(cls: RateLimitClass, backTo: string | null):
 	});
 }
 
+/** Where a site route's 429 "Go back" points: a resume goes back to its order
+ *  page (the shopper came from there), else the route's own `backTo`. */
+function siteBackTo(routePattern: string, url: URL): string {
+	if (routePattern === RESUME_ROUTE) {
+		const order = resumeOrderParam(url);
+		if (order !== "") return orderPathFor(order);
+	}
+	return SITE_ROUTES.get(routePattern)?.backTo ?? "/";
+}
+
 /** The middleware's whole check: the 429 for a request over its class's
  *  limit, or null when it may proceed (including every fail-open case). */
 export async function enforceRateLimit(
@@ -349,7 +380,7 @@ export async function enforceRateLimit(
 	env: Record<string, unknown> | undefined,
 ): Promise<Response | null> {
 	const { request, url, routePattern } = context;
-	const cls = rateLimitClassFor(request.method, url, routePattern);
+	const cls = rateLimitClassFor(request.method, url, routePattern, request);
 	if (cls === null) return null;
 	const limiter = limiterFrom(env, cls);
 	if (limiter === undefined) {
@@ -374,7 +405,8 @@ export async function enforceRateLimit(
 		}
 		return null;
 	}
-	const backTo =
-		pluginRouteOf(url) === null ? (SITE_ROUTES.get(routePattern)?.backTo ?? "/") : null;
-	return rateLimitedResponse(cls, backTo);
+	return rateLimitedResponse(
+		cls,
+		pluginRouteOf(url) === null ? siteBackTo(routePattern, url) : null,
+	);
 }

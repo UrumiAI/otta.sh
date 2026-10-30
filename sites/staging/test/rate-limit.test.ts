@@ -15,7 +15,8 @@
  *    endpoint runs; a missing binding is logged once, a failing one at most
  *    once per interval.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -38,6 +39,7 @@ import {
 	STOREFRONT_PRODUCT_ROUTE,
 	plugin as ottaPlugin,
 } from "@urumi.ai/otta-plugin";
+import * as ottaPluginExports from "@urumi.ai/otta-plugin";
 import {
 	FAILURE_LOG_INTERVAL_MS,
 	PLUGIN_ROUTES,
@@ -164,6 +166,40 @@ describe("the protected route table", () => {
 		expect(rateLimitClassFor("OPTIONS", url, "/checkout/resume")).toBeNull();
 	});
 
+	test("GET/HEAD /checkout/resume that the handler answers without the plugin is NOT counted (#661)", () => {
+		const withOrder = new URL("/checkout/resume?order=x", SITE);
+		const crossSite = new Request(withOrder, { headers: { "sec-fetch-site": "cross-site" } });
+		const sameSite = new Request(withOrder, { headers: { "sec-fetch-site": "same-origin" } });
+		for (const method of ["GET", "HEAD"]) {
+			// A third-party <img> must not burn the visitor's auth budget.
+			expect(rateLimitClassFor(method, withOrder, "/checkout/resume", crossSite)).toBeNull();
+			// Same-site with an order still counts.
+			expect(rateLimitClassFor(method, withOrder, "/checkout/resume", sameSite)).toBe("auth");
+			// No order, or an empty/blank one: the handler redirects to the cart.
+			for (const search of ["", "?order=", "?order=%20%20"]) {
+				const url = new URL(`/checkout/resume${search}`, SITE);
+				expect(rateLimitClassFor(method, url, "/checkout/resume", new Request(url))).toBeNull();
+			}
+		}
+		// The POST (email form) is never exempted by these rules.
+		expect(rateLimitClassFor("POST", withOrder, "/checkout/resume", crossSite)).toBe("auth");
+		const bare = new URL("/checkout/resume", SITE);
+		expect(rateLimitClassFor("POST", bare, "/checkout/resume", new Request(bare))).toBe("auth");
+	});
+
+	test("a cross-site GET /checkout/resume reaches the endpoint without spending the budget (#661)", async () => {
+		const auth = binding(false);
+		env[RATE_LIMIT_BINDINGS.auth] = auth;
+		const ctx = context("GET", "/checkout/resume?order=x", "/checkout/resume");
+		ctx.request = new Request(ctx.url, {
+			headers: { "sec-fetch-site": "cross-site", "cf-connecting-ip": IP },
+		});
+		const next = endpoint();
+		const response = await runMiddleware(ctx, next);
+		expect(response.status).toBe(299);
+		expect(auth.limit).not.toHaveBeenCalled();
+	});
+
 	test("a plugin write route counts on ANY method but OPTIONS (EmDash dispatches GET with query input)", () => {
 		const url = new URL(plugin(STOREFRONT_CART_CREATE_ROUTE), SITE);
 		for (const method of ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]) {
@@ -212,6 +248,7 @@ describe("the protected route table", () => {
 // ── default-deny coverage ─────────────────────────────────────────────────
 
 const ENDPOINT_FILE = /\.(ts|mts|js|mjs)$/;
+const PAGE_FILE = /\.(ts|mts|js|mjs|astro)$/;
 
 /** Does this endpoint source export a handler for a non-GET method? (The
  *  origin-middleware suite pins this detector's cases.) */
@@ -224,10 +261,27 @@ function exportsWriteHandler(source: string): boolean {
 	return declared.test(source) || reexported.test(source);
 }
 
-/** The route patterns under src/pages that export a write handler. */
-function siteWriteRoutes(): string[] {
-	const pages = path.join(SRC, "pages");
-	const routes: string[] = [];
+/** Does this page answer GET? An `.astro` page always does; an endpoint when
+ *  it exports GET or ALL. */
+function answersGet(page: PageFile): boolean {
+	if (page.file.endsWith(".astro")) return true;
+	const method = String.raw`(GET|ALL)`;
+	const declared = new RegExp(
+		String.raw`export\s+(const|let|var|(async\s+)?function\*?)\s+${method}\b`,
+	);
+	const reexported = new RegExp(String.raw`export\s*\{[^}]*\b${method}\b[^}]*\}`);
+	return declared.test(page.source) || reexported.test(page.source);
+}
+
+interface PageFile {
+	route: string;
+	file: string;
+	source: string;
+}
+
+/** Every file under a pages dir with its route pattern, matching `filter`. */
+function pageFiles(pages: string, filter: RegExp): PageFile[] {
+	const found: PageFile[] = [];
 	const walk = (dir: string): void => {
 		for (const entry of readdirSync(dir, { withFileTypes: true })) {
 			const full = path.join(dir, entry.name);
@@ -235,16 +289,51 @@ function siteWriteRoutes(): string[] {
 				walk(full);
 				continue;
 			}
-			if (!ENDPOINT_FILE.test(entry.name)) continue;
-			if (!exportsWriteHandler(readFileSync(full, "utf8"))) continue;
-			const route = `/${path.relative(pages, full)}`
-				.replace(ENDPOINT_FILE, "")
-				.replace(/\/index$/, "");
-			routes.push(route === "" ? "/" : route);
+			if (!filter.test(entry.name)) continue;
+			const route = `/${path.relative(pages, full)}`.replace(PAGE_FILE, "").replace(/\/index$/, "");
+			found.push({
+				route: route === "" ? "/" : route,
+				file: entry.name,
+				source: readFileSync(full, "utf8"),
+			});
 		}
 	};
 	walk(pages);
-	return routes.toSorted();
+	return found;
+}
+
+/** The route patterns under src/pages that export a write handler. */
+function siteWriteRoutes(pages = path.join(SRC, "pages")): string[] {
+	return pageFiles(pages, ENDPOINT_FILE)
+		.filter(({ source }) => exportsWriteHandler(source))
+		.map(({ route }) => route)
+		.toSorted();
+}
+
+/** The exported names of the plugin route constants that are PLUGIN_ROUTES keys. */
+function limitedPluginRouteConstants(): string[] {
+	return Object.entries(ottaPluginExports)
+		.filter(([name, value]) => name.endsWith("_ROUTE") && PLUGIN_ROUTES.has(String(value)))
+		.map(([name]) => name);
+}
+
+/** Violations of the page-level default-deny, as readable lines: every page
+ *  (`.ts` or `.astro`) that references a limited plugin route constant is in
+ *  SITE_ROUTES or exempt, and `anyMethod` when it answers GET. */
+function pageCoverageViolations(pages = path.join(SRC, "pages")): string[] {
+	const names = limitedPluginRouteConstants();
+	const reference = new RegExp(String.raw`\b(${names.join("|")})\b`);
+	const problems: string[] = [];
+	for (const page of pageFiles(pages, PAGE_FILE)) {
+		if (!reference.test(page.source)) continue;
+		const site = SITE_ROUTES.get(page.route);
+		if (site === undefined && !RATE_LIMIT_EXEMPT_SITE_ROUTES.has(page.route)) {
+			problems.push(`${page.route}: dispatches a limited plugin route; in neither map`);
+		} else if (site !== undefined && answersGet(page) && site.anyMethod !== true) {
+			problems.push(`${page.route}: answers GET but is not anyMethod`);
+		}
+	}
+	return problems;
 }
 
 describe("every write route is limited or explicitly exempt (default-deny)", () => {
@@ -259,6 +348,32 @@ describe("every write route is limited or explicitly exempt (default-deny)", () 
 		// No stale entries either.
 		for (const route of [...SITE_ROUTES.keys(), ...RATE_LIMIT_EXEMPT_SITE_ROUTES.keys()]) {
 			expect(routes, route).toContain(route);
+		}
+	});
+
+	test("each page (.ts or .astro) dispatching a limited plugin route is limited or exempt, anyMethod if it answers GET (#661)", () => {
+		expect(limitedPluginRouteConstants().length).toBe(PLUGIN_ROUTES.size);
+		expect(pageCoverageViolations()).toEqual([]);
+	});
+
+	test("the page scan catches a GET endpoint and an .astro page that dispatch a limited route (#661)", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "rl-pages-"));
+		try {
+			mkdirSync(path.join(dir, "cart"));
+			writeFileSync(
+				path.join(dir, "cart", "quick-add.ts"),
+				"import { STOREFRONT_CART_LINE_ADD_ROUTE } from '@urumi.ai/otta-plugin';\nexport const GET = () => STOREFRONT_CART_LINE_ADD_ROUTE;\n",
+			);
+			writeFileSync(
+				path.join(dir, "go.astro"),
+				"---\nimport { STOREFRONT_CART_CREATE_ROUTE } from '@urumi.ai/otta-plugin';\n---\n<p>{STOREFRONT_CART_CREATE_ROUTE}</p>\n",
+			);
+			expect(pageCoverageViolations(dir).toSorted()).toEqual([
+				"/cart/quick-add: dispatches a limited plugin route; in neither map",
+				"/go: dispatches a limited plugin route; in neither map",
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
@@ -540,7 +655,7 @@ describe("the middleware", () => {
 		expect(error).toHaveBeenCalledTimes(2);
 	});
 
-	test("over the limit on /checkout/resume (GET) → 429 whose Go back points at the cart", async () => {
+	test("over the limit on /checkout/resume (GET) → 429 whose Go back points at the order page", async () => {
 		env[RATE_LIMIT_BINDINGS.auth] = binding(false);
 		const next = endpoint();
 		const response = await runMiddleware(
@@ -548,8 +663,22 @@ describe("the middleware", () => {
 			next,
 		);
 		expect(response.status).toBe(429);
-		expect(await response.text()).toContain('href="/cart"');
+		expect(await response.text()).toContain('href="/orders/x"');
 		expect(next).not.toHaveBeenCalled();
+	});
+
+	test("the resume 429 sends the shopper back to the order page; /cart without a valid order (#661)", async () => {
+		env[RATE_LIMIT_BINDINGS.auth] = binding(false);
+		const back = async (target: string): Promise<string> =>
+			(await runMiddleware(context("GET", target, "/checkout/resume"), endpoint())).text();
+		expect(await back("/checkout/resume?order=ord%2F1")).toContain('href="/orders/ord%2F1"');
+		// A POST carries the order in its form body, not the query: the cart.
+		const post = await runMiddleware(
+			context("POST", "/checkout/resume", "/checkout/resume"),
+			endpoint(),
+		);
+		expect(post.status).toBe(429);
+		expect(await post.text()).toContain('href="/cart"');
 	});
 
 	test("a cross-origin write is refused by the origin guard before it spends budget", async () => {

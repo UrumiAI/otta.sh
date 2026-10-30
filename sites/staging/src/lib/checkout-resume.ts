@@ -151,7 +151,7 @@ export function resumeOutcome(
  * is not refused: the stash it writes is for an order the requester already
  * names by its capability.
  */
-export function isCrossSiteNavigation(request: Request): boolean {
+export function isCrossSiteNavigation(request: Pick<Request, "headers">): boolean {
 	return request.headers.get("sec-fetch-site") === "cross-site";
 }
 
