@@ -449,6 +449,8 @@ describe("one copy of each runtime in a site (ADR-0045)", () => {
 		expect(pkg.peerDependencies["@emdash-cms/cloudflare"]).toBe("1.3.1");
 		for (const name of ["astro", "@astrojs/cloudflare", "@astrojs/react", "react", "react-dom"]) {
 			expect(pkg.peerDependencies[name], name).toMatch(/^~\d+\.\d+\.\d+$/);
+			// The workspace builds and tests against the same range it declares.
+			expect(pkg.devDependencies[name], name).toBe(pkg.peerDependencies[name]);
 		}
 		// pnpm publishes workspace:* as the exact version.
 		expect(pkg.peerDependencies["@urumi.ai/otta-plugin"]).toBe("workspace:*");

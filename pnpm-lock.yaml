@@ -364,10 +364,10 @@ importers:
         specifier: ^0.9.9
         version: 0.9.9(prettier@3.9.5)(typescript@5.9.3)
       '@astrojs/cloudflare':
-        specifier: ^14.1.2
+        specifier: ~14.1.2
         version: 14.1.2(@types/node@26.1.1)(astro@7.3.6(@types/node@26.1.1)(yaml@2.9.1))(esbuild@0.28.1)(workerd@1.20260911.1)(wrangler@4.110.0(@cloudflare/workers-types@5.20260710.1)(@types/node@26.1.1))(yaml@2.9.1)
       '@astrojs/react':
-        specifier: ^6.0.1
+        specifier: ~6.0.1
         version: 6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yaml@2.9.1)
       '@cloudflare/workers-types':
         specifier: ^5.20260708.1
@@ -394,7 +394,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/plugin
       astro:
-        specifier: ^7.0.7
+        specifier: ~7.3.6
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.1)
       better-sqlite3:
         specifier: 'catalog:'
@@ -406,10 +406,10 @@ importers:
         specifier: ^21.0.4
         version: 21.0.4
       react:
-        specifier: ^19.2.4
+        specifier: ~19.2.7
         version: 19.2.7
       react-dom:
-        specifier: ^19.2.4
+        specifier: ~19.2.7
         version: 19.2.7(react@19.2.7)
       tsdown:
         specifier: 'catalog:'
