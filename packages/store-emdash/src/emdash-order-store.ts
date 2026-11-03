@@ -122,6 +122,7 @@ import {
 	computeRefundCeiling,
 	emailTemplateForState,
 	isLegalOrderTransition,
+	OFFLINE_UNPAID_STATES,
 	orderNumberIdPrefix,
 	type CancellationRestockPending,
 	type OrderCancellation,
@@ -145,6 +146,7 @@ import {
 	type IdempotencyKey,
 	type IdGen,
 	type InventoryStore,
+	type MarkPaidOptions,
 	type Order,
 	type OrderEvent,
 	type OrderId,
@@ -510,18 +512,26 @@ export class EmdashOrderStore implements OrderStore {
 
 	// -- the guarded transitions ----------------------------------------------
 
-	async markPaid(orderId: OrderId, providerRef?: string): Promise<boolean> {
+	async markPaid(
+		orderId: OrderId,
+		providerRef?: string,
+		options: MarkPaidOptions = {},
+	): Promise<boolean> {
 		// pending → paid enqueues the confirmation email AND records the commit
 		// intent, in the same write as the flip: settle's `commitMany` runs after
 		// this call returns, so the intent has to be durable before it does. The
 		// winning payment rides the same compare-and-set (#543), so a settle that
 		// loses the flip reads it back with the `paid` state, never one without it.
+		// ADR-0044: an offline Mark paid passes its own guarded states
+		// (`awaiting_payment → paid`, `shipped_awaiting_payment → delivered`) and the
+		// operator, recorded on the flip's audit event.
 		const { won } = await this.#flip({
 			orderId,
-			fromState: "pending",
-			toState: "paid",
+			fromState: options.fromState ?? "pending",
+			toState: options.toState ?? "paid",
 			enqueueEmail: true,
 			intent: "commit",
+			...(options.actor !== undefined ? { actor: options.actor } : {}),
 			...(providerRef !== undefined ? { envelope: () => ({ paidProviderRef: providerRef }) } : {}),
 		});
 		return won;
@@ -598,6 +608,38 @@ export class EmdashOrderStore implements OrderStore {
 		}
 		if (revision !== null && (await this.#stampIntentAt(doc, revision, "holdsReleased"))) return;
 		await this.#stampIntent(doc.orderId as OrderId, "holdsReleased");
+	}
+
+	/**
+	 * ADR-0044: open offline orders per buyer (the indexed `buyerRefLower`, folded
+	 * as the order was) and per client network (the indexed `offlineClientKey`) —
+	 * two `count()` calls, each a predicate on declared index fields.
+	 */
+	async countOpenOfflineOrders(input: {
+		buyerRef: string;
+		clientKey?: string;
+	}): Promise<{ byBuyer: number; byClient: number }> {
+		const open = { in: [...OFFLINE_UNPAID_STATES] };
+		const byBuyer = await this.#orders.count({
+			buyerRefLower: foldBuyerRef(input.buyerRef),
+			state: open,
+		});
+		const byClient =
+			input.clientKey === undefined
+				? 0
+				: await this.#orders.count({ offlineClientKey: input.clientKey, state: open });
+		return { byBuyer, byClient };
+	}
+
+	/** ADR-0044: the auto-cancel leg's batch, on the declared `[state, createdAt]`. */
+	async listAwaitingPaymentBefore(createdBefore: string, limit: number): Promise<OrderId[]> {
+		assertSweepLimit(limit);
+		const result = await this.#orders.query({
+			where: { state: "awaiting_payment", createdAt: { lt: createdBefore } },
+			orderBy: { createdAt: "asc" },
+			limit,
+		});
+		return result.items.map(({ data }) => data.orderId as OrderId);
 	}
 
 	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {
@@ -1334,7 +1376,8 @@ export class EmdashOrderStore implements OrderStore {
 		const { won } = await this.#flip({
 			orderId: input.orderId,
 			fromState: input.fromState,
-			toState: "shipped",
+			// ADR-0044: `shipped_awaiting_payment` for an offline order shipped unpaid.
+			toState: input.toState ?? "shipped",
 			enqueueEmail: input.enqueueEmail,
 			// The recorder is the actor this domain knows for a fulfillment flip.
 			actor: input.recordedBy,
@@ -1887,6 +1930,8 @@ export class EmdashOrderStore implements OrderStore {
 			...(input.buyerAddressRequired !== undefined
 				? { buyerAddressRequired: input.buyerAddressRequired }
 				: {}),
+			// ADR-0044: the indexed key the per-network cap counts by.
+			...(input.offlineClientKey !== undefined ? { offlineClientKey: input.offlineClientKey } : {}),
 			events: [],
 			emailOutbox: [],
 			payments: [],
