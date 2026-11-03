@@ -5,7 +5,9 @@ as a dependency, `@urumi.ai/otta-store`. Most releases need nothing from you: me
 Dependabot pull request and Workers Builds deploys it.
 
 A release that needs **your repository's own files** to change (a new binding in
-`wrangler.jsonc`, a new file, a new pinned dependency) raises the **template contract**, the
+`wrangler.jsonc`, a new file, a new pinned dependency, or a new version of EmDash, Astro or
+React, which `@urumi.ai/otta-store` declares as exact or minor-pinned peer dependencies and
+Dependabot therefore leaves alone) raises the **template contract**, the
 number your `astro.config.mjs` passes as `otta({ template: N })`
 ([ADR-0045](./adr/0045-the-store-ships-as-an-astro-integration-for-one-click-deploy.md)).
 Until you make the change, that release's build fails with

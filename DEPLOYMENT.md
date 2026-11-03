@@ -551,8 +551,12 @@ Store settings afterwards.
 > Settings → Builds → **Branch control** → turn off builds for non-production branches. Review
 > an update by reading its release notes, not by opening a preview.
 
-**Updates.** `.github/dependabot.yml` opens one pull request a week that bumps Otta, EmDash,
-Astro and Wrangler together. Merging it deploys the new version. If the build fails, nothing is
+**Updates.** `.github/dependabot.yml` opens one pull request a week for Otta's packages
+(`@urumi.ai/*`), and its own for Wrangler. Merging it deploys the new version. It never
+touches EmDash, Astro or React: `@urumi.ai/otta-store` declares them as **peer dependencies**
+(EmDash and `@emdash-cms/cloudflare` exactly, the others to the tested minor), so a site has one
+copy of each, and npm refuses (`ERESOLVE`) to install a combination that would need a second.
+An Otta release that moves those pins changes the template contract (below). If the build fails, nothing is
 deployed and the store keeps running the last version that built. A release that needs your
 repository's own files to change raises the **template contract**: the build then fails with
 `@urumi.ai/otta-store <version> needs template contract <n> …` and names the section of

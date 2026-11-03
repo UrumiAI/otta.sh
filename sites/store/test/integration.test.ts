@@ -384,3 +384,44 @@ describe("the package's public files never replace the site's", () => {
 		expect(head.body?.length).toBe(0);
 	});
 });
+
+describe("one copy of each runtime in a site (ADR-0045)", () => {
+	const pkg = JSON.parse(readFileSync(path.join(PKG, "package.json"), "utf8")) as {
+		dependencies?: Record<string, string>;
+		peerDependencies: Record<string, string>;
+		devDependencies: Record<string, string>;
+	};
+	// The site installs these itself (EmDash's generated modules import them from
+	// the project root). As dependencies, a site on another version would get a
+	// second copy nested under this package: two EmDash runtimes in one Worker.
+	const RUNTIMES = [
+		"emdash",
+		"@emdash-cms/cloudflare",
+		"astro",
+		"@astrojs/cloudflare",
+		"@astrojs/react",
+		"react",
+		"react-dom",
+		"@urumi.ai/otta-plugin",
+		"@urumi.ai/otta-admin-react",
+	];
+
+	test("each is a peer, never a dependency, and the workspace still has it for its own build", () => {
+		for (const name of RUNTIMES) {
+			expect(pkg.peerDependencies[name], name).toBeDefined();
+			expect(pkg.dependencies?.[name], name).toBeUndefined();
+			expect(pkg.devDependencies[name], name).toBeDefined();
+		}
+	});
+
+	test("EmDash and its Cloudflare package are pinned exactly; the rest to the tested minor", () => {
+		expect(pkg.peerDependencies["emdash"]).toBe("1.3.1");
+		expect(pkg.peerDependencies["@emdash-cms/cloudflare"]).toBe("1.3.1");
+		for (const name of ["astro", "@astrojs/cloudflare", "@astrojs/react", "react", "react-dom"]) {
+			expect(pkg.peerDependencies[name], name).toMatch(/^~\d+\.\d+\.\d+$/);
+		}
+		// pnpm publishes workspace:* as the exact version.
+		expect(pkg.peerDependencies["@urumi.ai/otta-plugin"]).toBe("workspace:*");
+		expect(pkg.peerDependencies["@urumi.ai/otta-admin-react"]).toBe("workspace:*");
+	});
+});
