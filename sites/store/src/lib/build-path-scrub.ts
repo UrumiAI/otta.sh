@@ -100,9 +100,24 @@ import type { AstroIntegration } from "astro";
 
 export const BUILD_PATH_SCRUB_INTEGRATION = "otta:build-path-scrub";
 
+/** Whether `dir` holds an npm or yarn workspace root: a package.json with `workspaces`. */
+function isNpmWorkspaceRoot(dir: string): boolean {
+	const manifest = path.join(dir, "package.json");
+	if (!existsSync(manifest)) return false;
+	try {
+		return (
+			(JSON.parse(readFileSync(manifest, "utf8")) as { workspaces?: unknown }).workspaces !==
+			undefined
+		);
+	} catch {
+		return false;
+	}
+}
+
 /**
  * The root whose prefix is removed: the nearest directory at or above `start`
- * holding `pnpm-workspace.yaml` (in this repository, the repo root, so both
+ * holding `pnpm-workspace.yaml`, or a package.json with `workspaces` (npm, yarn)
+ * (in this repository, the repo root, so both
  * `sites/store` and `sites/staging` paths go), else `start` itself. A site built
  * from the published package (ADR-0045) has no workspace file; its project root
  * holds everything the bundle names, `node_modules` included.
@@ -111,7 +126,7 @@ export function workspaceRoot(
 	start: string = path.dirname(fileURLToPath(import.meta.url)),
 ): string {
 	let dir = start;
-	while (!existsSync(path.join(dir, "pnpm-workspace.yaml"))) {
+	while (!existsSync(path.join(dir, "pnpm-workspace.yaml")) && !isNpmWorkspaceRoot(dir)) {
 		const parent = path.dirname(dir);
 		if (parent === dir) return start;
 		dir = parent;

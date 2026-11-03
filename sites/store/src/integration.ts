@@ -273,11 +273,13 @@ export function storefrontRoutes(
 	const routes: { pattern: string; entrypoint: string }[] = [];
 	for (const entry of readdirSync(pagesDir, { recursive: true, withFileTypes: true })) {
 		if (!entry.isFile() || !/\.(astro|ts)$/.test(entry.name)) continue;
+		// Astro's own exclusions: declaration and test files are not pages, and a
+		// file or directory whose name starts with `_` is private to its folder.
+		if (/\.(d|test)\.ts$/.test(entry.name)) continue;
 		const entrypoint = path.join(entry.parentPath, entry.name);
-		const segments = path
-			.relative(pagesDir, entrypoint)
-			.replace(/\.(astro|ts)$/, "")
-			.split(path.sep);
+		const relative = path.relative(pagesDir, entrypoint);
+		if (relative.split(path.sep).some((part) => part.startsWith("_"))) continue;
+		const segments = relative.replace(/\.(astro|ts)$/, "").split(path.sep);
 		if (segments.at(-1) === "index") segments.pop();
 		routes.push({ pattern: `/${segments.join("/")}`, entrypoint });
 	}
@@ -388,7 +390,10 @@ export function assertLiveConfig(root: string): void {
 	const file = LIVE_CONFIG_FILES.map((name) => path.join(root, "src", name)).find((candidate) =>
 		existsSync(candidate),
 	);
-	const text = file === undefined ? "" : readFileSync(file, "utf8");
+	// Comments stripped first: a commented-out call is not a call.
+	const text = (file === undefined ? "" : readFileSync(file, "utf8"))
+		.replace(/\/\*[\s\S]*?\*\//g, "")
+		.replace(/(^|[^:])\/\/.*$/gm, "$1");
 	if (/ottaLiveCollections\(\s*defineLiveCollection\s*\)/.test(text)) return;
 	throw new Error(
 		`${OTTA_INTEGRATION_NAME}: ${file ?? path.join(root, "src", "live.config.ts")} must define the ` +

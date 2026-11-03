@@ -257,6 +257,19 @@ describe("astro config wiring", () => {
 		expect(workspaceRoot(siteRoot)).toBe(path.resolve(siteRoot, "../.."));
 	});
 
+	test("an npm or yarn workspace root (package.json with `workspaces`) counts as the root", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "otta-root-"));
+		try {
+			const site = path.join(dir, "apps", "store");
+			mkdirSync(site, { recursive: true });
+			writeFileSync(path.join(dir, "package.json"), JSON.stringify({ workspaces: ["apps/*"] }));
+			writeFileSync(path.join(site, "package.json"), JSON.stringify({ name: "store" }));
+			expect(workspaceRoot(site)).toBe(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("with no pnpm-workspace.yaml above it, the root is the project itself (a template site)", () => {
 		const dir = mkdtempSync(path.join(tmpdir(), "otta-root-"));
 		try {

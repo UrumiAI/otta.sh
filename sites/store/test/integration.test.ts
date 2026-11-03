@@ -84,6 +84,12 @@ describe("storefrontRoutes", () => {
 			writeFileSync(path.join(dir, "a", "index.ts"), "");
 			writeFileSync(path.join(dir, "a", "[id]", "x.ts"), "");
 			writeFileSync(path.join(dir, "a", "notes.md"), "");
+			// Not pages: declaration and test files, and anything under a `_` name.
+			writeFileSync(path.join(dir, "a", "types.d.ts"), "");
+			writeFileSync(path.join(dir, "a", "x.test.ts"), "");
+			writeFileSync(path.join(dir, "_helper.ts"), "");
+			mkdirSync(path.join(dir, "_partials"));
+			writeFileSync(path.join(dir, "_partials", "card.astro"), "");
 			expect(storefrontRoutes(dir).map((r) => r.pattern)).toEqual(["/", "/a", "/a/[id]/x"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -260,6 +266,18 @@ describe("assertLiveConfig", () => {
 		expect(() => assertLiveConfig(dir)).toThrow(/defineLiveCollection to that file only/);
 	});
 
+	test("a commented-out call does not count", () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-live-"));
+		mkdirSync(path.join(dir, "src"));
+		for (const commented of [
+			`// export const collections = ottaLiveCollections(defineLiveCollection);\nexport const collections = {};`,
+			`/* export const collections = ottaLiveCollections(defineLiveCollection); */\nexport const collections = {};`,
+		]) {
+			writeFileSync(path.join(dir, "src", "live.config.ts"), commented);
+			expect(() => assertLiveConfig(dir)).toThrow(/must define the store's live collections/);
+		}
+	});
+
 	test("the store's module is NAMED live.config.ts: defineLiveCollection checks its caller's file", () => {
 		const pkg = JSON.parse(readFileSync(path.join(PKG, "package.json"), "utf8")) as {
 			exports: Record<string, string>;
@@ -330,9 +348,7 @@ describe("the package's public files never replace the site's", () => {
 		);
 		// A second copy finds every file already there and must not overwrite it.
 		writeFileSync(path.join(dir, "scripts", "region-picker.js"), "the site's own");
-		await expect(buildDone()).rejects.toThrow(
-			/already has \/\S+, which the store ships/,
-		);
+		await expect(buildDone()).rejects.toThrow(/already has \/\S+, which the store ships/);
 		expect(readFileSync(path.join(dir, "scripts", "region-picker.js"), "utf8")).toBe(
 			"the site's own",
 		);
