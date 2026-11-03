@@ -402,6 +402,7 @@ function calculated(
  */
 const DELIVERY_TEMPLATES: ReadonlySet<EmailTemplate> = new Set<EmailTemplate>([
 	"order-confirmation",
+	"order-placed-offline",
 	"order-processing",
 	"order-shipped",
 	"order-delivered",
@@ -618,6 +619,12 @@ const ORDER_COPY: Record<
 	"order-refund-issued": {
 		subject: "Refund issued",
 		body: "We've issued a refund for your order.",
+	},
+	// ADR-0042: a cash-on-delivery order is placed, not paid. The total below is
+	// the amount due; "confirmed" and "payment received" wait for Mark paid.
+	"order-placed-offline": {
+		subject: "Order received",
+		body: "Thanks — we've received your order. You'll pay in cash when it's delivered; please have the total below ready.",
 	},
 };
 

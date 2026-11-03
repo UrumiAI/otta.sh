@@ -24,7 +24,10 @@ export type EmailTemplate =
 	/** A NOTICE (`OrderNotice` "refund-issued"): a refund announced on its own — an
 	 *  admin partial refund, or a lost-race cancellation's refund — one per refund,
 	 *  stating its own amount. */
-	| "order-refund-issued";
+	| "order-refund-issued"
+	/** A NOTICE (`OrderNotice` "order-placed-offline", ADR-0042): an order placed
+	 *  with cash on delivery — received, and paid when it is delivered. */
+	| "order-placed-offline";
 
 export interface SendEmailInput {
 	to: Email;

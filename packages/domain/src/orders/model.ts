@@ -32,8 +32,13 @@ export type OrderState =
  *  the order line so settle's commit-vs-grant branch has a stable input (§4). */
 export type FulfillmentKind = "physical" | "digital";
 
-/** The payment gateways (§5). One today; the alias is the seam a second gateway slots into. */
-export type PaymentMethod = "stripe";
+/**
+ * The payment methods (§5). `stripe` is settled by its gateway's webhook; `cod`
+ * (cash on delivery, ADR-0042) is OFFLINE: no online payment exists, and a
+ * person marks the order paid once the cash is in hand. How each one settles is
+ * declared once, in `orders/payment-methods.ts` (`PAYMENT_METHOD_SETTLEMENT`).
+ */
+export type PaymentMethod = "stripe" | "cod";
 
 /**
  * A customer email about an order that is NOT a state transition. The outbox was
@@ -51,11 +56,16 @@ export type PaymentMethod = "stripe";
  *   shipped before the cancel landed, so no cancelled email will carry it
  *   (ADR-0026). One per refund.
  *
+ * - `order-placed-offline` — an order placed with an OFFLINE method (cash on
+ *   delivery, ADR-0042): there is no payment yet, so no `paid` email will
+ *   announce it for days. This one says "we have your order; pay on delivery",
+ *   with the amount due. Enqueued once, by the checkout that placed it.
+ *
  * A notice is first-wins per `(orderId, kind, refundId)` — `refundId` absent
  * reads as none — so each refund announces itself once, however often the step
  * that enqueued it is replayed.
  */
-export type OrderNotice = "late-payment-refunded" | "refund-issued";
+export type OrderNotice = "late-payment-refunded" | "refund-issued" | "order-placed-offline";
 
 /**
  * The admin's disposition when clearing a reconciliation flag (admin-UX

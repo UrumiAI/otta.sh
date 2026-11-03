@@ -416,7 +416,14 @@ export {
 	type TransitionOrderDeps,
 	type TransitionOrderResult,
 } from "./orders/transition.js";
-export { gatewayForStored, isCurrentPaymentMethod } from "./orders/payment-methods.js";
+export {
+	gatewayForStored,
+	isCurrentPaymentMethod,
+	isOfflinePaymentMethod,
+	OFFLINE_HOLD_EXPIRES_AT,
+	offlinePaymentRef,
+	PAYMENT_METHOD_SETTLEMENT,
+} from "./orders/payment-methods.js";
 export {
 	resolveUnverifiedRefund,
 	type ResolveFollowUp,

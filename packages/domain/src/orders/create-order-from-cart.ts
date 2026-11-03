@@ -41,7 +41,11 @@ import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
 import { buildOrderTaxSnapshot, type OrderTaxAddress } from "./order-tax-snapshot.js";
-import { gatewayForStored } from "./payment-methods.js";
+import {
+	gatewayForStored,
+	isOfflinePaymentMethod,
+	OFFLINE_HOLD_EXPIRES_AT,
+} from "./payment-methods.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
 export const DEFAULT_CHECKOUT_TTL_MS = 15 * 60 * 1000;
@@ -235,6 +239,7 @@ export async function createOrderFromCart(
 			return { ok: false, reason: intentFailureReason(err) };
 		}
 		await rememberIntent(deps, already, intent);
+		await announceOfflineOrder(deps, already);
 		return { ok: true, order: already, intent };
 	}
 
@@ -411,7 +416,12 @@ export async function createOrderFromCart(
 			: null;
 
 	const freshOrderId = brandOrderId(deps.idGen.newId());
-	const holdExpiresAt = new Date(deps.clock.now().getTime() + ttl(deps)).toISOString();
+	// ADR-0042: an OFFLINE order (cash on delivery) has no time to pay — it is
+	// paid on delivery — so it never expires and its stock stays with it until a
+	// person marks it paid or cancels it.
+	const holdExpiresAt = isOfflinePaymentMethod(command.paymentMethod)
+		? OFFLINE_HOLD_EXPIRES_AT
+		: new Date(deps.clock.now().getTime() + ttl(deps)).toISOString();
 
 	// Coupon redemption is the GATE, before order creation (§5): redeem atomically
 	// under the SAME idempotency key so a replay never double-redeems. If order
@@ -650,6 +660,7 @@ async function finalizeOrder(
 	try {
 		const intent = await ctx.gateway.createIntent(intentInput);
 		await rememberIntent(deps, order, intent);
+		await announceOfflineOrder(deps, order);
 		return { ok: true, order, intent };
 	} catch (err) {
 		if (!(err instanceof PaymentIntentError)) throw err;
@@ -900,6 +911,33 @@ async function rememberIntent(
 	} catch (err) {
 		deps.logger.error(
 			`[domain] could not record payment intent ${intent.intentId} for order ${order.id}; it will not be cancelled if the order expires`,
+			{ error: err instanceof Error ? err.message : String(err) },
+		);
+	}
+}
+
+/**
+ * An OFFLINE order's "we have your order — pay on delivery" email (ADR-0042): an
+ * `order-placed-offline` notice for the amount due. A card order is announced by
+ * its `paid` confirmation minutes later; a cash-on-delivery order is not paid
+ * until it is delivered, so without this the buyer would hear nothing for days.
+ *
+ * Run on the fresh path and on the replay, after the intent: the store's
+ * first-wins `(orderId, kind)` dedupe makes a replay enqueue nothing, and a call
+ * that died before it is finished by its retry. BEST-EFFORT like
+ * {@link rememberIntent}: the order is placed whatever the outbox says.
+ */
+async function announceOfflineOrder(deps: CreateOrderDeps, order: Order): Promise<void> {
+	if (!isOfflinePaymentMethod(order.paymentMethod)) return;
+	try {
+		await deps.orderStore.enqueueNotice(order.id, {
+			kind: "order-placed-offline",
+			amount: order.totals.total,
+			currency: order.totals.currency,
+		});
+	} catch (err) {
+		deps.logger.error(
+			`[domain] could not enqueue the order-placed email for offline order ${order.id}`,
 			{ error: err instanceof Error ? err.message : String(err) },
 		);
 	}

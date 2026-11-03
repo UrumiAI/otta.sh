@@ -6,6 +6,7 @@ import {
 	type OrderId,
 } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import { NOOP_LOGGER } from "../ports/logger.js";
 import type { CustomerStore } from "../ports/customer-store.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import {
@@ -17,7 +18,8 @@ import {
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
-import { isCurrentPaymentMethod } from "./payment-methods.js";
+import { isOfflinePaymentMethod, offlinePaymentRef } from "./payment-methods.js";
+import { applyPaidSideEffects, type SettleDeps } from "./settle-order.js";
 import { roundingEntry } from "../pricing/payment-rounding.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
 import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
@@ -42,6 +44,15 @@ export interface TransitionOrderDeps {
 	 * need not wire it; the admin console's composition does, and a test pins it.
 	 */
 	entitlementStore?: EntitlementStore;
+	/**
+	 * What an OFFLINE Mark paid needs beyond the flip (ADR-0042): the stock store
+	 * that commits the order's holds, the anomaly sink a lost hold is recorded in,
+	 * and the clock that stamps it. A `pending → paid` move on an offline order
+	 * records the payment and runs the same paid side-effects a gateway settle runs
+	 * (`applyPaidSideEffects`), so it refuses to run without them — a wiring bug,
+	 * thrown before anything is written. Absent everywhere else.
+	 */
+	offlinePayment?: Pick<SettleDeps, "inventoryStore" | "paymentEventStore" | "clock">;
 }
 
 export interface TransitionOrderCommand {
@@ -146,44 +157,15 @@ async function applyTransition(
 // -- the admin's status moves -------------------------------------------------
 
 /**
- * How each payment method's money is confirmed: by its GATEWAY (Stripe's
- * `payment_intent.succeeded`) or OFFLINE, by a person
- * who saw the money arrive.
- *
- * A `Record` over every `PaymentMethod` on purpose: a new method (a "bank
- * transfer" or "cash on delivery") must declare which kind it is, and only an
- * `offline` one may be marked paid by hand. None is today.
- *
- * A method that refunds outside Otta also needs a refund-route declaration read by
- * markRefundedRefusal (removed in #502 while none existed).
- */
-const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "offline">> = {
-	stripe: "gateway",
-};
-
-/**
- * A per-method fact for a STORED method: from the current table when the method
- * is a `PaymentMethod`, else `undefined` — an unknown method (a removed one such
- * as x402, or a hand-seeded value), which every caller treats as fail-closed.
- */
-function factForStored<V>(
-	table: Readonly<Record<PaymentMethod, V>>,
-	stored: string,
-): V | undefined {
-	return isCurrentPaymentMethod(stored) ? table[stored] : undefined;
-}
-
-/**
  * True iff an admin may mark an order paid by `method` BY HAND — only a method
- * declared `offline`. FAILS CLOSED: a gateway method is paid when its gateway says
- * so (the settle path's `markPaid`), and an order with NO method on file (`null`, a
- * historical or hand-seeded order) has nothing that could have been paid, so it is
- * refused too. With no offline method declared today, this is always false.
+ * declared `offline` (`PAYMENT_METHOD_SETTLEMENT`; cash on delivery, ADR-0042).
+ * FAILS CLOSED: a gateway method is paid when its gateway says so (the settle
+ * path's `markPaid`), and an order with NO method on file (`null`, a historical
+ * or hand-seeded order) or an unknown one has nothing that could have been paid,
+ * so it is refused too.
  */
 export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
-	if (method === null) return false;
-	// An unknown method has no entry, so it is not offline.
-	return factForStored(PAYMENT_METHOD_SETTLEMENT, method) === "offline";
+	return isOfflinePaymentMethod(method);
 }
 
 /** The two ledgers Mark refunded is decided from. */
@@ -293,8 +275,9 @@ export type TransitionOrderAsAdminFailure = Extract<
  * rules that keep a manual move honest about money (QA T1-3, T1-4, T1-6;
  * ADR-0026):
  *
- *  - **No manual `pending → paid` unless the method is declared offline** — none is
- *    today, so never. A card order is paid when Stripe says so, through the settle
+ *  - **No manual `pending → paid` unless the method is declared offline** — cash on
+ *    delivery is (ADR-0042), and its Mark paid records the payment and commits the
+ *    stock like a settlement ({@link markOfflineOrderPaid}). A card order is paid when Stripe says so, through the settle
  *    path's `markPaid`. A click here could otherwise tell the buyer "we've received
  *    your payment", count revenue in the reports and release the order for
  *    fulfilment with nothing captured.
@@ -326,6 +309,11 @@ export async function transitionOrderAsAdmin(
 ): Promise<TransitionOrderAsAdminResult> {
 	const pre = await precheckTransition(deps, cmd);
 	if (pre.done !== undefined) {
+		// A replayed offline Mark paid finishes what a crash between its flip and
+		// its side-effects left undone (each is idempotent).
+		if (cmd.toState === "paid" && pre.done.ok && isOfflinePaidBy(pre.done.order)) {
+			await applyOfflinePayment(deps, pre.done.order);
+		}
 		await revokeIfRefunded(deps, pre.done);
 		return pre.done;
 	}
@@ -333,6 +321,7 @@ export async function transitionOrderAsAdmin(
 	if (cmd.toState === "paid" && !manualPaymentAllowed(order.paymentMethod)) {
 		return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
 	}
+	if (cmd.toState === "paid") return markOfflineOrderPaid(deps, order);
 	if (cmd.toState === "cancelled") return { ok: false, reason: "USE_CANCEL" };
 	if (cmd.toState === "refunded") {
 		// The one admin move decided by the money: read the ledgers (only for it).
@@ -345,6 +334,86 @@ export async function transitionOrderAsAdmin(
 	const res = await applyTransition(deps, order, cmd, enqueueEmail);
 	await revokeIfRefunded(deps, res);
 	return res;
+}
+
+/**
+ * An OFFLINE order marked paid by hand (ADR-0042): a person attests the money
+ * arrived (the courier handed over the cash), so it is recorded exactly as a
+ * gateway settlement is — the guarded `markPaid` flip (which enqueues the
+ * confirmation email and, in the document store, the commit intent), then the
+ * same idempotent side-effects `settleOrder` runs: a `payments` row for the order
+ * total under {@link offlinePaymentRef}, the order's stock holds committed, and
+ * its downloads granted. The ledger then shows the money held, so reports, the
+ * refund ceiling and a later manual refund all read it like any other payment.
+ *
+ * A lost flip (the order moved meanwhile) answers as a bare transition would:
+ * already paid ⇒ the idempotent no-op (and the side-effects re-driven when the
+ * winner was this same offline payment); anything else ⇒ `INVALID_TRANSITION`.
+ */
+async function markOfflineOrderPaid(
+	deps: TransitionOrderDeps,
+	order: Order,
+): Promise<TransitionOrderAsAdminResult> {
+	const method = order.paymentMethod;
+	const settle = requireOfflinePaymentDeps(deps);
+	if (method === null) return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
+	const won = await deps.orderStore.markPaid(order.id, offlinePaymentRef(method, order.id));
+	const fresh = (await deps.orderStore.getById(order.id)) ?? order;
+	if (!won) {
+		if (fresh.state !== "paid") return { ok: false, reason: "INVALID_TRANSITION" };
+		if (isOfflinePaidBy(fresh)) await applyOfflinePayment(deps, fresh);
+		return { ok: true, transitioned: false, order: fresh };
+	}
+	await applyOfflinePayment(deps, fresh, settle);
+	return { ok: true, transitioned: true, order: fresh };
+}
+
+/** Whether a paid order's winning payment is its own offline one. */
+function isOfflinePaidBy(order: Order): boolean {
+	return (
+		order.state === "paid" &&
+		order.paymentMethod !== null &&
+		isOfflinePaymentMethod(order.paymentMethod) &&
+		order.paidProviderRef === offlinePaymentRef(order.paymentMethod, order.id)
+	);
+}
+
+function requireOfflinePaymentDeps(deps: TransitionOrderDeps): SettleDeps {
+	const offline = deps.offlinePayment;
+	if (offline === undefined || deps.entitlementStore === undefined) {
+		throw new Error(
+			"transitionOrderAsAdmin: marking an offline order paid needs `offlinePayment` and `entitlementStore` wired",
+		);
+	}
+	return {
+		orderStore: deps.orderStore,
+		entitlementStore: deps.entitlementStore,
+		inventoryStore: offline.inventoryStore,
+		paymentEventStore: offline.paymentEventStore,
+		clock: offline.clock,
+		// The paid side-effects never refund, so they log nothing.
+		logger: NOOP_LOGGER,
+	};
+}
+
+/** The paid side-effects of an offline payment, for the order as it now stands. */
+async function applyOfflinePayment(
+	deps: TransitionOrderDeps,
+	order: Order,
+	settle: SettleDeps = requireOfflinePaymentDeps(deps),
+): Promise<void> {
+	if (order.paymentMethod === null) return;
+	await applyPaidSideEffects(
+		settle,
+		{
+			gateway: order.paymentMethod,
+			providerRef: offlinePaymentRef(order.paymentMethod, order.id),
+			amount: order.totals.total,
+			currency: order.totals.currency,
+		},
+		order,
+		settle.clock.now().toISOString(),
+	);
 }
 
 // -- outbox dispatcher --------------------------------------------------------
@@ -592,9 +661,13 @@ async function drainOutbox(
 		// The money a refund email is about: a notice carries its own; the `refunded`
 		// STATE email states everything finalized on the ledger (QA T1-6), read here
 		// and passed as data so the template still reaches back into nothing.
+		// The order-placed notice (ADR-0042) is about money still DUE, not returned:
+		// it renders as a state email with no "Refunded" line.
 		const refunded =
 			row.notice !== null
-				? { amount: row.notice.amount, currency: row.notice.currency }
+				? row.notice.kind === "order-placed-offline"
+					? null
+					: { amount: row.notice.amount, currency: row.notice.currency }
 				: row.toState === "refunded"
 					? await refundedTotal(deps.orderStore, order)
 					: null;

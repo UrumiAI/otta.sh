@@ -1,4 +1,6 @@
 import { describe, expect, test } from "vitest";
+import { cents, currency } from "../money/cents.js";
+import { idempotencyKey } from "../money/ids.js";
 import { settleOrder } from "../orders/settle-order.js";
 import type { PaymentGatewayHarness } from "./gateway-harness.js";
 
@@ -104,6 +106,89 @@ export function paymentGatewayContract(
 			const res = await settleOrder(h.settleDeps, h.gateway, raw);
 			expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
 			expect(await h.orderState(orderId)).toBe("pending");
+		});
+	});
+}
+
+export interface OfflinePaymentGatewayContractOptions {
+	gateway: string;
+}
+
+/**
+ * The spec an OFFLINE gateway (ADR-0042 — cash on delivery) meets in place of the
+ * settlement spec above: it has no provider, no webhook and no money to move, so
+ * every verb answers "nothing online", and NO confirmation of any shape can settle
+ * one of its orders. The harness's `confirm` mints the most plausible raw
+ * confirmation the caller can (a correctly-signed webhook from another gateway);
+ * the offline gateway must still reject it. Paying such an order is a person's
+ * act — the admin Mark paid — pinned by `offlinePaymentContract`.
+ */
+export function offlinePaymentGatewayContract(
+	makeHarness: () => PaymentGatewayHarness,
+	opts: OfflinePaymentGatewayContractOptions,
+): void {
+	describe(`offlinePaymentGatewayContract [${opts.gateway}]`, () => {
+		test("it cannot refund: refundable is false and a refund answers UNSUPPORTED", async () => {
+			const h = makeHarness();
+			expect(h.gateway.refundable).toBe(false);
+			const res = await h.gateway.refund({
+				orderId: (await h.seedPhysicalOrder(1500)).orderId,
+				providerRef: "anything",
+				amount: cents(500),
+				currency: currency("USD"),
+				priorRefunded: cents(0),
+				idempotencyKey: idempotencyKey("refund-1"),
+			});
+			expect(res).toEqual({ ok: false, reason: "UNSUPPORTED" });
+		});
+
+		test("createIntent places the order with no online step: an offline action and no intent id, the same on a replay", async () => {
+			const h = makeHarness();
+			const { orderId } = await h.seedPhysicalOrder(1500);
+			const input = {
+				orderId,
+				amount: cents(1500),
+				currency: currency("USD"),
+				idempotencyKey: idempotencyKey("checkout-1"),
+				lines: [{ title: "Widget", quantity: 1 }],
+			};
+			const first = await h.gateway.createIntent(input);
+			expect(first).toEqual({
+				gateway: h.gateway.id,
+				intentId: "",
+				clientAction: { kind: "offline" },
+			});
+			expect(await h.gateway.createIntent(input)).toEqual(first);
+		});
+
+		test("no confirmation settles an offline order — a signed webhook is rejected and the order stays pending", async () => {
+			const h = makeHarness();
+			const { orderId, reservationId } = await h.seedPhysicalOrder(1500);
+			const raw = await h.confirm({
+				orderId,
+				amountCents: 1500,
+				currency: "USD",
+				outcome: "succeeded",
+				dedupeKey: "evt-offline-1",
+				providerRef: "pi_offline_1",
+			});
+			const res = await settleOrder(h.settleDeps, h.gateway, raw);
+			expect(res.ok).toBe(false);
+			expect(await h.orderState(orderId)).toBe("pending");
+			expect(h.reservationState(reservationId)).toBe("adopted");
+			expect(h.anomalies()).toEqual([]);
+		});
+
+		test("there is no standing intent to withdraw: cancelIntent answers UNSUPPORTED", async () => {
+			const h = makeHarness();
+			const { orderId } = await h.seedPhysicalOrder(1500);
+			expect(
+				await h.gateway.cancelIntent({
+					orderId,
+					intentId: "",
+					idempotencyKey: idempotencyKey("cancel-1"),
+				}),
+			).toEqual({ ok: false, reason: "UNSUPPORTED" });
 		});
 	});
 }
