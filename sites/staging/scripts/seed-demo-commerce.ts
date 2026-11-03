@@ -117,6 +117,7 @@ import {
 	OTTA_PLUGIN_ID,
 	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
 } from "@urumi.ai/otta-plugin";
+import { setupClaimHeaders } from "./setup-claim-cookie.js";
 
 export interface DemoPricing {
 	sku: string;
@@ -368,8 +369,13 @@ export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, st
 	// `applySeed(..., includeContent: true)` — authenticating by re-seeding the
 	// site is a side effect no read should have. The route IS registered in a
 	// production build; it just returns 403 there (it is gated on
-	// `import.meta.env.DEV`), so a deployed site needs EMDASH_TOKEN.
-	const res = await fetch(`${siteUrl}/_emdash/api/auth/dev-bypass`, { redirect: "manual" });
+	// `import.meta.env.DEV`), so a deployed site needs EMDASH_TOKEN. On a store
+	// not yet claimed, the route also needs the setup token (ADR-0042): sent as
+	// the claim cookie when OTTA_SETUP_TOKEN is set here.
+	const res = await fetch(`${siteUrl}/_emdash/api/auth/dev-bypass`, {
+		redirect: "manual",
+		headers: setupClaimHeaders(),
+	});
 	const cookies = res.headers
 		.getSetCookie()
 		.map((c) => c.split(";", 1)[0])

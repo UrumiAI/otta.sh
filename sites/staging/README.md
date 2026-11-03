@@ -26,6 +26,17 @@ applies the full seed including the 3 sample products:
 `/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin`. What first boot does and does
 not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §2.2.
 
+**A fresh local store is locked like a deployed one** (ADR-0042): until setup is finished,
+`/_emdash/*` (the bypass included) answers 403 without the setup token, and there is no
+development exception. Open the claim link first. With no `OTTA_SETUP_TOKEN` the dev server
+prints it on the first `/_emdash` request (a line starting `[otta-setup]`); to choose the
+token, put `OTTA_SETUP_TOKEN=<32+ random characters>` in `sites/staging/.dev.vars` and open
+`/_emdash/admin/setup?setup_token=<it>`. Then use the bypass as before; once it has run, the
+store is claimed and the token is not asked for again. `pnpm test:e2e` with
+`OTTA_E2E_START_STACK=1` hands its own throwaway token to the server it boots
+(`E2E_SETUP_TOKEN` in `e2e/harness.ts`); a server you started yourself on fresh state needs
+that same value, or to be claimed first.
+
 ### Plugin settings are namespaced by plugin id
 
 A setting saved under one plugin id is not visible to another. The Block Kit screens and the

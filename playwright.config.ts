@@ -20,11 +20,22 @@
  * (`sites/staging/README.md`, "Local development").
  */
 import { defineConfig, type PlaywrightTestConfig } from "@playwright/test";
-import { E2E_BASE_URL, E2E_STARTS_STACK, E2E_VIEWPORT } from "./sites/staging/e2e/harness.js";
+import {
+	E2E_BASE_URL,
+	E2E_SETUP_TOKEN,
+	E2E_STARTS_STACK,
+	E2E_VIEWPORT,
+} from "./sites/staging/e2e/harness.js";
+import { SETUP_TOKEN_SECRET } from "./sites/staging/src/lib/setup-claim-contract.js";
 import {
 	markServerStartedCommand,
 	serverStartedMarkerPath,
 } from "./sites/staging/e2e/server-started-marker.js";
+
+// ADR-0042: an unclaimed store admits only the setup-token holder, with no
+// development exception. Every process of this run (global setup, workers, the
+// scripts they call) and the dev server below read the SAME token from here.
+process.env[SETUP_TOKEN_SECRET] = E2E_SETUP_TOKEN;
 
 /** Playwright does not export `TestConfigWebServer`, so it is reached through
  *  the config type. The annotation dates from when `stack` held two entries and
@@ -134,6 +145,9 @@ const stack: WebServer[] = [
 			// CLOUDFLARE_INCLUDE_PROCESS_ENV is "true" (and there is no `.dev.vars`).
 			EMDASH_ENCRYPTION_KEY: process.env["EMDASH_ENCRYPTION_KEY"] ?? E2E_TEST_ENCRYPTION_KEY,
 			CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
+			// The setup token the suite presents (ADR-0042; e2e/harness.ts). Reaches
+			// workerd through CLOUDFLARE_INCLUDE_PROCESS_ENV, like the key above.
+			[SETUP_TOKEN_SECRET]: E2E_SETUP_TOKEN,
 		},
 	},
 ];

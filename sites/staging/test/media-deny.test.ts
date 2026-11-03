@@ -72,6 +72,9 @@ describe("the middleware applies it before EmDash's route", () => {
 		return {
 			request: new Request(url, { method }),
 			url,
+			// The route Astro matches: EmDash's public media route, which the
+			// setup-claim gate (ADR-0042) leaves open.
+			routePattern: "/_emdash/api/media/file/[...key]",
 			cookies: { get: () => undefined, set: vi.fn(), delete: vi.fn() },
 			locals: {},
 			cache: { set: vi.fn() },

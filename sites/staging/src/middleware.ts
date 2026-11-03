@@ -3,6 +3,15 @@
  * request may reach a storefront route at all (the origin check, below), and
  * who may be served a stored copy of a storefront page (ADR-0024).
  *
+ * THE SETUP CLAIM (ADR-0042) runs first. While EmDash setup is not complete,
+ * every `/_emdash/*` route (bar three that cannot create a user) is refused
+ * unless the request carries the one-time setup token, so the first admin is
+ * whoever holds the deployer's link, not whoever reaches the wizard first.
+ * Once setup is seen complete the gate is cached as inert for the isolate and
+ * costs nothing; a storefront request never reaches its database at all. The
+ * rule, the token's source and the cookie live in `lib/setup-claim.ts`. Off in
+ * the playground build, whose per-visitor databases EmDash creates claimed.
+ *
  * THE ORIGIN CHECK (CSRF, ADR-0006; issue #376). Every non-safe request to a
  * storefront route is refused with a 403 when it carries a present-but-foreign
  * `Origin` — before any endpoint runs, reads a body or touches a cookie. The
@@ -93,7 +102,8 @@ import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { rejectCrossOrigin } from "./lib/origin-guard.js";
 import { enforceRateLimit } from "./lib/rate-limit.js";
-import { playgroundGate, withPlaygroundBanner } from "./lib/playground-gate.js";
+import { isPlaygroundBuild, playgroundGate, withPlaygroundBanner } from "./lib/playground-gate.js";
+import { setupClaimGate } from "./lib/setup-claim.js";
 import { themeFor } from "./themes/registry.js";
 import { DEFAULT_THEME_ID } from "./themes/manifest.js";
 
@@ -134,6 +144,12 @@ function skipRouteCache(context: { cache?: { set(options: false): void } }): voi
 	context.cache?.set(false);
 }
 
+/** Whether this build runs the setup-claim gate: every build but the
+ *  playground (a build-time define, `false` in the storefront build). */
+export function setupClaimApplies(): boolean {
+	return !isPlaygroundBuild();
+}
+
 export const onRequest = defineMiddleware(async (context, next) => {
 	const response = await handle(context, next);
 	return context.routePattern === PAY_ROUTE
@@ -142,6 +158,13 @@ export const onRequest = defineMiddleware(async (context, next) => {
 });
 
 async function handle(context: APIContext, next: MiddlewareNext): Promise<Response> {
+	// Before anything else: an unclaimed store's EmDash routes are the deployer's
+	// alone (ADR-0042). A string test, then nothing, for a storefront request.
+	if (setupClaimApplies()) {
+		const unclaimed = await setupClaimGate().check(context, env);
+		if (unclaimed !== null) return unclaimed;
+	}
+
 	// Playground only (the storefront build no-ops). Prices the sample
 	// catalog before the page renders, and may answer the boot request
 	// itself — a wait page, or a redirect from the CMS admin onto the shop.
