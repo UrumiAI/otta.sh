@@ -1,9 +1,9 @@
 /**
  * Auto-cancel of stale unpaid OFFLINE orders (ADR-0044 §6, decision B): a
  * cash-on-delivery order still `awaiting_payment` after the merchant's window
- * (default 14 days) is cancelled — its stock released by the cancel's own release
- * intent, its coupon use freed (nobody chose to keep it, unlike a merchant cancel),
- * and the buyer emailed the ordinary cancelled email.
+ * (default 14 days) has its coupon use freed first (nobody chose to keep it,
+ * unlike a merchant cancel), then is cancelled — its stock released by the
+ * cancel's own release intent, and the buyer emailed the ordinary cancelled email.
  *
  * Never cancelled here:
  *  - a `shipped_awaiting_payment` order: the goods are out (the listing is
@@ -86,6 +86,20 @@ export async function cancelUnpaidOfflineOrders(
 			skipped++;
 			continue;
 		}
+		// The coupon use goes back FIRST (ADR-0044 §6): idempotent and order-scoped,
+		// so a run that fails here leaves the order listed and the next run retries
+		// both. Released after the cancel, a failure would strand the use for good —
+		// the coupon-orphans leg judges a redemption only once.
+		try {
+			await deps.couponStore.releaseByOrder(order);
+		} catch (err) {
+			deps.logger.error(
+				`[domain] auto-cancel could not free the coupon use of order ${id}; it will be retried`,
+				{ error: err instanceof Error ? err.message : String(err) },
+			);
+			skipped++;
+			continue;
+		}
 		const res = await cancelOrder(
 			{ orderStore: deps.orderStore, logger: deps.logger },
 			{
@@ -99,15 +113,6 @@ export async function cancelUnpaidOfflineOrders(
 		if (!res.ok || !res.cancelled) {
 			skipped++;
 			continue;
-		}
-		// The coupon use goes back with the order: the buyer never paid, and no
-		// merchant decided to keep it (`cancelOrder` alone deliberately does not).
-		try {
-			await deps.couponStore.releaseByOrder(res.order);
-		} catch (err) {
-			deps.logger.error(`[domain] auto-cancel could not free the coupon use of order ${id}`, {
-				error: err instanceof Error ? err.message : String(err),
-			});
 		}
 		cancelled++;
 	}

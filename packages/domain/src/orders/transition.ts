@@ -96,6 +96,15 @@ export async function transitionOrder(
 	cmd: TransitionOrderCommand,
 ): Promise<TransitionOrderResult> {
 	const pre = await precheckTransition(deps, cmd);
+	// ADR-0044: an offline order's Mark paid records the payment; this bare move
+	// would not, so it is refused — use `transitionOrderAsAdmin`.
+	if (
+		pre.order !== undefined &&
+		isOfflinePaymentMethod(pre.order.paymentMethod) &&
+		offlinePaidTarget(pre.order.state) === cmd.toState
+	) {
+		return { ok: false, reason: "INVALID_TRANSITION" };
+	}
 	const res =
 		pre.done ??
 		(await applyTransition(deps, pre.order, cmd, emailTemplateForState(cmd.toState) !== null));
@@ -272,7 +281,12 @@ export type TransitionOrderAsAdminResult =
 	 *  through its provider ({@link markRefundedAllowed}): use Money → Refunds. */
 	| { ok: false; reason: "REFUND_THROUGH_MONEY" }
 	/** Mark refunded while a refund on the order is still reserved or unverified. */
-	| { ok: false; reason: "REFUND_IN_FLIGHT" };
+	| { ok: false; reason: "REFUND_IN_FLIGHT" }
+	/** ADR-0044: an offline Mark paid lost its flip to a concurrent Record shipment —
+	 *  the order is now `shipped_awaiting_payment`. Nothing was revoked or flagged
+	 *  (the payment row is the same idempotent one); clicking Mark paid again lands
+	 *  it `delivered`. */
+	| { ok: false; reason: "MARK_PAID_RETRY" };
 
 /** Every reason `transitionOrderAsAdmin` can refuse with — the closed set a caller
  *  maps to copy. */
@@ -413,6 +427,12 @@ async function markOfflineOrderPaid(
 	if (isOfflinePaidBy(fresh, target)) {
 		await applyOfflinePayment(fresh, settle, now);
 		return { ok: true, transitioned: false, order: fresh };
+	}
+	// Lost to a concurrent Record shipment: the order is still unpaid and still this
+	// method's, now shipped. Nothing to undo — the next click pays it toward
+	// `delivered` with the same idempotent payment row.
+	if (order.state === "awaiting_payment" && fresh.state === "shipped_awaiting_payment") {
+		return { ok: false, reason: "MARK_PAID_RETRY" };
 	}
 	// Lost to a move that is not this payment (a cancel): money attested and held,
 	// on an order that is not paid. Never silent; never over another flag.

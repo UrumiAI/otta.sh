@@ -455,6 +455,99 @@ export function offlinePaymentContract(
 			).toMatchObject({ cancelled: 0 });
 		});
 
+		test("Mark paid losing its flip to a Record shipment is retryable: nothing revoked or flagged, and the next click lands it delivered", async () => {
+			const h = await makeHarness();
+			const { order, sku: s } = await seedOrder(h, "14", "cod", { kind: "physical" });
+			const real = h.settleDeps.orderStore;
+			// A store whose flip first lets a concurrent Record shipment win — the exact
+			// interleave of the race, made deterministic.
+			const racing = new Proxy(real, {
+				get(target, prop, receiver) {
+					if (prop === "markPaid") {
+						return async (...args: Parameters<typeof real.markPaid>) => {
+							await recordFulfillment(
+								{ orderStore: real },
+								{
+									orderId: order.id,
+									carrier: "Delhivery",
+									trackingNumber: "DL-RACE",
+									trackingUrl: null,
+									recordedBy: "Other Person",
+									idempotencyKey: idempotencyKey(`ship-race:${order.id}`),
+								},
+							);
+							return real.markPaid(...args);
+						};
+					}
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const raced = await transitionOrderAsAdmin(
+				{ ...adminDeps(h), orderStore: racing },
+				{
+					orderId: order.id,
+					toState: "paid",
+					idempotencyKey: idempotencyKey("raced-click"),
+					actor: "Ops Person",
+				},
+			);
+			expect(raced).toEqual({ ok: false, reason: "MARK_PAID_RETRY" });
+			const shipped = await real.getById(order.id);
+			expect(shipped?.state).toBe("shipped_awaiting_payment");
+			expect(shipped?.reconciliationFlag).toBeNull();
+			// The click again, toward delivered: one payment row, the same reference.
+			expect(await admin(h, order.id, "delivered")).toMatchObject({ ok: true, transitioned: true });
+			expect(await real.getCapturedPayments(order.id)).toHaveLength(1);
+			expect(await onHandAfterRelease(h, order, s)).toBe(ON_HAND - QTY);
+		});
+
+		test("the bare transitionOrder refuses an offline order's paid targets — only transitionOrderAsAdmin records the payment", async () => {
+			const h = await makeHarness();
+			const { order } = await seedOrder(h, "15", "cod");
+			const bare = await transitionOrder(
+				{ orderStore: h.settleDeps.orderStore },
+				{ orderId: order.id, toState: "paid", idempotencyKey: idempotencyKey("bare-paid") },
+			);
+			expect(bare).toEqual({ ok: false, reason: "INVALID_TRANSITION" });
+			expect((await h.settleDeps.orderStore.getById(order.id))?.state).toBe("awaiting_payment");
+		});
+
+		test("auto-cancel frees the coupon use BEFORE cancelling: a failed release leaves the order for the next run, which frees it and cancels", async () => {
+			const h = await makeHarness();
+			const stale = await seedOrder(h, "16", "cod");
+			const later = new Date(h.settleDeps.clock.now().getTime() + 15 * DAY_MS);
+			const released: string[] = [];
+			let failNext = true;
+			const coupons = {
+				async releaseByOrder(order: { id: string }) {
+					if (failNext) {
+						failNext = false;
+						throw new Error("coupon store busy");
+					}
+					released.push(order.id);
+					return 1;
+				},
+			};
+			const run = () =>
+				cancelUnpaidOfflineOrders(
+					{
+						orderStore: h.settleDeps.orderStore,
+						couponStore: coupons,
+						clock: { now: () => later },
+						logger: NOOP_LOGGER,
+					},
+					{ maxAgeDays: 14, limit: 10 },
+				);
+			expect(await run()).toMatchObject({ cancelled: 0, skipped: 1 });
+			expect((await h.settleDeps.orderStore.getById(stale.order.id))?.state).toBe(
+				"awaiting_payment",
+			);
+			expect(await run()).toMatchObject({ cancelled: 1 });
+			expect(released).toEqual([stale.order.id]);
+			expect((await h.settleDeps.orderStore.getById(stale.order.id))?.state).toBe("cancelled");
+		});
+
 		test("Mark paid on an offline order without the payment wiring throws before writing anything", async () => {
 			const h = await makeHarness();
 			const { order } = await seedOrder(h, "13", "cod");

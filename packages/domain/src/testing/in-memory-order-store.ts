@@ -785,6 +785,7 @@ export class InMemoryOrderStore implements OrderStore {
 		}
 		const now = this.#clock.now().toISOString();
 		stored.order.state = "cancelled";
+		delete stored.offlineClientKey;
 		stored.order.cancellation = {
 			reason: input.reason,
 			detail: input.detail,
@@ -1282,6 +1283,8 @@ export class InMemoryOrderStore implements OrderStore {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined || stored.order.state !== from) return false;
 		stored.order.state = to;
+		// ADR-0044 §7: the network key lives only while the offline order is open.
+		if (!OFFLINE_UNPAID_STATES.has(to)) delete stored.offlineClientKey;
 		stored.order.updatedAt = this.#clock.now().toISOString();
 		// State-change audit rides the (won) flip, exactly like the real adapter's
 		// event INSERT inside the guarded UPDATE transaction — so a 0-row miss above
