@@ -21,6 +21,15 @@ and nothing is deployed: the store keeps running the last version that built. Fo
 section for each contract number between yours and the new one, in order, then set
 `template` to the new number and push.
 
+## Your own middleware runs before Otta's
+
+`otta()` registers the store's middleware after EmDash's (`order: "post"`), and Astro runs a
+site's own `src/middleware.ts` between the two. So **a store's own middleware runs before
+Otta's**, which holds the cross-site request check and, until the store is claimed, the
+setup-link gate (ADR-0042). A site middleware that answers a request itself instead of calling
+`next()` skips both for that request. Call `next()` for every path you do not own, and never
+answer `/_emdash/*` or the cart, checkout and account routes.
+
 ## Template contract 1
 
 The first contract, `@urumi.ai/otta-store` 0.2.0. A store on it has:
