@@ -280,7 +280,7 @@ function emailSentence(email: InlineEmailStatus | undefined): string {
  * A manual mark-paid (QA T1-3). Otta marks an order paid only when its payment
  * provider confirms the charge; a person marking it paid would tell the buyer their
  * payment arrived and count revenue nobody captured. Only an OFFLINE method (cash on
- * delivery, ADR-0042) is marked paid by hand, and the console offers Mark paid only
+ * delivery, ADR-0044) is marked paid by hand, and the console offers Mark paid only
  * there; this is every other manual mark-paid — including an order with no method on
  * file, which nothing will ever settle (so no "it becomes paid by itself").
  */

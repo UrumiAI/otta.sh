@@ -287,7 +287,7 @@ export function accountOrderStatus(
 	order: { state: string; holdExpiresAt: string; paymentMethod?: string | null },
 	now: Date,
 ): string {
-	// ADR-0042: a cash-on-delivery order is placed, not awaiting an online payment.
+	// ADR-0044: a cash-on-delivery order is placed, not awaiting an online payment.
 	if (order.state === "pending" && order.paymentMethod === "cod") return "Placed — pay on delivery";
 	if (order.state === "pending" && !isOrderPayable(order, now)) {
 		return "Payment not completed — time ran out";

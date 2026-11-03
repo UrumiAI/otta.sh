@@ -16,7 +16,7 @@
  * `ctx.http` (the sandbox rule): `api.stripe.com` is the constant entry
  * `resolveAllowedHosts` always grants. The map stays keyed by `PaymentMethod`.
  *
- * Cash on delivery (ADR-0042) is armed independently of Stripe, so a store with
+ * Cash on delivery (ADR-0044) is armed independently of Stripe, so a store with
  * only COD checks out with no Stripe keys. `cashOnDelivery` says when:
  *  - `"if-enabled"` (checkout, the default): only while the merchant has it on;
  *  - `"always"` (the admin root): an order placed with COD stays manageable (a

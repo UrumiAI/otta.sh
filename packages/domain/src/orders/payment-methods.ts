@@ -17,7 +17,7 @@ import type { PaymentMethod } from "./model.js";
  * which kind it is. It is also the list of CURRENT methods — a stored value that
  * is not an own key here is unknown.
  *
- * `cod` (cash on delivery, ADR-0042) is offline: its order is placed with no
+ * `cod` (cash on delivery, ADR-0044) is offline: its order is placed with no
  * online payment, its stock stays with the order until a person marks it paid
  * (the cash arrived) or cancels it, and it never expires at a checkout hold.
  *
@@ -37,7 +37,7 @@ export function isCurrentPaymentMethod(stored: string): stored is PaymentMethod 
 }
 
 /**
- * True iff a STORED method is declared `offline` (ADR-0026 Decision 1, ADR-0042).
+ * True iff a STORED method is declared `offline` (ADR-0026 Decision 1, ADR-0044).
  * FAILS CLOSED: `null` (no method on file) and an unknown method are not offline.
  */
 export function isOfflinePaymentMethod(stored: string | null): boolean {
@@ -49,7 +49,7 @@ export function isOfflinePaymentMethod(stored: string | null): boolean {
 }
 
 /**
- * The hold deadline an OFFLINE order is placed with (ADR-0042): the largest
+ * The hold deadline an OFFLINE order is placed with (ADR-0044): the largest
  * ISO-8601 instant, so the order is never due for expiry and its adopted holds
  * (which carry the order's deadline) never lapse. An offline order has no
  * "time to pay" — the buyer pays on delivery — so its stock stays taken until a

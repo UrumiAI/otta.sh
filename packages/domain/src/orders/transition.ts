@@ -45,7 +45,7 @@ export interface TransitionOrderDeps {
 	 */
 	entitlementStore?: EntitlementStore;
 	/**
-	 * What an OFFLINE Mark paid needs beyond the flip (ADR-0042): the stock store
+	 * What an OFFLINE Mark paid needs beyond the flip (ADR-0044): the stock store
 	 * that commits the order's holds, the anomaly sink a lost hold is recorded in,
 	 * and the clock that stamps it. A `pending → paid` move on an offline order
 	 * records the payment and runs the same paid side-effects a gateway settle runs
@@ -158,7 +158,7 @@ async function applyTransition(
 
 /**
  * True iff an admin may mark an order paid by `method` BY HAND — only a method
- * declared `offline` (`PAYMENT_METHOD_SETTLEMENT`; cash on delivery, ADR-0042).
+ * declared `offline` (`PAYMENT_METHOD_SETTLEMENT`; cash on delivery, ADR-0044).
  * FAILS CLOSED: a gateway method is paid when its gateway says so (the settle
  * path's `markPaid`), and an order with NO method on file (`null`, a historical
  * or hand-seeded order) or an unknown one has nothing that could have been paid,
@@ -276,7 +276,7 @@ export type TransitionOrderAsAdminFailure = Extract<
  * ADR-0026):
  *
  *  - **No manual `pending → paid` unless the method is declared offline** — cash on
- *    delivery is (ADR-0042), and its Mark paid records the payment and commits the
+ *    delivery is (ADR-0044), and its Mark paid records the payment and commits the
  *    stock like a settlement ({@link markOfflineOrderPaid}). A card order is paid when Stripe says so, through the settle
  *    path's `markPaid`. A click here could otherwise tell the buyer "we've received
  *    your payment", count revenue in the reports and release the order for
@@ -339,7 +339,7 @@ export async function transitionOrderAsAdmin(
 }
 
 /**
- * An OFFLINE order marked paid by hand (ADR-0042): a person attests the money
+ * An OFFLINE order marked paid by hand (ADR-0044): a person attests the money
  * arrived (the courier handed over the cash), so it is recorded exactly as a
  * gateway settlement is — the guarded `markPaid` flip (which enqueues the
  * confirmation email and, in the document store, the commit intent), then the
@@ -663,7 +663,7 @@ async function drainOutbox(
 		// The money a refund email is about: a notice carries its own; the `refunded`
 		// STATE email states everything finalized on the ledger (QA T1-6), read here
 		// and passed as data so the template still reaches back into nothing.
-		// The order-placed notice (ADR-0042) is about money still DUE, not returned:
+		// The order-placed notice (ADR-0044) is about money still DUE, not returned:
 		// it renders as a state email with no "Refunded" line.
 		const refunded =
 			row.notice !== null

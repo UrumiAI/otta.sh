@@ -25,7 +25,7 @@ export type EmailTemplate =
 	 *  admin partial refund, or a lost-race cancellation's refund — one per refund,
 	 *  stating its own amount. */
 	| "order-refund-issued"
-	/** A NOTICE (`OrderNotice` "order-placed-offline", ADR-0042): an order placed
+	/** A NOTICE (`OrderNotice` "order-placed-offline", ADR-0044): an order placed
 	 *  with cash on delivery — received, and paid when it is delivered. */
 	| "order-placed-offline";
 

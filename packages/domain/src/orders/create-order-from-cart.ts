@@ -416,7 +416,7 @@ export async function createOrderFromCart(
 			: null;
 
 	const freshOrderId = brandOrderId(deps.idGen.newId());
-	// ADR-0042: an OFFLINE order (cash on delivery) has no time to pay — it is
+	// ADR-0044: an OFFLINE order (cash on delivery) has no time to pay — it is
 	// paid on delivery — so it never expires and its stock stays with it until a
 	// person marks it paid or cancels it.
 	const holdExpiresAt = isOfflinePaymentMethod(command.paymentMethod)
@@ -917,7 +917,7 @@ async function rememberIntent(
 }
 
 /**
- * An OFFLINE order's "we have your order — pay on delivery" email (ADR-0042): an
+ * An OFFLINE order's "we have your order — pay on delivery" email (ADR-0044): an
  * `order-placed-offline` notice for the amount due. A card order is announced by
  * its `paid` confirmation minutes later; a cash-on-delivery order is not paid
  * until it is delivered, so without this the buyer would hear nothing for days.

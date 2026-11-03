@@ -1,5 +1,5 @@
 /**
- * The domain's `offlinePaymentContract` (ADR-0042) on **D1** — the dialect Otta ships
+ * The domain's `offlinePaymentContract` (ADR-0044) on **D1** — the dialect Otta ships
  * on. Same harness as the decline spec (`test/payment-decline-harness.ts`); only
  * the storage BINDING differs, and `describe-d1.ts` supplies it.
  */

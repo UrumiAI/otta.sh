@@ -54,11 +54,11 @@ export async function readStripePublishableKey(
 		: { state: "configured", key: result.stripePublishableKey };
 }
 
-/** A payment method checkout can offer (ADR-0042). */
+/** A payment method checkout can offer (ADR-0044). */
 export type CheckoutPaymentMethod = "stripe" | "cod";
 
 /**
- * Which methods checkout offers, from the same one route read (ADR-0042): card
+ * Which methods checkout offers, from the same one route read (ADR-0044): card
  * only when Stripe is fully set up (#499), cash on delivery only when the
  * merchant switched it on. Each is independent, so a store with only cash on
  * delivery checks out with no Stripe keys. `unavailable` is a failed read —
@@ -86,7 +86,7 @@ export async function readCheckoutPaymentConfig(
 	);
 	if (result === null || !result.ok) return { state: "unavailable" };
 	const card = result.stripePublishableKey !== null && result.cardPaymentReady === true;
-	// A plugin older than ADR-0042 answers no `cashOnDelivery`: card only.
+	// A plugin older than ADR-0044 answers no `cashOnDelivery`: card only.
 	const cod = result.cashOnDelivery?.enabled === true;
 	return {
 		state: "ok",

@@ -1390,7 +1390,7 @@ export class InProcessCommerceClient implements CommerceClient {
 						{ sessionToken: opts.sessionToken, buyerRef: input.buyerRef },
 					);
 		// Issue #382: the Stripe account's address rule, a kv read — a rule about
-		// the card payment, so a cash-on-delivery order (ADR-0042) skips it.
+		// the card payment, so a cash-on-delivery order (ADR-0044) skips it.
 		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,

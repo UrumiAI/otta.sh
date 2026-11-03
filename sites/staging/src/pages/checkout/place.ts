@@ -485,7 +485,7 @@ async function place(context: APIContext): Promise<Response> {
 	// was created, a reload re-posts. The plugin's place route refuses a missing
 	// secret the same way (STRIPE_NOT_CONFIGURED), for a page that raced a change.
 	//
-	// ADR-0042: the same holds per METHOD. The buyer's choice (`paymentMethod`,
+	// ADR-0044: the same holds per METHOD. The buyer's choice (`paymentMethod`,
 	// card when the form sent none) must be one the store offers right now; cash
 	// on delivery is independent of Stripe, so a store with only it places orders
 	// with no Stripe keys.

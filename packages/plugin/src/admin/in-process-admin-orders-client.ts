@@ -413,7 +413,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const res = await transitionOrderAsAdmin(
 			// Mark refunded revokes the order's download access (issue #376). Mark paid
 			// on a cash-on-delivery order records the payment, commits its stock and
-			// grants its downloads (ADR-0042), so it needs the settle-side stores too.
+			// grants its downloads (ADR-0044), so it needs the settle-side stores too.
 			{
 				orderStore: this.#stores.orderStore,
 				entitlementStore: this.#stores.entitlementStore,

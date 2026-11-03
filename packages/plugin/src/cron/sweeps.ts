@@ -2521,7 +2521,7 @@ function sweepGateways(
 		const injected = options.gateways;
 		if (typeof injected === "function") return injected();
 		if (injected !== undefined) return injected;
-		// ADR-0042: no COD — the legs withdraw intents and refund late payments,
+		// ADR-0044: no COD — the legs withdraw intents and refund late payments,
 		// and a cash-on-delivery order has neither.
 		resolved ??= resolvePaymentGateways(ctx, { ...stripeOptions, cashOnDelivery: "never" });
 		return resolved;

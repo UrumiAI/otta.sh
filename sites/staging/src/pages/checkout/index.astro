@@ -159,7 +159,7 @@ const { lines, totals } = summary;
  *  /cart?error=BUSY a busy summary takes. */
 const paymentConfig = await readCheckoutPaymentConfig(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
 if (paymentConfig.state === "unavailable") return Astro.redirect(`/cart?error=BUSY#${CART_ERROR_ID}`, 303);
-/** ADR-0042: card and cash on delivery are offered independently — either one
+/** ADR-0044: card and cash on delivery are offered independently — either one
  *  is enough to place an order. */
 const paymentConfigured = paymentConfig.methods.length > 0;
 const paymentMethods = paymentConfig.methods.map((value) => ({

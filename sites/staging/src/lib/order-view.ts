@@ -72,7 +72,7 @@ export function orderProgress(
 	paymentMethod: string | null = null,
 ): OrderProgress | null {
 	if (PAID_STATES.has(state) || state === "refunded") return { current: "order", halted: false };
-	// ADR-0042: a placed cash-on-delivery order has no payment step left online.
+	// ADR-0044: a placed cash-on-delivery order has no payment step left online.
 	if (state === "pending" && paymentMethod === "cod") return { current: "order", halted: false };
 	if (state === "pending") return { current: "payment", halted: false };
 	if (state === "expired" || state === "failed") return { current: "payment", halted: true };

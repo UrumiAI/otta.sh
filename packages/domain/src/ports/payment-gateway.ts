@@ -356,7 +356,7 @@ export interface PaymentIntentHandle {
  *  - `stripe_client_secret` — pay on Stripe's page with this secret.
  *  - `none` — nothing to pay: the order already left the checkout window.
  *  - `offline` — the order is PLACED and there is no online payment step: the
- *    buyer pays offline (cash on delivery, ADR-0042). The storefront goes
+ *    buyer pays offline (cash on delivery, ADR-0044). The storefront goes
  *    straight to the order's confirmation.
  */
 export type ClientAction =

@@ -1400,7 +1400,7 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	});
 
 	/**
-	 * ADR-0042: cash on delivery is independent of Stripe. On this boot (no Stripe
+	 * ADR-0044: cash on delivery is independent of Stripe. On this boot (no Stripe
 	 * at all) it is refused while off, then — once the merchant switches it on in
 	 * Settings — the order is placed with no pay step: an `offline` action, no
 	 * intent, a pending order that never expires. Card checkout stays refused.

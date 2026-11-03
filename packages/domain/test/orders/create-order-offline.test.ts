@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
 /**
- * ADR-0042: a checkout with an OFFLINE method (cash on delivery). The order is
+ * ADR-0044: a checkout with an OFFLINE method (cash on delivery). The order is
  * placed `pending` with the offline hold deadline, so it never expires, and with
  * no intent recorded, so no sweep withdraws one. The buyer gets ONE
  * "order received, pay on delivery" email, which states the amount due and no

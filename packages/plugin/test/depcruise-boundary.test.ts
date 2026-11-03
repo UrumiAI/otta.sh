@@ -250,7 +250,7 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter now admits", () => 
 		).toEqual([]);
 	});
 
-	test("the cash-on-delivery adapter is admitted — an offline gateway with no IO (ADR-0042)", () => {
+	test("the cash-on-delivery adapter is admitted — an offline gateway with no IO (ADR-0044)", () => {
 		expect(
 			rulesViolatedBy(
 				"plugin",

@@ -843,7 +843,7 @@ order of appearance in a deployment's life:
 ### Cash on delivery (no Stripe needed)
 
 Cash on delivery is a second payment method beside Stripe, and each is enabled on its own
-([ADR-0042](./adr/0042-cash-on-delivery-is-an-offline-payment-method.md)). It has **no secrets
+([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md)). It has **no secrets
 and no webhook**, and it needs no egress. A store with only cash on delivery takes orders with
 none of the Stripe values above.
 

@@ -1,5 +1,5 @@
 /**
- * The domain's `offlinePaymentContract` (ADR-0042, cash on delivery) against the
+ * The domain's `offlinePaymentContract` (ADR-0044, cash on delivery) against the
  * document store on both Node dialects: an offline order never expires, Mark paid
  * records the payment and commits its stock once, and cancel returns it. D1 runs
  * the same suite from `d1/offline-payment-contract.d1.spec.ts`.

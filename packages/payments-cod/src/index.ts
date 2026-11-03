@@ -8,7 +8,7 @@ import type {
 } from "@urumi.ai/otta-domain";
 
 /**
- * Cash on delivery as a `PaymentGateway` (ADR-0042). It is an OFFLINE method
+ * Cash on delivery as a `PaymentGateway` (ADR-0044). It is an OFFLINE method
  * (`PAYMENT_METHOD_SETTLEMENT.cod === "offline"` in the domain): no online
  * payment exists, so every verb answers what "nothing to call" means.
  *

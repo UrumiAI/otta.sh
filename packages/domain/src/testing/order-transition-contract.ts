@@ -466,7 +466,7 @@ export function orderTransitionContract(
 		for (const method of ["stripe", null] as const) {
 			test(`the admin cannot mark a ${String(method)} order paid — only an offline method settles by hand`, async () => {
 				// Fails CLOSED: only a payment method DECLARED offline may be marked paid by
-				// hand (cash on delivery, ADR-0042). A gateway order is settled by its gateway; an
+				// hand (cash on delivery, ADR-0044). A gateway order is settled by its gateway; an
 				// order with no method on file has nothing that could have been paid.
 				const h = await makeHarness();
 				const id = await seed(h, { paymentMethod: method });

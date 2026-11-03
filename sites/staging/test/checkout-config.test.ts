@@ -107,7 +107,7 @@ describe("8b — the guards around the degraded state", () => {
 		// cannot happen.
 		const page = readFileSync(path.resolve(HERE, "../src/pages/checkout/index.astro"), "utf8");
 		const endpoint = readFileSync(path.resolve(HERE, "../src/pages/checkout/place.ts"), "utf8");
-		// ADR-0042: per METHOD — card only when Stripe is ready, cash on delivery
+		// ADR-0044: per METHOD — card only when Stripe is ready, cash on delivery
 		// only when switched on; the endpoint refuses a method not on offer.
 		expect(page).toContain("readCheckoutPaymentConfig");
 		expect(page).toContain("paymentConfig.methods.length > 0");
@@ -178,7 +178,7 @@ describe("8c — isPlausibleEmail (the buyerRef guard nothing upstream provides)
 	});
 });
 
-describe("8c — readCheckoutPaymentConfig (ADR-0042)", () => {
+describe("8c — readCheckoutPaymentConfig (ADR-0044)", () => {
 	const card = { ok: true, stripePublishableKey: "pk_test_x", cardPaymentReady: true };
 	const noCard = { ok: true, stripePublishableKey: null, cardPaymentReady: false };
 

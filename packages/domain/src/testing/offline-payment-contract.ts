@@ -27,7 +27,7 @@ export interface OfflinePaymentContractOptions {
  * A pending order placed with `method` over one physical line of {@link QTY}
  * units held for it, built through the ports alone so every adapter family seeds
  * it byte-identically. An offline order carries the offline hold deadline, as
- * `createOrderFromCart` places it (ADR-0042).
+ * `createOrderFromCart` places it (ADR-0044).
  */
 async function seedOrder(
 	h: PaymentDeclineHarness,
@@ -101,7 +101,7 @@ function markPaid(h: PaymentDeclineHarness, id: OrderId, key = `mark-paid:${id}`
 }
 
 /**
- * The OFFLINE payment lifecycle (ADR-0042, cash on delivery) against every
+ * The OFFLINE payment lifecycle (ADR-0044, cash on delivery) against every
  * adapter family: an offline order never expires and keeps its stock until a
  * person marks it paid (payment recorded, stock committed, downloads granted,
  * exactly once) or cancels it (stock released). A gateway order is still refused

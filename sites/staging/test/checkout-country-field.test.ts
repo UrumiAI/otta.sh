@@ -12,7 +12,7 @@ import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
 vi.mock("../src/lib/stripe-config.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../src/lib/stripe-config.js")>()),
 	readStripePublishableKey: async () => ({ state: "configured", key: "pk_test_fake" }),
-	// ADR-0042: card is the one method this store offers.
+	// ADR-0044: card is the one method this store offers.
 	readCheckoutPaymentConfig: async () => ({
 		state: "ok",
 		methods: ["stripe"],

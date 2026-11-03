@@ -67,7 +67,7 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 		// Lazy too: only "Start a new cart" that actually cancelled an order uses it
 		// (QA2 X4). Built with the cancel's own short, fixed bound — not checkout's.
 		resolveWithdrawGateways: () =>
-			// ADR-0042: withdrawing intents only — a COD order has none to withdraw.
+			// ADR-0044: withdrawing intents only — a COD order has none to withdraw.
 			resolvePaymentGateways(ctx, {
 				requestTimeoutMs: ABANDON_CANCEL_CALL_MS,
 				cashOnDelivery: "never",

@@ -56,7 +56,7 @@ export default defineConfig([
 			// Its own subpath: matched as an exact id, so it is listed too.
 			"@urumi.ai/otta-domain/subdivision-names",
 			"@urumi.ai/otta-payments-stripe",
-			// ADR-0042: the cash-on-delivery gateway, armed by the same resolver.
+			// ADR-0044: the cash-on-delivery gateway, armed by the same resolver.
 			"@urumi.ai/otta-payments-cod",
 			"@urumi.ai/otta-store-emdash",
 		],

@@ -37,7 +37,7 @@ export function isOrderPayable(
 	now: Date,
 ): boolean {
 	if (order.state !== "pending") return false;
-	// ADR-0042: a cash-on-delivery order is paid at the door, never on this page.
+	// ADR-0044: a cash-on-delivery order is paid at the door, never on this page.
 	if (order.paymentMethod === "cod") return false;
 	const deadline = Date.parse(order.holdExpiresAt);
 	return Number.isFinite(deadline) && deadline > now.getTime();

@@ -34,7 +34,7 @@ export type FulfillmentKind = "physical" | "digital";
 
 /**
  * The payment methods (§5). `stripe` is settled by its gateway's webhook; `cod`
- * (cash on delivery, ADR-0042) is OFFLINE: no online payment exists, and a
+ * (cash on delivery, ADR-0044) is OFFLINE: no online payment exists, and a
  * person marks the order paid once the cash is in hand. How each one settles is
  * declared once, in `orders/payment-methods.ts` (`PAYMENT_METHOD_SETTLEMENT`).
  */
@@ -57,7 +57,7 @@ export type PaymentMethod = "stripe" | "cod";
  *   (ADR-0026). One per refund.
  *
  * - `order-placed-offline` — an order placed with an OFFLINE method (cash on
- *   delivery, ADR-0042): there is no payment yet, so no `paid` email will
+ *   delivery, ADR-0044): there is no payment yet, so no `paid` email will
  *   announce it for days. This one says "we have your order; pay on delivery",
  *   with the amount due. Enqueued once, by the checkout that placed it.
  *

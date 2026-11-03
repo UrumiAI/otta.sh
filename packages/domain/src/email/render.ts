@@ -620,7 +620,7 @@ const ORDER_COPY: Record<
 		subject: "Refund issued",
 		body: "We've issued a refund for your order.",
 	},
-	// ADR-0042: a cash-on-delivery order is placed, not paid. The total below is
+	// ADR-0044: a cash-on-delivery order is placed, not paid. The total below is
 	// the amount due; "confirmed" and "payment received" wait for Mark paid.
 	"order-placed-offline": {
 		subject: "Order received",

@@ -965,7 +965,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 
 		const labels = groupLabels(blocks);
-		// INC-D3a deleted "Service connection" outright; ADR-0042 adds "Cash on
+		// INC-D3a deleted "Service connection" outright; ADR-0044 adds "Cash on
 		// delivery" after the card group.
 		expect([...labels.keys()]).toEqual([
 			"settings:store",
@@ -996,7 +996,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(formFor(sectionBlocks(blocks, "settings:cod"), "save-cash-on-delivery")).toBeDefined();
 	});
 
-	// ADR-0042: the cash-on-delivery toggle saves only a real boolean, keeps its
+	// ADR-0044: the cash-on-delivery toggle saves only a real boolean, keeps its
 	// instructions bounded, and the heading says whether it is on.
 	test("cash on delivery: saved on with instructions, refused without a boolean or over the bound", async () => {
 		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });

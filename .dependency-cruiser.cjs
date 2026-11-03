@@ -88,7 +88,7 @@ module.exports = {
 				"rule, which the carve-out does not touch. " +
 				"packages/plugin/test/depcruise-boundary.test.ts pins both halves: that " +
 				"package admitted, a second payments-* package still forbidden.\n\n" +
-				"FIFTH NARROWING (ADR-0042): the lookahead admits payments-cod beside " +
+				"FIFTH NARROWING (ADR-0044): the lookahead admits payments-cod beside " +
 				"payments-stripe — `(?!payments-(stripe|cod)(/|$))`. Cash on delivery " +
 				"is an offline gateway with no IO at all: it imports only the domain's " +
 				"types, and its own sandbox-clean guard " +

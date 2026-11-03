@@ -123,7 +123,7 @@ export interface CheckoutPlaceParsedInput {
 	 *  back rather than rejecting: a bad locale must not fail an order). */
 	locale: string;
 	selection: CheckoutSelection;
-	/** ADR-0042: the method the buyer chose; `stripe` when the call named none. */
+	/** ADR-0044: the method the buyer chose; `stripe` when the call named none. */
 	paymentMethod: "stripe" | "cod";
 	/** The signed-in shopper's session, when one came along — a bearer the client
 	 *  resolves to its customer, never trusted here. Absent ⇔ a guest checkout. */
@@ -268,7 +268,7 @@ export function parseCheckoutPlaceInput(input: {
 	const selection = parseCheckoutSelection(input);
 	if (selection === null) return null;
 
-	// ADR-0042: the method the buyer chose. Absent is card — every caller before
+	// ADR-0044: the method the buyer chose. Absent is card — every caller before
 	// cash on delivery sent none — and anything but a known method is malformed.
 	const paymentMethod = input.paymentMethod ?? "stripe";
 	if (paymentMethod !== "stripe" && paymentMethod !== "cod") return null;

@@ -1,7 +1,7 @@
 {
 	"name": "@urumi.ai/otta-payments-cod",
 	"version": "0.2.0",
-	"description": "Cash-on-delivery PaymentGateway adapter for Otta: an OFFLINE method (ADR-0042). No online payment, no webhook and no secrets; the order is placed at checkout and a person marks it paid once the cash is collected. Turned on with the \"Cash on delivery\" toggle on the Otta Settings page.",
+	"description": "Cash-on-delivery PaymentGateway adapter for Otta: an OFFLINE method (ADR-0044). No online payment, no webhook and no secrets; the order is placed at checkout and a person marks it paid once the cash is collected. Turned on with the \"Cash on delivery\" toggle on the Otta Settings page.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"

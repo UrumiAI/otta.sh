@@ -1,4 +1,4 @@
-# 0042. Cash on delivery is an offline payment method
+# 0044. Cash on delivery is an offline payment method
 
 - Status: accepted
 - Date: 2026-11-03

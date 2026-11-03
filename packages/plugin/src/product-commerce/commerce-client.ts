@@ -746,7 +746,7 @@ export interface ShippingAddressWire {
 
 export interface CheckoutRequestWire {
 	cartId: string;
-	/** The method the buyer chose (ADR-0042): `stripe` (card) or `cod` (cash on
+	/** The method the buyer chose (ADR-0044): `stripe` (card) or `cod` (cash on
 	 *  delivery). The checkout route refuses one the store has not enabled. */
 	paymentMethod: "stripe" | "cod";
 	/** Email/session claim token (ADR-0004). Stored VERBATIM by the service —
@@ -776,7 +776,7 @@ export interface BillingLocationWire {
 export type ClientActionWire =
 	| { kind: "stripe_client_secret"; clientSecret: string }
 	| { kind: "none" }
-	/** ADR-0042: placed with no online payment step (cash on delivery). */
+	/** ADR-0044: placed with no online payment step (cash on delivery). */
 	| { kind: "offline" };
 
 export interface PaymentIntentWire {

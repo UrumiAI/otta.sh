@@ -25,7 +25,7 @@ export type PaymentConfigRouteResult =
 			ok: true;
 			stripePublishableKey: string | null;
 			cardPaymentReady: boolean;
-			/** ADR-0042: whether checkout offers cash on delivery, and the merchant's
+			/** ADR-0044: whether checkout offers cash on delivery, and the merchant's
 			 *  optional instructions for buyers (null when none). */
 			cashOnDelivery: { enabled: boolean; instructions: string | null };
 	  }

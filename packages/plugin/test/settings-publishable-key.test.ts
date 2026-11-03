@@ -511,7 +511,7 @@ describe("storefront/payment-config", () => {
 		);
 		expect(Object.keys(answer as object).toSorted()).toEqual([
 			"cardPaymentReady",
-			// ADR-0042: cash on delivery's toggle and buyer instructions — public by design.
+			// ADR-0044: cash on delivery's toggle and buyer instructions — public by design.
 			"cashOnDelivery",
 			"ok",
 			"stripePublishableKey",

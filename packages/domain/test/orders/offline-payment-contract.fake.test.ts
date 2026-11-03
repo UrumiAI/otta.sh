@@ -11,7 +11,7 @@ import {
 	offlinePaymentContract,
 } from "@urumi.ai/otta-domain/testing";
 
-// The offline (cash-on-delivery) lifecycle, ADR-0042, against the in-memory fakes.
+// The offline (cash-on-delivery) lifecycle, ADR-0044, against the in-memory fakes.
 offlinePaymentContract(
 	() => {
 		const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));

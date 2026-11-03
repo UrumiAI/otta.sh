@@ -41,7 +41,7 @@ export interface OrderStampInput {
 	/** …and was that only `processing` — not yet settled? Then the refund is
 	 *  promised only IF the payment goes through. Absent ⇒ `false`. */
 	returnedProcessing?: boolean;
-	/** The order's payment method (ADR-0042). A pending CASH-ON-DELIVERY order is
+	/** The order's payment method (ADR-0044). A pending CASH-ON-DELIVERY order is
 	 *  placed, not awaiting an online payment. Absent ⇒ a card order. */
 	paymentMethod?: string | null;
 }
@@ -125,7 +125,7 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 	if (state === null) return null;
 
 	if (state === "pending") {
-		// ADR-0042: cash on delivery. The order is placed and its items set aside;
+		// ADR-0044: cash on delivery. The order is placed and its items set aside;
 		// nothing is due online, and it never times out.
 		if (input.paymentMethod === "cod") {
 			return {

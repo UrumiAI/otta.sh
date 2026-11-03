@@ -34,7 +34,7 @@ export type SettleResult =
 type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
 
 /** The payment the paid side-effects record: a verified gateway settlement, or an
- *  offline payment a person attested (ADR-0042, `transitionOrderAsAdmin`). */
+ *  offline payment a person attested (ADR-0044, `transitionOrderAsAdmin`). */
 export type PaidPayment = Pick<VerifiedSuccess, "gateway" | "providerRef" | "amount" | "currency">;
 
 /**
@@ -433,7 +433,7 @@ async function settlePaidOrder(
 
 /**
  * The paid-order side-effects — shared by `settleOrder` and an offline Mark paid
- * (ADR-0042) — each individually idempotent so the whole block
+ * (ADR-0044) — each individually idempotent so the whole block
  * can be re-driven by any retry (crash-window healing):
  *  - `payments` record — keyed on `provider_ref` (INSERT … ON CONFLICT DO NOTHING);
  *  - physical lines — state-guarded `commit` (already-`committed` is a benign

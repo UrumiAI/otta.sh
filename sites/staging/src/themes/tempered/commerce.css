@@ -517,7 +517,7 @@
 	font-size: 0.875rem;
 }
 
-/* ADR-0042: the payment method choice — one row per method, logical spacing. */
+/* ADR-0044: the payment method choice — one row per method, logical spacing. */
 [data-theme-id] .checkout-payment {
 	display: grid;
 	gap: 0.5rem;

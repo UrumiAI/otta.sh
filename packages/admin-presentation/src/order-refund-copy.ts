@@ -93,7 +93,7 @@ export function refundConfirmText(
  *  so this module stays free of wire types. */
 export function refundCapabilityText(refundable: boolean, paymentMethod: string | null): string {
 	if (paymentMethod === "cod") {
-		// ADR-0042: cash went to the merchant at the door; it comes back by hand.
+		// ADR-0044: cash went to the merchant at the door; it comes back by hand.
 		return "Paid in cash on delivery — refunds here are RECORD-ONLY. Return the cash to the buyer yourself, then record it here.";
 	}
 	if (refundable) {
@@ -103,7 +103,7 @@ export function refundCapabilityText(refundable: boolean, paymentMethod: string 
 }
 
 /**
- * A payment method as an operator reads it (ADR-0042): the stored code is a
+ * A payment method as an operator reads it (ADR-0044): the stored code is a
  * token (`cod`), not a label. An unknown or legacy code is shown as stored, and
  * no method as "—".
  */

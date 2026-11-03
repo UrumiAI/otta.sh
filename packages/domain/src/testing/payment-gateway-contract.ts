@@ -115,7 +115,7 @@ export interface OfflinePaymentGatewayContractOptions {
 }
 
 /**
- * The spec an OFFLINE gateway (ADR-0042 — cash on delivery) meets in place of the
+ * The spec an OFFLINE gateway (ADR-0044 — cash on delivery) meets in place of the
  * settlement spec above: it has no provider, no webhook and no money to move, so
  * every verb answers "nothing online", and NO confirmation of any shape can settle
  * one of its orders. The harness's `confirm` mints the most plausible raw

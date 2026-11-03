@@ -1,5 +1,5 @@
 /**
- * ADR-0042: what the buyer is told about a cash-on-delivery order. It is placed,
+ * ADR-0044: what the buyer is told about a cash-on-delivery order. It is placed,
  * not awaiting an online payment: no pay page, no "time ran out", no hold timer,
  * and the step tracker is past Payment. A card order is unchanged.
  */

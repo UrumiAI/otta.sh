@@ -1,9 +1,9 @@
 /**
- * Cash on delivery's two settings (ADR-0042), plain plugin kv beside the Stripe
+ * Cash on delivery's two settings (ADR-0044), plain plugin kv beside the Stripe
  * keys, saved from the Payments group of the Store settings page.
  *
  *  - `settings:codEnabled` — the toggle. ONLY a stored `true` turns it on: a
- *    store that never saved it (every store before ADR-0042), a kv miss or any
+ *    store that never saved it (every store before ADR-0044), a kv miss or any
  *    other value reads as OFF, so existing stores see no change.
  *  - `settings:codInstructions` — optional text shown to the buyer under the
  *    method at checkout and on the order page ("Please have the exact amount

@@ -1,5 +1,5 @@
 /**
- * Cash on delivery, end to end, on a store with NO card payment (ADR-0042).
+ * Cash on delivery, end to end, on a store with NO card payment (ADR-0044).
  *
  * The buyer adds a product to the cart, checks out with cash on delivery, the
  * only method offered, and lands on the order's confirmation page. There is no

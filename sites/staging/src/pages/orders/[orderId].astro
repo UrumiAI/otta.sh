@@ -185,7 +185,7 @@ const holdLapsed =
 	order !== null &&
 	isPending &&
 	!returnedFromStripe &&
-	/* ADR-0042: a cash-on-delivery order has no hold to lapse. */
+	/* ADR-0044: a cash-on-delivery order has no hold to lapse. */
 	order.paymentMethod !== "cod" &&
 	!isOrderPayable(order, new Date());
 
@@ -298,7 +298,7 @@ const returnOver = returnPollIsOver({ returnedFromStripe, pending: isPending, po
 if (returnOver && order !== null) forgetStripeReturn(Astro.cookies, order.id);
 const canResume =
 	state === "pending" &&
-	/* ADR-0042: a cash-on-delivery order has nothing to pay online. */
+	/* ADR-0044: a cash-on-delivery order has nothing to pay online. */
 	order?.paymentMethod !== "cod" &&
 	!holdLapsed &&
 	(!returnedFromStripe || (returnOver && order !== null && isOrderPayable(order, new Date())));
@@ -307,7 +307,7 @@ const canResume =
    offers it (QA2 M3). */
 const lateRefundUnrecorded =
 	deadEnd && !holdLapsed && returnedPaid && (order?.latePayment ?? "none") !== "refunded";
-/* ADR-0042: a placed cash-on-delivery order changes only when the merchant acts
+/* ADR-0044: a placed cash-on-delivery order changes only when the merchant acts
    — days later, on delivery — so there is nothing to check again for. */
 const canCheckAgain =
 	((isPending && order?.paymentMethod !== "cod") || lateRefundUnrecorded) && !shouldPoll;

@@ -58,7 +58,7 @@ vi.mock("../src/lib/stripe-config.js", async (importOriginal) => {
 	return {
 		...actual,
 		readStripePublishableKey,
-		// ADR-0042: the methods checkout offers — card only, by the key above.
+		// ADR-0044: the methods checkout offers — card only, by the key above.
 		readCheckoutPaymentConfig: async () => {
 			const key = await readStripePublishableKey();
 			return key.state === "unavailable"

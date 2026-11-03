@@ -1,7 +1,7 @@
 # @urumi.ai/otta-payments-cod
 
 Cash on delivery for [Otta](https://github.com/UrumiAI/otta.sh): a `PaymentGateway` adapter for an
-**offline** payment method ([ADR-0042](../../adr/0042-cash-on-delivery-is-an-offline-payment-method.md)).
+**offline** payment method ([ADR-0044](../../adr/0044-cash-on-delivery-is-an-offline-payment-method.md)).
 
 The buyer places the order at checkout and pays in cash when it arrives. There is no online
 payment, no webhook and no secret to configure.

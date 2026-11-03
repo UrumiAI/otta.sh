@@ -130,7 +130,7 @@ export interface CheckoutPlaceRouteInput {
 	 *  was priced for (`destination` there) when the summary said
 	 *  `taxByBuyerLocation`. Code-shaped, or INVALID_INPUT. */
 	billingLocation?: unknown;
-	/** ADR-0042: `"stripe"` (card, the default when absent) or `"cod"` (cash on
+	/** ADR-0044: `"stripe"` (card, the default when absent) or `"cod"` (cash on
 	 *  delivery). A method the store has not enabled is `PAYMENT_METHOD_UNAVAILABLE`. */
 	paymentMethod?: unknown;
 	/** The same selection the summary priced — see {@link CheckoutSummaryRouteInput}. */
@@ -352,7 +352,7 @@ export type CheckoutPlaceRouteResult =
 	 */
 	| { ok: false; reason: "STRIPE_NOT_CONFIGURED" }
 	/**
-	 * ADR-0042: the buyer chose cash on delivery and the store does not offer it
+	 * ADR-0044: the buyer chose cash on delivery and the store does not offer it
 	 * (switched off, or never on — a stale page). Nothing was created; the buyer
 	 * chooses another method.
 	 */
@@ -792,7 +792,7 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				return { ok: false as const, reason: "CHECKOUT_STALE" as const };
 			}
 
-			// ADR-0042, fail closed: cash on delivery only while the merchant has it
+			// ADR-0044, fail closed: cash on delivery only while the merchant has it
 			// on. Asked before anything is created — the gateway map would refuse it
 			// too, but as a throw this route could only call "card isn't set up".
 			if (input.paymentMethod === "cod" && !(await readCodEnabled(ctx))) {

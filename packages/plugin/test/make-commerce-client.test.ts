@@ -98,7 +98,7 @@ describe("makeCommerceClient", () => {
 		// it is configured means reading BOTH its kv keys on every construction —
 		// that is the two reads below, in the order `stripeGatewayFromCtx` issues
 		// them. The login email sender is built lazily, so the retired email key is
-		// not read here. Cash on delivery's toggle is the third read (ADR-0042):
+		// not read here. Cash on delivery's toggle is the third read (ADR-0044):
 		// checkout arms it only while the merchant has it on.
 		expect(kvReads).toEqual([
 			STRIPE_SECRET_KEY_KEY,

@@ -145,7 +145,7 @@ export { STORE_DISPLAY_NAME_KEY };
 
 /** The "Background work per minute" form's submit — a kv save. */
 const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
-/** ADR-0042: the cash-on-delivery toggle and its buyer instructions, one form. */
+/** ADR-0044: the cash-on-delivery toggle and its buyer instructions, one form. */
 export const SAVE_CASH_ON_DELIVERY_ACTION = "save-cash-on-delivery";
 
 /** The "Store currency" form's submit — a settings-store save. */
@@ -414,7 +414,7 @@ interface SettingsPageState {
 	/** #497: whether a payment key saved now could be stored encrypted. Not kv,
 	 *  but read once with it. */
 	encryptionKey: EncryptionKeyStatus;
-	/** ADR-0042: cash on delivery's toggle and instructions, or `null` when the
+	/** ADR-0044: cash on delivery's toggle and instructions, or `null` when the
 	 *  read failed (the form is then left out, so a save cannot write a blank). */
 	cashOnDelivery: CashOnDeliveryState | null;
 }
@@ -491,7 +491,7 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		emailSendingStatus(ctx),
 		// #531: never throws; a failed read is its own state, never "never".
 		readStripeWebhookLastVerified(ctx),
-		// ADR-0042: fail-soft — an unread toggle leaves its form out, never "off".
+		// ADR-0044: fail-soft — an unread toggle leaves its form out, never "off".
 		Promise.all([readCodEnabled(ctx), readCodInstructions(ctx)]).then(
 			([enabled, instructions]): CashOnDeliveryState => ({
 				enabled,
@@ -704,7 +704,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			} satisfies BlockResponse;
 		}
 
-		// -- kv save path: Cash on delivery (ADR-0042) ------------------------------
+		// -- kv save path: Cash on delivery (ADR-0044) ------------------------------
 		// The toggle is saved only as a real boolean (an absent or malformed value
 		// refuses the save, never reads as "off"); the instructions are trimmed and
 		// bounded, and a blank clears them.
@@ -1497,17 +1497,17 @@ function buildSettingsBlocks(args: {
 	return blocks;
 }
 
-/** ADR-0042: what the cash-on-delivery group renders from. */
+/** ADR-0044: what the cash-on-delivery group renders from. */
 interface CashOnDeliveryState {
 	enabled: boolean;
 	instructions: string;
 }
 
 /**
- * "Cash on delivery" (ADR-0042): one toggle and the optional buyer instructions,
+ * "Cash on delivery" (ADR-0044): one toggle and the optional buyer instructions,
  * saved as one form. Independent of the card group above — a store may take
  * either or both — and OFF until the merchant saves it on, so a store upgraded
- * past ADR-0042 changes nothing until then.
+ * past ADR-0044 changes nothing until then.
  */
 function cashOnDeliveryGroup(state: CashOnDeliveryState | null): Block[] {
 	const status = state === null ? "couldn't be loaded" : state.enabled ? "on" : "off";
