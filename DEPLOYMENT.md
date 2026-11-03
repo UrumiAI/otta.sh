@@ -840,6 +840,40 @@ order of appearance in a deployment's life:
 > A sandboxed deployment may also hold it in `_plugin_storage`:
 > `... --command "DELETE FROM _plugin_storage WHERE plugin_id = 'otta' AND collection = '__kv' AND id = 'settings:storeTheme'"`.
 
+### Cash on delivery (no Stripe needed)
+
+Cash on delivery is a second payment method beside Stripe, and each is enabled on its own
+([ADR-0042](./adr/0042-cash-on-delivery-is-an-offline-payment-method.md)). It has **no secrets
+and no webhook**, and it needs no egress. A store with only cash on delivery takes orders with
+none of the Stripe values above.
+
+1. In the admin, open **Otta → Store settings → General** and find the **Cash on delivery**
+   group under Payments.
+2. Switch on **Offer cash on delivery at checkout**. Optionally, add instructions for buyers, up to
+   500 characters, for example "Please have the exact amount ready." The checkout shows them
+   under the method.
+3. Click **Save cash on delivery**. It is stored as plain plugin kv: `settings:codEnabled`, which
+   only a saved `true` turns on, and `settings:codInstructions`.
+
+What changes:
+
+- **Checkout.** With Stripe set up too, the buyer chooses between Card and Cash on delivery.
+  With only cash on delivery, there is no choice to make. A cash-on-delivery order skips the pay
+  page and lands on its confirmation page. The buyer is emailed "Order received, pay on
+  delivery", so an email provider should be configured (ADR-0031).
+- **Stock.** Placing the order sets its items aside, and they stay set aside until the order is
+  marked paid or cancelled. The checkout hold timer does **not** apply, and such an order never
+  expires. Cancel orders that will not be delivered: **Cancel order** returns their stock.
+- **Getting paid.** When the cash is in hand, open the order in **Orders** and click
+  **Mark paid**. This records the payment for the order total, commits the stock, grants any
+  downloads and sends the "payment received" confirmation. Then move the order on as usual (for
+  example, Mark completed). The state machine fulfils only from paid, so record shipping after
+  Mark paid.
+- **Refunds.** Return the cash yourself, then record it in **Money → Refunds**. That records a
+  manual refund; Otta moves no money for cash on delivery.
+- **Turning it off** stops checkout offering it. Orders already placed with it are unchanged and
+  can still be marked paid, cancelled or refunded.
+
 ## 4. Egress and `allowedHosts`
 
 The plugin's only egress is `ctx.http.fetch`, gated by the descriptor's `allowedHosts`
