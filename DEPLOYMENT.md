@@ -558,12 +558,18 @@ Store settings afterwards.
 touches EmDash, Astro or React: `@urumi.ai/otta-store` declares them as **peer dependencies**
 (EmDash and `@emdash-cms/cloudflare` exactly, the others to the tested minor), so a site has one
 copy of each, and npm refuses (`ERESOLVE`) to install a combination that would need a second.
-An Otta release that moves those pins changes the template contract (below). If the build fails, nothing is
-deployed and the store keeps running the last version that built. A release that needs your
-repository's own files to change raises the **template contract**: the build then fails with
-`@urumi.ai/otta-store <version> needs template contract <n> …` and names the section of
-[`UPGRADING.md`](./UPGRADING.md) that says what to change. Make the change, set
-`otta({ template: <n> })`, and push.
+If the build fails, nothing is deployed and the store keeps running the last version that
+built. Two kinds of release need the merchant:
+
+- **One that moves those pins** never arrives as a working pull request: Dependabot holds the
+  update back, or its build stops at `npm install` with `ERESOLVE`, before `otta()` runs. It is
+  announced in the release notes; the merchant follows [`UPGRADING.md`](./UPGRADING.md) and
+  bumps the pins by hand.
+- **One that changes the template's other files** (a binding, a file) raises the **template
+  contract**: its build fails with `@urumi.ai/otta-store <version> needs template contract
+  <n> …`, naming the section of [`UPGRADING.md`](./UPGRADING.md) that says what to change. Make
+  the change, set `otta({ template: <n> })`, and push. The contract message covers these
+  template-file changes only.
 
 **Build settings.** `OTTA_EMAIL_FROM`, `OTTA_EMAIL_FROM_NAME` and `OTTA_EXTRA_ALLOWED_HOSTS` keep
 their meaning (§3, §4). In the template, set them as options in `astro.config.mjs`

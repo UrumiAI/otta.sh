@@ -4,11 +4,19 @@ A store made from the one-click template ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2
 as a dependency, `@urumi.ai/otta-store`. Most releases need nothing from you: merge the
 Dependabot pull request and Workers Builds deploys it.
 
-A release that needs **your repository's own files** to change (a new binding in
-`wrangler.jsonc`, a new file, a new pinned dependency, or a new version of EmDash, Astro or
-React, which `@urumi.ai/otta-store` declares as exact or minor-pinned peer dependencies and
-Dependabot therefore leaves alone) raises the **template contract**, the
-number your `astro.config.mjs` passes as `otta({ template: N })`
+Two kinds of release need you.
+
+**A release that moves EmDash, Astro or React.** `@urumi.ai/otta-store` declares them as peer
+dependencies (EmDash and `@emdash-cms/cloudflare` exactly, the others to the minor), and the
+template's Dependabot never updates them, because a mismatch would install a second EmDash. So
+such a release does **not** arrive as a working Dependabot pull request: Dependabot holds back
+the Otta update, or the build stops at `npm install` with an `ERESOLVE` error, before Otta's
+own checks run. It is announced in the release notes. Bump the versions its section below
+lists in `package.json` by hand, together with the `@urumi.ai/*` packages, and push.
+
+**A release that changes your repository's other files** (a new binding in `wrangler.jsonc`,
+a new file) raises the **template contract**, the number your `astro.config.mjs` passes as
+`otta({ template: N })`
 ([ADR-0045](./adr/0045-the-store-ships-as-an-astro-integration-for-one-click-deploy.md)).
 Until you make the change, that release's build fails with
 
@@ -19,7 +27,8 @@ otta({ template: <yours> }) …
 
 and nothing is deployed: the store keeps running the last version that built. Follow the
 section for each contract number between yours and the new one, in order, then set
-`template` to the new number and push.
+`template` to the new number and push. This message covers template-file changes only; a
+version move announces itself as above.
 
 ## Your own middleware runs before Otta's
 

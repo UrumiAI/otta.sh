@@ -65,8 +65,9 @@ Options considered:
      (shell, then `.env`), with the same validation as before.
 3. **The template contract number.** `otta({ template: N })` is required. The package exports the
    number it expects, `OTTA_TEMPLATE_CONTRACT` (1 today). A release that needs the merchant's own
-   files to change (a new binding in `wrangler.jsonc`, a new required file, a new pinned
-   dependency) raises it. A build whose `template` differs fails before any bundling with:
+   files to change (a new binding in `wrangler.jsonc`, a new required file, a newly required
+   dependency) raises it. Moving an existing EmDash, Astro or React pin does not: such a release
+   fails at `npm install` first, and is announced instead (Decision 5). A build whose `template` differs fails before any bundling with:
 
    > `@urumi.ai/otta-store <version> needs template contract <expected>, but astro.config.mjs passes`
    > `otta({ template: <given> }). Your store's own files must change before this version can`
@@ -93,9 +94,18 @@ Options considered:
    two Otta packages at the release). As dependencies, a site on another EmDash would get a
    second copy nested under the package, and the Worker would carry two EmDash runtimes. As
    peers, npm refuses the install (`ERESOLVE`), which was checked with the packed tarballs and
-   `emdash@1.4.0`. So Dependabot is limited to `@urumi.ai/*` (one group) and Wrangler. A release
-   that moves the other pins raises the template contract, and its upgrade notes list the new
-   versions.
+   `emdash@1.4.0`. So Dependabot is limited to `@urumi.ai/*` (one group) and Wrangler.
+
+   **A release that moves one of those peers never reaches `otta()`.** Dependabot holds back
+   the Otta update (its peer no longer matches the site's pin), or the build stops at
+   `npm install` with `ERESOLVE`. The template contract's message is never shown. So such a
+   release is announced in its release notes, and the merchant follows UPGRADING.md and bumps
+   the pins by hand. The template contract covers changes to the template's other files only.
+   *Not taken, possible follow-up:* floor peer ranges (`>=1.3.1`) plus a runtime check in
+   `otta()` that the resolved EmDash and Astro are versions this release supports. Dependabot
+   could then propose the bump and `otta()` would explain a mismatch, at the cost of letting
+   npm install untested combinations and moving the one-copy guarantee from npm to a build
+   check.
 6. **The template's wrangler config declares what the build actually deploys.** That includes
    `SESSION` (EmDash keeps signed-in users in the Astro session) and `IMAGES` (the
    `@astrojs/cloudflare` 14 default image service binds it). The adapter would add both to its
