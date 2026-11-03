@@ -75,18 +75,18 @@ describe("the write-limit precondition (decision C1)", () => {
 	});
 
 	test("the middleware refuses ANY incoming request that carries the attestation header", async () => {
-		for (const path of [
+		for (const route of [
 			"/_emdash/api/plugins/otta/storefront/checkout/place",
 			"/checkout/place",
 			"/",
 		]) {
 			const refused = refuseCodAttestHeader(
-				new Request(new URL(path, SITE), {
+				new Request(new URL(route, SITE), {
 					method: "POST",
 					headers: { [COD_ATTEST_HEADER]: COD_ATTEST_VALUE },
 				}),
 			);
-			expect(refused?.status, path).toBe(400);
+			expect(refused?.status, route).toBe(400);
 		}
 		expect(refuseCodAttestHeader(new Request(new URL("/", SITE)))).toBeNull();
 	});
