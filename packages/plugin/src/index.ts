@@ -399,6 +399,8 @@ export {
 	STOREFRONT_PAYMENT_CONFIG_ROUTE,
 	type PaymentConfigRouteResult,
 } from "./storefront/payment-config-route.js";
+// ADR-0044 §7: the attestation only the site's in-process dispatch may carry.
+export { COD_ATTEST_HEADER, COD_ATTEST_VALUE } from "./payments/cod-request.js";
 export {
 	readStripePublishableKey,
 	STRIPE_PUBLISHABLE_KEY_KEY,

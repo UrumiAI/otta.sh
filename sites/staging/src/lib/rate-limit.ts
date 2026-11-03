@@ -68,6 +68,8 @@ import {
 	STOREFRONT_PRODUCT_ROUTE,
 	STOREFRONT_SHOPPER_STATE_ROUTE,
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
+	COD_ATTEST_HEADER,
+	COD_ATTEST_VALUE,
 } from "@urumi.ai/otta-plugin";
 import { orderPathFor, resumeGetReachesPlugin, resumeOrderParam } from "./checkout-resume.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
@@ -331,17 +333,40 @@ export function hasWriteLimit(env: Record<string, unknown> | undefined): boolean
 }
 
 /**
- * The client key a cash-on-delivery placement carries (ADR-0044 §7): the
- * client's network, as the write limit keys it (`clientNetwork`) — sent only
- * once that limit has run, i.e. only with the binding. `null` when there is no
- * binding or no client address; the caller then refuses the method.
+ * ADR-0044 §7 (round 2, M1): an incoming request carrying the COD attestation
+ * header is refused (400) — whatever its path, method or value. Only the site's
+ * own in-process dispatch from `/checkout/place` sets it ({@link codPlaceHeaders}),
+ * and that dispatch never passes through this middleware; so the plugin's place
+ * route can trust the header as proof that the per-IP write limit ran. `null` ⇒
+ * the request carries none and goes on.
  */
-export function offlineClientKey(
+export function refuseCodAttestHeader(request: Request): Response | null {
+	if (!request.headers.has(COD_ATTEST_HEADER)) return null;
+	return new Response("Bad request", {
+		status: 400,
+		headers: { "Cache-Control": PRIVATE_NO_STORE, "Content-Type": "text/plain; charset=utf-8" },
+	});
+}
+
+/**
+ * The headers the site's in-process COD place dispatch carries (ADR-0044 §7): the
+ * attestation, and the client's address as Cloudflare gave it, which the plugin
+ * derives the network from — or `null` without the write-limit binding or without
+ * a client address, where the caller refuses the method.
+ */
+export function codPlaceHeaders(
 	env: Record<string, unknown> | undefined,
 	headers: Headers,
-): string | null {
+): Record<string, string> | null {
 	if (!hasWriteLimit(env)) return null;
-	return clientNetwork(clientAddress(headers));
+	const ip = headers.get("cf-connecting-ip");
+	if (ip === null || ip.trim() === "") return null;
+	const ipv6 = headers.get("cf-connecting-ipv6");
+	return {
+		[COD_ATTEST_HEADER]: COD_ATTEST_VALUE,
+		"cf-connecting-ip": ip,
+		...(ipv6 !== null && ipv6.trim() !== "" ? { "cf-connecting-ipv6": ipv6 } : {}),
+	};
 }
 
 const loggedMissing = new Set<RateLimitClass>();

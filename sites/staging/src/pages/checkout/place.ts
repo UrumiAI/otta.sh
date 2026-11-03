@@ -75,7 +75,7 @@ import {
 	DELIVERY_ERROR_ID,
 	placeRefusalNoticeId,
 } from "../../lib/error-notice.js";
-import { offlineClientKey } from "../../lib/rate-limit.js";
+import { codPlaceHeaders } from "../../lib/rate-limit.js";
 import { readCheckoutPaymentConfig } from "../../lib/stripe-config.js";
 import {
 	busyResponse,
@@ -517,17 +517,20 @@ async function place(context: APIContext): Promise<Response> {
 	// binding, or no client address to key: the method is unavailable here.
 	// (Physical carts only, decision D, is the plugin's check:
 	// OFFLINE_NEEDS_PHYSICAL — the review already hides COD for such a cart.)
-	let clientKey: string | undefined;
+	// ADR-0044 §7 (round 2, M1): the proof travels as HEADERS on this in-process
+	// dispatch — the attestation (which the middleware refuses from any outside
+	// request) and the client's address, which the plugin derives the network from.
+	let codHeaders: Record<string, string> = {};
 	if (paymentMethod === "cod") {
-		const key = offlineClientKey(env, context.request.headers);
-		if (key === null) {
+		const headers = codPlaceHeaders(env, context.request.headers);
+		if (headers === null) {
 			return refuse(
 				placeFailurePath(PAYMENT_METHOD_UNAVAILABLE, selection),
 				PAYMENT_METHOD_UNAVAILABLE,
 				{ fields: staleMark },
 			);
 		}
-		clientKey = key;
+		codHeaders = headers;
 	}
 
 	const cartId = currentCartId(context);
@@ -646,7 +649,6 @@ async function place(context: APIContext): Promise<Response> {
 			buyerRef: email,
 			idempotencyKey,
 			paymentMethod,
-			...(clientKey !== undefined ? { clientKey } : {}),
 			...(sessionToken !== undefined ? { sessionToken } : {}),
 			...(couponCode !== undefined ? { couponCode } : {}),
 			...(shippingMethodId !== undefined ? { shippingMethodId } : {}),
@@ -654,6 +656,7 @@ async function place(context: APIContext): Promise<Response> {
 			...(billingLocation !== undefined ? { billingLocation } : {}),
 		},
 		context.url,
+		codHeaders,
 	);
 
 	// Busy. NOT auto-retried (not on otta-api.ts's retry allowlist — this is the

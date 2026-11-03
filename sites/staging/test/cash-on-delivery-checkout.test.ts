@@ -31,7 +31,8 @@ vi.mock("../src/lib/stripe-config.js", async (importOriginal) => ({
 import { CHECKOUT_DRAFT_COOKIE, readCheckoutDraft } from "../src/lib/checkout-draft.js";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 import { countryOptions } from "../src/lib/countries.js";
-import { hasWriteLimit, offlineClientKey } from "../src/lib/rate-limit.js";
+import { COD_ATTEST_HEADER, COD_ATTEST_VALUE } from "@urumi.ai/otta-plugin";
+import { codPlaceHeaders, hasWriteLimit, refuseCodAttestHeader } from "../src/lib/rate-limit.js";
 import { regionChoice } from "../src/lib/regions.js";
 import { checkoutMethodsFor } from "../src/lib/stripe-config.js";
 import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
@@ -56,13 +57,38 @@ describe("the write-limit precondition (decision C1)", () => {
 		expect(hasWriteLimit({ RATE_LIMIT_WRITES: LIMITER })).toBe(true);
 	});
 
-	test("offlineClientKey is the write limit's own network key, only with the binding", () => {
+	test("codPlaceHeaders: the attestation and the client's address, only with the binding (ADR-0044 §7)", () => {
 		const v4 = new Headers({ "cf-connecting-ip": "203.0.113.7" });
-		const v6 = new Headers({ "cf-connecting-ip": "2001:db8:1:2:3:4:5:6" });
-		expect(offlineClientKey({ RATE_LIMIT_WRITES: LIMITER }, v4)).toBe("203.0.113.7");
-		expect(offlineClientKey({ RATE_LIMIT_WRITES: LIMITER }, v6)).toBe("2001:db8:1:2::/64");
-		expect(offlineClientKey({}, v4)).toBeNull();
-		expect(offlineClientKey({ RATE_LIMIT_WRITES: LIMITER }, new Headers())).toBeNull();
+		expect(codPlaceHeaders({ RATE_LIMIT_WRITES: LIMITER }, v4)).toEqual({
+			[COD_ATTEST_HEADER]: COD_ATTEST_VALUE,
+			"cf-connecting-ip": "203.0.113.7",
+		});
+		const pseudo = new Headers({
+			"cf-connecting-ip": "240.0.0.1",
+			"cf-connecting-ipv6": "2001:db8:1:2:3:4:5:6",
+		});
+		expect(codPlaceHeaders({ RATE_LIMIT_WRITES: LIMITER }, pseudo)).toMatchObject({
+			"cf-connecting-ipv6": "2001:db8:1:2:3:4:5:6",
+		});
+		expect(codPlaceHeaders({}, v4)).toBeNull();
+		expect(codPlaceHeaders({ RATE_LIMIT_WRITES: LIMITER }, new Headers())).toBeNull();
+	});
+
+	test("the middleware refuses ANY incoming request that carries the attestation header", async () => {
+		for (const path of [
+			"/_emdash/api/plugins/otta/storefront/checkout/place",
+			"/checkout/place",
+			"/",
+		]) {
+			const refused = refuseCodAttestHeader(
+				new Request(new URL(path, SITE), {
+					method: "POST",
+					headers: { [COD_ATTEST_HEADER]: COD_ATTEST_VALUE },
+				}),
+			);
+			expect(refused?.status, path).toBe(400);
+		}
+		expect(refuseCodAttestHeader(new Request(new URL("/", SITE)))).toBeNull();
 	});
 });
 
@@ -100,6 +126,7 @@ describe("checkoutMethodsFor — which methods THIS checkout offers", () => {
 interface Call {
 	route: string;
 	body: Record<string, unknown>;
+	headers: Record<string, string>;
 }
 
 const COD_PLACED = {
@@ -126,7 +153,11 @@ async function place(
 	const calls: Call[] = [];
 	const handler = async (_id: string, _method: string, routePath: string, request: Request) => {
 		const route = routePath.replace(/^\//, "");
-		calls.push({ route, body: (await request.json()) as Record<string, unknown> });
+		calls.push({
+			route,
+			body: (await request.json()) as Record<string, unknown>,
+			headers: Object.fromEntries(request.headers.entries()),
+		});
 		return route === STOREFRONT_CHECKOUT_PLACE_ROUTE
 			? { success: true, data: opts.placeResult ?? COD_PLACED }
 			: { success: false };
@@ -214,8 +245,13 @@ describe("/checkout/place — cash on delivery", () => {
 		const [call] = placeCalls(calls);
 		expect(call?.body).toMatchObject({
 			paymentMethod: "cod",
-			clientKey: "203.0.113.7",
 			shippingAddress: { ...ADDRESS, phone: "+91 98765 43210" },
+		});
+		// The proof rides the in-process request's HEADERS, never the body.
+		expect(call?.body).not.toHaveProperty("clientKey");
+		expect(call?.headers).toMatchObject({
+			[COD_ATTEST_HEADER]: COD_ATTEST_VALUE,
+			"cf-connecting-ip": "203.0.113.7",
 		});
 		expect(response.headers.get("location")).toBe("/orders/order-1");
 	});
@@ -235,6 +271,7 @@ describe("/checkout/place — cash on delivery", () => {
 		const [call] = placeCalls(calls);
 		expect(call?.body["paymentMethod"]).toBe("stripe");
 		expect(call?.body).not.toHaveProperty("clientKey");
+		expect(call?.headers).not.toHaveProperty(COD_ATTEST_HEADER);
 	});
 
 	test("COD with no address is MISSING_SHIPPING_ADDRESS, every blank field and the phone marked", async () => {
