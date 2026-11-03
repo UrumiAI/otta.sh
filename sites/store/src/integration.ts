@@ -304,6 +304,37 @@ export function assertSeedFound(root: string): void {
 	);
 }
 
+/** The site file Astro reads live collections from (any of its extensions). */
+const LIVE_CONFIG_FILES = [
+	"live.config.ts",
+	"live.config.mts",
+	"live.config.js",
+	"live.config.mjs",
+];
+
+/**
+ * Throws unless the site's `src/live.config.*` defines the store's collections
+ * ITSELF. Astro hands the real `defineLiveCollection` only to that file, so a
+ * file that re-exports a finished `collections` object from a package gets a
+ * stub that throws, and every catalog read fails at runtime with "Top-level
+ * await in module is unsettled" — after a green build. This turns that into a
+ * build failure that says what to write.
+ */
+export function assertLiveConfig(root: string): void {
+	const file = LIVE_CONFIG_FILES.map((name) => path.join(root, "src", name)).find((candidate) =>
+		existsSync(candidate),
+	);
+	const text = file === undefined ? "" : readFileSync(file, "utf8");
+	if (/ottaLiveCollections\(\s*defineLiveCollection\s*\)/.test(text)) return;
+	throw new Error(
+		`${OTTA_INTEGRATION_NAME}: ${file ?? path.join(root, "src", "live.config.ts")} must define the ` +
+			`store's live collections itself (Astro gives defineLiveCollection to that file only):\n` +
+			`  import { defineLiveCollection } from "astro:content";\n` +
+			`  import { ottaLiveCollections } from "@urumi.ai/otta-store/live-config";\n` +
+			`  export const collections = ottaLiveCollections(defineLiveCollection);`,
+	);
+}
+
 /** Read one variable: the build environment first, then `<envDir>/.env`, then unset.
  *  Astro does NOT load `.env` into `process.env` while it loads the config. */
 function buildSetting(
@@ -450,6 +481,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 				});
 
 				if (!playground) assertSeedFound(root);
+				assertLiveConfig(root);
 
 				updateConfig({
 					output: "server",

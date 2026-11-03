@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import otta, {
+	assertLiveConfig,
 	assertSeedFound,
 	assertTemplateContract,
 	OTTA_INTEGRATION_NAME,
@@ -208,5 +209,39 @@ describe("the runtime source a site's Vite build compiles from node_modules", ()
 				});
 		}
 		expect(offenders).toEqual([]);
+	});
+});
+
+describe("assertLiveConfig", () => {
+	let dir: string;
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+	const SITE_FILE = [
+		'import { defineLiveCollection } from "astro:content";',
+		'import { ottaLiveCollections } from "@urumi.ai/otta-store/live-config";',
+		"export const collections = ottaLiveCollections(defineLiveCollection);",
+	].join("\n");
+
+	test("passes a site file that calls defineLiveCollection itself", () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-live-"));
+		mkdirSync(path.join(dir, "src"));
+		writeFileSync(path.join(dir, "src", "live.config.ts"), SITE_FILE);
+		expect(() => assertLiveConfig(dir)).not.toThrow();
+	});
+
+	test("fails a missing file, and a re-export of finished collections, saying what to write", () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-live-"));
+		mkdirSync(path.join(dir, "src"));
+		expect(() => assertLiveConfig(dir)).toThrow(/ottaLiveCollections\(defineLiveCollection\)/);
+		writeFileSync(
+			path.join(dir, "src", "live.config.ts"),
+			'export { collections } from "@urumi.ai/otta-store/live-config";',
+		);
+		expect(() => assertLiveConfig(dir)).toThrow(/defineLiveCollection to that file only/);
+	});
+
+	test("the store's own module never imports defineLiveCollection as a value", () => {
+		const source = readFileSync(path.join(PKG, "src", "live-config.ts"), "utf8");
+		expect(source).toMatch(/^import type \{ defineLiveCollection \} from "astro:content";$/m);
+		expect(source).not.toMatch(/^import \{[^}]*defineLiveCollection[^}]*\} from "astro:content"/m);
 	});
 });
