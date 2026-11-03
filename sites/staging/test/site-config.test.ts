@@ -26,6 +26,8 @@
  *    block below.
  */
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import {
 	COMMERCE_STORAGE_COLLECTIONS,
 	COMMERCE_STORAGE_COLLECTION_NAMES,
@@ -61,6 +63,7 @@ import { ottaConsoleDescriptor } from "../../store/src/otta-console-descriptor.j
 import { ottaPluginDescriptor } from "../../store/src/otta-plugin-descriptor.js";
 import { assertDownloadsBucketPrivate } from "../../store/src/lib/downloads-bucket.js";
 import { runOttaSetup } from "./helpers/otta-setup.js";
+import { ottaFonts } from "../../store/src/integration.js";
 import { readFile } from "node:fs/promises";
 
 /** The hosts every build grants: Stripe's API alone. No email host — email goes
@@ -993,4 +996,35 @@ describe("the tracked template, and the build wiring", () => {
 		expect(config).toMatch(/configPath: localWranglerConfig/);
 		expect(config).toMatch(/wranglerConfig: selectedWranglerConfig/);
 	});
+});
+
+/** What otta() registers with Astro, through its real setup hook (ADR-0045). */
+describe("otta() registration", () => {
+	const STORE_SRC = fileURLToPath(new URL("../../store/src/", import.meta.url));
+
+	test("adds the store's middleware once, AFTER EmDash's (order: post)", async () => {
+		const config = (await import("../astro.config.js")).default;
+		const { middleware } = await runOttaSetup(config);
+		expect(middleware).toEqual([
+			{ entrypoint: path.join(STORE_SRC, "middleware.ts"), order: "post" },
+		]);
+	}, 60_000);
+
+	test("injects the storefront routes from the store's pages, the write and webhook routes included", async () => {
+		const config = (await import("../astro.config.js")).default;
+		const { routes } = await runOttaSetup(config);
+		const byPattern = new Map(routes.map((r) => [r.pattern, r.entrypoint]));
+		expect(byPattern.get("/checkout/place")).toBe(
+			path.join(STORE_SRC, "pages", "checkout", "place.ts"),
+		);
+		expect(byPattern.get("/webhooks/stripe")).toBe(
+			path.join(STORE_SRC, "pages", "webhooks", "stripe.ts"),
+		);
+		expect(byPattern.get("/")).toBe(path.join(STORE_SRC, "pages", "index.astro"));
+	}, 60_000);
+
+	test("hands Astro exactly the store's font list", async () => {
+		const config = (await import("../astro.config.js")).default;
+		expect((await runOttaSetup(config)).config.fonts).toEqual(ottaFonts());
+	}, 60_000);
 });

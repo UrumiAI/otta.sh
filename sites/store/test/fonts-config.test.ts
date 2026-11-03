@@ -61,6 +61,18 @@ const FACES = [
 	["--f-tempered-data", "Martian Mono", "300 700", ["wdth", "wght"]],
 ] as const;
 
+describe("otta() hands Astro this list", () => {
+	// The behavioural check (the setup hook's \`fonts\` equals ottaFonts()) runs
+	// through the reference site's config: sites/staging/test/site-config.test.ts.
+	test("updateConfig receives the font constant itself", () => {
+		const source = readFileSync(path.resolve(here, "..", "src", "integration.ts"), "utf8");
+		expect(source).toMatch(/updateConfig\(\{[\s\S]*?\n\t\t\t\t\tfonts: OTTA_FONTS,/);
+		expect(source).toMatch(
+			/export function ottaFonts\(\): readonly unknown\[\] \{\s*return OTTA_FONTS;/,
+		);
+	});
+});
+
 describe("the otta() integration's fonts", () => {
 	test("declares exactly each theme's roles, namespaced `--f-<theme>-<role>`", () => {
 		// Namespaced per theme so a second theme's faces can never collide with
