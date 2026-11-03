@@ -27,8 +27,8 @@
  * will not strip types from a file under `node_modules`. Everything it points
  * Astro at (pages, middleware, worker, theme) ships as source for Vite.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { copyFile, mkdir } from "node:fs/promises";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { cp } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@astrojs/react";
@@ -275,8 +275,32 @@ export function storefrontRoutes(
 	return routes.toSorted((a, b) => a.pattern.localeCompare(b.pattern));
 }
 
-/** The first-party scripts pages load as `<script src="/scripts/<name>.js">`. */
-export const PUBLIC_SCRIPTS_DIR = path.join(PACKAGE_ROOT, "public", "scripts");
+/**
+ * The package's static files, served at the same path under every site that
+ * uses it: `/scripts/<name>.js` (the first-party scripts pages load by URL) and
+ * `/playground-products/<name>.jpg` (the sample products' photographs, which
+ * the seed names). A site's own `public/` is untouched.
+ */
+export const PUBLIC_DIR = path.join(PACKAGE_ROOT, "public");
+
+/** The file under {@link PUBLIC_DIR} a request path names, or undefined. */
+export function publicFileFor(urlPath: string): string | undefined {
+	let pathname: string;
+	try {
+		pathname = decodeURIComponent(new URL(urlPath, "http://x").pathname);
+	} catch {
+		return undefined;
+	}
+	const file = path.resolve(PUBLIC_DIR, `.${pathname}`);
+	if (!file.startsWith(PUBLIC_DIR + path.sep)) return undefined;
+	return existsSync(file) && statSync(file).isFile() ? file : undefined;
+}
+
+const PUBLIC_CONTENT_TYPES: Readonly<Record<string, string>> = {
+	".js": "text/javascript; charset=utf-8",
+	".jpg": "image/jpeg",
+	".txt": "text/plain; charset=utf-8",
+};
 
 /** The seed EmDash applies to a new database (its own lookup order: `.emdash/seed.json`,
  *  `package.json` → `emdash.seed`, `seed/seed.json`). */
@@ -351,10 +375,10 @@ function buildSetting(
 	}
 }
 
-/** `/scripts/<name>.js` in dev: Vite serves only the site's own `public/`. */
-function publicScriptsDevPlugin() {
+/** The package's static files in dev: Vite serves only the site's own `public/`. */
+function publicFilesDevPlugin() {
 	return {
-		name: `${OTTA_INTEGRATION_NAME}:public-scripts`,
+		name: `${OTTA_INTEGRATION_NAME}:public-files`,
 		configureServer(server: {
 			middlewares: {
 				use(
@@ -367,13 +391,15 @@ function publicScriptsDevPlugin() {
 			};
 		}) {
 			server.middlewares.use((req, res, next) => {
-				const match = /^\/scripts\/([a-z0-9-]+\.js)(?:\?|$)/.exec(req.url ?? "");
-				const file = match?.[1] === undefined ? undefined : path.join(PUBLIC_SCRIPTS_DIR, match[1]);
-				if (file === undefined || !existsSync(file)) {
+				const file = publicFileFor(req.url ?? "/");
+				if (file === undefined) {
 					next();
 					return;
 				}
-				res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+				res.setHeader(
+					"Content-Type",
+					PUBLIC_CONTENT_TYPES[path.extname(file)] ?? "application/octet-stream",
+				);
 				res.end(readFileSync(file));
 			});
 		},
@@ -509,7 +535,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 					// ourselves (pinned by the site-config test) so nothing regresses if emdash
 					// stops overriding.
 					vite: {
-						plugins: [publicScriptsDevPlugin()],
+						plugins: [publicFilesDevPlugin()],
 						// Build-time globals the @urumi.ai/otta-plugin bundle reads through
 						// `typeof` guards (manifest.ts, src/lib/stripe-config.ts).
 						define: {
@@ -565,14 +591,10 @@ export default function otta(options: OttaOptions): AstroIntegration {
 				clientDir = config.build.client;
 			},
 			/* The client output is what wrangler uploads as static assets, so the
-			   scripts keep their `/scripts/<name>.js` URLs. */
+			   files keep their URLs (`/scripts/…`, `/playground-products/…`). */
 			"astro:build:done": async () => {
 				if (clientDir === undefined) return;
-				const target = path.join(fileURLToPath(clientDir), "scripts");
-				await mkdir(target, { recursive: true });
-				for (const name of readdirSync(PUBLIC_SCRIPTS_DIR)) {
-					await copyFile(path.join(PUBLIC_SCRIPTS_DIR, name), path.join(target, name));
-				}
+				await cp(PUBLIC_DIR, fileURLToPath(clientDir), { recursive: true });
 			},
 		},
 	};

@@ -19,7 +19,8 @@ import otta, {
 	OTTA_SEED,
 	OTTA_TEMPLATE_CONTRACT,
 	packageRoot,
-	PUBLIC_SCRIPTS_DIR,
+	PUBLIC_DIR,
+	publicFileFor,
 	storefrontRoutes,
 } from "../src/integration.js";
 
@@ -179,12 +180,29 @@ describe("package files", () => {
 		expect(packageRoot(path.join(PKG, "src", "lib"))).toBe(PKG);
 	});
 
-	test("the public scripts the pages load by URL are all shipped", () => {
-		expect(readdirSync(PUBLIC_SCRIPTS_DIR).toSorted()).toEqual([
+	test("the static files pages and the seed name by URL are all shipped", () => {
+		expect(readdirSync(path.join(PUBLIC_DIR, "scripts")).toSorted()).toEqual([
 			"add-to-cart-key.js",
 			"playground-star.js",
 			"region-picker.js",
 		]);
+		// The sample products' photographs, which the seed's images point at.
+		const seed = readFileSync(OTTA_SEED, "utf8");
+		for (const src of seed.match(/\/playground-products\/[a-z-]+\.jpg/g) ?? []) {
+			expect(publicFileFor(src), src).toBeDefined();
+		}
+		expect(seed).toContain("/playground-products/");
+	});
+
+	test("publicFileFor serves only files inside the package's public/", () => {
+		expect(publicFileFor("/scripts/region-picker.js?v=1")).toBe(
+			path.join(PUBLIC_DIR, "scripts", "region-picker.js"),
+		);
+		expect(publicFileFor("/scripts")).toBeUndefined();
+		expect(publicFileFor("/scripts/nope.js")).toBeUndefined();
+		expect(publicFileFor("/../package.json")).toBeUndefined();
+		expect(publicFileFor("/%2e%2e/package.json")).toBeUndefined();
+		expect(publicFileFor("/scripts/..%2f..%2fpackage.json")).toBeUndefined();
 	});
 });
 

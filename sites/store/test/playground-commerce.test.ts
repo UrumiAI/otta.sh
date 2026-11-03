@@ -379,8 +379,6 @@ describe("itemsFromListResult", () => {
 });
 
 describe("playground product photographs", () => {
-	// The photographs are the playground site's static files (sites/staging/public);
-	// the seed and the photo table are this package's.
 	const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 	test("the seed points each sample product at a JPEG in the repo", () => {
@@ -404,7 +402,7 @@ describe("playground product photographs", () => {
 				}),
 			).toBe(photo?.src);
 			const relative = (photo?.src ?? "").replace(/^\//, "");
-			const file = readFileSync(path.join(root, "..", "staging", "public", relative));
+			const file = readFileSync(path.join(root, "public", relative));
 			expect(file.subarray(0, 3).toString("hex")).toBe("ffd8ff");
 		}
 	});
