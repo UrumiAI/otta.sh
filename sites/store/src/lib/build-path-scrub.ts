@@ -256,6 +256,47 @@ export function findInlinedSecretsInDir(dir: string): string[] {
 }
 
 /**
+ * The keys Astro's inlined env object may legitimately carry: Astro's own build
+ * keys, and `PUBLIC_*`, which Astro promises are public. A clean build of the
+ * store inlines no others at all (every such object is empty; checked against
+ * real `sites/staging` and template builds, ADR-0045).
+ */
+const ASTRO_ENV_KEYS: ReadonlySet<string> = new Set([
+	"SSR",
+	"DEV",
+	"PROD",
+	"MODE",
+	"BASE_URL",
+	"SITE",
+	"ASSETS_PREFIX",
+]);
+
+/** Whether an inlined env key is one a bundle may carry ({@link ASTRO_ENV_KEYS}, `PUBLIC_*`). */
+export function isAllowedInlinedEnvKey(key: string): boolean {
+	return ASTRO_ENV_KEYS.has(key) || key.startsWith("PUBLIC_");
+}
+
+/**
+ * Every `<file>: <KEY>` for ANY build variable inlined into a `.mjs`/`.js` file
+ * under `dir` that is not {@link isAllowedInlinedEnvKey} — secret-shaped or not.
+ * A module that mentions `import.meta.env` other than as a `.KEY` read makes
+ * Astro inline every build variable whose name appears in it (HOME, PATH, TERM
+ * in the case ADR-0045 records), so the check is by key, not by value.
+ * {@link findInlinedSecretsInDir} is the secret-only subset. Names only.
+ */
+export function findInlinedEnvKeysInDir(dir: string): string[] {
+	const found: string[] = [];
+	for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+		if (!entry.isFile() || !/\.m?js$/.test(entry.name)) continue;
+		const file = path.join(entry.parentPath, entry.name);
+		for (const key of inlinedEnvKeys(readFileSync(file, "utf8"))) {
+			if (!isAllowedInlinedEnvKey(key)) found.push(`${path.relative(dir, file)}: ${key}`);
+		}
+	}
+	return found;
+}
+
+/**
  * Values shorter than this are not searched for. A clean server bundle already
  * contains `"postgres"`, `"password"` and `changeme`, so a builder whose shell
  * has `POSTGRES_PASSWORD=postgres` would otherwise fail every build. Real
@@ -317,15 +358,18 @@ const viteLoadEnv: LoadEnv = (
 	}
 ).loadEnv;
 
-/** The name a leaked `PATH` is reported under. */
-export const WHOLE_ENV_MARKER = "PATH (the whole build environment was inlined)";
+/** The name a leaked `PATH` VALUE is reported under: the second layer behind the key check. */
+export const WHOLE_ENV_MARKER = "PATH (build environment variables were inlined into the bundle)";
 
 const LEAK_HELP =
 	"Astro writes a variable from the build's env or a .env file into the bundle when its name " +
-	"appears next to `import.meta.env` (or is read as `import.meta.env.KEY`). Remove it from the " +
-	"build environment and from sites/staging/.env, set it as a Worker secret (`wrangler secret " +
-	"put`), and build again. For `astro dev`, keep local secrets in sites/staging/.dev.vars, which " +
-	"Astro never reads (DEPLOYMENT.md §3).";
+	"appears in a module that mentions `import.meta.env` other than as `import.meta.env.KEY`, or " +
+	"that reads it as `import.meta.env.KEY`. If the name is a secret, remove it from the build " +
+	"environment and from the project's .env, set it as a Worker secret (`wrangler secret put`), " +
+	"and build again; for `astro dev`, keep local secrets in the project's .dev.vars, which Astro " +
+	"never reads. If it is not a secret (HOME, PATH, …), a dependency spells `import.meta.env` " +
+	"another way: report it. See " +
+	"https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md#3-secrets--tokens-checklist.";
 
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -420,10 +464,9 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 							secrets.set(key, value);
 						}
 					}
-					// Not a secret, but no module reads PATH: its value in the bundle means a
-					// module handed Vite a BARE `import.meta.env` (or `import.meta.env?.KEY`),
-					// which it replaces with the whole build environment — every variable,
-					// secret-shaped or not (found in the published plugin, ADR-0045).
+					// Not a secret, but no module reads PATH: its VALUE in the bundle means
+					// build variables were inlined, however minified (the key check above is
+					// the first layer; this one does not depend on the object's shape).
 					if (process.env.PATH !== undefined) {
 						secrets.set(WHOLE_ENV_MARKER, process.env.PATH);
 					}
@@ -433,7 +476,7 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 						clientDir !== undefined && existsSync(clientDir) ? fileURLToPath(clientDir) : undefined;
 					const serverLeaks = [
 						...new Set([
-							...findInlinedSecretsInDir(server),
+							...findInlinedEnvKeysInDir(server),
 							...findLeakedSecretValuesInDir(server, secrets),
 						]),
 					];

@@ -38,6 +38,7 @@ import {
 	buildPathScrub,
 	dropBuildSecretEnv,
 	dropShellPathEnv,
+	findInlinedEnvKeysInDir,
 	findInlinedSecretsInDir,
 	findLeakedSecretValuesInDir,
 	MIN_SEARCHED_SECRET_LENGTH,
@@ -466,9 +467,41 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 			expect(existsSync(server)).toBe(false);
 		}));
 
-	test("passes a server bundle with no secret in it", () =>
+	test("an inlined HOME alone fails it: ANY build variable outside the allowlist, secret or not", () =>
 		withTempDir(async (dir) => {
-			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(`\tCI: "1"`));
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			writeFileSync(path.join(server, "plugin_X.mjs"), withInlinedEnv(`\tHOME: "/home/x"`));
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("plugin_X.mjs: HOME");
+			expect(failure).not.toContain("/home/x");
+			expect(existsSync(server)).toBe(false);
+		}));
+
+	test("a SHORT PATH (under the value search's 16 characters) still fails, by its key", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			process.env.PATH = "/bin";
+			writeFileSync(path.join(server, "plugin_X.mjs"), withInlinedEnv(`\tPATH: "/bin"`));
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("plugin_X.mjs: PATH");
+			expect(existsSync(server)).toBe(false);
+		}));
+
+	test("Astro's own keys and PUBLIC_* may be inlined", () =>
+		withTempDir(async (dir) => {
+			writeFileSync(
+				path.join(dir, "ok.mjs"),
+				withInlinedEnv(`\tPUBLIC_SITE_NAME: "Acme",\n\tMODE: "production"`),
+			);
+			const { failure } = await runHooks("build", { serverDir: dir });
+			expect(failure).toBeUndefined();
+		}));
+
+	test("passes a server bundle with no secret in it (an EMPTY inlined object, as a real build has)", () =>
+		withTempDir(async (dir) => {
+			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(""));
 			process.env.GITHUB_CLIENT_SECRET = MARKER;
 			const { failure } = await runHooks("build", { serverDir: dir });
 			expect(failure).toBeUndefined();
@@ -704,5 +737,10 @@ describe.runIf(existsSync(dist) || process.env.CI !== undefined)("the built site
 	test("inlines no secret into a server chunk (#584)", () => {
 		expect(existsSync(dist), "no sites/staging/dist — run `pnpm -r build` first").toBe(true);
 		expect(findInlinedSecretsInDir(path.join(dist, "server")), rebuildHint).toEqual([]);
+	});
+
+	test("inlines NO build variable at all outside the allowlist (ADR-0045)", () => {
+		expect(existsSync(dist), "no sites/staging/dist — run `pnpm -r build` first").toBe(true);
+		expect(findInlinedEnvKeysInDir(path.join(dist, "server")), rebuildHint).toEqual([]);
 	});
 });
