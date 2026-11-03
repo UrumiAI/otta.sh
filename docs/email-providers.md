@@ -105,7 +105,7 @@ are write-only in the admin and are never echoed back.
 
 1. Add the descriptor to the `plugins` array of the site's EmDash config, after the otta
    descriptors already there. `@urumi.ai/otta-plugin` exports no descriptor; each site writes its
-   own (the staging site's are in `sites/staging/src/emdash-options.ts`):
+   own (the staging site's are in `sites/store/src/emdash-options.ts`):
    ```ts
    import { httpEmailProvider } from "your-email-provider";
    // ottaDescriptors: the otta descriptors your config already lists

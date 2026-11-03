@@ -763,7 +763,7 @@ describe("storefront/checkout/summary (workerd sandbox)", () => {
 /**
  * #305 part 1 — the buyer's SELECTION (coupon, shipping method) through the
  * summary. A rejected selection must NOT bounce the buyer to `/cart` (every
- * `ok: false` summary does — `sites/staging/src/lib/checkout-redirect.ts`), so
+ * `ok: false` summary does — `sites/store/src/lib/checkout-redirect.ts`), so
  * the route reports it beside totals computed WITHOUT it, and still renders.
  */
 describe("storefront/checkout/summary — the buyer's selection (workerd sandbox)", () => {

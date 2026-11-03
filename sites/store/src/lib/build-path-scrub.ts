@@ -21,7 +21,7 @@
  * final, so the rewrite runs there, over the server output only.
  *
  * The rewrite removes the workspace-root prefix, so
- * `<root>/sites/staging/src/X.astro` becomes `/sites/staging/src/X.astro` and
+ * `<root>/sites/store/src/X.astro` becomes `/sites/store/src/X.astro` and
  * `file://<root>/sites/staging/` becomes `file:///sites/staging/` (still a valid
  * URL). Every occurrence changes the same way, so an id and the map key it is
  * looked up under stay equal.

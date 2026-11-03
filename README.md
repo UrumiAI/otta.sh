@@ -12,10 +12,12 @@ Open source (MIT). Latest published release: 0.1.0 (`main` is 0.2.0, unreleased)
 > between releases. The `@urumi.ai/otta-*` packages are published to npm at `0.1.0`; pin an exact version
 > (`pnpm add -E`) if you build on it.
 >
-> **Coming soon: one-click Cloudflare Workers deployment.** A one-click / hosted way to put
-> an Otta store on Cloudflare Workers is on the way. Until then you can self-deploy the
-> reference site by following [`DEPLOYMENT.md`](./DEPLOYMENT.md) — see [Status](#status)
-> for what is and isn't built yet.
+> **Coming soon: one-click Cloudflare Workers deployment.** The store now ships as one npm
+> package, `@urumi.ai/otta-store`, and a small template repository built on it is ready
+> for Cloudflare's Deploy button ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.6). The button goes
+> live once `0.2.0` is published. Until then you can self-deploy the reference site by
+> following [`DEPLOYMENT.md`](./DEPLOYMENT.md) — see [Status](#status) for what is and isn't
+> built yet.
 
 ![The Otta storefront: a product listing with three sample products, each showing generated coil artwork, a title, a description, a price, and whether it is in stock — the first is sold out, its price struck through](./docs/storefront.png)
 
@@ -38,7 +40,9 @@ Otta turns an EmDash site into a store. It is **one deployable**, and it ships a
    ([ADR-0018](./adr/0018-plugin-owns-commerce-truth-in-process.md),
    [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)).
 2. **The reference site** (`sites/staging`) — a default EmDash site with the plugin already
-   registered, so there's something to actually run. It's the storefront in the screenshot
+   registered, so there's something to actually run. Its store code is the
+   `@urumi.ai/otta-store` package (`sites/store`), an Astro integration the site's config
+   calls as `otta({ template: 1 })`. It's the storefront in the screenshot
    above and what the [quick start](#quick-start-local-2-minutes) boots: product listing
    pages, cart, and the admin console. Treat it as the worked example to copy from when
    wiring Otta into your own site — it covers catalog, cart, card checkout and customer
@@ -93,7 +97,7 @@ commerce fields it does not touch — so give them some:
 #    then prices and stocks each one through the SITE's own admin API — the same
 #    route the product editor's Pricing & stock section uses, so the site URL is all it needs.
 SITE_URL=http://localhost:4321 \
-  pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
+  pnpm dlx tsx@4 sites/store/scripts/seed-demo-commerce.ts
 ```
 
 `/products` now renders a priced catalog and add-to-cart takes a real inventory hold. In the
@@ -148,8 +152,8 @@ pnpm add @urumi.ai/otta-plugin @urumi.ai/otta-admin-react
 `@urumi.ai/otta-plugin` brings `@urumi.ai/otta-domain`, `@urumi.ai/otta-store-emdash`, `@urumi.ai/otta-payments-stripe`
 and `@urumi.ai/otta-admin-presentation` with it. The packages export no ready-made plugin descriptor: each
 site writes its own. The reference site's are the worked example:
-[`otta-plugin-descriptor.ts`](./sites/staging/src/otta-plugin-descriptor.ts) and
-[`otta-console-descriptor.ts`](./sites/staging/src/otta-console-descriptor.ts). Your `otta`
+[`otta-plugin-descriptor.ts`](./sites/store/src/otta-plugin-descriptor.ts) and
+[`otta-console-descriptor.ts`](./sites/store/src/otta-console-descriptor.ts). Your `otta`
 descriptor **must** declare `settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA }` (exported by
 `@urumi.ai/otta-plugin`) and the host must set `EMDASH_ENCRYPTION_KEY`; without the schema the Stripe
 keys are stored as plain text and the plugin cannot tell ([ADR-0037](./adr/0037-payment-secrets-are-encrypted-at-rest.md),
@@ -208,7 +212,8 @@ the tree).
 | `@urumi.ai/otta-plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
 | `@urumi.ai/otta-admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
 | `@urumi.ai/otta-admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — the Orders page, plus the product editor's Pricing & stock cards (and the Download file card for a digital product) and the products list's Price / Stock columns. |
-| `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
+| `@urumi.ai/otta-store` (`sites/store`) | The storefront and admin as one Astro integration, `otta()`: routes, middleware, theme, fonts and build guards (ADR-0045). What the one-click template depends on. |
+| `sites/staging` | The reference site built from `otta()` — EmDash on Cloudflare Workers, plugin registered trusted — plus the e2e suite and the playground config. |
 | `examples/email-provider` | Template for an EmDash email-transport plugin (not published); see [`docs/email-providers.md`](./docs/email-providers.md). |
 
 Design decisions live in [`adr/`](./adr/); development practices in
@@ -238,7 +243,9 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 breaking changes before 1.0.
 
 **Cloudflare Workers:** self-deploying the reference site to Workers works today
-([`DEPLOYMENT.md`](./DEPLOYMENT.md)); a one-click / hosted Workers deployment is coming soon.
+([`DEPLOYMENT.md`](./DEPLOYMENT.md)). One-click: the store template for Cloudflare's Deploy
+button is built and verified locally, and goes live once `0.2.0` is on npm
+([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.6).
 
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
 cart, checkout, orders, customers with magic-link auth, Stripe payments, tax,

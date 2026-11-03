@@ -51,12 +51,15 @@ Options considered:
      middlewares, which is where `src/middleware.ts` ran;
    - sets `output`, `image`, `fonts` and the Vite `define`, `ssr.noExternal` and `optimizeDeps`
      settings that `sites/staging/astro.config.ts` set;
-   - serves `/scripts/*.js` in dev and copies them into the client output on build, so their URLs
-     do not change;
+   - ships the package's `public/` (the first-party `/scripts/*.js` and the sample products'
+     `/playground-products/*.jpg`, which the seed names): served in dev, copied into the
+     client output on build, at the same URLs;
    - runs the same build guards against the project's wrangler config: downloads bucket privacy
      (issue #376), the `EMAIL` binding for a configured sender (ADR-0043), the refusal of
      `STRIPE_PUBLIC_KEY` (issue #498) and the build-path and secret scrub (issues #121, #584),
-     now rooted at the Astro project root instead of the nearest `pnpm-workspace.yaml`;
+     now rooted at the Astro project root instead of the nearest `pnpm-workspace.yaml`, plus
+     two checks a template site needs: EmDash will find the store's seed, and the site's
+     `src/live.config.ts` defines the collections itself (see "Found while verifying");
    - takes `emailFrom`, `emailFromName` and `extraAllowedHosts` as options, falling back to the
      `OTTA_EMAIL_FROM`, `OTTA_EMAIL_FROM_NAME` and `OTTA_EXTRA_ALLOWED_HOSTS` build variables
      (shell, then `.env`), with the same validation as before.
@@ -77,8 +80,8 @@ Options considered:
    this repository needs: the e2e wrangler config, the e2e Stripe-offline switch, the
    persisted-state option, `wrangler.local.jsonc` and the playground config. The e2e suite
    therefore runs the same integration a merchant runs.
-5. **The template is a separate public repository** (13 files: config, two one-line re-exports,
-   README, Dependabot). It uses npm with a committed `package-lock.json`, and pins exact versions of
+5. **The template is a separate public repository** (13 files: config, `src/worker.ts` (a
+   one-line re-export), `src/live.config.ts` (three lines), README, Dependabot). It uses npm with a committed `package-lock.json`, and pins exact versions of
    `@urumi.ai/otta-store`, the plugin, the admin package, `emdash` and `@emdash-cms/cloudflare`,
    because the modules EmDash generates import them from the project root. Updates arrive as one
    grouped Dependabot pull request, which Workers Builds deploys once it is merged.
@@ -91,6 +94,32 @@ Options considered:
 7. **Customisation goes through the CMS and Store settings, not code.** That means the site
    title, tagline, menus and products, plus payments, tax and shipping. Tempered stays the only
    theme (ADR-0024, 2026-10-15 amendment), and overriding a single page is not supported.
+
+## Found while verifying (2026-11-03)
+
+The template was built from `pnpm pack` tarballs of all eight packages, installed with npm,
+and run under `wrangler dev`: claimed through the logged setup link, cash on delivery turned on
+in Store settings, a COD order placed, shipped and marked paid, and a fake `0.2.1` installed by
+a version bump alone. Three things only the packed form showed:
+
+- **Astro hands `defineLiveCollection` to the site's own `src/live.config.ts` only** (it
+  compares the importer's path). Re-exporting finished collections from the package built
+  cleanly and then failed every catalog read with "Top-level await in module is unsettled". The
+  package exports `ottaLiveCollections(define)`, the site file passes `defineLiveCollection` in,
+  and `otta()` fails the build, saying what to write, when the site file does not.
+- **Astro's env plugin decides by a module's text, comments included.** A mention of
+  `import.meta.env` that is not a `.KEY` member read (the plugin's `?.DEV`, and comments
+  about it, kept in the published `dist`) makes it inline every build variable whose name
+  appears in the module. The template's Worker carried the builder's HOME, PATH and TERM.
+  The plugin now reads only `import.meta.env.DEV` and never names the bare object, tests scan
+  the plugin's and the store's shipped source for any other spelling, and the build scrub
+  fails a bundle that contains the builder's `PATH`.
+- **The seed's sample photos lived in `sites/staging/public`**, so a template store showed
+  empty image boxes. They ship with the package now.
+
+`package-lock.json` is the one template file that cannot exist yet: npm cannot lock versions
+the registry does not have. It is generated when `0.2.0` is published, before the template
+repository is made public.
 
 ## A failed first boot
 

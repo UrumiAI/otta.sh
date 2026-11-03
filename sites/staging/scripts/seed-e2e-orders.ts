@@ -382,7 +382,7 @@ export async function findPurchasable(deps: SeedOrdersDeps): Promise<Purchasable
 	if (picked === null) {
 		throw new Error(
 			"no product is priced, titled, active and in stock, so there is nothing to buy. Run " +
-				"sites/staging/scripts/seed-demo-commerce.ts first.",
+				"sites/store/scripts/seed-demo-commerce.ts first.",
 		);
 	}
 	return picked;

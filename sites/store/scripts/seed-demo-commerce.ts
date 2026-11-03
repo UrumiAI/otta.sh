@@ -92,7 +92,7 @@
  *
  *   # after the site's seed has been applied
  *   SITE_URL=http://localhost:4321 pnpm dlx tsx@4 \
- *     sites/staging/scripts/seed-demo-commerce.ts
+ *     sites/store/scripts/seed-demo-commerce.ts
  *
  * AUTH — ONE credential, for reads and writes alike, because everything now goes
  * through the site. Set `EMDASH_TOKEN` to an em-dash API token (sent as
@@ -193,7 +193,7 @@ export function demoRows(slugs: string[], page: CmsProductPage): DemoRow[] {
 	const unpriced = slugs.filter((s) => DEMO_PRICING[s] === undefined);
 	if (unpriced.length > 0) {
 		throw new Error(
-			`seed/seed.json declares product(s) with no entry in DEMO_PRICING: ${unpriced.join(", ")}. Add them to sites/staging/scripts/seed-demo-commerce.ts — a seeded product with no commerce row is listed but cannot be bought.`,
+			`seed/seed.json declares product(s) with no entry in DEMO_PRICING: ${unpriced.join(", ")}. Add them to sites/store/scripts/seed-demo-commerce.ts — a seeded product with no commerce row is listed but cannot be bought.`,
 		);
 	}
 	// Returned but unusable is a DIFFERENT failure from not returned at all, and

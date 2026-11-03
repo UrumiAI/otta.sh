@@ -24,7 +24,7 @@ ESM-only, for an EmDash site on `emdash` `^1.3.1` (a peer dependency, the same r
 | `@urumi.ai/otta-plugin/subdivisions` | English subdivision names for a storefront's region pick list (kept out of the sandbox bundle). |
 | `@urumi.ai/otta-plugin/testing` | Test helpers, e.g. `recordingEmailProvider`. |
 
-The package exports no descriptor; each site writes its own, as the reference site does in [`sites/staging/src/otta-plugin-descriptor.ts`](https://github.com/UrumiAI/otta.sh/blob/main/sites/staging/src/otta-plugin-descriptor.ts). That descriptor **must** declare `settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA }` and the host must set `EMDASH_ENCRYPTION_KEY`: without the schema the Stripe keys are stored as plain text, and the plugin cannot detect it ([ADR-0037](https://github.com/UrumiAI/otta.sh/blob/main/adr/0037-payment-secrets-are-encrypted-at-rest.md)). See the [repo README](https://github.com/UrumiAI/otta.sh#readme).
+The package exports no descriptor; each site writes its own, as the reference site does in [`sites/store/src/otta-plugin-descriptor.ts`](https://github.com/UrumiAI/otta.sh/blob/main/sites/store/src/otta-plugin-descriptor.ts). That descriptor **must** declare `settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA }` and the host must set `EMDASH_ENCRYPTION_KEY`: without the schema the Stripe keys are stored as plain text, and the plugin cannot detect it ([ADR-0037](https://github.com/UrumiAI/otta.sh/blob/main/adr/0037-payment-secrets-are-encrypted-at-rest.md)). See the [repo README](https://github.com/UrumiAI/otta.sh#readme).
 
 ## The commerce transport
 

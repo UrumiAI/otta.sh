@@ -19,7 +19,7 @@ ESM-only. Peer dependencies: `emdash` `^1.3.1` and `react` `^19.2.4`. Node `>=22
 
 ## Usage
 
-Register it in your EmDash config as a `native` plugin descriptor, next to the `otta` one. The reference site's [`otta-console-descriptor.ts`](https://github.com/UrumiAI/otta.sh/blob/main/sites/staging/src/otta-console-descriptor.ts) is the worked example. Its fields come straight from this package:
+Register it in your EmDash config as a `native` plugin descriptor, next to the `otta` one. The reference site's [`otta-console-descriptor.ts`](https://github.com/UrumiAI/otta.sh/blob/main/sites/store/src/otta-console-descriptor.ts) is the worked example. Its fields come straight from this package:
 
 ```ts
 import {

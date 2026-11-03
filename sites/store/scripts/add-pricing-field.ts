@@ -10,7 +10,7 @@
  * it through EmDash's schema API, which does accept `widget`:
  *
  *   SITE_URL=https://<your-site> EMDASH_TOKEN=<admin API token> \
- *     pnpm dlx tsx@4 sites/staging/scripts/add-pricing-field.ts
+ *     pnpm dlx tsx@4 sites/store/scripts/add-pricing-field.ts
  *
  * (On a local dev site `SITE_URL` alone is enough: it signs in through the dev
  * bypass, like `seed-demo-commerce.ts`.)

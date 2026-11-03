@@ -16,13 +16,20 @@ alongside CMS content ([ADR-0018](./adr/0018-plugin-owns-commerce-truth-in-proce
 [ADR-0019](./adr/0019-commerce-aggregates-are-one-document-each.md),
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)).
 
-`sites/staging` is the reference site: copy it for your own store rather than treating it as
-staging-only.
+The store itself is the package `@urumi.ai/otta-store` (`sites/store`): an Astro integration,
+`otta()`, that brings the storefront, the admin wiring, the theme and the build guards
+([ADR-0045](./adr/0045-the-store-ships-as-an-astro-integration-for-one-click-deploy.md)).
+`sites/staging` is the reference site built from it: an `astro.config.ts` that calls
+`otta({ template: 1 })`, a `wrangler.jsonc`, and the e2e suite. Two ways to stand up your own:
+
+- **One-click** (§2.6): the store template repository, which the Deploy to Cloudflare button
+  clones into your GitHub account. Updates arrive as a dependency bump.
+- **By hand** (§2.1 to §2.5): this repository's `sites/staging`, deployed with Wrangler.
 
 > **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
 > works today, but APIs, storage document shapes, settings and admin screens may still change
-> between releases. This guide is the self-deploy path; a one-click / hosted Cloudflare
-> Workers deployment is coming soon.
+> between releases. This guide covers both the self-deploy path and the one-click template
+> (§2.6), whose Deploy to Cloudflare button goes live once `0.2.0` is published.
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
 > checkout, orders, customers with magic-link auth, Stripe payments, tax,
@@ -77,9 +84,14 @@ paid plan:
   plugin-sandbox runner) are the cost pivot that flips the account onto Workers Paid. See
   [ADR-0006](./adr/0006-trusted-in-process-deployment.md) for why this is allowed and what
   stays forbidden.
-- **No Cloudflare Images or Stream.** Media lives in R2; the site uses Astro's built-in
-  image service (the config deliberately does not set `imageService: "cloudflare"` — that is
-  the paid resizing product).
+- **No Cloudflare Stream, and no paid image resizing.** Media lives in R2. The config does not
+  set `imageService: "cloudflare"` (Cloudflare's paid URL-based resizing). It keeps the
+  `@astrojs/cloudflare` default, which binds the **Images** binding `IMAGES` and transforms
+  through it; the adapter adds that binding to the generated deploy config even though
+  `wrangler.jsonc` does not name it (the one-click template names it, so it is visible). The
+  Images binding has a monthly free allowance of transformations; whether a store on Workers
+  Free keeps working past it is not yet verified on a real account. The playground build uses
+  `imageService: "passthrough"` and has no binding.
 
 The site's single `* * * * *` cron touches only D1, within free limits — the commerce sweep
 budgets itself to fit Workers Free's 50 D1 queries per invocation by default. On Workers Paid,
@@ -263,7 +275,7 @@ expired holds and queued emails drain at the Free pace (§5).
    it in that product's **Pricing & stock** cards (the CMS holds no commercial data);
    add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
    are content-only until you price them — the seed fires no content hooks, so either
-   price them in each product's Pricing & stock cards or run `sites/staging/scripts/seed-demo-commerce.ts`
+   price them in each product's Pricing & stock cards or run `sites/store/scripts/seed-demo-commerce.ts`
    against the SITE. It drives the site's own admin API — the route the Pricing & stock
    cards use — so it needs only the site URL and a token that can read the CMS
    and call that route:
@@ -271,7 +283,7 @@ expired holds and queued emails drain at the Free pace (§5).
    ```bash
    SITE_URL=https://<your-site-worker>.workers.dev \
    EMDASH_TOKEN=<an admin API token> \
-     pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
+     pnpm dlx tsx@4 sites/store/scripts/seed-demo-commerce.ts
    ```
 
    The script is safe to re-run: it reads each product first and skips any that already
@@ -286,7 +298,7 @@ expired holds and queued emails drain at the Free pace (§5).
    ```bash
    SITE_URL=https://<your-site-worker>.workers.dev \
    EMDASH_TOKEN=<an admin API token> \
-     pnpm dlx tsx@4 sites/staging/scripts/add-pricing-field.ts
+     pnpm dlx tsx@4 sites/store/scripts/add-pricing-field.ts
    ```
 
    The field holds no data; new stores get it from the seed. If a product editor ever shows a
@@ -299,8 +311,20 @@ expired holds and queued emails drain at the Free pace (§5).
 
 **Only for an actual failed boot** — errors in `wrangler tail` (migration failures, partial
 schema seed). An empty `/products` catalog is NOT a failed boot (§2.2 step 1); never reset a
-healthy database. The seed applies only to an **empty** D1 database, so a midway failure
-cannot be retried in place:
+healthy database. Try these first, in order (EmDash 1.3.1, ADR-0045 "A failed first boot"):
+
+- **A seed that failed or was cut off retries itself.** The next request applies what is
+  missing (`onConflict: "skip"`) and marks the seed complete last. Load the site again.
+- **"Database initialization is backing off after a recent migration failure"** clears by
+  itself: EmDash waits 30 seconds, then retries. Migrations already applied are skipped.
+- **"The migration lock has been held since …"** does NOT clear by itself: the Worker was
+  stopped in the middle of a migration (for example by the Workers Free CPU limit) and left
+  EmDash's lock row behind. Release it as EmDash's own message links to
+  (docs.emdashcms.com, "release a stuck migration lock"), for example in the D1 console of the
+  Cloudflare dashboard, then load the site again.
+
+Only when a migration half-applied a step that cannot run twice (the retry keeps failing on
+the same migration) is the database beyond repair. Then start a new one:
 
 1. `wrangler d1 delete YOUR-D1-DATABASE-NAME` and `wrangler d1 create YOUR-D1-DATABASE-NAME`.
 2. Update `database_id` in your `wrangler.local.jsonc` with the new id.
@@ -315,7 +339,7 @@ cannot be retried in place:
 > hostname on the site's **own zone** is routed to that zone's origin, not back through
 > Cloudflare, so never add an egress host on the site's own zone.
 >
-> D1 `session` in `sites/staging/src/emdash-options.ts` is **`"primary-first"`**: every
+> D1 `session` in `sites/store/src/emdash-options.ts` is **`"primary-first"`**: every
 > request EmDash has not authenticated — every shopper — and every write and cron run starts
 > on the primary, so a shopper's redirect after a write (placing an order, signing in,
 > resuming a payment) always reads what it just wrote, even with read replicas on. It is
@@ -358,7 +382,7 @@ cannot be retried in place:
 > 500 rather than re-run. Nothing fails at deploy time. So the flag must never come back
 > while a session mode is set. Pinned by `sites/staging/test/wrangler-config.test.ts` (flag
 > absent, template hygiene) and `sites/staging/test/site-config.test.ts` (`"primary-first"`;
-> never flag + session together, `sites/staging/src/lib/wrangler-pairing.ts`).
+> never flag + session together, `sites/store/src/lib/wrangler-pairing.ts`).
 >
 > **Your own `wrangler.local.jsonc` is not checked.** If you made it by copying the template
 > before issue #375 (§2.1 step 2), it may still list the flag: delete
@@ -372,7 +396,7 @@ cannot be retried in place:
 The storefront's writes are anonymous by design: anyone can create a cart, change it, place an
 order, or ask for a sign-in link. The site limits them per client IP with two Cloudflare
 [Workers Rate Limiting](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/)
-bindings, checked in its middleware (`sites/staging/src/lib/rate-limit.ts`, issues #91 and #29).
+bindings, checked in its middleware (`sites/store/src/lib/rate-limit.ts`, issues #91 and #29).
 **Set this up before you open customer sign-in to real customers:**
 [ADR-0004](./adr/0004-customer-auth-mechanism.md) makes per-IP limiting on the sign-in request a
 prerequisite, because the per-address throttle can be used to lock a customer out.
@@ -390,7 +414,7 @@ out), then build and deploy as in §2.1:
 Each `namespace_id` is a string holding a positive integer, unique within your Cloudflare
 account. Two Workers that share one share its counters. `period` must be `10` or `60` seconds.
 The site sends that period as `Retry-After` from its own table (`RETRY_AFTER_SECONDS` in
-`sites/staging/src/lib/rate-limit.ts`), so a changed `period` needs that constant changed too;
+`sites/store/src/lib/rate-limit.ts`), so a changed `period` needs that constant changed too;
 a changed `limit` needs nothing. Check Cloudflare's current plan availability for the binding
 before relying on it.
 
@@ -480,6 +504,74 @@ equivalent there is about 2 requests per 10 seconds. Longer periods and more cou
 need a paid plan. Keep the bindings too: they are versioned
 with the code and cover every route listed above.
 
+### 2.6 One-click: the store template and the Deploy to Cloudflare button
+
+> **Status.** The template is built and verified locally from packed `0.2.0` tarballs
+> (build, `wrangler deploy --dry-run`, `wrangler dev`, claim, a cash-on-delivery order).
+> The button goes live once `0.2.0` is on npm and the template repository is public; the
+> Cloudflare-side behaviour listed under "Not yet verified" below needs a real account.
+
+The template is a small repository: `astro.config.mjs` (the adapter plus
+`otta({ template: 1 })`), `wrangler.jsonc`, `.dev.vars.example`, `src/worker.ts` and
+`src/live.config.ts` (a few lines each), `package.json` with exact pins, its
+`package-lock.json` (generated once the pinned versions are on npm; npm cannot lock versions
+the registry does not have yet), `.github/dependabot.yml`, `README.md`, `LICENSE`, `.gitignore`,
+`.node-version` and `tsconfig.json`. No store code: that is the `@urumi.ai/otta-store`
+dependency.
+
+**What the button does.** It clones the template into your GitHub account (a copy, not a
+fork), creates the D1 database (`DB`), the two R2 buckets (`MEDIA`, and the private
+`DOWNLOADS`) and the KV namespace (`SESSION`) the template's `wrangler.jsonc` declares, asks
+for the one secret (`EMDASH_ENCRYPTION_KEY`, from `.dev.vars.example`), and connects Workers
+Builds, which runs `npm run build` (`astro build`) and `npm run deploy` (`wrangler deploy`) on
+every push to your production branch. The template also turns on `IMAGES`, both rate limits
+(`RATE_LIMIT_AUTH`, `RATE_LIMIT_WRITES`, so cash on delivery can be offered, ADR-0044), the
+every-minute cron and Workers Logs. `send_email` stays commented out (ADR-0043).
+
+**Before you click:** R2 needs a payment method on the account (its free allowance still
+applies). Email Sending needs Workers Paid; leave it off until then.
+
+**Claiming the store.** The button does not ask for `OTTA_SETUP_TOKEN`. Either:
+
+- open the Worker's **Logs** in the dashboard right after the first deploy, visit
+  `/_emdash/admin` once, and search the logs for `[otta-setup]`: the line holds the setup link
+  (§2.2); or
+- before anyone visits the site, add `OTTA_SETUP_TOKEN` as a secret (Worker → Settings →
+  Variables and Secrets; at least 32 random characters of `A-Z a-z 0-9 - _`), and open
+  `/_emdash/admin/setup?setup_token=<it>`. Nothing is logged then.
+
+Finish the setup wizard with **Sample content** for the three demo products (unpriced until
+you price them, §2.2 step 3). Enter Stripe keys, or turn on cash on delivery, in the admin's
+Store settings afterwards.
+
+> **Turn off non-production branch builds.** Workers Builds also builds other branches, such
+> as Dependabot's, and uploads each as a preview version. A preview version shares your
+> production D1 database, and the first request to its preview URL runs that release's
+> **forward-only migrations against your live data**. In the dashboard: your Worker →
+> Settings → Builds → **Branch control** → turn off builds for non-production branches. Review
+> an update by reading its release notes, not by opening a preview.
+
+**Updates.** `.github/dependabot.yml` opens one pull request a week that bumps Otta, EmDash,
+Astro and Wrangler together. Merging it deploys the new version. If the build fails, nothing is
+deployed and the store keeps running the last version that built. A release that needs your
+repository's own files to change raises the **template contract**: the build then fails with
+`@urumi.ai/otta-store <version> needs template contract <n> …` and names the section of
+[`UPGRADING.md`](./UPGRADING.md) that says what to change. Make the change, set
+`otta({ template: <n> })`, and push.
+
+**Build settings.** `OTTA_EMAIL_FROM`, `OTTA_EMAIL_FROM_NAME` and `OTTA_EXTRA_ALLOWED_HOSTS` keep
+their meaning (§3, §4). In the template, set them as options in `astro.config.mjs`
+(`emailFrom`, `emailFromName`, `extraAllowedHosts`) or as **build variables** in Workers Builds
+(Settings → Builds → Variables), never as Worker secrets. The build guards run on the
+template too: the downloads bucket must not be the media bucket, and a sender needs the `EMAIL`
+binding.
+
+**Not yet verified (needs a real Cloudflare account):** that the button writes the created IDs
+into the cloned `wrangler.jsonc`; how its secret prompt treats an empty value; whether the
+`IMAGES` and rate-limit bindings deploy on Workers Free; whether a fresh store's first boot (all
+migrations plus the seed) fits Workers Free's CPU limit (`wrangler dev` does not enforce it);
+and how Workers Builds runs npm and Node 22 for this project.
+
 ## 3. Secrets & tokens checklist
 
 Three of these are **Worker secrets** on the site (`wrangler secret put`); the rest are
@@ -506,7 +598,7 @@ order of appearance in a deployment's life:
 > `import.meta.env.KEY`, into the worker bundle in plain text (issue #584). emdash's OAuth
 > routes name `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_SECRET`, `MICROSOFT_CLIENT_SECRET` and
 > their `EMDASH_OAUTH_*` forms, so a build that had one of those set shipped it. The build
-> guards against this (`sites/staging/src/lib/build-path-scrub.ts`):
+> guards against this (`sites/store/src/lib/build-path-scrub.ts`):
 >
 > - it **removes** secrets from its own `process.env` before Astro reads it, and warns with
 >   their names (never the values). A secret is any variable on the list there (emdash's
@@ -654,7 +746,7 @@ order of appearance in a deployment's life:
     longer than its hold TTL plus one sweep tick (7 days at the maximum `holdTtlMinutes`).
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
-> Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
+> Stripe delivers to `POST /webhooks/stripe` on the site (`sites/store/src/pages/webhooks/stripe.ts`)
 > — register **that** path in the Stripe dashboard, subscribed to exactly two events:
 > `payment_intent.succeeded` and `payment_intent.payment_failed`. Those are the only events the
 > settle route acts on — subscribe to nothing else. It is a transport shim: it reads the raw

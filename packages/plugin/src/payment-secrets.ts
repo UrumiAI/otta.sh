@@ -132,7 +132,7 @@ const MANAGED_IN_OTTA = "Managed in Otta → Store settings → General; saved e
 
 /**
  * The `admin.settingsSchema` the deploying site's Otta descriptor MUST declare
- * (`sites/staging/src/otta-plugin-descriptor.ts`, pinned by its site-config
+ * (`sites/store/src/otta-plugin-descriptor.ts`, pinned by its site-config
  * test). Keyed by the setting's name — the `ctx.kv` key without its
  * `settings:` prefix — because that is how EmDash's settings layer matches a
  * stored key to its field. Declaring a field `secret` is what makes EmDash

@@ -151,7 +151,7 @@ export const E2E_SEEDS = process.env["OTTA_E2E_SEED"] === "1";
  * Dev-only sign-in. §0.2 reaches for `/_emdash/api/setup/dev-bypass`, which
  * ALSO runs `applySeed(..., includeContent: true)` — re-seeding the site on
  * every spec is a side effect a read should not have (the repo's own seed
- * script says exactly this, `sites/staging/scripts/seed-demo-commerce.ts`, which refuses to re-seed a site that is fine). The
+ * script says exactly this, `sites/store/scripts/seed-demo-commerce.ts`, which refuses to re-seed a site that is fine). The
  * harness therefore defaults to the sign-in-only route and keeps §0.2's
  * seeding variant one env var away, for a run that wants a freshly seeded site.
  *
@@ -165,7 +165,7 @@ export const E2E_SEEDS = process.env["OTTA_E2E_SEED"] === "1";
  * INC-20 IS THE CASE THAT COMMENT ANTICIPATED, and the default STILL DOES NOT
  * MOVE. The migrated Orders screen does assert on ROWS, but seeding on every
  * sign-in would re-seed once per spec — the side effect the repo's own seed
- * script warns about (`sites/staging/scripts/seed-demo-commerce.ts`, which refuses to re-seed a site that is fine) — to serve a
+ * script warns about (`sites/store/scripts/seed-demo-commerce.ts`, which refuses to re-seed a site that is fine) — to serve a
  * handful of them. The row-dependent specs call {@link skipWithoutOrders}
  * instead: they state what they need, skip loudly when a run has no orders, and
  * FAIL under `OTTA_E2E_REQUIRE_SITE=1`, so a gate run cannot report green
@@ -405,7 +405,7 @@ export async function skipWithoutProducts(testInfo: TestInfo, rowCount: number):
 	if (rowCount > 0) return;
 	const how =
 		"the stack has no products, so this spec cannot exercise a row. Set " +
-		"OTTA_E2E_SEED=1 for this run, or run sites/staging/scripts/seed-demo-commerce.ts.";
+		"OTTA_E2E_SEED=1 for this run, or run sites/store/scripts/seed-demo-commerce.ts.";
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }
@@ -462,7 +462,7 @@ export async function skipWithoutPurchasableProduct(testInfo: TestInfo): Promise
 	const how =
 		"no product page on the storefront renders an add-to-cart form (every " +
 		"product is unpriced or out of stock). Seed the stack " +
-		"(sites/staging/scripts/seed-demo-commerce.ts), or price and stock a product.";
+		"(sites/store/scripts/seed-demo-commerce.ts), or price and stock a product.";
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }

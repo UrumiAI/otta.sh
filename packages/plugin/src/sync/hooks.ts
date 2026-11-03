@@ -132,11 +132,11 @@ import { syncVariants, type VariantSyncClient, type VariantSyncOutcome } from ".
  * (`packages/core/src/database/repositories/types.ts`) has no `title` member at
  * all. `mapRow()` copies every column NOT in `SYSTEM_COLUMNS` into `data`
  * (`repositories/content.ts`), `title` is an ordinary user-defined collection
- * field (`sites/staging/seed/seed.json` declares it `required` on `products`),
+ * field (`sites/store/seed/seed.json` declares it `required` on `products`),
  * and `contentItemToRecord = { ...item }` passes the item through verbatim — so
  * a hook receives the title at `content.data.title`. em-dash's own code reads it
  * that way (`query.ts`: "entries[0].data.title"; `seo/index.ts`: "title from
- * `data.title`"), as does this repo's theme (`sites/staging/src/lib/products.ts`
+ * `data.title`"), as does this repo's theme (`sites/store/src/lib/products.ts`
  * projects `data.title` into `CmsProductContent`).
  *
  * A collection that names its title field something else therefore syncs

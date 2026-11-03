@@ -25,7 +25,7 @@
  */
 import type { Failure } from "./console-api.js";
 
-/** The site endpoint's path prefix (`sites/staging/src/lib/download-upload.ts`). */
+/** The site endpoint's path prefix (`sites/store/src/lib/download-upload.ts`). */
 export const DOWNLOAD_UPLOAD_PATH_PREFIX = "/otta-admin/downloads/";
 
 /** The header the file's name travels in, percent-encoded. */
