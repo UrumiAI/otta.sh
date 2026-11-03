@@ -186,9 +186,10 @@ const MESSAGES: Record<string, string> = {
 	OFFLINE_NEEDS_PHYSICAL:
 		"Cash on delivery is only available for orders with items we deliver. Please choose another way to pay.",
 	// ADR-0044 decision C2: too many open cash-on-delivery orders for this buyer
-	// or network. Says what to do, and nothing about whose count it was.
+	// or network. Neutral: the count may be a shared network's, so it says what to
+	// do and never implies the buyer has orders open.
 	OFFLINE_ORDER_LIMIT:
-		"You already have as many cash-on-delivery orders waiting for payment as this store allows. Please pay another way, or order again once an earlier order has been delivered and paid.",
+		"Cash on delivery isn't available for this order right now. Please choose another payment method.",
 	...SELECTION_MESSAGES,
 	// ── Customer account (issue #306, ADR-0004) ─────────────────────────────
 	// A failed magic link. Each says what to do next, and none says anything

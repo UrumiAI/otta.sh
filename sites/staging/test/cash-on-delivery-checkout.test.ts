@@ -297,11 +297,17 @@ describe("buyer copy for the COD refusals", () => {
 	test.each([
 		["PAYMENT_METHOD_UNAVAILABLE", /isn't available for this order/],
 		["OFFLINE_NEEDS_PHYSICAL", /only available for orders with items we deliver/],
-		["OFFLINE_ORDER_LIMIT", /cash-on-delivery orders waiting for payment/],
+		["OFFLINE_ORDER_LIMIT", /isn't available for this order right now/],
 		["SHIPPING_PHONE_REQUIRED", /phone number for cash on delivery/],
 	])("%s says what happened and what to do", (token, copy) => {
 		expect(cartErrorMessage(token)).toMatch(copy);
 		expect(cartErrorMessage(token)).not.toBe(cartErrorMessage("SOMETHING_UNKNOWN"));
+	});
+
+	test("OFFLINE_ORDER_LIMIT is neutral: it never implies the buyer has orders open", () => {
+		const copy = cartErrorMessage("OFFLINE_ORDER_LIMIT");
+		expect(copy).toMatch(/choose another payment method/);
+		expect(copy).not.toMatch(/already|waiting|earlier order|you have/i);
 	});
 });
 
