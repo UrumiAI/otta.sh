@@ -41,8 +41,8 @@
  *    keeps the expression as written (`import.meta.env.DEV`) and the
  *    CONSUMER's bundler rewrites it: Vite folds it to `false` in any build with
  *    `NODE_ENV=production`, and a bundle that never rewrites it (no Vite, the
- *    workerd sandbox) has no `import.meta.env`, so reading it throws, which is
- *    caught and read as off.
+ *    workerd sandbox) has no env object on `import.meta`, so reading it throws,
+ *    which is caught and read as off.
  *
  * The webhook secret is still required: the order is marked paid only by a
  * signed `payment_intent.succeeded`, verified by the same HMAC as production.
@@ -101,15 +101,19 @@ declare const __OTTA_DEV_STRIPE_OFFLINE__: unknown;
  * `true`, AND this is a Vite dev build. Exported so a test pins each guard.
  *
  * `import.meta.env.DEV` is SPELLED LITERALLY, as one member expression, with no
- * cast around `import.meta` and NO optional chaining. Vite and vitest find it by
- * its text: `(import.meta as …).env` is not rewritten — measured under vitest,
- * where the cast form read the unstubbed `true` after `vi.stubEnv("DEV",
- * false)`. And `import.meta.env?.DEV` is worse: Vite does not see the member, so
- * it replaces the BARE `import.meta.env` with the whole build environment as an
- * object literal. A site that bundles the published `dist` (ADR-0045) then
- * shipped its builder's HOME, PATH and every other non-secret variable in the
- * Worker. Outside Vite, where `import.meta.env` does not exist, the read
- * throws; the `catch` reads that as "not dev".
+ * cast around `import.meta` and no optional chaining. Vite and vitest find it by
+ * its text: a cast form is not rewritten — measured under vitest, where it read
+ * the unstubbed `true` after `vi.stubEnv("DEV", false)`.
+ *
+ * NOTHING IN THIS PACKAGE MAY SPELL THE ENV OBJECT ANY OTHER WAY — not in code
+ * and not in a comment, because the published `dist` keeps comments (ADR-0045).
+ * Astro's env plugin scans a module's TEXT: one mention of the env object that
+ * is not a `.KEY` member read (optional chaining included) makes it replace the
+ * object with a literal holding every build variable whose NAME appears anywhere
+ * in the module. A site bundling the old `dist` shipped its builder's HOME, PATH
+ * and TERM in the Worker that way. `test/stripe-wiring.test.ts` scans every line
+ * of `src`, comments included. Outside Vite the member read throws, and the
+ * `catch` reads that as "not dev".
  */
 export function devStripeOfflineEnabled(): boolean {
 	const baked =
@@ -120,7 +124,7 @@ export function devStripeOfflineEnabled(): boolean {
 	// that site's check as unused.
 	let devBuild = false;
 	try {
-		// @ts-ignore -- `import.meta.env` is Vite's; see the comment above.
+		// @ts-ignore -- the env object is Vite's; see the comment above.
 		devBuild = import.meta.env.DEV === true;
 	} catch {
 		devBuild = false;

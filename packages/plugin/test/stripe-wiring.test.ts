@@ -202,7 +202,10 @@ describe("stripeGatewayFromCtx — the dev-only offline arm (issue #378)", () =>
 });
 
 describe("the dev gate never hands a consumer's bundler a bare import.meta.env (ADR-0045)", () => {
-	test("every CODE use of import.meta.env in src is a plain member read, never `?.` or bare", () => {
+	test("every line of src, COMMENTS INCLUDED, names import.meta.env only as a `.KEY` member read", () => {
+		// Astro's env plugin scans the module text, and the published dist keeps
+		// comments: one bare (or `?.`) mention makes it inline every build variable
+		// whose name appears in the module.
 		const offenders: string[] = [];
 		const src = fileURLToPath(new URL("../src", import.meta.url));
 		for (const file of readdirSync(src, { recursive: true }).map(String)) {
@@ -210,12 +213,8 @@ describe("the dev gate never hands a consumer's bundler a bare import.meta.env (
 			readFileSync(path.join(src, file), "utf8")
 				.split("\n")
 				.forEach((line, index) => {
-					const code = line.trim();
-					if (code.startsWith("*") || code.startsWith("//") || code.startsWith("/*")) return;
-					// Vite rewrites `import.meta.env.KEY`; anything else makes it inline
-					// the whole build environment as an object.
-					if (/import\.meta\.env(?!\.[A-Z_]+\b)/.test(code)) {
-						offenders.push(`${file}:${String(index + 1)}: ${code}`);
+					if (/import\.meta\.env(?!\.[A-Z_]+\b)/.test(line)) {
+						offenders.push(`${file}:${String(index + 1)}: ${line.trim()}`);
 					}
 				});
 		}

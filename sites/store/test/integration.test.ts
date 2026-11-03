@@ -6,7 +6,7 @@
  * `default-email.test.ts` and `build-path-leak.test.ts`, which run the real
  * hook through the staging site's config.
  */
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -184,5 +184,29 @@ describe("package files", () => {
 			"playground-star.js",
 			"region-picker.js",
 		]);
+	});
+});
+
+describe("the runtime source a site's Vite build compiles from node_modules", () => {
+	// Astro's env plugin scans each module's TEXT. One mention of import.meta.env
+	// that is not a `.KEY` member read — comments included — makes it inline every
+	// build variable whose name appears in that module into the Worker. The
+	// build-time modules run in Node and are never bundled into the Worker.
+	const BUILD_TIME_ONLY = new Set(["integration.ts", path.join("lib", "build-path-scrub.ts")]);
+
+	test("names import.meta.env only as a `.KEY` member read, in code and comments", () => {
+		const offenders: string[] = [];
+		const src = path.join(PKG, "src");
+		for (const file of readdirSync(src, { recursive: true }).map(String)) {
+			if (!/\.(ts|astro)$/.test(file) || BUILD_TIME_ONLY.has(file)) continue;
+			readFileSync(path.join(src, file), "utf8")
+				.split("\n")
+				.forEach((line, index) => {
+					if (/import\.meta\.env(?!\.[A-Z_]+\b)/.test(line)) {
+						offenders.push(`${file}:${String(index + 1)}`);
+					}
+				});
+		}
+		expect(offenders).toEqual([]);
 	});
 });
