@@ -317,6 +317,9 @@ const viteLoadEnv: LoadEnv = (
 	}
 ).loadEnv;
 
+/** The name a leaked `PATH` is reported under. */
+export const WHOLE_ENV_MARKER = "PATH (the whole build environment was inlined)";
+
 const LEAK_HELP =
 	"Astro writes a variable from the build's env or a .env file into the bundle when its name " +
 	"appears next to `import.meta.env` (or is read as `import.meta.env.KEY`). Remove it from the " +
@@ -416,6 +419,13 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 						for (const [key, value] of buildSecretEnvValues(viteLoadEnv(mode, envDir, ""))) {
 							secrets.set(key, value);
 						}
+					}
+					// Not a secret, but no module reads PATH: its value in the bundle means a
+					// module handed Vite a BARE `import.meta.env` (or `import.meta.env?.KEY`),
+					// which it replaces with the whole build environment — every variable,
+					// secret-shaped or not (found in the published plugin, ADR-0045).
+					if (process.env.PATH !== undefined) {
+						secrets.set(WHOLE_ENV_MARKER, process.env.PATH);
 					}
 					// A prerendered page renders on the server but is written to the CLIENT
 					// output, which is uploaded as public static assets: search it too.

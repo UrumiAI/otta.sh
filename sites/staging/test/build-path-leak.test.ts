@@ -47,6 +47,7 @@ import {
 	scrubBuildPaths,
 	scrubBuildPathsInDir,
 	workspaceRoot,
+	WHOLE_ENV_MARKER,
 } from "../../store/src/lib/build-path-scrub.js";
 
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -448,6 +449,21 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 			expect(failure).toBeUndefined();
 			expect(existsSync(path.join(server, ".dev.vars"))).toBe(false);
 			expect(existsSync(path.join(server, "entry.mjs"))).toBe(true);
+		}));
+
+	test("the builder's PATH in the bundle fails it: a bare import.meta.env inlined the WHOLE env", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			process.env.PATH = "/opt/build/node_modules/.bin:/usr/local/bin:/usr/bin:/bin";
+			writeFileSync(
+				path.join(server, "plugin_X.mjs"),
+				withInlinedEnv(`\tPATH: ${JSON.stringify(process.env.PATH)}`),
+			);
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain(`plugin_X.mjs: ${WHOLE_ENV_MARKER}`);
+			expect(failure).not.toContain("/usr/local/bin");
+			expect(existsSync(server)).toBe(false);
 		}));
 
 	test("passes a server bundle with no secret in it", () =>
