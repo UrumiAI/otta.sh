@@ -151,6 +151,7 @@
 import {
 	assertSweepLimit,
 	AUTO_CANCEL_ACTOR,
+	CouponReleaseDeferredError,
 	cancelDueIntents,
 	cancelUnpaidOfflineOrders,
 	COUPON_RECOUNT_SETTLE_MS,
@@ -671,13 +672,13 @@ export const PRODUCT_ORPHAN_DELETE_CALLS = 4;
  *  guarded delete, and the cart's guarded delete. */
 export const PRUNE_CART_CALLS = 5;
 
-/** One stale COD order's auto-cancel (`LEG_QUERY_COSTS`), MEASURED at 22 in
+/** One stale COD order's auto-cancel (`LEG_QUERY_COSTS`), MEASURED at 21 in
  *  cron-leg-costs.test.ts: its read, the captured-payments check, the cancel (the
  *  guarded flip with its release intent and email, the rollup delta, the hold
  *  release) and an order-scoped coupon release that finds nothing. A coupon use to
  *  free is begun only inside the commit window, as an expiry's is
  *  (`COUPON_RELEASE_CALLS`). */
-export const COD_AUTO_CANCEL_UNIT = 22;
+export const COD_AUTO_CANCEL_UNIT = 21;
 
 /** One coupon's recount at worst (`EmdashCouponStore.recountUses`): the coupon read,
  *  its in-flight and applied counts, and the correcting write. */
@@ -2109,7 +2110,8 @@ export async function runCommerceSweeps(
 						async releaseByOrder(order: Parameters<typeof wholeOnly.releaseByOrder>[0]) {
 							const released = await wholeOnly.releaseByOrder(order);
 							if (releaseSkipped) {
-								throw new Error(
+								// A deferral, not a fault: the domain logs it at info (R3-4).
+								throw new CouponReleaseDeferredError(
 									"coupon release deferred to a later tick (the tick's query budget)",
 								);
 							}
@@ -4361,9 +4363,11 @@ function addDays(day: string, delta: number): string {
  * fact, handing back a per-customer slot for a coupon a real order consumed. A
  * change to that policy belongs in an ADR, not in a sweeper. The one exception is
  * that ADR's own: a cash-on-delivery order cancelled by the AUTO-CANCEL (ADR-0044
- * §6, `cancelledBy` = `AUTO_CANCEL_ACTOR`) is owed its use back, and this arm is the
- * retry for a release `cod-auto-cancel` skipped or lost, as the expired arm is for
- * `expireOrders`.
+ * §6, `cancelledBy` = `AUTO_CANCEL_ACTOR`) is owed its use back. Since review round
+ * 2 the auto-cancel frees the use BEFORE it cancels, and retries the order itself
+ * when that fails — so this arm is defence in depth (a redemption this walk has not
+ * yet passed, released twice is a no-op), NOT the retry. It cannot be: the walk
+ * judges a redemption once, usually while its order is still unpaid and live.
  *
  * WHY NOT JUST CALL `reconcileCouponRedemptions`. Its rule is reused verbatim and
  * its grace default is imported rather than re-picked, but its READ cannot be: it
@@ -4461,8 +4465,8 @@ async function releaseOrphanedRedemptions(
 		}
 		// No holder (or a lapsed claim) is an orphan; an EXPIRED order is owed its
 		// coupon back and may have lost the release to a crash (see above), and so is a
-		// COD order the AUTO-CANCEL cancelled (ADR-0044 §6: nobody chose to keep it,
-		// and the leg skips a release the tick cannot afford). Every other state keeps
+		// COD order the AUTO-CANCEL cancelled (ADR-0044 §6: nobody chose to keep it —
+		// defence in depth; the auto-cancel frees it first itself). Every other state keeps
 		// it — `awaiting_payment` and `shipped_awaiting_payment` included: an unpaid
 		// COD order is live and owns its use, so the walk passes it like a paid one
 		// (review finding 2) rather than waiting on a hold deadline it never had.
