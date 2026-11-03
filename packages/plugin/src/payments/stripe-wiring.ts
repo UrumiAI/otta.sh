@@ -38,10 +38,11 @@
  *    (`sites/staging/src/lib/e2e-stripe-offline.ts`). A site that never bakes
  *    it can never arm this path.
  *  - DEFENCE IN DEPTH: `import.meta.env.DEV` is `true`. The published `dist`
- *    keeps the expression as written (`import.meta.env?.DEV`) and the
+ *    keeps the expression as written (`import.meta.env.DEV`) and the
  *    CONSUMER's bundler rewrites it: Vite folds it to `false` in any build with
  *    `NODE_ENV=production`, and a bundle that never rewrites it (no Vite, the
- *    workerd sandbox) has no `import.meta.env` and reads it as off.
+ *    workerd sandbox) has no `import.meta.env`, so reading it throws, which is
+ *    caught and read as off.
  *
  * The webhook secret is still required: the order is marked paid only by a
  * signed `payment_intent.succeeded`, verified by the same HMAC as production.
@@ -99,12 +100,16 @@ declare const __OTTA_DEV_STRIPE_OFFLINE__: unknown;
  * independently, as the module doc explains: the site's define is the literal
  * `true`, AND this is a Vite dev build. Exported so a test pins each guard.
  *
- * `import.meta.env` is SPELLED LITERALLY, with no cast around `import.meta`:
- * Vite and vitest find it by its text, and `(import.meta as …).env` is not
- * rewritten — measured under vitest, where the cast form read the unstubbed
- * `true` after `vi.stubEnv("DEV", false)`. The `?.` is for every bundle outside
- * Vite, where `import.meta.env` does not exist and must read as "not dev"
- * rather than throw.
+ * `import.meta.env.DEV` is SPELLED LITERALLY, as one member expression, with no
+ * cast around `import.meta` and NO optional chaining. Vite and vitest find it by
+ * its text: `(import.meta as …).env` is not rewritten — measured under vitest,
+ * where the cast form read the unstubbed `true` after `vi.stubEnv("DEV",
+ * false)`. And `import.meta.env?.DEV` is worse: Vite does not see the member, so
+ * it replaces the BARE `import.meta.env` with the whole build environment as an
+ * object literal. A site that bundles the published `dist` (ADR-0045) then
+ * shipped its builder's HOME, PATH and every other non-secret variable in the
+ * Worker. Outside Vite, where `import.meta.env` does not exist, the read
+ * throws; the `catch` reads that as "not dev".
  */
 export function devStripeOfflineEnabled(): boolean {
 	const baked =
@@ -113,8 +118,13 @@ export function devStripeOfflineEnabled(): boolean {
 	// `vite/client` types (so `env` is unknown to it), but a Vite site that
 	// type-checks this source DOES have them, and an expect-error would then fail
 	// that site's check as unused.
-	// @ts-ignore -- `import.meta.env` is Vite's; see the comment above.
-	const devBuild = import.meta.env?.DEV === true;
+	let devBuild = false;
+	try {
+		// @ts-ignore -- `import.meta.env` is Vite's; see the comment above.
+		devBuild = import.meta.env.DEV === true;
+	} catch {
+		devBuild = false;
+	}
 	return baked && devBuild;
 }
 
