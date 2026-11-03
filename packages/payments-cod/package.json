@@ -1,0 +1,46 @@
+{
+	"name": "@urumi.ai/otta-payments-cod",
+	"version": "0.2.0",
+	"description": "Cash-on-delivery PaymentGateway adapter for Otta: an OFFLINE method (ADR-0042). No online payment, no webhook and no secrets; the order is placed at checkout and a person marks it paid once the cash is collected. Turned on with the \"Cash on delivery\" toggle on the Otta Settings page.",
+	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
+	"bugs": {
+		"url": "https://github.com/UrumiAI/otta.sh/issues"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/UrumiAI/otta.sh.git",
+		"directory": "packages/payments-cod"
+	},
+	"files": [
+		"dist",
+		"!dist/tsc",
+		"!dist/**/*.d.mts.map"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.mjs"
+			}
+		},
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"prepublishOnly": "tsdown"
+	},
+	"dependencies": {
+		"@urumi.ai/otta-domain": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "catalog:",
+		"tsdown": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}
