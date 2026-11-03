@@ -50,7 +50,7 @@
 	},
 	"scripts": {
 		"build": "tsdown",
-		"prepublishOnly": "tsdown",
+		"prepack": "tsdown",
 		"typecheck": "astro check"
 	},
 	"dependencies": {

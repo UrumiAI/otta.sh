@@ -33,7 +33,7 @@
 	},
 	"scripts": {
 		"build": "tsdown",
-		"prepublishOnly": "tsdown",
+		"prepack": "tsdown",
 		"test:d1": "vitest run --config vitest.d1.config.ts"
 	},
 	"dependencies": {

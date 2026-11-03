@@ -58,7 +58,7 @@
 	},
 	"scripts": {
 		"build": "tsdown",
-		"prepublishOnly": "tsdown"
+		"prepack": "tsdown"
 	},
 	"dependencies": {
 		"@urumi.ai/otta-admin-presentation": "workspace:*",
