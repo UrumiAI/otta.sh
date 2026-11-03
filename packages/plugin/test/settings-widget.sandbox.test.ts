@@ -1952,19 +1952,20 @@ async function dropOrders(ids: readonly string[]): Promise<void> {
 	for (const id of ids) await orders.delete(id);
 }
 
+/** A COD form submit: on, with instructions, plus `values`. */
+function codSave(boot: SandboxHandle, values: Record<string, unknown>) {
+	return boot.invokeRoute("admin", {
+		type: "form_submit",
+		action_id: "save-cash-on-delivery",
+		values: { codEnabled: true, codInstructions: "Exact change.", ...values },
+	});
+}
+
 describe("Settings: lowering the cash-on-delivery auto-cancel window (B flag 4)", () => {
 	const seeded: string[] = [];
 	afterEach(async () => {
 		await dropOrders(seeded.splice(0));
 	});
-
-	function codSave(boot: SandboxHandle, values: Record<string, unknown>) {
-		return boot.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-cash-on-delivery",
-			values: { codEnabled: true, codInstructions: "Exact change.", ...values },
-		});
-	}
 
 	test("the confirm action is a Settings action", () => {
 		expect(SETTINGS_ACTION_IDS.has(COD_CONFIRM)).toBe(true);
