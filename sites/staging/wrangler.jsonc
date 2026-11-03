@@ -80,6 +80,14 @@
 			"bucket_name": "your-downloads-bucket",
 		},
 	],
+	// Default email provider (ADR-0042): the `send_email` binding EmDash's
+	// first-party Cloudflare provider sends through, named EMAIL. Unrestricted
+	// sender binding (no destination_address), so it can mail any buyer. It does
+	// nothing until OTTA_EMAIL_FROM is set at BUILD time AND the sender's domain is
+	// onboarded for Cloudflare Email Sending (DEPLOYMENT.md §3, Email). Leaving
+	// the binding declared with no sender configured is harmless: no provider is
+	// registered, so nothing is sent (ADR-0031's fail-closed state).
+	"send_email": [{ "name": "EMAIL" }],
 	// Console logs stay on. Per-request invocation logs are off: they record the
 	// request URL with its query, and the order return URL carries Stripe's
 	// payment_intent_client_secret (#551), which would be stored for 3-7 days.

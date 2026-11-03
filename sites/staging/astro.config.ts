@@ -16,6 +16,7 @@ import emdash from "emdash/astro";
 import { parseExtraAllowedHosts } from "@urumi.ai/otta-plugin";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
+import { parseEmailFrom } from "./src/lib/email-from.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
 import { buildPathScrub } from "./src/lib/build-path-scrub.js";
 import { devStripeOfflineIntegration } from "./src/lib/e2e-stripe-offline.js";
@@ -41,7 +42,8 @@ function readDotEnv(name: string): string | undefined {
  * refuses. So one const, both consumers. Operator-supplied egress plugs in here.
  *
  * NO EMAIL URL. Email goes through EmDash's `ctx.email` (ADR-0031): install and
- * select an EmDash email provider; otta grants itself no email host.
+ * select an EmDash email provider; otta grants itself no email host. The site's
+ * default provider is wired below (`emailFrom`, ADR-0042).
  *
  * NEVER SECRETS. API credentials live in write-only plugin kv (the `settings:`
  * keys `payment-secrets.ts` owns), provisioned through the admin Settings form —
@@ -61,6 +63,17 @@ const egress = {
 		process.env.OTTA_EXTRA_ALLOWED_HOSTS ?? readDotEnv("OTTA_EXTRA_ALLOWED_HOSTS"),
 	),
 };
+
+/**
+ * The default email provider's sender (ADR-0042). Unset registers NO provider
+ * (fail-closed, ADR-0031). Validated here so a malformed address fails the
+ * build. Not a secret and not a wrangler `vars` entry: it is baked into the
+ * provider's descriptor at build time. The playground does not receive it.
+ */
+const emailFrom = parseEmailFrom(
+	process.env.OTTA_EMAIL_FROM ?? readDotEnv("OTTA_EMAIL_FROM"),
+	process.env.OTTA_EMAIL_FROM_NAME ?? readDotEnv("OTTA_EMAIL_FROM_NAME"),
+);
 
 /** The playground config (`astro.config.playground.ts`) registers the same
  *  egress. Re-exported so the two builds cannot resolve hosts twice. */
@@ -239,7 +252,7 @@ export default defineConfig({
 	// worker bundle once the build is done; see src/lib/build-path-scrub.ts.
 	integrations: [
 		react(),
-		emdash(buildEmdashOptions(egress)),
+		emdash(buildEmdashOptions(egress, emailFrom)),
 		devStripeOfflineIntegration(),
 		buildPathScrub(),
 	],
