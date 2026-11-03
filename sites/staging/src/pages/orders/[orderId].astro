@@ -307,7 +307,10 @@ const canResume =
    offers it (QA2 M3). */
 const lateRefundUnrecorded =
 	deadEnd && !holdLapsed && returnedPaid && (order?.latePayment ?? "none") !== "refunded";
-const canCheckAgain = (isPending || lateRefundUnrecorded) && !shouldPoll;
+/* ADR-0042: a placed cash-on-delivery order changes only when the merchant acts
+   — days later, on delivery — so there is nothing to check again for. */
+const canCheckAgain =
+	((isPending && order?.paymentMethod !== "cod") || lateRefundUnrecorded) && !shouldPoll;
 const hasActions = deadEnd || canResume || canCheckAgain;
 
 /** A resume that could not reach the pay page says why here — only for the
