@@ -416,7 +416,7 @@ export function offlinePaymentContract(
 				new Date(later.getTime() - 14 * DAY_MS).toISOString(),
 				10,
 			);
-			expect([...listed].sort()).toEqual([stale.order.id, half.order.id].sort());
+			expect([...listed].toSorted()).toEqual([stale.order.id, half.order.id].toSorted());
 
 			const res = await cancelUnpaidOfflineOrders(
 				{
