@@ -147,6 +147,8 @@ function checkoutModel(errorMessage: string | null): CheckoutModel {
 		paymentMethods: [
 			{ value: "stripe", label: "Card", note: "Pay securely by card on the next step." },
 		],
+		chosenMethod: "stripe",
+		codDetails: null,
 		notConfiguredLead: "",
 		emailValue: "",
 		emailNote: "",

@@ -58,6 +58,9 @@ export interface CheckoutDraft {
 	error?: string;
 	/** A coupon code refused AT PLACE — the redirect drops it from the URL. */
 	coupon?: string;
+	/** The payment method chosen (ADR-0044), so a refused cash-on-delivery place
+	 *  comes back with cash on delivery still chosen. */
+	method?: "stripe" | "cod";
 }
 
 /** A value longer than this was not typed into this form (each field's own bound
@@ -107,6 +110,8 @@ function clean(raw: unknown): CheckoutDraft | null {
 	};
 	const error = record["error"];
 	if (typeof error === "string" && TOKEN_SHAPE.test(error)) draft.error = error;
+	const method = record["method"];
+	if (method === "stripe" || method === "cod") draft.method = method;
 	const coupon = record["coupon"];
 	if (typeof coupon === "string" && coupon.length > 0 && coupon.length <= COUPON_MAX) {
 		draft.coupon = coupon;
@@ -205,6 +210,9 @@ export function fieldErrorCopy(
 	if (field === "email") return "Enter an email address like name@example.com.";
 	if (field === "region" && error === "stale") {
 		return "Pick your state/province again — the list changed with the country you chose.";
+	}
+	if (field === "phone" && error === "missing") {
+		return "Enter a phone number — it's needed for cash on delivery.";
 	}
 	if (error === "missing") {
 		return context.addressRequired === true

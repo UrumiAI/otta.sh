@@ -110,7 +110,7 @@ describe("8b — the guards around the degraded state", () => {
 		// ADR-0044: per METHOD — card only when Stripe is ready, cash on delivery
 		// only when switched on; the endpoint refuses a method not on offer.
 		expect(page).toContain("readCheckoutPaymentConfig");
-		expect(page).toContain("paymentConfig.methods.length > 0");
+		expect(page).toContain("offered.methods.length > 0");
 		expect(endpoint).toContain("paymentConfig.methods.find(");
 	});
 

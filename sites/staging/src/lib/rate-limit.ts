@@ -319,6 +319,31 @@ function limiterFrom(
 		: undefined;
 }
 
+/**
+ * ADR-0044 decision C1: cash on delivery is offered and accepted only where the
+ * per-IP write limit runs — it is the bound on how fast one client can mint
+ * unpaid orders that hold stock. The plugin cannot see the site's bindings, so
+ * the site asks here. Unlike the limiter itself, this does NOT fail open: no
+ * binding, no cash on delivery.
+ */
+export function hasWriteLimit(env: Record<string, unknown> | undefined): boolean {
+	return limiterFrom(env, "writes") !== undefined;
+}
+
+/**
+ * The client key a cash-on-delivery placement carries (ADR-0044 §7): the
+ * client's network, as the write limit keys it (`clientNetwork`) — sent only
+ * once that limit has run, i.e. only with the binding. `null` when there is no
+ * binding or no client address; the caller then refuses the method.
+ */
+export function offlineClientKey(
+	env: Record<string, unknown> | undefined,
+	headers: Headers,
+): string | null {
+	if (!hasWriteLimit(env)) return null;
+	return clientNetwork(clientAddress(headers));
+}
+
 const loggedMissing = new Set<RateLimitClass>();
 /** A failing binding is logged at most this often, so an ongoing outage stays
  *  visible in the logs without one line per request. */

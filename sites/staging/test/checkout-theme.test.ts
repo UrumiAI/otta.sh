@@ -201,10 +201,12 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		expect(text).toContain("Stripe accounts in India need the buyer's name and address");
 		// A cart that ships nothing is not "delivered": the block is the buyer's address.
 		expect(text).toMatch(/summary\.requiresShipping \? "Delivery address" : "Billing address"/);
-		// The country select is marked required like the typed fields.
+		// The country select is marked required like the typed fields — where the
+		// address is required (the account's rule, or cash on delivery: ADR-0044).
 		expect(VIEW).toMatch(
-			/Country\{summary\.addressRequired && <span class="checkout-req">required<\/span>\}/,
+			/const addressReq = summary\.addressRequired \|\| codDetails === "always";/,
 		);
+		expect(VIEW).toMatch(/Country\{addressReq \? <span class="checkout-req">required<\/span>/);
 	});
 
 	test("review B: the required address fields say so to assistive tech, not only in the label", () => {
@@ -214,7 +216,7 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 					VIEW.slice(VIEW.indexOf('<fieldset class="checkout-group">')),
 				)?.[0] ?? "";
 			// Omitted — never `aria-required="false"` — when the address is optional.
-			expect(field, name).toContain('aria-required={summary.addressRequired ? "true" : undefined}');
+			expect(field, name).toContain('aria-required={addressReq ? "true" : undefined}');
 		}
 	});
 

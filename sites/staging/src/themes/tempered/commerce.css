@@ -534,6 +534,22 @@
 [data-theme-id] .checkout-payment-option > span {
 	display: grid;
 }
+/* ADR-0044: with a choice of method, the place button carries both labels and
+   shows the one for the checked radio — no script. Card's is the default, so a
+   browser without `:has()` reads "Continue to payment" over the default radio. */
+[data-theme-id] .checkout-submit-cod {
+	display: none;
+}
+[data-theme-id]
+	.checkout-details:has(input[name="paymentMethod"][value="cod"]:checked)
+	.checkout-submit-cod {
+	display: inline;
+}
+[data-theme-id]
+	.checkout-details:has(input[name="paymentMethod"][value="cod"]:checked)
+	.checkout-submit-card {
+	display: none;
+}
 [data-theme-id] .checkout-note {
 	margin: 0;
 	font-size: 0.75rem;

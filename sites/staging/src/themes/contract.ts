@@ -436,6 +436,14 @@ export interface CheckoutModel {
 	 *  `note` is the line under each — for cash on delivery, the merchant's
 	 *  instructions when set. */
 	paymentMethods: { value: "stripe" | "cod"; label: string; note: string }[];
+	/** The method checked when the page renders (a refused place's choice, else
+	 *  the first); null when none is offered. */
+	chosenMethod: "stripe" | "cod" | null;
+	/** ADR-0044 §8: cash on delivery needs a full delivery address and a phone.
+	 *  `always` — it is the only method; `when-chosen` — a choice, so the fields
+	 *  are required only for it; null — not offered. A view marks the address
+	 *  and phone fields accordingly and always renders the phone field. */
+	codDetails: "always" | "when-chosen" | null;
 	/** STRIPE_NOT_CONFIGURED's copy, quoted. */
 	notConfiguredLead: string;
 	/** The email field's initial value: what the buyer typed before a refused

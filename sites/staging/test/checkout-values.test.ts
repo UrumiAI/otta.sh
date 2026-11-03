@@ -1077,7 +1077,7 @@ describe("/checkout reads the draft back", () => {
 		expect(page).toMatch(/const draftAddress = draftAddressValues\(draft\);/);
 		expect(page).toMatch(/^\taddressValues,$/m);
 		expect(page).toMatch(
-			/fieldErrors: shownFieldErrors\(draft, shownError, \{\s*addressRequired: summary\.paymentAccountNeedsAddress,?\s*\}\)/,
+			/fieldErrors: shownFieldErrors\(draft, shownError, \{[\s\S]*?addressRequired: summary\.paymentAccountNeedsAddress \|\| draft\?\.method === "cod",?\s*\}\)/,
 		);
 	});
 

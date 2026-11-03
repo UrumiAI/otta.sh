@@ -101,3 +101,29 @@ export function paymentMethodName(method: string | null): string | null {
 	if (method === "cod") return "Cash on delivery";
 	return null;
 }
+
+/** Why cash on delivery, switched on, is not offered for this checkout. */
+export type CodWithheld = "no-write-limit" | "nothing-ships";
+
+/**
+ * The methods THIS checkout offers (ADR-0044 decisions C1 and D): cash on
+ * delivery only where the site's per-IP write limit runs (`RATE_LIMIT_WRITES`,
+ * `hasWriteLimit`) and only for a cart with something to deliver
+ * (`summary.requiresShipping`). Card is untouched. `codWithheld` says why a
+ * switched-on COD was dropped, so the page can say so when nothing is left.
+ */
+export function checkoutMethodsFor(
+	methods: readonly CheckoutPaymentMethod[],
+	context: { writeLimit: boolean; ships: boolean },
+): { methods: CheckoutPaymentMethod[]; codWithheld: CodWithheld | null } {
+	if (!methods.includes("cod")) return { methods: [...methods], codWithheld: null };
+	const codWithheld: CodWithheld | null = !context.writeLimit
+		? "no-write-limit"
+		: !context.ships
+			? "nothing-ships"
+			: null;
+	return {
+		methods: codWithheld === null ? [...methods] : methods.filter((method) => method !== "cod"),
+		codWithheld,
+	};
+}

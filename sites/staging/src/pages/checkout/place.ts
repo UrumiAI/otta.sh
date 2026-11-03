@@ -34,6 +34,7 @@ import {
 	type CheckoutPlaceRouteResult,
 } from "@urumi.ai/otta-plugin";
 import type { APIContext, APIRoute } from "astro";
+import { env } from "virtual:emdash/env";
 import { currentSessionToken } from "../../lib/account.js";
 import {
 	currentCartId,
@@ -74,6 +75,7 @@ import {
 	DELIVERY_ERROR_ID,
 	placeRefusalNoticeId,
 } from "../../lib/error-notice.js";
+import { offlineClientKey } from "../../lib/rate-limit.js";
 import { readCheckoutPaymentConfig } from "../../lib/stripe-config.js";
 import {
 	busyResponse,
@@ -96,6 +98,8 @@ const INVALID_EMAIL = "INVALID_EMAIL";
 const INVALID_SHIPPING_ADDRESS = "INVALID_SHIPPING_ADDRESS";
 const STRIPE_NOT_CONFIGURED = "STRIPE_NOT_CONFIGURED";
 const PAYMENT_METHOD_UNAVAILABLE = "PAYMENT_METHOD_UNAVAILABLE";
+const MISSING_SHIPPING_ADDRESS = "MISSING_SHIPPING_ADDRESS";
+const SHIPPING_PHONE_REQUIRED = "SHIPPING_PHONE_REQUIRED";
 /** The site's own token for a review page placed for a cart the cookie no
  *  longer names (see the module doc). */
 const CHECKOUT_STALE = "CHECKOUT_STALE";
@@ -243,6 +247,11 @@ async function place(context: APIContext): Promise<Response> {
 	// What the buyer typed, kept across every refusal below (QA U-1) — in the
 	// draft cookie, never in the redirect URL (see lib/checkout-draft.ts).
 	const draftValues = draftValuesFromForm(form);
+	// The method chosen rides the draft too (ADR-0044), so a refused cash-on-
+	// delivery place comes back with cash on delivery still chosen.
+	const postedMethod = formString(form.get("paymentMethod"));
+	const draftMethod: { method?: "stripe" | "cod" } =
+		postedMethod === "stripe" || postedMethod === "cod" ? { method: postedMethod } : {};
 	// A zoned store's review carries the destination it priced as hidden
 	// fields (see readShippingAddress).
 	const zoned = formString(form.get("addressMode")) === "zoned";
@@ -287,6 +296,7 @@ async function place(context: APIContext): Promise<Response> {
 	): Response => {
 		const draft = {
 			values: draftValues,
+			...draftMethod,
 			errors: extra.fields ?? {},
 			...(error !== undefined ? { error } : {}),
 			...(extra.coupon !== undefined ? { coupon: extra.coupon } : {}),
@@ -494,11 +504,30 @@ async function place(context: APIContext): Promise<Response> {
 		writeCheckoutDraft(context.cookies, { values: draftValues, errors: {} });
 		return busyResponse("/checkout");
 	}
-	const chosenMethod = formString(form.get("paymentMethod")) ?? "stripe";
+	const chosenMethod = postedMethod ?? "stripe";
 	const paymentMethod = paymentConfig.methods.find((method) => method === chosenMethod);
 	if (paymentMethod === undefined) {
 		const token = chosenMethod === "stripe" ? STRIPE_NOT_CONFIGURED : PAYMENT_METHOD_UNAVAILABLE;
 		return refuse(placeFailurePath(token, selection), token, { fields: staleMark });
+	}
+	// ADR-0044 decision C1: cash on delivery only where the per-IP write limit
+	// runs — the `RATE_LIMIT_WRITES` binding, which the middleware has just
+	// applied to this POST — and then with the client's network key, which the
+	// plugin caps open COD orders by (and refuses a COD place without). No
+	// binding, or no client address to key: the method is unavailable here.
+	// (Physical carts only, decision D, is the plugin's check:
+	// OFFLINE_NEEDS_PHYSICAL — the review already hides COD for such a cart.)
+	let clientKey: string | undefined;
+	if (paymentMethod === "cod") {
+		const key = offlineClientKey(env, context.request.headers);
+		if (key === null) {
+			return refuse(
+				placeFailurePath(PAYMENT_METHOD_UNAVAILABLE, selection),
+				PAYMENT_METHOD_UNAVAILABLE,
+				{ fields: staleMark },
+			);
+		}
+		clientKey = key;
 	}
 
 	const cartId = currentCartId(context);
@@ -542,6 +571,28 @@ async function place(context: APIContext): Promise<Response> {
 			shipping.error,
 			{ fields: { ...shipping.fields, ...staleMark } },
 		);
+	}
+
+	// ADR-0044 §8: cash on delivery needs a full delivery address AND a phone, on
+	// every store — zones or not. Refused here with the blank fields marked, so
+	// the buyer fixes them in one round trip; the plugin refuses the same
+	// (MISSING_SHIPPING_ADDRESS, SHIPPING_PHONE_REQUIRED) for any other caller.
+	if (paymentMethod === "cod" && !regionMismatch) {
+		const phoneMissing = shipping.address?.["phone"] === undefined;
+		if (shipping.address === undefined) {
+			return refuse(
+				checkoutPath({ ...selection, error: MISSING_SHIPPING_ADDRESS }),
+				MISSING_SHIPPING_ADDRESS,
+				{ fields: { ...blankRequiredFields(form, zoned), phone: "missing" } },
+			);
+		}
+		if (phoneMissing) {
+			return refuse(
+				checkoutPath({ ...selection, error: SHIPPING_PHONE_REQUIRED }),
+				SHIPPING_PHONE_REQUIRED,
+				{ fields: { phone: "missing" } },
+			);
+		}
 	}
 
 	// The re-ask for a dropped pick, AFTER the checks above so every field to
@@ -595,6 +646,7 @@ async function place(context: APIContext): Promise<Response> {
 			buyerRef: email,
 			idempotencyKey,
 			paymentMethod,
+			...(clientKey !== undefined ? { clientKey } : {}),
 			...(sessionToken !== undefined ? { sessionToken } : {}),
 			...(couponCode !== undefined ? { couponCode } : {}),
 			...(shippingMethodId !== undefined ? { shippingMethodId } : {}),
@@ -623,9 +675,11 @@ async function place(context: APIContext): Promise<Response> {
 			fields:
 				token === SHIPPING_REGION_CODE_REQUIRED
 					? { region: "invalid" }
-					: token === "MISSING_SHIPPING_ADDRESS"
+					: token === MISSING_SHIPPING_ADDRESS
 						? blankRequiredFields(form, zoned)
-						: {},
+						: token === SHIPPING_PHONE_REQUIRED
+							? { phone: "missing" }
+							: {},
 			coupon: isCouponFailure(token) ? couponCode : undefined,
 		});
 	}
