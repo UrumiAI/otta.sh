@@ -16,6 +16,7 @@ import emdash from "emdash/astro";
 import { parseExtraAllowedHosts } from "@urumi.ai/otta-plugin";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
+import { assertEmailBindingDeclared } from "./src/lib/email-binding.js";
 import { parseEmailFrom } from "./src/lib/email-from.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
 import { buildPathScrub } from "./src/lib/build-path-scrub.js";
@@ -118,6 +119,17 @@ assertDownloadsBucketPrivate(
 	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
 	selectedWranglerConfig,
 );
+
+/**
+ * A configured sender needs the `EMAIL` send_email binding in the config this
+ * build uses (ADR-0043): selected-but-unbound burns order-email attempts.
+ */
+if (emailFrom !== undefined) {
+	assertEmailBindingDeclared(
+		readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
+		selectedWranglerConfig,
+	);
+}
 
 /**
  * The latin `unicode-range`: the range on the face Google Fonts' css2 response

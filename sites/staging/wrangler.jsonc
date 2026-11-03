@@ -80,14 +80,16 @@
 			"bucket_name": "your-downloads-bucket",
 		},
 	],
-	// Default email provider (ADR-0043): the `send_email` binding EmDash's
-	// first-party Cloudflare provider sends through, named EMAIL. Unrestricted
-	// sender binding (no destination_address), so it can mail any buyer. It does
-	// nothing until OTTA_EMAIL_FROM is set at BUILD time AND the sender's domain is
-	// onboarded for Cloudflare Email Sending (DEPLOYMENT.md §3, Email). Leaving
-	// the binding declared with no sender configured is harmless: no provider is
-	// registered, so nothing is sent (ADR-0031's fail-closed state).
-	"send_email": [{ "name": "EMAIL" }],
+	// OPTIONAL, OPT-IN, default email provider (ADR-0043; DEPLOYMENT.md §3, Email).
+	// Uncomment this TOGETHER WITH setting OTTA_EMAIL_FROM at build time, and only
+	// once the sender domain is active on Cloudflare Email Sending, the account is
+	// on Workers Paid, and a test send has succeeded. Add it to YOUR
+	// wrangler.local.jsonc too (the build reads that file when it exists, and
+	// REFUSES to build with OTTA_EMAIL_FROM set and no binding named EMAIL).
+	// Left commented here because an unrestricted binding has not been verified to
+	// deploy on a Workers Free account with no Email Sending set up, and a
+	// half-configured provider fails every send and parks order emails as failed.
+	// "send_email": [{ "name": "EMAIL" }],
 	// Console logs stay on. Per-request invocation logs are off: they record the
 	// request URL with its query, and the order return URL carries Stripe's
 	// payment_intent_client_secret (#551), which would be stored for 3-7 days.

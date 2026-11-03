@@ -765,17 +765,30 @@ order of appearance in a deployment's life:
   holds no email credential. The reference **site** registers EmDash's first-party Cloudflare
   provider for you ([ADR-0043](./adr/0043-site-default-cloudflare-email-provider.md)):
 
-  1. **Onboard a sending domain** on Cloudflare (dashboard: Compute > Email Service > Email
+  **Do these IN ORDER, and set `OTTA_EMAIL_FROM` last.** EmDash auto-selects the only provider
+  and remembers the choice. If the provider is selected but cannot send (no binding, domain not
+  active, Workers Free), every send throws and each one is a **counted** attempt: an order-email
+  row is parked `failed` after five tries (about 25 minutes) and is not re-queued, and sign-in
+  links never arrive. That is worse than no provider (where mail simply waits, ADR-0031). So:
+
+  1. **Be on Workers Paid.** **Workers Free merchants must leave `OTTA_EMAIL_FROM` unset.**
+  2. **Onboard a sending domain** on Cloudflare (dashboard: Compute > Email Service > Email
      Sending > Onboard Domain, or `npx wrangler email sending enable mail.example.com`). The
      domain's DNS must be on Cloudflare; Cloudflare adds the MX, SPF, DKIM and DMARC records
-     (usually live in 5-15 minutes, up to 24 hours).
-  2. **Set `OTTA_EMAIL_FROM`** at **build** time (shell env or `sites/staging/.env`), e.g.
-     `OTTA_EMAIL_FROM=store@mail.example.com`, and optionally `OTTA_EMAIL_FROM_NAME="Acme Goods"`.
-     A plain address only; a malformed value fails the build. Not a secret. Rebuild and redeploy to
-     change it. Unset registers **no** provider (the fail-closed state below).
-  3. The tracked `wrangler.jsonc` already declares the binding
-     `"send_email": [{ "name": "EMAIL" }]`; keep it in your `wrangler.local.jsonc`. It is an
-     unrestricted sender binding (no `destination_address`), so it can mail any buyer.
+     (usually live in 5-15 minutes, up to 24 hours). Wait until the domain shows **active**.
+  3. **Add the binding** `"send_email": [{ "name": "EMAIL" }]` to your `wrangler.local.jsonc`
+     (an unrestricted sender binding, so it can mail any buyer). The tracked `wrangler.jsonc`
+     carries it COMMENTED OUT (opt-in: it is not verified to deploy on a Free account with no
+     Email Sending). An **existing** `wrangler.local.jsonc` does not get it by itself; add it.
+  4. **Prove a send works first** (a test send from the dashboard, or `wrangler email sending`
+     / a Worker using the binding to an address you control) BEFORE the next step.
+  5. **Set `OTTA_EMAIL_FROM`** at **build** time (shell env or `sites/staging/.env`; for local
+     dev keep it out of `.env`), e.g. `OTTA_EMAIL_FROM=store@mail.example.com`, optionally
+     `OTTA_EMAIL_FROM_NAME="Acme Goods"`. A plain ASCII address only. Rebuild and redeploy to
+     change it. The **build fails** on a malformed address, and on a set address whose selected
+     wrangler config (`wrangler.local.jsonc` if present, else `wrangler.jsonc`) has no
+     `send_email` binding named `EMAIL`. Unset registers **no** provider (fail-closed below).
+     The playground build imports the same config, so a malformed value fails it too.
 
   **What Cloudflare Email Sending requires** (checked 2026-11-03; re-check before relying on it):
   - **Plan: Workers Paid.** Outbound sending is "Not available" on Workers Free; Paid includes
@@ -794,16 +807,24 @@ order of appearance in a deployment's life:
     start with "a conservative daily quota" that grows with sending reputation; Cloudflare
     publishes no numeric daily limit. Per message: 50 recipients, 25 MiB.
   - **Transactional only.** No marketing or bulk mail.
-  - The binding's behaviour under `astro dev` / local simulator is not documented; in `astro dev`
-    with `OTTA_EMAIL_FROM` set there are two providers (EmDash's console one and this one), so
-    select one in EmDash Settings > Email.
+  - **Privacy: the provider logs recipient and subject.** On every send EmDash's Cloudflare
+    provider calls `ctx.log.info` with the `to` address and the `subject`, and Workers Logs are
+    persisted (this repo turns invocation logs off for the same reason, wrangler.jsonc). Buyer
+    email addresses therefore sit in your Worker logs for the log retention period. Decide that
+    is acceptable, or set a short retention / turn console logs off, before enabling it.
+  - **Local dev.** The binding's behaviour under the local simulator is not documented. On a
+    FRESH local D1 neither the console provider nor this one is auto-selected when this one is
+    registered, so dev mail is not captured until you pick one in EmDash Settings > Email; an
+    existing D1 keeps its saved selection.
 
   **A Free-plan merchant cannot use this default** (Workers Free has no outbound sending), and
-  a merchant with no domain on Cloudflare cannot either. They keep the fail-closed state, or
-  install another provider: [`docs/email-providers.md`](./docs/email-providers.md) and
+  a merchant with no domain on Cloudflare cannot either: leave `OTTA_EMAIL_FROM` unset. They
+  keep the fail-closed state, or install another provider:
+  [`docs/email-providers.md`](./docs/email-providers.md) and
   [`examples/email-provider/`](./examples/email-provider/) show how to bring any vendor.
-  The from-address, SPF, DKIM and any API key belong to the provider. In `astro dev` EmDash's
-  console provider is active and captured mail is readable at `/_emdash/api/dev/emails`.
+  The from-address, SPF, DKIM and any API key belong to the provider. In `astro dev` with NO
+  email provider registered EmDash's console provider is used and captured mail is readable at
+  `/_emdash/api/dev/emails` (see the local-dev caveat above when this default is registered).
   With **no provider** nothing is sent and nothing is lost: the order emails wait in the
   outbox **without spending attempts** (the cron sweep's `order-emails` leg reports `skipped`),
   the console says "no email provider" on every write that would have emailed, and Settings →

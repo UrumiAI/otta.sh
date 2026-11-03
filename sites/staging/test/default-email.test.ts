@@ -9,19 +9,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { buildEmdashOptions } from "../src/emdash-options.js";
+import { assertEmailBindingDeclared } from "../src/lib/email-binding.js";
 import { parseEmailFrom } from "../src/lib/email-from.js";
+import { parseWrangler } from "../src/lib/wrangler-jsonc.js";
 import { buildPlaygroundEmdashOptions } from "../src/playground-options.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_IMPORT_TIMEOUT_MS = 60_000;
-
-function parseJsonc(raw: string): Record<string, unknown> {
-	const noComments = raw
-		.replace(/\/\*[\s\S]*?\*\//g, "")
-		.replace(/^\s*\/\/.*$/gm, "")
-		.replace(/([^:"])\/\/.*$/gm, "$1");
-	return JSON.parse(noComments.replace(/,(\s*[}\]])/g, "$1")) as Record<string, unknown>;
-}
 
 describe("parseEmailFrom", () => {
 	test("unset, empty and blank mean no provider", () => {
@@ -32,6 +26,16 @@ describe("parseEmailFrom", () => {
 
 	test("a plain address is returned trimmed", () => {
 		expect(parseEmailFrom(" store@example.com ", undefined)).toEqual("store@example.com");
+	});
+
+	test("apostrophes, plus tags and inner dots are valid (ASCII dot-atom)", () => {
+		for (const ok of ["o'brien@example.com", "a.b+tag@mail.example.co.uk", "x_y-z@example.com"]) {
+			expect(parseEmailFrom(ok, undefined)).toEqual(ok);
+		}
+	});
+
+	test("the error says the address must be ASCII", () => {
+		expect(() => parseEmailFrom("störe@example.com", undefined)).toThrow(/ASCII/);
 	});
 
 	test("a display name makes it { email, name }", () => {
@@ -51,6 +55,15 @@ describe("parseEmailFrom", () => {
 		"Store <store@example.com>",
 		"a@b@example.com",
 		"store@example.com\r\nBcc: x@evil.com",
+		"st\u0001ore@example.com",
+		"store\u007f@example.com",
+		".store@example.com",
+		"store.@example.com",
+		"sto..re@example.com",
+		"störe@example.com",
+		"store@exämple.com",
+		"store@-example.com",
+		"store@example..com",
 	])("a malformed address %j throws, naming OTTA_EMAIL_FROM", (bad) => {
 		expect(() => parseEmailFrom(bad, undefined)).toThrow(/OTTA_EMAIL_FROM/);
 	});
@@ -122,16 +135,36 @@ describe("the playground gets NO default email (it is disposable)", () => {
 	});
 
 	test("wrangler.playground.jsonc declares no send_email binding", () => {
-		const cfg = parseJsonc(readFileSync(path.join(root, "wrangler.playground.jsonc"), "utf8"));
+		const cfg = parseWrangler(
+			readFileSync(path.join(root, "wrangler.playground.jsonc"), "utf8"),
+			"wrangler.playground.jsonc",
+			"send_email",
+		);
 		expect(cfg).not.toHaveProperty("send_email");
 	});
 });
 
 describe("wrangler.jsonc template", () => {
-	const cfg = parseJsonc(readFileSync(path.join(root, "wrangler.jsonc"), "utf8"));
+	const cfg = parseWrangler(
+		readFileSync(path.join(root, "wrangler.jsonc"), "utf8"),
+		"wrangler.jsonc",
+		"send_email",
+	);
 
-	test("declares one unrestricted send_email binding named EMAIL", () => {
-		expect(cfg["send_email"]).toEqual([{ name: "EMAIL" }]);
+	test("send_email is OPT-IN: not active in the template (ADR-0043)", () => {
+		expect(cfg).not.toHaveProperty("send_email");
+	});
+
+	test("the commented opt-in block names the EMAIL binding and OTTA_EMAIL_FROM", () => {
+		const raw = readFileSync(path.join(root, "wrangler.jsonc"), "utf8");
+		expect(raw).toMatch(/^\s*\/\/\s*"send_email": \[\{ "name": "EMAIL" \}\],\s*$/m);
+		expect(raw).toMatch(/OTTA_EMAIL_FROM/);
+		// Uncommenting it yields exactly an unrestricted binding the guard accepts.
+		const uncommented = raw.replace(/^(\s*)\/\/\s*("send_email")/m, "$1$2");
+		expect(() => assertEmailBindingDeclared(uncommented, "wrangler.jsonc")).not.toThrow();
+		expect(parseWrangler(uncommented, "wrangler.jsonc", "send_email")["send_email"]).toEqual([
+			{ name: "EMAIL" },
+		]);
 	});
 
 	test("the sender address is not a vars entry (build-time, and not a secret)", () => {
@@ -156,12 +189,15 @@ describe("OTTA_EMAIL_FROM at config load", () => {
 	);
 
 	test(
-		"a valid value loads",
+		"a valid value with no send_email binding in the selected wrangler config THROWS",
 		async () => {
 			vi.stubEnv("OTTA_EMAIL_FROM", "store@example.com");
 			vi.resetModules();
-			const config = (await import("../astro.config.js")).default;
-			expect(config).toBeDefined();
+			// The template has no active binding, so a valid sender with no binding
+			// must be refused by the build guard (selected-but-unbound burns attempts).
+			await expect(import("../astro.config.js")).rejects.toThrow(
+				/declares no send_email binding named "EMAIL"/,
+			);
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
