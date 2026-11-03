@@ -2,6 +2,7 @@ import {
 	customerId as toCustomerId,
 	isEmailAddress,
 	type Email,
+	idempotencyKey,
 	type IdempotencyKey,
 	type OrderId,
 } from "../money/ids.js";
@@ -18,7 +19,7 @@ import {
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
-import { isOfflinePaymentMethod, offlinePaymentRef } from "./payment-methods.js";
+import { isOfflinePaymentMethod, offlinePaymentRef, settlementOf } from "./payment-methods.js";
 import { applyPaidSideEffects, type SettleDeps } from "./settle-order.js";
 import { roundingEntry } from "../pricing/payment-rounding.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
@@ -31,7 +32,9 @@ import {
 	emailTemplateForNotice,
 	emailTemplateForState,
 	isLegalOrderTransition,
+	isOfflineOnlyMove,
 	legalNextStates,
+	offlinePaidTarget,
 } from "./state-machine.js";
 
 export interface TransitionOrderDeps {
@@ -131,6 +134,11 @@ async function precheckTransition(
 	if (order === null) return { done: { ok: false, reason: "ORDER_NOT_FOUND" } };
 	if (order.state === cmd.toState) return { done: { ok: true, transitioned: false, order } };
 	if (!isLegalOrderTransition(order.state, cmd.toState)) {
+		return { done: { ok: false, reason: "INVALID_TRANSITION" } };
+	}
+	// ADR-0044: the unpaid offline states are an offline method's alone — a card
+	// order is never parked unpaid, nor moved out of a state it cannot be in.
+	if (isOfflineOnlyMove(order.state, cmd.toState) && !isOfflinePaymentMethod(order.paymentMethod)) {
 		return { done: { ok: false, reason: "INVALID_TRANSITION" } };
 	}
 	return { order };
@@ -241,10 +249,14 @@ export function adminNextStates(
 	order: Pick<Order, "state" | "paymentMethod" | "reconciliationFlag">,
 	facts: RefundLedgerFacts,
 ): OrderState[] {
+	const offline = isOfflinePaymentMethod(order.paymentMethod);
 	return legalNextStates(order.state).filter(
 		(to) =>
 			!(to === "paid" && !manualPaymentAllowed(order.paymentMethod)) &&
 			to !== "cancelled" &&
+			// Placing an offline order is checkout's move, never a button.
+			to !== "awaiting_payment" &&
+			!(isOfflineOnlyMove(order.state, to) && !offline) &&
 			!(to === "refunded" && !markRefundedAllowed(order, facts)),
 	);
 }
@@ -311,8 +323,8 @@ export async function transitionOrderAsAdmin(
 	if (pre.done !== undefined) {
 		// A replayed offline Mark paid finishes what a crash between its flip and
 		// its side-effects left undone (each is idempotent).
-		if (cmd.toState === "paid" && pre.done.ok && isOfflinePaidBy(pre.done.order)) {
-			await applyOfflinePayment(deps, pre.done.order);
+		if (pre.done.ok && isOfflinePaidBy(pre.done.order, cmd.toState)) {
+			await applyOfflinePayment(pre.done.order, requireOfflinePaymentDeps(deps));
 		}
 		await revokeIfRefunded(deps, pre.done);
 		return pre.done;
@@ -321,9 +333,16 @@ export async function transitionOrderAsAdmin(
 	if (cmd.toState === "paid" && !manualPaymentAllowed(order.paymentMethod)) {
 		return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
 	}
-	// The wiring is checked HERE, in this function's own frame, before any write.
-	if (cmd.toState === "paid")
-		return markOfflineOrderPaid(deps, order, requireOfflinePaymentDeps(deps));
+	// ADR-0044: an offline order's Mark paid — into `paid` from awaiting_payment (or
+	// a placement's crash window, pending), into `delivered` from
+	// shipped_awaiting_payment. The wiring is checked HERE, in this function's own
+	// frame, before any write.
+	if (
+		isOfflinePaymentMethod(order.paymentMethod) &&
+		offlinePaidTarget(order.state) === cmd.toState
+	) {
+		return markOfflineOrderPaid(deps, order, cmd, requireOfflinePaymentDeps(deps));
+	}
 	if (cmd.toState === "cancelled") return { ok: false, reason: "USE_CANCEL" };
 	if (cmd.toState === "refunded") {
 		// The one admin move decided by the money: read the ledgers (only for it).
@@ -339,41 +358,80 @@ export async function transitionOrderAsAdmin(
 }
 
 /**
- * An OFFLINE order marked paid by hand (ADR-0044): a person attests the money
- * arrived (the courier handed over the cash), so it is recorded exactly as a
- * gateway settlement is — the guarded `markPaid` flip (which enqueues the
- * confirmation email and, in the document store, the commit intent), then the
- * same idempotent side-effects `settleOrder` runs: a `payments` row for the order
- * total under {@link offlinePaymentRef}, the order's stock holds committed, and
- * its downloads granted. The ledger then shows the money held, so reports, the
- * refund ceiling and a later manual refund all read it like any other payment.
+ * An OFFLINE order marked paid by hand (ADR-0044): a person attests the cash
+ * arrived, so it is recorded as a settlement is — and ordered so that a crash
+ * anywhere leaves something the next click finishes:
  *
- * A lost flip (the order moved meanwhile) answers as a bare transition would:
- * already paid ⇒ the idempotent no-op (and the side-effects re-driven when the
- * winner was this same offline payment); anything else ⇒ `INVALID_TRANSITION`.
+ *  1. BEFORE the flip, idempotently: the order's downloads (grant-once keys) and
+ *     its `payments` row for the total under {@link offlinePaymentRef}. A crash
+ *     here leaves the order unpaid, where the console still offers Mark paid.
+ *  2. The guarded flip (`markPaid` with the order's own from/to states and the
+ *     actor): the state email and, in the document store, the commit intent.
+ *  3. AFTER it, the same idempotent side-effects `settleOrder` runs, which commits
+ *     the stock (the commit intent heals a crash here).
+ *
+ * A lost flip: a concurrent Mark paid won ⇒ the idempotent no-op (side-effects
+ * re-driven); anything else (a cancel won the race) ⇒ the attested cash is on the
+ * ledger of an order that is not paid, so the order is flagged for reconciliation
+ * and its downloads revoked; `INVALID_TRANSITION`.
  */
 async function markOfflineOrderPaid(
 	deps: TransitionOrderDeps,
 	order: Order,
+	cmd: TransitionOrderCommand,
 	settle: SettleDeps,
 ): Promise<TransitionOrderAsAdminResult> {
 	const method = order.paymentMethod;
-	if (method === null) return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
-	const won = await deps.orderStore.markPaid(order.id, offlinePaymentRef(method, order.id));
+	const target = offlinePaidTarget(order.state);
+	if (method === null || target === null) {
+		return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
+	}
+	const providerRef = offlinePaymentRef(method, order.id);
+	const now = settle.clock.now().toISOString();
+
+	await grantDownloads(settle, order);
+	await deps.orderStore.recordPayment({
+		orderId: order.id,
+		gateway: method,
+		providerRef,
+		amount: order.totals.total,
+		currency: order.totals.currency,
+		status: "succeeded",
+	});
+
+	const actor = cmd.actor?.trim();
+	const won = await deps.orderStore.markPaid(order.id, providerRef, {
+		fromState: order.state,
+		toState: target,
+		...(actor !== undefined && actor.length > 0 ? { actor } : {}),
+	});
 	const fresh = (await deps.orderStore.getById(order.id)) ?? order;
-	if (!won) {
-		if (fresh.state !== "paid") return { ok: false, reason: "INVALID_TRANSITION" };
-		if (isOfflinePaidBy(fresh)) await applyOfflinePayment(deps, fresh, settle);
+	if (won) {
+		await applyOfflinePayment(fresh, settle, now);
+		return { ok: true, transitioned: true, order: fresh };
+	}
+	if (isOfflinePaidBy(fresh, target)) {
+		await applyOfflinePayment(fresh, settle, now);
 		return { ok: true, transitioned: false, order: fresh };
 	}
-	await applyOfflinePayment(deps, fresh, settle);
-	return { ok: true, transitioned: true, order: fresh };
+	// Lost to a move that is not this payment (a cancel): money attested and held,
+	// on an order that is not paid. Never silent; never over another flag.
+	await revokeOrderEntitlements(deps.entitlementStore, fresh);
+	if (fresh.reconciliationFlag === null) {
+		await deps.orderStore.flagReconciliation(
+			order.id,
+			`cash recorded on an order ${fresh.state} at the same moment: ${String(order.totals.total)} ${order.totals.currency} under ${providerRef} — return it or reinstate the order`,
+			{ expectedFlag: null },
+		);
+	}
+	return { ok: false, reason: "INVALID_TRANSITION" };
 }
 
-/** Whether a paid order's winning payment is its own offline one. */
-function isOfflinePaidBy(order: Order): boolean {
+/** Whether `order` sits in `target` because its own offline payment put it there. */
+function isOfflinePaidBy(order: Order, target: OrderState): boolean {
 	return (
-		order.state === "paid" &&
+		order.state === target &&
+		(target === "paid" || target === "delivered") &&
 		order.paymentMethod !== null &&
 		isOfflinePaymentMethod(order.paymentMethod) &&
 		order.paidProviderRef === offlinePaymentRef(order.paymentMethod, order.id)
@@ -398,11 +456,26 @@ function requireOfflinePaymentDeps(deps: TransitionOrderDeps): SettleDeps {
 	};
 }
 
+/** The order's digital lines, granted once each (the settle path's own key). */
+async function grantDownloads(settle: SettleDeps, order: Order): Promise<void> {
+	for (const line of order.lines) {
+		if (line.fulfillmentKind !== "digital") continue;
+		await settle.entitlementStore.grant({
+			orderId: order.id,
+			productId: line.productId,
+			sku: line.sku,
+			buyerRef: order.buyerRef,
+			source: "order_paid",
+			grantIdempotencyKey: idempotencyKey(`ent:${order.id}:${line.sku}`),
+		});
+	}
+}
+
 /** The paid side-effects of an offline payment, for the order as it now stands. */
 async function applyOfflinePayment(
-	deps: TransitionOrderDeps,
 	order: Order,
-	settle: SettleDeps = requireOfflinePaymentDeps(deps),
+	settle: SettleDeps,
+	now: string = settle.clock.now().toISOString(),
 ): Promise<void> {
 	if (order.paymentMethod === null) return;
 	await applyPaidSideEffects(
@@ -414,7 +487,7 @@ async function applyOfflinePayment(
 			currency: order.totals.currency,
 		},
 		order,
-		settle.clock.now().toISOString(),
+		now,
 	);
 }
 
@@ -663,13 +736,9 @@ async function drainOutbox(
 		// The money a refund email is about: a notice carries its own; the `refunded`
 		// STATE email states everything finalized on the ledger (QA T1-6), read here
 		// and passed as data so the template still reaches back into nothing.
-		// The order-placed notice (ADR-0044) is about money still DUE, not returned:
-		// it renders as a state email with no "Refunded" line.
 		const refunded =
 			row.notice !== null
-				? row.notice.kind === "order-placed-offline"
-					? null
-					: { amount: row.notice.amount, currency: row.notice.currency }
+				? { amount: row.notice.amount, currency: row.notice.currency }
 				: row.toState === "refunded"
 					? await refundedTotal(deps.orderStore, order)
 					: null;
@@ -817,9 +886,13 @@ async function resolveRecipient(
 /** Template data, rendered from order fields passed explicitly — no template
  *  reaches back into a store (§6). */
 export function buildOrderEmailData(order: Order, toState: OrderState): Record<string, unknown> {
+	const settlement = settlementOf(order.paymentMethod);
 	return {
 		orderId: order.id,
 		state: toState,
+		// ADR-0044: an offline order's emails speak of cash, not a card. Present only
+		// for one, so every card order's data is exactly what it was.
+		...(settlement === "offline" ? { settlement } : {}),
 		currency: order.totals.currency,
 		totalCents: order.totals.total,
 		// The totals breakdown AS RECORDED (QA U-3), so the email states the same

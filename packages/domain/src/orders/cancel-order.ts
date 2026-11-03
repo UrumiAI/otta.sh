@@ -12,7 +12,11 @@ import {
 import type { OrderStore, RefundRecord } from "../ports/order-store.js";
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway } from "../ports/payment-gateway.js";
-import { emailTemplateForState, isLegalOrderTransition } from "./state-machine.js";
+import {
+	OFFLINE_UNPAID_STATES,
+	emailTemplateForState,
+	isLegalOrderTransition,
+} from "./state-machine.js";
 import type {
 	CancellationReason,
 	CancellationRefund,
@@ -714,7 +718,17 @@ export async function cancelOrderWithRefund(
 	if (!isLegalOrderTransition(order.state, "cancelled")) {
 		return { ok: false, reason: "NOT_CANCELLABLE" };
 	}
-	if (order.state === "pending") {
+	// ADR-0044: an unpaid offline order holds stock like a pending one and has no
+	// money to return — unless a Mark paid died after recording the cash, which a
+	// plain cancel would keep behind a "cancelled" email: refused, so the operator
+	// records the cash refund first.
+	if (OFFLINE_UNPAID_STATES.has(order.state)) {
+		const captured = await deps.orderStore.getCapturedPayments(order.id);
+		if (captured.some((p) => p.status === "succeeded")) {
+			return { ok: false, reason: "REFUND_NOT_AUTOMATIC" };
+		}
+	}
+	if (order.state === "pending" || OFFLINE_UNPAID_STATES.has(order.state)) {
 		// Nothing was sold and nothing captured: the plain cancel, which releases the
 		// held stock through the store's own release intent.
 		const res = await cancelOrder(

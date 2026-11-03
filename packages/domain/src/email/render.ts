@@ -90,7 +90,10 @@ export function renderEmail(
 	// page link from it.
 	const label = orderLabel(labelLines(data["lines"]));
 	const number = numberOf(data["orderId"]);
-	const copy = latePaymentCopyFor(template, str(data["state"])) ?? ORDER_COPY[template];
+	const copy =
+		latePaymentCopyFor(template, str(data["state"])) ??
+		offlineCopyFor(template, data) ??
+		ORDER_COPY[template];
 	const subject = subjectLine(copy.subject, number, label);
 	// A refund email states its OWN figure first (`noticeAmountCents`, the refunded
 	// money): a late capture or a partial refund differs from the order total,
@@ -704,6 +707,38 @@ function latePaymentCopyFor(
 		// A historical `failed` order (ADR-0022): it never completed, and the buyer
 		// was told so — the late payment is money for an order that no longer exists.
 		return { subject, body: `A payment arrived for an order that had already failed, ${tail}` };
+	}
+	return null;
+}
+
+/**
+ * ADR-0044: a cash-on-delivery order's own sentences. Its confirmation and
+ * delivered emails come from a person's Mark paid — cash, not a card — and its
+ * shipped email goes out BEFORE payment, so it asks for the amount due (stated on
+ * the order's Total line below). `null` for every other order and template.
+ */
+function offlineCopyFor(
+	template: EmailTemplate,
+	data: Record<string, unknown>,
+): { subject: string; body: string } | null {
+	if (data["settlement"] !== "offline") return null;
+	if (template === "order-confirmation") {
+		return {
+			subject: "Payment received",
+			body: "Thanks — we've received your cash payment and your order is confirmed.",
+		};
+	}
+	if (template === "order-delivered") {
+		return {
+			subject: "Order delivered",
+			body: "Your order has been delivered and we've received your cash payment. Thank you!",
+		};
+	}
+	if (template === "order-shipped" && data["state"] === "shipped_awaiting_payment") {
+		return {
+			subject: "Order shipped",
+			body: "Your order is on its way. You'll pay in cash on delivery — please have the total below ready.",
+		};
 	}
 	return null;
 }

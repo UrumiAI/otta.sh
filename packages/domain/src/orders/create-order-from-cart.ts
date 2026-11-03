@@ -41,11 +41,7 @@ import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
 import { buildOrderTaxSnapshot, type OrderTaxAddress } from "./order-tax-snapshot.js";
-import {
-	gatewayForStored,
-	isOfflinePaymentMethod,
-	OFFLINE_HOLD_EXPIRES_AT,
-} from "./payment-methods.js";
+import { gatewayForStored, isOfflinePaymentMethod } from "./payment-methods.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
 export const DEFAULT_CHECKOUT_TTL_MS = 15 * 60 * 1000;
@@ -132,6 +128,22 @@ export interface CreateOrderCommand {
 	 * (issue #382), because the review the buyer approved was priced without it.
 	 */
 	billingLocation?: { country: string; region?: string | null };
+	/**
+	 * ADR-0044 — what the CALLER knows about an offline method (cash on delivery)
+	 * right now, checked only for a FRESH placement (a same-key replay returns its
+	 * order whatever these say now):
+	 *  - `enabled` — the merchant offers it (absent block ⇒ not offered);
+	 *  - `clientKey` — the opaque key of the client's network, which the caller
+	 *    supplies only once its per-IP write limit has run; required;
+	 *  - `maxOpenPerBuyer` / `maxOpenPerClient` — caps on OPEN offline orders (0 or
+	 *    absent ⇒ no cap).
+	 */
+	offline?: {
+		enabled: boolean;
+		clientKey?: string;
+		maxOpenPerBuyer?: number;
+		maxOpenPerClient?: number;
+	};
 }
 
 export type CreateOrderFromCartResult =
@@ -239,8 +251,11 @@ export async function createOrderFromCart(
 			return { ok: false, reason: intentFailureReason(err) };
 		}
 		await rememberIntent(deps, already, intent);
-		await announceOfflineOrder(deps, already);
-		return { ok: true, order: already, intent };
+		const placed = await placeOffline(deps, already);
+		if (placed !== null && placed.state !== "awaiting_payment") {
+			return leftCheckoutWindow(placed, gateway);
+		}
+		return { ok: true, order: placed ?? already, intent };
 	}
 
 	// Validate + normalize the ship-to snapshot (ADR-0009, ADR-0021) BEFORE
@@ -416,12 +431,13 @@ export async function createOrderFromCart(
 			: null;
 
 	const freshOrderId = brandOrderId(deps.idGen.newId());
-	// ADR-0044: an OFFLINE order (cash on delivery) has no time to pay — it is
-	// paid on delivery — so it never expires and its stock stays with it until a
-	// person marks it paid or cancels it.
-	const holdExpiresAt = isOfflinePaymentMethod(command.paymentMethod)
-		? OFFLINE_HOLD_EXPIRES_AT
-		: new Date(deps.clock.now().getTime() + ttl(deps)).toISOString();
+	const holdExpiresAt = new Date(deps.clock.now().getTime() + ttl(deps)).toISOString();
+
+	// ADR-0044: an OFFLINE method's own rules, before any redemption or mint.
+	if (isOfflinePaymentMethod(command.paymentMethod)) {
+		const refused = await offlineRefusal(deps, command, lines, shippingAddress);
+		if (refused !== null) return { ok: false, reason: refused };
+	}
 
 	// Coupon redemption is the GATE, before order creation (§5): redeem atomically
 	// under the SAME idempotency key so a replay never double-redeems. If order
@@ -606,6 +622,10 @@ async function finalizeOrder(
 		// Issue #382: the requirement this checkout was placed under, frozen in the
 		// same insert — it also decides the payment's customer for every intent.
 		buyerAddressRequired: command.addressRequired === true,
+		// ADR-0044: the network key the per-network cap counts by (offline only).
+		...(isOfflinePaymentMethod(command.paymentMethod) && command.offline?.clientKey !== undefined
+			? { offlineClientKey: command.offline.clientKey }
+			: {}),
 		totals: {
 			subtotal: breakdown.subtotalCents,
 			total: breakdown.totalCents,
@@ -660,8 +680,11 @@ async function finalizeOrder(
 	try {
 		const intent = await ctx.gateway.createIntent(intentInput);
 		await rememberIntent(deps, order, intent);
-		await announceOfflineOrder(deps, order);
-		return { ok: true, order, intent };
+		const placed = await placeOffline(deps, order);
+		if (placed !== null && placed.state !== "awaiting_payment") {
+			return leftCheckoutWindow(placed, ctx.gateway);
+		}
+		return { ok: true, order: placed ?? order, intent };
 	} catch (err) {
 		if (!(err instanceof PaymentIntentError)) throw err;
 		logIntentFailure(deps, err, order.id);
@@ -917,30 +940,60 @@ async function rememberIntent(
 }
 
 /**
- * An OFFLINE order's "we have your order — pay on delivery" email (ADR-0044): an
- * `order-placed-offline` notice for the amount due. A card order is announced by
- * its `paid` confirmation minutes later; a cash-on-delivery order is not paid
- * until it is delivered, so without this the buyer would hear nothing for days.
- *
- * Run on the fresh path and on the replay, after the intent: the store's
- * first-wins `(orderId, kind)` dedupe makes a replay enqueue nothing, and a call
- * that died before it is finished by its retry. BEST-EFFORT like
- * {@link rememberIntent}: the order is placed whatever the outbox says.
+ * ADR-0044: the offline method's refusals for a FRESH placement, in order — not
+ * offered (the toggle, or no client key: the caller could not attest its per-IP
+ * write limit), a cart with nothing to deliver, a delivery address without a phone
+ * number, and the caps on open offline orders. `null` ⇒ place it.
  */
-async function announceOfflineOrder(deps: CreateOrderDeps, order: Order): Promise<void> {
-	if (!isOfflinePaymentMethod(order.paymentMethod)) return;
-	try {
-		await deps.orderStore.enqueueNotice(order.id, {
-			kind: "order-placed-offline",
-			amount: order.totals.total,
-			currency: order.totals.currency,
+async function offlineRefusal(
+	deps: CreateOrderDeps,
+	command: CreateOrderCommand,
+	lines: readonly CreateOrderLineInput[],
+	shippingAddress: OrderAddress | null,
+): Promise<CreateOrderFailure | null> {
+	const offline = command.offline;
+	const clientKey = offline?.clientKey?.trim() ?? "";
+	if (offline?.enabled !== true || clientKey.length === 0) return "PAYMENT_METHOD_UNAVAILABLE";
+	if (!lines.some((line) => line.fulfillmentKind === "physical")) return "OFFLINE_NEEDS_PHYSICAL";
+	if (shippingAddress === null) return "MISSING_SHIPPING_ADDRESS";
+	if ((shippingAddress.phone ?? "").trim().length === 0) return "SHIPPING_PHONE_REQUIRED";
+	const perBuyer = offline.maxOpenPerBuyer ?? 0;
+	const perClient = offline.maxOpenPerClient ?? 0;
+	if (perBuyer > 0 || perClient > 0) {
+		const open = await deps.orderStore.countOpenOfflineOrders({
+			buyerRef: command.buyerRef,
+			clientKey,
 		});
-	} catch (err) {
-		deps.logger.error(
-			`[domain] could not enqueue the order-placed email for offline order ${order.id}`,
-			{ error: err instanceof Error ? err.message : String(err) },
-		);
+		if (
+			(perBuyer > 0 && open.byBuyer >= perBuyer) ||
+			(perClient > 0 && open.byClient >= perClient)
+		) {
+			return "OFFLINE_ORDER_LIMIT";
+		}
 	}
+	return null;
+}
+
+/**
+ * ADR-0044: place an OFFLINE order — the guarded `pending → awaiting_payment`
+ * flip, whose entry email is "order received, pay on delivery". Run after the
+ * intent, on the fresh path and the replay, so a call that died before it is
+ * finished by its retry (the flip is a no-op once it landed). `null` for any
+ * other method; otherwise the order as it now stands — `awaiting_payment`, or a
+ * state it moved to underneath (an expiry of a crash-window order, say), which the
+ * caller answers as having left the checkout window.
+ */
+async function placeOffline(deps: CreateOrderDeps, order: Order): Promise<Order | null> {
+	if (!isOfflinePaymentMethod(order.paymentMethod)) return null;
+	if (order.state !== "pending") return order;
+	const res = await deps.orderStore.transition({
+		orderId: order.id,
+		fromState: "pending",
+		toState: "awaiting_payment",
+		idempotencyKey: order.idempotencyKey,
+		enqueueEmail: true,
+	});
+	return res.order ?? (await deps.orderStore.getById(order.id)) ?? order;
 }
 
 /**

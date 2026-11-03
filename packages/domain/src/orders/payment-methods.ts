@@ -37,30 +37,24 @@ export function isCurrentPaymentMethod(stored: string): stored is PaymentMethod 
 }
 
 /**
+ * How a STORED method's money is confirmed — `"gateway"` or `"offline"` — or
+ * `null` for no method on file or an unknown one (fail closed). The public and
+ * admin order wires carry it as `settlement`, so readers branch on the kind of
+ * method, never on `=== "cod"` (ADR-0044).
+ */
+export function settlementOf(stored: string | null): "gateway" | "offline" | null {
+	return stored !== null && isCurrentPaymentMethod(stored)
+		? PAYMENT_METHOD_SETTLEMENT[stored]
+		: null;
+}
+
+/**
  * True iff a STORED method is declared `offline` (ADR-0026 Decision 1, ADR-0044).
  * FAILS CLOSED: `null` (no method on file) and an unknown method are not offline.
  */
 export function isOfflinePaymentMethod(stored: string | null): boolean {
-	return (
-		stored !== null &&
-		isCurrentPaymentMethod(stored) &&
-		PAYMENT_METHOD_SETTLEMENT[stored] === "offline"
-	);
+	return settlementOf(stored) === "offline";
 }
-
-/**
- * The hold deadline an OFFLINE order is placed with (ADR-0044): the largest
- * ISO-8601 instant, so the order is never due for expiry and its adopted holds
- * (which carry the order's deadline) never lapse. An offline order has no
- * "time to pay" — the buyer pays on delivery — so its stock stays taken until a
- * person marks it paid (which commits it) or cancels it (which releases it).
- *
- * A value rather than a new nullable field, on purpose: every store already
- * compares the deadline as an ISO string (`listExpirable`, `expire`, the adopt
- * guard, the coupon leg), so no adapter, index or migration changes, and an
- * existing reader that renders it sees a date that is plainly "never".
- */
-export const OFFLINE_HOLD_EXPIRES_AT = "9999-12-31T23:59:59.999Z";
 
 /**
  * The `payments` row reference an offline payment is recorded under — one per

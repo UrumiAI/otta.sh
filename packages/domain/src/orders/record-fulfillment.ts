@@ -93,15 +93,18 @@ export async function recordFulfillment(
 	// Already shipped WITH fulfillment ⇒ benign idempotent no-op (a replay / double
 	// submit). Shipped WITHOUT fulfillment (the bare transition path) is not
 	// back-fillable via this compose.
-	if (order.state === "shipped") {
+	if (order.state === "shipped" || order.state === "shipped_awaiting_payment") {
 		if (order.fulfillment !== null) return { ok: true, recorded: false, order };
 		return { ok: false, reason: "NOT_FULFILLABLE" };
 	}
+	// ADR-0044: an offline order shipped before it is paid lands in
+	// `shipped_awaiting_payment` (unpaid, not revenue); everything else in `shipped`.
+	const target = order.state === "awaiting_payment" ? "shipped_awaiting_payment" : "shipped";
 	// Legality is DERIVED from the one state machine (never a hardcoded state
 	// list): fulfillable ⇔ the current state can legally transition to `shipped`
 	// (today only `processing`; if the machine ever grows another pre-`shipped`
 	// state, this — and the store's fromState guard below — follow automatically).
-	if (!isLegalOrderTransition(order.state, "shipped")) {
+	if (!isLegalOrderTransition(order.state, target)) {
 		return { ok: false, reason: "NOT_FULFILLABLE" };
 	}
 
@@ -110,6 +113,7 @@ export async function recordFulfillment(
 		// The guarded flip's from-state — the state we just validated as legally
 		// able to ship (the `transition` fromState precedent).
 		fromState: order.state,
+		toState: target,
 		carrier,
 		trackingNumber,
 		trackingUrl,
@@ -117,7 +121,7 @@ export async function recordFulfillment(
 		recordedBy,
 		idempotencyKey: cmd.idempotencyKey,
 		// `shipped` always has a template — symmetric with `transitionOrder`.
-		enqueueEmail: emailTemplateForState("shipped") !== null,
+		enqueueEmail: emailTemplateForState(target) !== null,
 	});
 	if (res.recorded) return { ok: true, recorded: true, order: res.order ?? order };
 
@@ -126,7 +130,7 @@ export async function recordFulfillment(
 	// fulfillment ⇒ a concurrent record won (benign no-op); anything else (a
 	// concurrent cancel, refund, vanished) ⇒ not fulfillable.
 	const fresh = res.order;
-	if (fresh !== null && fresh.state === "shipped" && fresh.fulfillment !== null) {
+	if (fresh !== null && fresh.state === target && fresh.fulfillment !== null) {
 		return { ok: true, recorded: false, order: fresh };
 	}
 	return { ok: false, reason: "NOT_FULFILLABLE" };

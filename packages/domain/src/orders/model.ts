@@ -21,6 +21,15 @@ export type OrderState =
 	| "failed"
 	| "expired"
 	// Phase 5 additions:
+	// ADR-0044 — an OFFLINE (cash-on-delivery) order, placed and unpaid:
+	/** Placed with an offline method, not paid, not shipped. Its stock is held for
+	 *  it (adopted holds); it never expires. → paid | shipped_awaiting_payment |
+	 *  cancelled. Not a revenue state. */
+	| "awaiting_payment"
+	/** Shipped before it was paid; the cash is due at the door. → delivered (Mark
+	 *  paid: the courier collected it) | cancelled (delivery refused, returned).
+	 *  Not a revenue state. */
+	| "shipped_awaiting_payment"
 	| "processing"
 	| "shipped"
 	| "delivered"
@@ -56,16 +65,11 @@ export type PaymentMethod = "stripe" | "cod";
  *   shipped before the cancel landed, so no cancelled email will carry it
  *   (ADR-0026). One per refund.
  *
- * - `order-placed-offline` — an order placed with an OFFLINE method (cash on
- *   delivery, ADR-0044): there is no payment yet, so no `paid` email will
- *   announce it for days. This one says "we have your order; pay on delivery",
- *   with the amount due. Enqueued once, by the checkout that placed it.
- *
  * A notice is first-wins per `(orderId, kind, refundId)` — `refundId` absent
  * reads as none — so each refund announces itself once, however often the step
  * that enqueued it is replayed.
  */
-export type OrderNotice = "late-payment-refunded" | "refund-issued" | "order-placed-offline";
+export type OrderNotice = "late-payment-refunded" | "refund-issued";
 
 /**
  * The admin's disposition when clearing a reconciliation flag (admin-UX

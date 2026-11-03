@@ -290,6 +290,7 @@ export type {
 	OrderState,
 	OrderSummary,
 	OrderTransitionInput,
+	MarkPaidOptions,
 	OrderTransitionResult,
 	OrderLedger,
 	RefundRetry,
@@ -351,6 +352,9 @@ export {
 	emailTemplateForNotice,
 	emailTemplateForState,
 	isLegalOrderTransition,
+	isOfflineOnlyMove,
+	OFFLINE_UNPAID_STATES,
+	offlinePaidTarget,
 	legalNextStates,
 	ORDER_EMAIL_TEMPLATE_FOR_STATE,
 	ORDER_NOTICE_EMAIL_TEMPLATE,
@@ -420,7 +424,7 @@ export {
 	gatewayForStored,
 	isCurrentPaymentMethod,
 	isOfflinePaymentMethod,
-	OFFLINE_HOLD_EXPIRES_AT,
+	settlementOf,
 	offlinePaymentRef,
 	PAYMENT_METHOD_SETTLEMENT,
 } from "./orders/payment-methods.js";
@@ -517,7 +521,21 @@ export {
 	type CreateOrderDeps,
 	type CreateOrderFromCartResult,
 } from "./orders/create-order-from-cart.js";
-export { settleOrder, type SettleDeps, type SettleResult } from "./orders/settle-order.js";
+export {
+	applyPaidSideEffects,
+	settleOrder,
+	type PaidPayment,
+	type SettleDeps,
+	type SettleResult,
+} from "./orders/settle-order.js";
+export {
+	AUTO_CANCEL_ACTOR,
+	cancelUnpaidOfflineOrders,
+	DEFAULT_OFFLINE_AUTO_CANCEL_DAYS,
+	type CancelUnpaidOfflineDeps,
+	type CancelUnpaidOfflineOptions,
+	type CancelUnpaidOfflineResult,
+} from "./orders/cancel-unpaid-offline.js";
 export {
 	computeRefundCeiling,
 	providerCaptured,
