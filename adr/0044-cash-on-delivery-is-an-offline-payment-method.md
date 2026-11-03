@@ -5,6 +5,13 @@
 - Revised: 2026-11-03, after review round 1 and the product owner's decisions A–D. The first
   version held a COD order in `pending` with a hold deadline in the year 9999. That sentinel is
   gone, replaced by two order states. Everything below is the revised record.
+- Revised again: 2026-11-03, after review round 2.
+  - The plugin derives the client network itself, and COD requires proof that the call came
+    through the site's rate-limited path (§7).
+  - The network key is an HMAC under a per-store secret.
+  - The per-network cap defaults to 20.
+  - Auto-cancel frees the coupon use before it cancels.
+  - A Mark paid that loses to a Record shipment is retryable.
 - Decided by: the product owner, 2026-11-03. That covers a separate package, a Settings toggle,
   each method enabled independently, dedicated order states, auto-cancel, abuse controls and
   physical carts only. This record holds the engineering decisions made within those.
@@ -101,9 +108,16 @@ chosen so that a crash leaves something the next click finishes:
 If the flip loses, there are two cases:
 
 - A concurrent Mark paid won: the result is the idempotent no-op.
+- A concurrent Record shipment won (the order is now `shipped_awaiting_payment`): nothing is
+  revoked or flagged. The result is `MARK_PAID_RETRY`, and the console asks the merchant to click
+  Mark paid again, which now lands the order `delivered`. The payment row already recorded is the
+  same idempotent row.
 - A concurrent Cancel won: the cash was attested, so the payment row stays. The order is flagged
   for reconciliation ("cash recorded on an order cancelled at the same moment") and any grants
   are revoked.
+
+Only `transitionOrderAsAdmin` makes these moves. The bare `transitionOrder` refuses the offline
+Mark paid targets with `INVALID_TRANSITION`, because it records no payment.
 
 The console asks before it acts: "Confirm you received {total} in cash. This records the payment
 and emails the buyer."
@@ -121,10 +135,18 @@ A merchant setting, `settings:codAutoCancelDays`, defaults to **14**; 0 turns it
 It uses the documents' `["state", "createdAt"]` index, oldest first, in bounded batches inside
 the tick's query budget. For each order it:
 
-- cancels through `cancelOrder`, with reason `other` and detail "Not paid within N days". This
-  releases the stock and enqueues the cancelled email;
-- releases the coupon use (`releaseByOrder`). Unlike a merchant cancel, nobody chose to keep the
-  coupon.
+- **first** frees the coupon use (`releaseByOrder`, idempotent and order-scoped). Unlike a
+  merchant cancel, nobody chose to keep the coupon. If the release fails, or the tick cannot
+  afford it, the order is not cancelled this tick: it stays listed and is retried on the next
+  one. The coupon-orphans leg judges a redemption only once, so the release can never be left to
+  it;
+- then cancels through `cancelOrder`, with reason `other` and detail "Not paid within N days".
+  This releases the stock and enqueues the cancelled email.
+
+The cost of releasing first: in the moment between the release and the cancel, a concurrent Mark
+paid can win. That order is then paid with its coupon use freed, which allows at most one extra
+use of a capped coupon. The order's own discount is unaffected. We accept this rather than a use
+that is never freed.
 
 An order whose ledger already shows a captured payment (a half-finished Mark paid) is skipped and
 flagged, never cancelled. `shipped_awaiting_payment` orders are never auto-cancelled, because
@@ -133,24 +155,45 @@ orders on the next tick. The Settings copy says so.
 
 ### 7. Abuse controls (decision C)
 
-1. **The per-IP write limit is a precondition.**
+1. **The per-IP write limit is a precondition, and the plugin checks the proof itself.**
    - COD is offered and accepted only when the site has the `RATE_LIMIT_WRITES` binding
-     (DEPLOYMENT.md §2.5). The plugin cannot see the site's bindings, so the site enforces it.
-   - Without the binding, the site leaves COD out of the method list, and `/checkout/place`
-     refuses `PAYMENT_METHOD_UNAVAILABLE`.
-   - With it, the site sends the client's network key (`clientNetwork`: an IPv4 address or an
-     IPv6 /64). The plugin refuses a COD placement that carries no key.
+     (DEPLOYMENT.md §2.5).
+   - The plugin's place route is also reachable directly, at
+     `/_emdash/api/plugins/otta/storefront/checkout/place`. It therefore never trusts the body.
+   - **The proof** is the `x-otta-cod-attest` header.
+     - The site adds it only on its own in-process dispatch from `/checkout/place`, and only when
+       the binding exists.
+     - The site middleware refuses (400) every incoming HTTP request that carries it, so no
+       outside caller can present it.
+     - A COD placement without it is refused `PAYMENT_METHOD_UNAVAILABLE`.
+     - A site other than the reference one that hosts the plugin must strip or refuse the same
+       header at its edge, or it does not offer COD safely.
+   - **The network** is derived by the plugin from the request's `cf-connecting-ip` header:
+     - an IPv4 address is used whole, and an IPv6 address is cut to its /64;
+     - the site forwards that header on its synthetic request;
+     - a direct call carries the one Cloudflare set;
+     - no address means no COD.
+     The public input no longer has a `clientKey`; a body field of that name is ignored.
    - The Settings group states the requirement.
 2. **Caps on open COD orders.**
    - "Open" means `awaiting_payment` or `shipped_awaiting_payment`.
-   - There are two caps, each merchant-configurable and defaulting to **3**: per buyer email
-     (`settings:codMaxOpenPerBuyer`) and per client network (`settings:codMaxOpenPerClient`).
+   - There are two caps, each merchant-configurable:
+     - per buyer email (`settings:codMaxOpenPerBuyer`), default **3**;
+     - per client network (`settings:codMaxOpenPerClient`), default **20**, because carrier and
+       office NAT put many honest buyers behind one address, common in COD's main markets.
      0 means no cap.
    - The domain checks both before minting anything, through
      `OrderStore.countOpenOfflineOrders`. The buyer count uses the indexed `buyerRefLower`.
-   - The order stores a one-way hash of the network key (`offlineClientKey`, a new indexed
-     field), never the address.
-   - Over a cap, the order is refused `OFFLINE_ORDER_LIMIT`.
+   - The order stores `offlineClientKey`, a new indexed field: an HMAC-SHA-256 of the network
+     under a per-store secret. The secret is random and kept in plugin kv
+     (`settings:codNetworkKeySecret`), created on first use. A bare hash of an IPv4 address could
+     be reversed by trying every address; the HMAC cannot without the secret.
+     - The field is cleared when the order leaves the open states, so a paid, delivered or
+       cancelled order keeps no network trace.
+     - Two first uses racing could each create a secret, and the last write wins. Orders placed
+       under the losing secret then under-count for their network until they close.
+   - Over a cap, the order is refused `OFFLINE_ORDER_LIMIT`. The buyer copy is neutral: it does
+     not say they have orders open.
    - The caps are soft under a true race: two simultaneous placements may both pass. The per-IP
      write limit bounds that.
 
@@ -194,8 +237,9 @@ This replaces the first version's `order-placed-offline` notice. `OrderNotice` i
 - `storefront/payment-config` adds `cashOnDelivery: { enabled, instructions }`. A kv failure
   reading the COD settings reads as COD off and never fails the route, so card-only stores are
   unaffected.
-- `storefront/checkout/place` takes `paymentMethod` (absent means `"stripe"`; any other value is
-  `INVALID_INPUT`, a deliberate refusal) and, for COD, `clientKey`.
+- `storefront/checkout/place` takes `paymentMethod`. Absent means `"stripe"`; any other value
+  is `INVALID_INPUT`, a deliberate refusal. COD also needs the attestation and the network
+  (§7).
 - The toggle and the caps are checked inside `createOrderFromCart`, after the same-key replay
   short-circuit. A replay whose first reply was lost therefore returns the existing order even if
   COD was switched off since.
@@ -257,5 +301,7 @@ Nothing changes until a merchant switches COD on:
 - Follow-ups:
   - a report of old unpaid COD orders;
   - COD instructions in the emails;
-  - a plugin-side proof of the site's rate-limit binding. Today the plugin trusts the site's
-    `clientKey`, and its own public place route is rate-limited by the same binding.
+  - checking the new `offlineClientKey` index on UPGRADED installs: a host that creates declared
+    indexes only for new collections would leave the per-network count unindexed. It would still
+    be correct, but slower;
+  - copy saying that 0 disables a control (the auto-cancel window, the caps).
