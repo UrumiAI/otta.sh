@@ -100,12 +100,20 @@ import type { AstroIntegration } from "astro";
 
 export const BUILD_PATH_SCRUB_INTEGRATION = "otta:build-path-scrub";
 
-/** The repo root: the nearest directory above this file holding `pnpm-workspace.yaml`. */
-export function workspaceRoot(): string {
-	let dir = path.dirname(fileURLToPath(import.meta.url));
+/**
+ * The root whose prefix is removed: the nearest directory at or above `start`
+ * holding `pnpm-workspace.yaml` (in this repository, the repo root, so both
+ * `sites/store` and `sites/staging` paths go), else `start` itself. A site built
+ * from the published package (ADR-0045) has no workspace file; its project root
+ * holds everything the bundle names, `node_modules` included.
+ */
+export function workspaceRoot(
+	start: string = path.dirname(fileURLToPath(import.meta.url)),
+): string {
+	let dir = start;
 	while (!existsSync(path.join(dir, "pnpm-workspace.yaml"))) {
 		const parent = path.dirname(dir);
-		if (parent === dir) throw new Error(`build-path-scrub: no pnpm-workspace.yaml above ${dir}`);
+		if (parent === dir) return start;
 		dir = parent;
 	}
 	return dir;
@@ -353,7 +361,9 @@ export async function scrubBuildPathsInDir(dir: string, root: string): Promise<n
 	return changed;
 }
 
-export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration {
+/** @param rootOption the prefix to remove; default {@link workspaceRoot} of the project root. */
+export function buildPathScrub(rootOption?: string): AstroIntegration {
+	let root = rootOption ?? "";
 	let serverDir: URL | undefined;
 	let clientDir: URL | undefined;
 	let envDir: string | false | undefined;
@@ -365,6 +375,7 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 		name: BUILD_PATH_SCRUB_INTEGRATION,
 		hooks: {
 			"astro:config:setup": ({ command, config, logger, updateConfig }) => {
+				if (rootOption === undefined) root = workspaceRoot(fileURLToPath(config.root));
 				if (command !== "build") return;
 				dropShellPathEnv(process.env);
 				droppedSecrets = buildSecretEnvValues(process.env);
@@ -433,6 +444,9 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 						);
 					}
 				}
+				// Set in astro:config:setup, which always runs first; an empty root
+				// would match every quoted absolute path, so never scrub without one.
+				if (root === "") throw new Error("build-path-scrub: no root was resolved");
 				const changed = await scrubBuildPathsInDir(server, root);
 				logger.info(`removed the workspace root from ${changed} server file(s)`);
 			},

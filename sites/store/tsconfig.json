@@ -1,0 +1,18 @@
+{
+	"extends": "astro/tsconfigs/strict",
+	"compilerOptions": {
+		"noUncheckedIndexedAccess": true,
+		"verbatimModuleSyntax": true,
+		"types": ["node"]
+	},
+	"include": [
+		"src",
+		"test",
+		"scripts",
+		".astro/types.d.ts",
+		"emdash-env.d.ts",
+		"vitest.config.ts",
+		"tsdown.config.ts"
+	],
+	"exclude": ["dist", ".wrangler", "node_modules"]
+}

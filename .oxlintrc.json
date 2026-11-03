@@ -21,7 +21,7 @@
 			}
 		},
 		{
-			"files": ["sites/staging/src/lib/playground-gate.ts"],
+			"files": ["sites/store/src/lib/playground-gate.ts"],
 			"rules": {
 				"no-underscore-dangle": [
 					"error",
