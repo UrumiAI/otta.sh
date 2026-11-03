@@ -538,7 +538,15 @@ export type ResolveReconciliationResult =
  *  `processing`); the caller renders GENERIC copy keyed off it, never the raw
  *  status/URL. */
 export type RecordFulfillmentResult =
-	| { ok: true; recorded: boolean; email?: InlineEmailStatus }
+	| {
+			ok: true;
+			recorded: boolean;
+			email?: InlineEmailStatus;
+			/** ADR-0044: the state the shipment moved the order to — `shipped`, or
+			 *  `shipped_awaiting_payment` for an unpaid cash-on-delivery order. Present
+			 *  when `recorded`. */
+			state?: string;
+	  }
 	| { ok: false; status: number; reason?: string };
 
 /** POST cancel returns a discriminated result (like `transitionOrder`) so a

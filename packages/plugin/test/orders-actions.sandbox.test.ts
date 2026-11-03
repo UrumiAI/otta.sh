@@ -291,7 +291,8 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// one per order state + one per ONE-CLICK cancellation reason. `other` has no
 		// one-click control, so it derives no id (and the deleted `-review` pair
 		// derives none either).
-		expect(ORDERS_ACTION_IDS.size).toBe(8 + 10 + 4);
+		// Twelve order states since ADR-0044 (awaiting_payment, shipped_awaiting_payment).
+		expect(ORDERS_ACTION_IDS.size).toBe(8 + 12 + 4);
 		expect(ORDERS_ACTION_IDS.has("orders:revoke-downloads")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-confirmed")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-voided")).toBe(true);

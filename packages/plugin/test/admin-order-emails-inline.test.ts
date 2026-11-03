@@ -379,9 +379,61 @@ describe("an admin write sends its email at once, in order", () => {
 			{ carrier: "UPS", trackingNumber: "1Z999", recordedBy: "carol" },
 			{ idempotencyKey: "k-ship" },
 		);
-		expect(res).toEqual({ ok: true, recorded: true, email: "sent" });
+		expect(res).toEqual({ ok: true, recorded: true, email: "sent", state: "shipped" });
 		const shipped = sender.sends.find((s) => s.template === "order-shipped");
 		expect(shipped?.data["fulfillment"]).toMatchObject({ trackingNumber: "1Z999" });
+	});
+
+	// ADR-0044: Record shipment of an unpaid COD order moves it to
+	// `shipped_awaiting_payment`, and THAT state's shipped email (tracking, amount due)
+	// goes out inline too — not left in the outbox for the cron.
+	test("fulfilment of an unpaid COD order sends its shipped email at once", async () => {
+		const oid = toOrderId("ord-cod-ship");
+		await harness.stores.orderStore.createFromCart({
+			orderId: oid,
+			cartId: null,
+			currency: USD,
+			idempotencyKey: toIdempotencyKey("seed-ord-cod-ship"),
+			holdExpiresAt: FAR,
+			buyerRef: "cod@example.com",
+			paymentMethod: "cod",
+			lines: [
+				{
+					productId: toProductId("prod-cod-ship"),
+					sku: toSku("SKU-cod-ship"),
+					title: "Widget",
+					unitPrice: cents(1500),
+					currency: USD,
+					quantity: 1,
+					fulfillmentKind: "physical",
+					reservationId: null,
+				},
+			],
+			totals: { subtotal: cents(1500), total: cents(1500), currency: USD },
+		});
+		await harness.stores.orderStore.transition({
+			orderId: oid,
+			fromState: "pending",
+			toState: "awaiting_payment",
+			idempotencyKey: toIdempotencyKey("place-ord-cod-ship"),
+			enqueueEmail: false,
+		});
+		const sender = new FakeEmailSender();
+		const orders = adminClient({ emailSender: sender });
+		const res = await orders.recordFulfillment(
+			oid,
+			{ carrier: "UPS", trackingNumber: "1ZCOD", recordedBy: "carol" },
+			{ idempotencyKey: "k-cod-ship" },
+		);
+		expect(res).toEqual({
+			ok: true,
+			recorded: true,
+			email: "sent",
+			state: "shipped_awaiting_payment",
+		});
+		const shipped = sender.sends.find((s) => s.template === "order-shipped");
+		expect(shipped?.data["fulfillment"]).toMatchObject({ trackingNumber: "1ZCOD" });
+		expect(shipped?.data["state"]).toBe("shipped_awaiting_payment");
 	});
 
 	test("a cancel sends the cancelled email, which states the refund", async () => {

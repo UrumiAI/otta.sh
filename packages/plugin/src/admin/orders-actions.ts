@@ -375,6 +375,11 @@ function assertNever(value: never): never {
 	throw new Error(`unhandled transition refusal: ${String(value)}`);
 }
 
+/** ADR-0044: an unpaid cash-on-delivery order moved to `shipped_awaiting_payment`. */
+const SHIPPED_CASH_DUE_TITLE = "Order marked shipped — cash due on delivery";
+/** ADR-0044: Mark paid on a cash-on-delivery order (`paid` or `delivered`). */
+const PAYMENT_RECORDED_TITLE = "Payment recorded";
+
 /** A Mark refunded that applied (ADR-0026 Decision 3): bookkeeping for a refund
  *  made outside Otta — it says so, because nothing else on the screen will. */
 const MARKED_REFUNDED: Notice = {
@@ -443,11 +448,20 @@ function transitionAction(toState: string): OrdersAction {
 		// every other applied move says what became of the buyer's email (T1-6).
 		if (toState === "refunded" && result.email === undefined) return applied(MARKED_REFUNDED);
 		const email = emailSentence(result.email).trim();
-		return applied(
-			email.length === 0
-				? null
-				: { variant: "default", title: `Order marked ${toState}`, description: email },
-		);
+		// ADR-0044: the cash-on-delivery moves say what they mean, not the state name —
+		// and Mark paid always says the payment was recorded, email or not.
+		const offlinePaid =
+			live.order.settlement === "offline" && (toState === "paid" || toState === "delivered");
+		if (offlinePaid) {
+			return applied({
+				variant: "default",
+				title: PAYMENT_RECORDED_TITLE,
+				description: `The cash payment is recorded on the order.${email.length > 0 ? ` ${email}` : ""}`,
+			});
+		}
+		const title =
+			toState === "shipped_awaiting_payment" ? SHIPPED_CASH_DUE_TITLE : `Order marked ${toState}`;
+		return applied(email.length === 0 ? null : { variant: "default", title, description: email });
 	};
 }
 
@@ -641,7 +655,7 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
 						variant: "error",
 						title: "Order can’t be shipped right now",
 						description:
-							"This order is no longer “processing” — it may have shipped or been cancelled. Reload and check its status.",
+							"This order is no longer waiting to ship — it may have shipped or been cancelled. Reload and check its status.",
 					}
 				: {
 						variant: "error",
@@ -660,7 +674,8 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
 	}
 	return applied({
 		variant: "default",
-		title: "Order shipped",
+		// ADR-0044: an unpaid cash-on-delivery order ships before it is paid.
+		title: result.state === "shipped_awaiting_payment" ? SHIPPED_CASH_DUE_TITLE : "Order shipped",
 		description:
 			result.email === "sent"
 				? "Fulfilment recorded. The buyer has been emailed their tracking."

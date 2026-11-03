@@ -492,8 +492,10 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	}
 
 	/** POST record shipping fulfillment. Recording fulfillment IS shipping the
-	 *  order (`processing → shipped`, atomically with the tracking envelope and the
-	 *  shipped email), so a non-`processing` order is `NOT_FULFILLABLE` (409). */
+	 *  order (`processing → shipped`, or ADR-0044's `awaiting_payment →
+	 *  shipped_awaiting_payment` for an unpaid COD order — the domain picks the
+	 *  target — atomically with the tracking envelope and the shipped email), so any
+	 *  other order is `NOT_FULFILLABLE` (409). */
 	async recordFulfillment(
 		orderId: string,
 		fulfillment: {
@@ -537,13 +539,18 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		);
 		if (res.ok) {
 			if (!res.recorded) return { ok: true, recorded: false };
+			// The state the shipment moved the order to: `shipped`, or — for an unpaid
+			// cash-on-delivery order (ADR-0044) — `shipped_awaiting_payment`, whose
+			// shipped email carries the tracking and the amount due.
+			const shippedState: OrderState =
+				res.order.state === "shipped_awaiting_payment" ? "shipped_awaiting_payment" : "shipped";
 			const email = await this.#sendEmailsNow(
 				toOrderId(orderId),
 				deadline,
-				(row) => isStateRow(row, "shipped"),
+				(row) => isStateRow(row, shippedState),
 				res.order,
 			);
-			return { ok: true, recorded: true, email };
+			return { ok: true, recorded: true, email, state: shippedState };
 		}
 		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404, reason: res.reason };
 		if (res.reason === "NOT_FULFILLABLE") return { ok: false, status: 409, reason: res.reason };

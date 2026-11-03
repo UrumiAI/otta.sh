@@ -98,7 +98,8 @@ interface SeedOptions {
 	/** An explicit line sku (default `SKU-<suffix>`). */
 	sku?: string;
 	totalCents?: number;
-	state?: "pending" | "paid" | "processing";
+	/** `awaiting_payment` seeds a placed, unpaid cash-on-delivery order (ADR-0044). */
+	state?: "pending" | "paid" | "processing" | "awaiting_payment";
 }
 
 /** One order, seeded through the SAME adapters the console's in-process client
@@ -115,7 +116,7 @@ async function seedOrder(options: SeedOptions): Promise<string> {
 		idempotencyKey: idempotencyKey(`create-${suffix}`),
 		holdExpiresAt: "2099-01-01T00:00:00.000Z",
 		buyerRef: `${options.tag}-${suffix}@example.test`,
-		paymentMethod: "stripe",
+		paymentMethod: options.state === "awaiting_payment" ? "cod" : "stripe",
 		lines: [
 			{
 				productId: toProductId(`prod-${suffix}`),
@@ -130,6 +131,16 @@ async function seedOrder(options: SeedOptions): Promise<string> {
 		],
 		totals: { subtotal: cents(total), total: cents(total), currency: currency("USD") },
 	});
+	if (options.state === "awaiting_payment") {
+		await orderStore.transition({
+			orderId: toOrderId(id),
+			fromState: "pending",
+			toState: "awaiting_payment",
+			idempotencyKey: idempotencyKey(`seed-placed-${suffix}`),
+			enqueueEmail: false,
+		});
+		return id;
+	}
 	if (options.state !== "pending") await orderStore.markPaid(toOrderId(id));
 	if (options.state === "processing") {
 		await orderStore.transition({
@@ -324,6 +335,9 @@ describe("the console's read/write branch on the otta admin route", () => {
 			"completed",
 			"cancelled",
 			"refunded",
+			// ADR-0044: the cash-on-delivery states — "awaiting payment" is a filter too.
+			"awaiting_payment",
+			"shipped_awaiting_payment",
 		]);
 		expect(vocabulary["pageLimit"]).toBe(PAGE_LIMIT);
 		expect(
@@ -598,6 +612,28 @@ describe("the console's read/write branch on the otta admin route", () => {
 	// so the place it can still be proven is a direct unit test of that function
 	// rather than a route case. The two steering filters beside it ARE reachable
 	// here and are asserted below and in `orders.detail answers the order…`.
+
+	// ADR-0044: likewise an unpaid COD order is shipped through Record shipment (the
+	// Fulfilment form, with tracking and the amount-due email), never a bare move to
+	// `shipped_awaiting_payment`. Mark paid (`paid`) stays; cancel is the Cancel group.
+	test("an AWAITING_PAYMENT COD order is offered no bare `shipped_awaiting_payment`; Mark paid stays", async () => {
+		const id = await seedOrder({ tag: "cod-steering", state: "awaiting_payment" });
+		const result = await invoke({ type: READ, resource: "orders.detail", orderId: id });
+		expect(result["transitions"]).toEqual(["paid"]);
+		// What the console's Mark paid confirm needs: the method's settlement and the
+		// total ("Confirm you received {total} in cash").
+		expect(result["order"]).toMatchObject({
+			state: "awaiting_payment",
+			paymentMethod: "cod",
+			settlement: "offline",
+		});
+		expect(JSON.stringify(result["order"])).toContain('"totalCents":1999');
+		// And the list filter takes the COD state ("Cash on delivery — awaiting payment").
+		const listed = await list({ search: "cod-steering", status: "awaiting_payment" });
+		expect((listed["orders"] as Array<{ id: string }>).map((o) => o.id)).toEqual([id]);
+		const notListed = await list({ search: "cod-steering", status: "pending" });
+		expect(notListed["orders"]).toEqual([]);
+	});
 
 	test("a PROCESSING order is offered no bare `shipped` — it is steered to the Fulfilment form", async () => {
 		// A bare `shipped` would ship without tracking and email the buyer an empty
