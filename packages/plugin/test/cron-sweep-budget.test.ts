@@ -135,6 +135,8 @@ describe("the sweep's schedule and timeout are pinned", () => {
 		// customer never waits on.
 		expect([...MAINTENANCE_LEGS].toSorted()).toEqual(
 			[
+				// ADR-0044: its window is days; its idle run is a due check.
+				"cod-auto-cancel",
 				"coupon-orphans",
 				"coupon-recount",
 				"order-sku-index",

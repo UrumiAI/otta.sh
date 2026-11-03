@@ -66,6 +66,7 @@ import {
 	ABANDONED_CART_TTL_MS,
 	LEG_PRIORITY,
 	MAINTENANCE_LEGS,
+	NEVER_AHEAD_OF_CANCELS,
 	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
 import {
@@ -77,6 +78,7 @@ import {
 	MINUTE_MS,
 	placeLapsedOrder,
 	placeOrder,
+	placeAwaitingPaymentOrder,
 	placePaidOrderOwingCommit,
 	recordingSender,
 	seedLapsedHolds,
@@ -102,6 +104,10 @@ const EXPIRY_WITHIN = Math.ceil(LAPSED_ORDERS / MIN_EXPIRIES_PER_MINUTE);
 const PROGRESS_WITHIN = 12;
 /** And is never passed over more than this many ticks in a row. */
 const MAX_WAIT = 8;
+/** ADR-0044: the COD auto-cancel's bound. It is aged behind every other aged leg
+ *  and never put ahead of the intent cancels, so with every leg backlogged on Free it
+ *  waits for the rest to settle — measured: 46 ticks, against a window of days. */
+const COD_AUTO_CANCEL_WAIT = 60;
 
 /**
  * The instant the backlog is seeded at, and START, two hours on (so a late refund
@@ -330,6 +336,10 @@ async function seedEveryLeg(): Promise<void> {
 		);
 	}
 
+	// cod-auto-cancel (ADR-0044): a cash-on-delivery order unpaid past the default
+	// fourteen-day window.
+	await placeAwaitingPaymentOrder(storage, "cod-stale", new Date(START.getTime() - 20 * DAY_MS));
+
 	// product-orphans: three products deleted in the CMS whose afterDelete was lost.
 	for (const id of ORPHANED_PRODUCTS) {
 		await products.upsert(
@@ -458,6 +468,8 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 			(await collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION).get("listed"))
 				?.active === true,
 		"late-refunds": stripe.refundCalls.length >= 1,
+		"cod-auto-cancel":
+			(await s.orderStore.getById(toOrderId("order-cod-stale")))?.state === "cancelled",
 	};
 }
 
@@ -557,6 +569,13 @@ async function sweepTheBacklogOnFakedClock(expiryWithin: number): Promise<void> 
 		const trace = traces.get(leg)!;
 		expect(trace.firstProgress, `${leg} never progressed\n${report}`).not.toBeNull();
 		if (UNPROMOTED_LEGS.includes(leg)) continue;
+		// ADR-0044: the COD auto-cancel's window is days and it never goes ahead of the
+		// intent cancels (`NEVER_AHEAD_OF_CANCELS`), so under this backlog it waits for
+		// them to drain; it must still finish (below), and it is bounded by its own pin.
+		if (NEVER_AHEAD_OF_CANCELS.includes(leg)) {
+			expect(trace.longestWait, `${leg}\n${report}`).toBeLessThanOrEqual(COD_AUTO_CANCEL_WAIT);
+			continue;
+		}
 		expect(trace.firstProgress!, `${leg}\n${report}`).toBeLessThan(PROGRESS_WITHIN);
 		expect(trace.longestWait, `${leg}\n${report}`).toBeLessThanOrEqual(MAX_WAIT);
 	}
@@ -629,9 +648,11 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
  * tick 91–94 when START is near 00:00 (73–76 at every other hour), every email
  * still sent. So the run is scanned across the day: the work is ALL done at every
  * hour, and the pace holds everywhere, with the midnight straddle given its
- * measured floor (0.5 a minute) rather than hidden by the fixed instant above.
+ * measured floor rather than hidden by the fixed instant above: 0.5 a minute until
+ * ADR-0044 added a stale COD order to the backlog — its cancel and its two emails
+ * (placed, cancelled) — after which the straddle measured 105 ticks (0.476).
  */
-const MIDNIGHT_EXPIRY_WITHIN = Math.ceil(LAPSED_ORDERS / 0.5);
+const MIDNIGHT_EXPIRY_WITHIN = Math.ceil(LAPSED_ORDERS / 0.47);
 
 describe("the same backlog at any time of day", () => {
 	test.each([
