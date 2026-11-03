@@ -19,6 +19,11 @@ import { buildEmdashOptions } from "./src/emdash-options.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
 import { buildPathScrub } from "./src/lib/build-path-scrub.js";
 import { devStripeOfflineIntegration } from "./src/lib/e2e-stripe-offline.js";
+import {
+	E2E_WRITE_LIMIT_VAR,
+	e2eWranglerConfig,
+	e2eWranglerIntegration,
+} from "./src/lib/e2e-wrangler.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
  *  see src/lib/dot-env.ts), so fall back to sites/staging/.env explicitly:
@@ -89,9 +94,14 @@ if ((process.env.STRIPE_PUBLIC_KEY ?? readDotEnv("STRIPE_PUBLIC_KEY") ?? "").tri
  * HERE, not with `wrangler deploy --config` (which bypasses the redirect
  * and tries to rebundle the raw worker source).
  */
-const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.meta.url))
-	? "wrangler.local.jsonc"
-	: undefined;
+const localWranglerConfig =
+	/* The Playwright e2e stack's own config (ADR-0044: it adds RATE_LIMIT_WRITES,
+	   so cash on delivery can be offered) — `astro dev` only; the integration
+	   below refuses a build with it (src/lib/e2e-wrangler.ts). */
+	e2eWranglerConfig(process.env[E2E_WRITE_LIMIT_VAR]) ??
+	(existsSync(new URL("wrangler.local.jsonc", import.meta.url))
+		? "wrangler.local.jsonc"
+		: undefined);
 
 /**
  * A guard on the config this build actually uses — the gitignored local config
@@ -241,6 +251,7 @@ export default defineConfig({
 		react(),
 		emdash(buildEmdashOptions(egress)),
 		devStripeOfflineIntegration(),
+		e2eWranglerIntegration(),
 		buildPathScrub(),
 	],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the storefront's
