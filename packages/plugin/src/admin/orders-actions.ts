@@ -279,15 +279,16 @@ function emailSentence(email: InlineEmailStatus | undefined): string {
 /**
  * A manual mark-paid (QA T1-3). Otta marks an order paid only when its payment
  * provider confirms the charge; a person marking it paid would tell the buyer their
- * payment arrived and count revenue nobody captured. No payment method is declared
- * offline today, so this is every manual mark-paid — including an order with no
- * method on file, which nothing will ever settle (so no "it becomes paid by itself").
+ * payment arrived and count revenue nobody captured. Only an OFFLINE method (cash on
+ * delivery, ADR-0042) is marked paid by hand, and the console offers Mark paid only
+ * there; this is every other manual mark-paid — including an order with no method on
+ * file, which nothing will ever settle (so no "it becomes paid by itself").
  */
 const PAID_BY_PROVIDER_ONLY: Notice = {
 	variant: "error",
 	title: "Only the payment provider can mark this order paid",
 	description:
-		"Nothing was changed. Otta marks an order paid only when its payment provider confirms the charge. Otta can’t record a payment taken outside it yet.",
+		"Nothing was changed. Otta marks a card order paid only when its payment provider confirms the charge. Only a cash-on-delivery order is marked paid by hand.",
 };
 
 /**

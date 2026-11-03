@@ -1399,6 +1399,97 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		expect(cart.lines.map((l) => l.reservationId)).toEqual(beforeLines.map((l) => l.reservationId));
 	});
 
+	/**
+	 * ADR-0042: cash on delivery is independent of Stripe. On this boot (no Stripe
+	 * at all) it is refused while off, then — once the merchant switches it on in
+	 * Settings — the order is placed with no pay step: an `offline` action, no
+	 * intent, a pending order that never expires. Card checkout stays refused.
+	 */
+	test("cash on delivery with no Stripe: refused while off, placed once switched on, card still refused", async () => {
+		const codCart = await seedThreeLineCart();
+		const placeCod = async (cartId: string) =>
+			resultOf(
+				await sandboxHandle.invokeRoute("storefront/checkout/place", {
+					cartId,
+					buyerRef: "cod-buyer@example.com",
+					idempotencyKey: `checkout:${cartId}`,
+					paymentMethod: "cod",
+				}),
+			);
+		const saveCod = (codEnabled: boolean, codInstructions = "") =>
+			sandboxHandle.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-cash-on-delivery",
+				values: { codEnabled, codInstructions },
+			});
+		const config = async () =>
+			resultOf(await sandboxHandle.invokeRoute("storefront/payment-config", {}));
+
+		expect(await config()).toMatchObject({
+			cashOnDelivery: { enabled: false, instructions: null },
+		});
+		expect(await placeCod(codCart)).toEqual({ ok: false, reason: "PAYMENT_METHOD_UNAVAILABLE" });
+
+		expect(await saveCod(true, "  Please have the exact amount ready.  ")).toHaveProperty("result");
+		try {
+			expect(await config()).toMatchObject({
+				cardPaymentReady: false,
+				cashOnDelivery: { enabled: true, instructions: "Please have the exact amount ready." },
+			});
+			const placed = await placeCod(codCart);
+			expect(placed, JSON.stringify(placed)).toMatchObject({
+				ok: true,
+				state: "pending",
+				alreadyPlaced: false,
+				clientAction: { kind: "offline" },
+			});
+			const orderId = placed["orderId"] as string;
+			// A same-key replay is the same order, still offline.
+			expect(await placeCod(codCart)).toMatchObject({
+				ok: true,
+				orderId,
+				clientAction: { kind: "offline" },
+			});
+			const read = resultOf(await sandboxHandle.invokeRoute("storefront/order", { orderId }));
+			expect(read).toMatchObject({
+				ok: true,
+				order: {
+					paymentMethod: "cod",
+					state: "pending",
+					holdExpiresAt: "9999-12-31T23:59:59.999Z",
+				},
+			});
+
+			// Card checkout on this Stripe-less store is still refused.
+			const cardCart = await seedThreeLineCart();
+			expect(
+				resultOf(
+					await sandboxHandle.invokeRoute("storefront/checkout/place", {
+						cartId: cardCart,
+						buyerRef: "card-buyer@example.com",
+						idempotencyKey: `checkout:${cardCart}`,
+						paymentMethod: "stripe",
+					}),
+				),
+			).toEqual({ ok: false, reason: "STRIPE_NOT_CONFIGURED" });
+		} finally {
+			await saveCod(false);
+		}
+		expect(await config()).toMatchObject({ cashOnDelivery: { enabled: false } });
+	});
+
+	test("an unknown payment method is malformed input", async () => {
+		const result = resultOf(
+			await sandboxHandle.invokeRoute("storefront/checkout/place", {
+				cartId: "cart-1",
+				buyerRef: "a@b.co",
+				idempotencyKey: "checkout:cart-1",
+				paymentMethod: "bitcoin",
+			}),
+		);
+		expect(result).toEqual({ ok: false, error: "INVALID_INPUT" });
+	});
+
 	test.each([
 		["a blank buyerRef", { cartId: "cart-1", buyerRef: "  ", idempotencyKey: "checkout:cart-1" }],
 		["a missing idempotencyKey", { cartId: "cart-1", buyerRef: "a@b.co" }],
@@ -1651,6 +1742,7 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			ok: true,
 			stripePublishableKey: null,
 			cardPaymentReady: false,
+			cashOnDelivery: { enabled: false, instructions: null },
 		});
 		const saved = await stripeBoot.invokeRoute("admin", {
 			type: "form_submit",
@@ -1662,6 +1754,7 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			ok: true,
 			stripePublishableKey: "pk_test_sandbox499",
 			cardPaymentReady: true,
+			cashOnDelivery: { enabled: false, instructions: null },
 		});
 	});
 

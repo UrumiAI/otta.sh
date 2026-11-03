@@ -220,7 +220,7 @@ export interface ArrangedOrder {
 	unitPrice?: CommerceMoney;
 	quantity?: number;
 	/** The method the order was placed with. Defaults to `stripe`. */
-	paymentMethod?: "stripe";
+	paymentMethod?: "stripe" | "cod";
 	/**
 	 * A SETTLED payment for the order, in the order's currency: the order is
 	 * flipped `pending → paid` and one `succeeded` payment row is recorded under

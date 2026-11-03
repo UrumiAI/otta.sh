@@ -92,8 +92,29 @@ export function refundConfirmText(
  *  is record-only, and says why. Takes primitives rather than a summary object
  *  so this module stays free of wire types. */
 export function refundCapabilityText(refundable: boolean, paymentMethod: string | null): string {
+	if (paymentMethod === "cod") {
+		// ADR-0042: cash went to the merchant at the door; it comes back by hand.
+		return "Paid in cash on delivery — refunds here are RECORD-ONLY. Return the cash to the buyer yourself, then record it here.";
+	}
 	if (refundable) {
 		return `Paid via ${paymentMethod ?? "the payment provider"} — refunding here issues a REAL refund through Stripe and money moves back to the buyer.`;
 	}
 	return "Automatic refunds are unavailable for this order — refunds here are RECORD-ONLY. Issue it through your payment provider, then record it here.";
+}
+
+/**
+ * A payment method as an operator reads it (ADR-0042): the stored code is a
+ * token (`cod`), not a label. An unknown or legacy code is shown as stored, and
+ * no method as "—".
+ */
+export function paymentMethodLabel(paymentMethod: string | null): string {
+	if (paymentMethod === null) return "—";
+	switch (paymentMethod) {
+		case "stripe":
+			return "Card (Stripe)";
+		case "cod":
+			return "Cash on delivery";
+		default:
+			return paymentMethod;
+	}
 }

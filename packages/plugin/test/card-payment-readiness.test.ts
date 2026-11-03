@@ -115,6 +115,7 @@ describe("storefront/payment-config — cardPaymentReady", () => {
 			ok: true,
 			stripePublishableKey: PK_TEST,
 			cardPaymentReady: false,
+			cashOnDelivery: { enabled: false, instructions: null },
 		});
 	});
 
@@ -144,7 +145,12 @@ describe("storefront/payment-config — cardPaymentReady", () => {
 	test("both secrets but no publishable key is not ready", async () => {
 		expect(
 			await call(makeCtx({ [STRIPE_SECRET_KEY_KEY]: SK_TEST, [STRIPE_WEBHOOK_SECRET_KEY]: WHSEC })),
-		).toEqual({ ok: true, stripePublishableKey: null, cardPaymentReady: false });
+		).toEqual({
+			ok: true,
+			stripePublishableKey: null,
+			cardPaymentReady: false,
+			cashOnDelivery: { enabled: false, instructions: null },
+		});
 	});
 
 	test.each([
@@ -163,6 +169,7 @@ describe("storefront/payment-config — cardPaymentReady", () => {
 			ok: true,
 			stripePublishableKey: key,
 			cardPaymentReady: true,
+			cashOnDelivery: { enabled: false, instructions: null },
 		});
 	});
 

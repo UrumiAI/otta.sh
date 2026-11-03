@@ -46,6 +46,13 @@ import {
 } from "../payments/card-payment-readiness.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
 import {
+	COD_ENABLED_KEY,
+	COD_INSTRUCTIONS_KEY,
+	COD_INSTRUCTIONS_MAX,
+	readCodEnabled,
+	readCodInstructions,
+} from "../payments/cash-on-delivery.js";
+import {
 	clearStripeWebhookLastVerified,
 	readStripeWebhookLastVerified,
 	stripeWebhookLastVerifiedLine,
@@ -138,6 +145,8 @@ export { STORE_DISPLAY_NAME_KEY };
 
 /** The "Background work per minute" form's submit — a kv save. */
 const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
+/** ADR-0042: the cash-on-delivery toggle and its buyer instructions, one form. */
+export const SAVE_CASH_ON_DELIVERY_ACTION = "save-cash-on-delivery";
 
 /** The "Store currency" form's submit — a settings-store save. */
 const SAVE_STORE_CURRENCY_ACTION = "save-store-currency";
@@ -405,6 +414,9 @@ interface SettingsPageState {
 	/** #497: whether a payment key saved now could be stored encrypted. Not kv,
 	 *  but read once with it. */
 	encryptionKey: EncryptionKeyStatus;
+	/** ADR-0042: cash on delivery's toggle and instructions, or `null` when the
+	 *  read failed (the form is then left out, so a save cannot write a blank). */
+	cashOnDelivery: CashOnDeliveryState | null;
 }
 
 /** Read the non-secret payment/email settings. FAIL-SOFT per key, for the
@@ -458,6 +470,7 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		stripeAccount,
 		emailStatus,
 		stripeWebhookLastVerified,
+		cashOnDelivery,
 	] = await Promise.all([
 		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
 		// a kv blip on it must not deny the operator the secret forms below.
@@ -478,6 +491,14 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		emailSendingStatus(ctx),
 		// #531: never throws; a failed read is its own state, never "never".
 		readStripeWebhookLastVerified(ctx),
+		// ADR-0042: fail-soft — an unread toggle leaves its form out, never "off".
+		Promise.all([readCodEnabled(ctx), readCodInstructions(ctx)]).then(
+			([enabled, instructions]): CashOnDeliveryState => ({
+				enabled,
+				instructions: instructions ?? "",
+			}),
+			() => null,
+		),
 	]);
 	return {
 		backgroundWork,
@@ -489,6 +510,7 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		displayName: displayName ?? "",
 		paymentSecrets,
 		encryptionKey: encryptionKeyStatus(),
+		cashOnDelivery,
 	};
 }
 
@@ -542,6 +564,7 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-display",
 	"save-operational",
 	SAVE_BACKGROUND_WORK_ACTION,
+	SAVE_CASH_ON_DELIVERY_ACTION,
 	SAVE_STORE_CURRENCY_ACTION,
 	CONFIRM_STORE_CURRENCY_ACTION,
 	// INC-C3: the payment secrets, from the one table that also builds
@@ -678,6 +701,43 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			return {
 				...page,
 				toast: { message: "Display name saved", type: "success" },
+			} satisfies BlockResponse;
+		}
+
+		// -- kv save path: Cash on delivery (ADR-0042) ------------------------------
+		// The toggle is saved only as a real boolean (an absent or malformed value
+		// refuses the save, never reads as "off"); the instructions are trimmed and
+		// bounded, and a blank clears them.
+		if (action === SAVE_CASH_ON_DELIVERY_ACTION) {
+			const enabled = input.values?.codEnabled;
+			const rawInstructions = input.values?.codInstructions;
+			const instructions = typeof rawInstructions === "string" ? rawInstructions.trim() : "";
+			if (typeof enabled !== "boolean" || instructions.length > COD_INSTRUCTIONS_MAX) {
+				const page = await renderPage(ctx, client, {
+					variant: "error",
+					title: "Cash on delivery not saved",
+					description:
+						typeof enabled !== "boolean"
+							? "The on/off choice didn't come through. Nothing was changed."
+							: `Instructions must be at most ${String(COD_INSTRUCTIONS_MAX)} characters. Nothing was changed.`,
+				});
+				return {
+					...page,
+					toast: { message: "Cash on delivery not saved", type: "error" },
+				} satisfies BlockResponse;
+			}
+			await ctx.kv.set(COD_INSTRUCTIONS_KEY, instructions);
+			await ctx.kv.set(COD_ENABLED_KEY, enabled);
+			const page = await renderPage(ctx, client, {
+				variant: "default",
+				title: "Cash on delivery saved",
+				description: enabled
+					? "Cash on delivery is on: checkout offers it from now on."
+					: "Cash on delivery is off: checkout no longer offers it. Orders already placed with it are unchanged.",
+			});
+			return {
+				...page,
+				toast: { message: "Cash on delivery saved", type: "success" },
 			} satisfies BlockResponse;
 		}
 
@@ -1403,6 +1463,7 @@ function buildSettingsBlocks(args: {
 	stripeWebhookLastVerified: StripeWebhookLastVerified;
 	/** #497: whether a payment key typed below could be stored encrypted. */
 	encryptionKey: EncryptionKeyStatus;
+	cashOnDelivery: CashOnDeliveryState | null;
 	notice?: Notice;
 	paymentRefusal?: PaymentRefusal;
 	/** #447: the switch waiting on a confirm, rendered under the notice. */
@@ -1431,8 +1492,66 @@ function buildSettingsBlocks(args: {
 			args.stripeWebhookLastVerified,
 			args.paymentRefusal,
 		),
+		...cashOnDeliveryGroup(args.cashOnDelivery),
 	);
 	return blocks;
+}
+
+/** ADR-0042: what the cash-on-delivery group renders from. */
+interface CashOnDeliveryState {
+	enabled: boolean;
+	instructions: string;
+}
+
+/**
+ * "Cash on delivery" (ADR-0042): one toggle and the optional buyer instructions,
+ * saved as one form. Independent of the card group above — a store may take
+ * either or both — and OFF until the merchant saves it on, so a store upgraded
+ * past ADR-0042 changes nothing until then.
+ */
+function cashOnDeliveryGroup(state: CashOnDeliveryState | null): Block[] {
+	const status = state === null ? "couldn't be loaded" : state.enabled ? "on" : "off";
+	return section({
+		blockId: "settings:cod",
+		title: `Cash on delivery — ${status}`,
+		blocks: [
+			{
+				type: "context",
+				text: "Buyers place the order without paying online and pay in cash on delivery. Their items are set aside until you mark the order paid in Orders, or cancel it. Card payments above are not affected.",
+			},
+			...(state === null
+				? [
+						{
+							type: "context",
+							text: "The cash-on-delivery setting couldn't be loaded, so its form is hidden to avoid overwriting it. Reload the page to try again.",
+						} satisfies Block,
+					]
+				: [
+						carriedForm({
+							namespace: "settings:cod",
+							form: {
+								type: "form",
+								fields: [
+									{
+										type: "toggle",
+										action_id: "codEnabled",
+										label: "Offer cash on delivery at checkout",
+										initial_value: state.enabled,
+									},
+									{
+										type: "text_input",
+										action_id: "codInstructions",
+										label: `Instructions for buyers (optional, up to ${String(COD_INSTRUCTIONS_MAX)} characters)`,
+										placeholder: "Please have the exact amount ready.",
+										initial_value: state.instructions,
+									},
+								],
+								submit: { label: "Save cash on delivery", action_id: SAVE_CASH_ON_DELIVERY_ACTION },
+							},
+						}),
+					]),
+		],
+	});
 }
 
 /** The Store heading carries the name itself, so the one thing this group

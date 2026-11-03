@@ -965,13 +965,15 @@ describe("Settings admin form (workerd sandbox)", () => {
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 
 		const labels = groupLabels(blocks);
-		// THREE groups, not the old four: INC-D3a deletes "Service connection"
-		// outright.
+		// INC-D3a deleted "Service connection" outright; ADR-0042 adds "Cash on
+		// delivery" after the card group.
 		expect([...labels.keys()]).toEqual([
 			"settings:store",
 			"settings:checkout",
 			"settings:payments",
+			"settings:cod",
 		]);
+		expect(labels.get("settings:cod")).toBe("Cash on delivery — off");
 		expect(labels.get("settings:store")).toBe("Store — no display name");
 		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
 		expect(labels.get("settings:payments")).toBe(
@@ -991,6 +993,35 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(findBlocks(sectionBlocks(blocks, "settings:payments"), "form").length).toBeGreaterThan(
 			0,
 		);
+		expect(formFor(sectionBlocks(blocks, "settings:cod"), "save-cash-on-delivery")).toBeDefined();
+	});
+
+	// ADR-0042: the cash-on-delivery toggle saves only a real boolean, keeps its
+	// instructions bounded, and the heading says whether it is on.
+	test("cash on delivery: saved on with instructions, refused without a boolean or over the bound", async () => {
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+		const save = async (values: Record<string, unknown>) =>
+			boot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-cash-on-delivery",
+				values,
+			});
+
+		const refused = await save({ codEnabled: "yes", codInstructions: "" });
+		expect(JSON.stringify(refused)).toContain("Cash on delivery not saved");
+		const tooLong = await save({ codEnabled: true, codInstructions: "x".repeat(501) });
+		expect(JSON.stringify(tooLong)).toContain("at most 500 characters");
+		expect(groupLabels(blocksOf(tooLong)).get("settings:cod")).toBe("Cash on delivery — off");
+
+		const saved = await save({ codEnabled: true, codInstructions: "  Exact change, please.  " });
+		expect(JSON.stringify(saved)).toContain("Cash on delivery saved");
+		const page = blocksOf(saved);
+		expect(groupLabels(page).get("settings:cod")).toBe("Cash on delivery — on");
+		expect(JSON.stringify(sectionBlocks(page, "settings:cod"))).toContain("Exact change, please.");
+
+		const off = blocksOf(await save({ codEnabled: false, codInstructions: "" }));
+		expect(groupLabels(off).get("settings:cod")).toBe("Cash on delivery — off");
 	});
 
 	// The old "a label states an unset or unreadable value as a FACT" case used a
@@ -1071,6 +1102,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			"settings:store",
 			"settings:checkout",
 			"settings:payments",
+			"settings:cod",
 		]);
 	});
 

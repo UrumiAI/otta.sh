@@ -14,23 +14,36 @@
  * which the e2e seed relies on before it saves a placeholder.
  */
 import { readCardPaymentReadiness } from "../payments/card-payment-readiness.js";
+import { readCodEnabled, readCodInstructions } from "../payments/cash-on-delivery.js";
 import type { RouteHandler } from "../types.js";
 import { renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 
 export const STOREFRONT_PAYMENT_CONFIG_ROUTE = "storefront/payment-config";
 
 export type PaymentConfigRouteResult =
-	| { ok: true; stripePublishableKey: string | null; cardPaymentReady: boolean }
+	| {
+			ok: true;
+			stripePublishableKey: string | null;
+			cardPaymentReady: boolean;
+			/** ADR-0042: whether checkout offers cash on delivery, and the merchant's
+			 *  optional instructions for buyers (null when none). */
+			cashOnDelivery: { enabled: boolean; instructions: string | null };
+	  }
 	| RenderGuardFailure;
 
 export function createPaymentConfigRouteHandler(): RouteHandler<unknown> {
 	return (_routeCtx, ctx): Promise<PaymentConfigRouteResult> =>
 		renderGuard(STOREFRONT_PAYMENT_CONFIG_ROUTE, async () => {
-			const { readiness, publishableKey } = await readCardPaymentReadiness(ctx);
+			const [{ readiness, publishableKey }, codEnabled, codInstructions] = await Promise.all([
+				readCardPaymentReadiness(ctx),
+				readCodEnabled(ctx),
+				readCodInstructions(ctx),
+			]);
 			return {
 				ok: true as const,
 				stripePublishableKey: publishableKey ?? null,
 				cardPaymentReady: readiness.ready,
+				cashOnDelivery: { enabled: codEnabled, instructions: codInstructions },
 			};
 		});
 }

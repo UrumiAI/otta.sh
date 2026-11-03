@@ -481,6 +481,7 @@ describe("storefront/payment-config", () => {
 			stripePublishableKey: PK_LIVE,
 			// #499: the key alone is not card payment — both secrets are missing.
 			cardPaymentReady: false,
+			cashOnDelivery: { enabled: false, instructions: null },
 		});
 	});
 
@@ -493,6 +494,7 @@ describe("storefront/payment-config", () => {
 			ok: true,
 			stripePublishableKey: null,
 			cardPaymentReady: false,
+			cashOnDelivery: { enabled: false, instructions: null },
 		});
 	});
 
@@ -503,12 +505,14 @@ describe("storefront/payment-config", () => {
 		});
 	});
 
-	test("answers nothing but the publishable key and whether card payment is ready", async () => {
+	test("answers nothing but the publishable key, whether card payment is ready and cash on delivery", async () => {
 		const answer = await call(
 			makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST, [STRIPE_SECRET_KEY_KEY]: SK_TEST }).ctx,
 		);
 		expect(Object.keys(answer as object).toSorted()).toEqual([
 			"cardPaymentReady",
+			// ADR-0042: cash on delivery's toggle and buyer instructions — public by design.
+			"cashOnDelivery",
 			"ok",
 			"stripePublishableKey",
 		]);

@@ -1083,7 +1083,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 				},
 			},
 		} as unknown as PluginContext;
-		const used = await cost(() => resolvePaymentGateways(ctx));
+		const used = await cost(() => resolvePaymentGateways(ctx, { cashOnDelivery: "never" }));
 		// Exactly Stripe's two secret reads: the entry is sized to it, no headroom.
 		expect(used).toBe(2);
 		expect(LEG_QUERY_COSTS["cancel-intents"].entry).toBe(used);
@@ -1100,7 +1100,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			},
 		} as unknown as PluginContext;
 		// The due list is the leg's due check, charged before the entry.
-		const used = await cost(() => resolvePaymentGateways(ctx));
+		const used = await cost(() => resolvePaymentGateways(ctx, { cashOnDelivery: "never" }));
 		// Exactly Stripe's two secret reads: the entry is sized to it, no headroom.
 		expect(used).toBe(2);
 		expect(LEG_QUERY_COSTS["late-refunds"].entry).toBe(used);

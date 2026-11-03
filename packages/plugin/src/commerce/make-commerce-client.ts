@@ -67,7 +67,11 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 		// Lazy too: only "Start a new cart" that actually cancelled an order uses it
 		// (QA2 X4). Built with the cancel's own short, fixed bound — not checkout's.
 		resolveWithdrawGateways: () =>
-			resolvePaymentGateways(ctx, { requestTimeoutMs: ABANDON_CANCEL_CALL_MS }),
+			// ADR-0042: withdrawing intents only — a COD order has none to withdraw.
+			resolvePaymentGateways(ctx, {
+				requestTimeoutMs: ABANDON_CANCEL_CALL_MS,
+				cashOnDelivery: "never",
+			}),
 		// Issue #382: an India-based Stripe account needs every buyer's name and
 		// address. A kv read of the cached account country — Stripe is asked only
 		// when nothing usable is cached (see stripe-account-country.ts).

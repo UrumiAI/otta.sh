@@ -388,7 +388,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Only the payment provider can mark this order paid");
 		expect(result.notice?.description).toBe(
-			"Nothing was changed. Otta marks an order paid only when its payment provider confirms the charge. Otta can’t record a payment taken outside it yet.",
+			"Nothing was changed. Otta marks a card order paid only when its payment provider confirms the charge. Only a cash-on-delivery order is marked paid by hand.",
 		);
 		const order = await readOrder(id);
 		expect(order.state).toBe("pending");

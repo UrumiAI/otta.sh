@@ -88,6 +88,7 @@ import {
 	parseMinorUnitsInput,
 	reconciliationAlertSentence,
 	reconciliationSummary,
+	paymentMethodLabel,
 	refundCapabilityText,
 	refundConfirmText,
 	refundTooHighInline,
@@ -1259,7 +1260,12 @@ export function OrderDetail({
 						],
 						["Total", formatAmount(order.totals.totalCents, order.totals.currency)],
 						["Placed", formatTimestamp(order.createdAt)],
-						["Payment", order.paymentMethod ?? "—"],
+						[
+							"Payment",
+							<span key="payment" data-testid="detail-payment-method">
+								{paymentMethodLabel(order.paymentMethod)}
+							</span>,
+						],
 						[
 							// The shopper's label for this order (ADR-0033) — what a buyer
 							// quotes from their email. Display only; the full id below is

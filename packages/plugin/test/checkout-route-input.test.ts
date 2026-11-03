@@ -80,6 +80,8 @@ describe("parseCheckoutPlaceInput", () => {
 			}),
 		).toEqual({
 			cartId: "cart-1",
+			// ADR-0042: no method named is card, as before cash on delivery existed.
+			paymentMethod: "stripe",
 			buyerRef: "Buyer@Example.com",
 			idempotencyKey: "checkout:cart-1",
 			locale: "en",

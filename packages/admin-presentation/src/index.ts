@@ -144,6 +144,7 @@ export {
 } from "./order-status.js";
 export {
 	UNNAMED_REFUND_RECIPIENT,
+	paymentMethodLabel,
 	refundCapabilityText,
 	refundConfirmText,
 } from "./order-refund-copy.js";

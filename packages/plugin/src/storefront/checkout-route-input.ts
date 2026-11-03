@@ -123,6 +123,8 @@ export interface CheckoutPlaceParsedInput {
 	 *  back rather than rejecting: a bad locale must not fail an order). */
 	locale: string;
 	selection: CheckoutSelection;
+	/** ADR-0042: the method the buyer chose; `stripe` when the call named none. */
+	paymentMethod: "stripe" | "cod";
 	/** The signed-in shopper's session, when one came along — a bearer the client
 	 *  resolves to its customer, never trusted here. Absent ⇔ a guest checkout. */
 	sessionToken?: string;
@@ -249,6 +251,7 @@ export function parseCheckoutPlaceInput(input: {
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
 	sessionToken?: unknown;
+	paymentMethod?: unknown;
 }): CheckoutPlaceParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	// Trimmed, but NOT otherwise rewritten — never lowercased (§1.5): the
@@ -265,12 +268,18 @@ export function parseCheckoutPlaceInput(input: {
 	const selection = parseCheckoutSelection(input);
 	if (selection === null) return null;
 
+	// ADR-0042: the method the buyer chose. Absent is card — every caller before
+	// cash on delivery sent none — and anything but a known method is malformed.
+	const paymentMethod = input.paymentMethod ?? "stripe";
+	if (paymentMethod !== "stripe" && paymentMethod !== "cod") return null;
+
 	const parsed: CheckoutPlaceParsedInput = {
 		cartId,
 		buyerRef,
 		idempotencyKey,
 		locale: sanitizeLocale(input.locale),
 		selection,
+		paymentMethod,
 	};
 
 	if (input.shippingAddress !== undefined) {

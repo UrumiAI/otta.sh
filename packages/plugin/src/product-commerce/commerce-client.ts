@@ -746,7 +746,9 @@ export interface ShippingAddressWire {
 
 export interface CheckoutRequestWire {
 	cartId: string;
-	paymentMethod: "stripe";
+	/** The method the buyer chose (ADR-0042): `stripe` (card) or `cod` (cash on
+	 *  delivery). The checkout route refuses one the store has not enabled. */
+	paymentMethod: "stripe" | "cod";
 	/** Email/session claim token (ADR-0004). Stored VERBATIM by the service —
 	 *  the site trims but never lowercases it. */
 	buyerRef: string;
@@ -773,7 +775,9 @@ export interface BillingLocationWire {
  *  plugin never inspects a client secret beyond handing it to the theme. */
 export type ClientActionWire =
 	| { kind: "stripe_client_secret"; clientSecret: string }
-	| { kind: "none" };
+	| { kind: "none" }
+	/** ADR-0042: placed with no online payment step (cash on delivery). */
+	| { kind: "offline" };
 
 export interface PaymentIntentWire {
 	gateway: string;

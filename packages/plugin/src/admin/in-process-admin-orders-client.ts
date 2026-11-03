@@ -411,8 +411,18 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const key = fallbackKey(opts.idempotencyKey, `admin:transition:${orderId}:${toState}`);
 		const actor = opts.actor?.trim() || undefined;
 		const res = await transitionOrderAsAdmin(
-			// Mark refunded revokes the order's download access (issue #376).
-			{ orderStore: this.#stores.orderStore, entitlementStore: this.#stores.entitlementStore },
+			// Mark refunded revokes the order's download access (issue #376). Mark paid
+			// on a cash-on-delivery order records the payment, commits its stock and
+			// grants its downloads (ADR-0042), so it needs the settle-side stores too.
+			{
+				orderStore: this.#stores.orderStore,
+				entitlementStore: this.#stores.entitlementStore,
+				offlinePayment: {
+					inventoryStore: this.#stores.inventory,
+					paymentEventStore: this.#stores.paymentEventStore,
+					clock: this.#stores.clock,
+				},
+			},
 			{
 				orderId: toOrderId(orderId),
 				toState: target,
