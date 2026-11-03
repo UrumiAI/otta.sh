@@ -129,6 +129,7 @@ const OFFLINE_COPY: Record<string, StateCopy> = {
 	},
 	paid: { headline: "Payment received.", body: "Thank you — we've received your cash payment." },
 	delivered: { headline: "Order delivered.", body: "Payment received — thank you." },
+	completed: { headline: "Order complete.", body: "Payment received — thank you." },
 };
 
 const COPY: Record<string, StateCopy> = {

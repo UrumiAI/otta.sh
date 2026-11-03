@@ -84,10 +84,21 @@ describe("an offline (cash-on-delivery) order", () => {
 			headline: "Order delivered.",
 			body: "Payment received — thank you.",
 		});
+		// …and once the merchant completes it, the page still says the cash came in.
+		expect(stamp("completed", "offline")).toEqual({
+			headline: "Order complete.",
+			body: "Payment received — thank you.",
+		});
 	});
 
 	test("no stamp, in any state, promises an email", () => {
-		for (const state of ["awaiting_payment", "shipped_awaiting_payment", "paid", "delivered"]) {
+		for (const state of [
+			"awaiting_payment",
+			"shipped_awaiting_payment",
+			"paid",
+			"delivered",
+			"completed",
+		]) {
 			const copy = stamp(state, "offline");
 			expect(`${copy?.headline} ${copy?.body}`, state).not.toMatch(/email/i);
 		}
