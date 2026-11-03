@@ -531,6 +531,7 @@ export {
 export {
 	AUTO_CANCEL_ACTOR,
 	cancelUnpaidOfflineOrders,
+	CouponReleaseDeferredError,
 	DEFAULT_OFFLINE_AUTO_CANCEL_DAYS,
 	type CancelUnpaidOfflineDeps,
 	type CancelUnpaidOfflineOptions,

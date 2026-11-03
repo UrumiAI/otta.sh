@@ -9,7 +9,7 @@ import {
 	ReservationNotFoundError,
 	type InventoryStore,
 } from "../ports/inventory-store.js";
-import type { OrderStore, RefundRecord } from "../ports/order-store.js";
+import type { CapturedPayment, OrderStore, RefundRecord } from "../ports/order-store.js";
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway } from "../ports/payment-gateway.js";
 import {
@@ -33,6 +33,7 @@ import {
 	type RefundOrderFailure,
 } from "./refund-order.js";
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
+import { offlinePaymentRef } from "./payment-methods.js";
 
 export interface CancelOrderDeps {
 	/** Where this path's diagnostics go. Required, so a composition root that forgets
@@ -719,14 +720,24 @@ export async function cancelOrderWithRefund(
 		return { ok: false, reason: "NOT_CANCELLABLE" };
 	}
 	// ADR-0044: an unpaid offline order holds stock like a pending one and has no
-	// money to return — unless a Mark paid died after recording the cash, which a
-	// plain cancel would keep behind a "cancelled" email: refused, so the operator
-	// records the cash refund first.
+	// money to return. Its one possible ledger row is its OWN attestation — a Mark
+	// paid that recorded the cash and then lost its flip (to a Record shipment, say:
+	// review round 3, R3-3). That does not block the cancel (a refused parcel must be
+	// cancellable): the cancel goes ahead, any download the attestation granted is
+	// revoked, and the order is flagged so a person settles the recorded cash. Any
+	// OTHER captured payment is money this path cannot account for: refused, as
+	// before, so the operator records its refund first.
+	let attested: CapturedPayment | undefined;
 	if (OFFLINE_UNPAID_STATES.has(order.state)) {
-		const captured = await deps.orderStore.getCapturedPayments(order.id);
-		if (captured.some((p) => p.status === "succeeded")) {
+		const own =
+			order.paymentMethod !== null ? offlinePaymentRef(order.paymentMethod, order.id) : null;
+		const captured = (await deps.orderStore.getCapturedPayments(order.id)).filter(
+			(p) => p.status === "succeeded",
+		);
+		if (captured.some((p) => p.providerRef !== own)) {
 			return { ok: false, reason: "REFUND_NOT_AUTOMATIC" };
 		}
+		attested = captured[0];
 	}
 	if (order.state === "pending" || OFFLINE_UNPAID_STATES.has(order.state)) {
 		// Nothing was sold and nothing captured: the plain cancel, which releases the
@@ -738,6 +749,10 @@ export async function cancelOrderWithRefund(
 			},
 			cmd,
 		);
+		if (res.ok && res.cancelled && OFFLINE_UNPAID_STATES.has(order.state)) {
+			await revokeOrderEntitlements(deps.entitlementStore, res.order);
+			if (attested !== undefined) await flagAttestedCash(deps, res.order, attested);
+		}
 		return res.ok
 			? { ...res, refund: null, restockedUnits: 0, restockSkipped: [], restockPending: false }
 			: res;
@@ -1098,4 +1113,25 @@ async function refundForCancellation(
 		restock,
 		refundId: res.refund.id,
 	};
+}
+
+/**
+ * ADR-0044 (R3-3): an unpaid offline order cancelled with its own cash attestation
+ * on the ledger. The row stays — the cash may really have been taken — and a person
+ * is asked to settle it. Best-effort and never over another flag.
+ */
+async function flagAttestedCash(
+	deps: CancelOrderWithRefundDeps,
+	order: Order,
+	attested: CapturedPayment,
+): Promise<void> {
+	const fresh = (await bestEffortRead(() => deps.orderStore.getById(order.id))) ?? order;
+	if (fresh.reconciliationFlag !== null) return;
+	await bestEffort(() =>
+		deps.orderStore.flagReconciliation(
+			order.id,
+			`cash recorded on a cash-on-delivery order that was then cancelled: ${String(attested.amount)} ${attested.currency} under ${attested.providerRef} — if the cash was taken, return it and record a manual refund in Money → Refunds; otherwise resolve this flag`,
+			{ expectedFlag: null },
+		),
+	);
 }

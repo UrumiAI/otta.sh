@@ -18,10 +18,23 @@ import type { Clock } from "../ports/clock.js";
 import type { CouponStore } from "../ports/coupon-store.js";
 import type { Logger } from "../ports/logger.js";
 import type { OrderStore } from "../ports/order-store.js";
-import { cancelOrder } from "./cancel-order.js";
+import { emailTemplateForState } from "./state-machine.js";
 
 /** Who the auto-cancel is recorded as, on the cancellation and its audit event. */
 export const AUTO_CANCEL_ACTOR = "otta:auto-cancel";
+
+/**
+ * Thrown by a caller's coupon store when it DEFERS a release rather than failing
+ * it — the plugin's sweep, when the tick's query budget cannot afford the whole
+ * release. Not a fault: the order stays listed and a later run frees the use, so
+ * it is logged at info, never at error (review round 3, R3-4).
+ */
+export class CouponReleaseDeferredError extends Error {
+	constructor(message = "coupon release deferred to a later run") {
+		super(message);
+		this.name = "CouponReleaseDeferredError";
+	}
+}
 
 /** The window a store gets when it never saved one (ADR-0044). */
 export const DEFAULT_OFFLINE_AUTO_CANCEL_DAYS = 14;
@@ -93,24 +106,43 @@ export async function cancelUnpaidOfflineOrders(
 		try {
 			await deps.couponStore.releaseByOrder(order);
 		} catch (err) {
-			deps.logger.error(
-				`[domain] auto-cancel could not free the coupon use of order ${id}; it will be retried`,
-				{ error: err instanceof Error ? err.message : String(err) },
-			);
+			if (err instanceof CouponReleaseDeferredError) {
+				deps.logger.info(
+					`[domain] auto-cancel deferred order ${id} to a later run (its coupon release did not fit)`,
+				);
+			} else {
+				deps.logger.error(
+					`[domain] auto-cancel could not free the coupon use of order ${id}; it will be retried`,
+					{ error: err instanceof Error ? err.message : String(err) },
+				);
+			}
 			skipped++;
 			continue;
 		}
-		const res = await cancelOrder(
-			{ orderStore: deps.orderStore, logger: deps.logger },
-			{
-				orderId: id,
-				reason: "other",
-				detail: `Not paid within ${String(options.maxAgeDays)} days`,
-				cancelledBy: AUTO_CANCEL_ACTOR,
-				idempotencyKey: idempotencyKey(`auto-cancel:${id}`),
-			},
-		);
-		if (!res.ok || !res.cancelled) {
+		// The store's GUARDED flip from `awaiting_payment` — never the generic
+		// `cancelOrder`, which re-reads the order and would cancel it from wherever
+		// it now is: a Mark paid that won since the read above would be cancelled
+		// with its cash (paid → cancelled is legal). Lost here, the order is left as
+		// the winner left it.
+		const res = await deps.orderStore.cancelOrder({
+			orderId: id,
+			fromState: "awaiting_payment",
+			reason: "other",
+			detail: `Not paid within ${String(options.maxAgeDays)} days`,
+			cancelledBy: AUTO_CANCEL_ACTOR,
+			idempotencyKey: idempotencyKey(`auto-cancel:${id}`),
+			enqueueEmail: emailTemplateForState("cancelled") !== null,
+		});
+		if (!res.cancelled) {
+			// The use was freed and the cancel did not land — a concurrent move (a Mark
+			// paid) won. The order keeps its discount; the coupon may be used once more
+			// than its cap allows (ADR-0044 §6). Not re-redeemed: made visible instead.
+			if (order.totals.appliedCouponCode !== null) {
+				deps.logger.warn(
+					`[domain] auto-cancel freed coupon ${order.totals.appliedCouponCode}'s use for order ${id}, then the order moved before it could be cancelled; the coupon may be used once more than its cap`,
+					{ orderId: id, coupon: order.totals.appliedCouponCode },
+				);
+			}
 			skipped++;
 			continue;
 		}

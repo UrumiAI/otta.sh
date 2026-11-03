@@ -2,8 +2,12 @@ import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
 import { idempotencyKey, orderId, productId, reservationId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
-import { cancelOrder } from "../orders/cancel-order.js";
-import { cancelUnpaidOfflineOrders } from "../orders/cancel-unpaid-offline.js";
+import { cancelOrder, cancelOrderWithRefund } from "../orders/cancel-order.js";
+import {
+	cancelUnpaidOfflineOrders,
+	CouponReleaseDeferredError,
+} from "../orders/cancel-unpaid-offline.js";
+import { RecordingLogger } from "./recording-logger.js";
 import { expireOrdersBatch } from "../orders/expire-orders.js";
 import type { Order, OrderState, PaymentMethod } from "../orders/model.js";
 import { offlinePaymentRef } from "../orders/payment-methods.js";
@@ -51,7 +55,12 @@ async function seedOrder(
 	h: PaymentDeclineHarness,
 	n: string,
 	method: PaymentMethod,
-	opts: { kind?: "physical" | "digital"; buyerRef?: string; clientKey?: string } = {},
+	opts: {
+		kind?: "physical" | "digital";
+		buyerRef?: string;
+		clientKey?: string;
+		couponCode?: string;
+	} = {},
 ): Promise<{ order: Order; sku: string }> {
 	const kind = opts.kind ?? "physical";
 	const { inventoryStore, orderStore, clock } = h.settleDeps;
@@ -86,7 +95,12 @@ async function seedOrder(
 				reservationId: held === null ? null : reservationId(held),
 			},
 		],
-		totals: { subtotal: cents(total), total: cents(total), currency: USD },
+		totals: {
+			subtotal: cents(total),
+			total: cents(total),
+			currency: USD,
+			...(opts.couponCode !== undefined ? { appliedCouponCode: opts.couponCode } : {}),
+		},
 	});
 	if (held !== null) {
 		const adopted = await inventoryStore.adoptMany({
@@ -502,6 +516,97 @@ export function offlinePaymentContract(
 			expect(await onHandAfterRelease(h, order, s)).toBe(ON_HAND - QTY);
 		});
 
+		test("a refused parcel whose Mark paid lost to the shipment is cancellable: the attested row is flagged, downloads revoked, stock back (R3-3)", async () => {
+			const h = await makeHarness();
+			const { order, sku: s } = await seedOrder(h, "17", "cod", { kind: "digital" });
+			const real = h.settleDeps.orderStore;
+			const racing = new Proxy(real, {
+				get(target, prop, receiver) {
+					if (prop === "markPaid") {
+						return async (...args: Parameters<typeof real.markPaid>) => {
+							await transitionOrder(
+								{ orderStore: real },
+								{
+									orderId: order.id,
+									toState: "shipped_awaiting_payment",
+									idempotencyKey: idempotencyKey(`ship17:${order.id}`),
+								},
+							);
+							return real.markPaid(...args);
+						};
+					}
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			expect(
+				await transitionOrderAsAdmin(
+					{ ...adminDeps(h), orderStore: racing },
+					{ orderId: order.id, toState: "paid", idempotencyKey: idempotencyKey("click17") },
+				),
+			).toEqual({ ok: false, reason: "MARK_PAID_RETRY" });
+			expect(await real.getCapturedPayments(order.id)).toHaveLength(1);
+			expect(await h.settleDeps.entitlementStore.check({ orderId: order.id, sku: sku(s) })).toBe(
+				true,
+			);
+
+			const res = await cancelOrderWithRefund(
+				{
+					orderStore: real,
+					inventoryStore: h.settleDeps.inventoryStore,
+					entitlementStore: h.settleDeps.entitlementStore,
+					logger: NOOP_LOGGER,
+				},
+				null,
+				{
+					orderId: order.id,
+					reason: "customer_request",
+					cancelledBy: "Ops Person",
+					idempotencyKey: idempotencyKey(`cancel17:${order.id}`),
+					restock: true,
+				},
+			);
+			expect(res).toMatchObject({ ok: true, cancelled: true });
+			const cancelled = await real.getById(order.id);
+			expect(cancelled?.state).toBe("cancelled");
+			expect(cancelled?.reconciliationFlag).toMatch(
+				/cash recorded on a cash-on-delivery order that was then cancelled/,
+			);
+			expect(await h.settleDeps.entitlementStore.check({ orderId: order.id, sku: sku(s) })).toBe(
+				false,
+			);
+		});
+
+		test("an unpaid cod order carrying a payment that is NOT its own attestation is still refused a plain cancel", async () => {
+			const h = await makeHarness();
+			const { order } = await seedOrder(h, "18", "cod");
+			await h.settleDeps.orderStore.recordPayment({
+				orderId: order.id,
+				gateway: "cod",
+				providerRef: "someone-else",
+				amount: cents(UNIT_CENTS * QTY),
+				currency: USD,
+				status: "succeeded",
+			});
+			const res = await cancelOrderWithRefund(
+				{
+					orderStore: h.settleDeps.orderStore,
+					inventoryStore: h.settleDeps.inventoryStore,
+					logger: NOOP_LOGGER,
+				},
+				null,
+				{
+					orderId: order.id,
+					reason: "customer_request",
+					cancelledBy: "Ops Person",
+					idempotencyKey: idempotencyKey(`cancel18:${order.id}`),
+					restock: true,
+				},
+			);
+			expect(res).toEqual({ ok: false, reason: "REFUND_NOT_AUTOMATIC" });
+			expect((await h.settleDeps.orderStore.getById(order.id))?.state).toBe("awaiting_payment");
+		});
+
 		test("the bare transitionOrder refuses an offline order's paid targets — only transitionOrderAsAdmin records the payment", async () => {
 			const h = await makeHarness();
 			const { order } = await seedOrder(h, "15", "cod");
@@ -546,6 +651,57 @@ export function offlinePaymentContract(
 			expect(await run()).toMatchObject({ cancelled: 1 });
 			expect(released).toEqual([stale.order.id]);
 			expect((await h.settleDeps.orderStore.getById(stale.order.id))?.state).toBe("cancelled");
+		});
+
+		test("auto-cancel logging: a DEFERRED coupon release is info, a real failure is error (R3-4)", async () => {
+			const h = await makeHarness();
+			await seedOrder(h, "19", "cod");
+			const later = new Date(h.settleDeps.clock.now().getTime() + 15 * DAY_MS);
+			const run = async (err: Error) => {
+				const logger = new RecordingLogger();
+				await cancelUnpaidOfflineOrders(
+					{
+						orderStore: h.settleDeps.orderStore,
+						couponStore: {
+							releaseByOrder: async () => {
+								throw err;
+							},
+						},
+						clock: { now: () => later },
+						logger,
+					},
+					{ maxAgeDays: 14, limit: 10 },
+				);
+				return logger.entries.map((e) => e.level);
+			};
+			expect(await run(new CouponReleaseDeferredError())).toEqual(["info"]);
+			expect(await run(new Error("coupon store down"))).toEqual(["error"]);
+		});
+
+		test("auto-cancel that frees the coupon and then loses the cancel warns, naming the order and the coupon (M2 visibility)", async () => {
+			const h = await makeHarness();
+			const { order } = await seedOrder(h, "20", "cod", { couponCode: "CASH10" });
+			const later = new Date(h.settleDeps.clock.now().getTime() + 15 * DAY_MS);
+			const logger = new RecordingLogger();
+			const res = await cancelUnpaidOfflineOrders(
+				{
+					orderStore: h.settleDeps.orderStore,
+					couponStore: {
+						// The release lands; then a Mark paid wins before the cancel.
+						releaseByOrder: async () => {
+							await admin(h, order.id, "paid");
+							return 1;
+						},
+					},
+					clock: { now: () => later },
+					logger,
+				},
+				{ maxAgeDays: 14, limit: 10 },
+			);
+			expect(res).toMatchObject({ cancelled: 0, skipped: 1 });
+			expect((await h.settleDeps.orderStore.getById(order.id))?.state).toBe("paid");
+			const warn = logger.entries.find((e) => e.level === "warn");
+			expect(warn?.fields).toMatchObject({ orderId: order.id, coupon: "CASH10" });
 		});
 
 		test("Mark paid on an offline order without the payment wiring throws before writing anything", async () => {
