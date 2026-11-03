@@ -658,6 +658,9 @@ export default function otta(options: OttaOptions): AstroIntegration {
 							constants.COPYFILE_EXCL,
 						);
 					} catch (error) {
+						// Only "already there" is a collision; anything else (permissions, a full
+						// disk) is reported as itself.
+						if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") throw error;
 						throw new Error(
 							`${OTTA_INTEGRATION_NAME}: the build output already has /${file}, which the store ` +
 								`ships itself; it was left as it is. Rename or remove the other file.`,

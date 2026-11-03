@@ -6,7 +6,15 @@
  * `default-email.test.ts` and `build-path-leak.test.ts`, which run the real
  * hook through the staging site's config.
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -352,6 +360,28 @@ describe("the package's public files never replace the site's", () => {
 		expect(readFileSync(path.join(dir, "scripts", "region-picker.js"), "utf8")).toBe(
 			"the site's own",
 		);
+	});
+
+	test("a copy error other than EEXIST is reported as itself, not as a collision", async () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-client-"));
+		// A read-only scripts/ directory: mkdir succeeds (it exists), copyFile fails EACCES.
+		const scripts = path.join(dir, "scripts");
+		mkdirSync(scripts);
+		chmodSync(scripts, 0o500);
+		try {
+			const integration = otta({ template: 1, env: {} });
+			const done = integration.hooks["astro:config:done"] as (o: unknown) => void;
+			const buildDone = integration.hooks["astro:build:done"] as () => Promise<void>;
+			done({ config: { build: { client: pathToFileURL(`${dir}/`) } } });
+			const error = await buildDone().then(
+				() => undefined,
+				(e: unknown) => e as NodeJS.ErrnoException,
+			);
+			expect(error?.code).toBe("EACCES");
+			expect(error?.message).not.toMatch(/which the store ships itself/);
+		} finally {
+			chmodSync(scripts, 0o700);
+		}
 	});
 
 	test("in dev, only GET and HEAD are answered from public/", () => {
