@@ -265,6 +265,41 @@ Nothing changes until a merchant switches COD on:
 - a place call with no method is a card place;
 - no stored data is migrated.
 
+## Verified 2026-11-03: the new index on an upgraded install (review N6)
+
+A store was booted from the pre-COD base (`eb0ffd45`, the merge-base with `main`) on a scratch
+copy, and its e2e seed placed three orders. The same local D1 was then upgraded to this branch.
+
+- The COD e2e placed, shipped, marked paid and completed an order on it. The three older orders
+  were intact.
+- EmDash materializes a configured plugin's declared indexes in
+  `syncPluginStorageIndexesOnce()`, once per process, on the scheduler path. It uses an
+  idempotent sync, `CREATE INDEX IF NOT EXISTS` plus `_plugin_indexes`.
+- A short dev session fires no scheduled event, so the pre-COD store had no otta index at all.
+  The old ones were missing too.
+- After one scheduled tick (`/cdn-cgi/handler/scheduled`), `_plugin_indexes` listed
+  `idx_plugin_otta_orders_offlineClientKey` and `idx_plugin_otta_orders_state_createdAt`, and
+  SQLite held the index.
+
+An upgraded install therefore gains the index on the first cron tick after deploy. Until then the
+per-network count is correct, only unindexed.
+
+## Round 3 additions
+
+- **A cancel with only its own attestation (R3-3).** A Mark paid that lost to Record shipment
+  leaves its attested payment row on a `shipped_awaiting_payment` order. Cancel order on an unpaid
+  offline order whose only captured payment is that attestation now goes ahead and revokes any
+  downloads it granted. The order is flagged ("cash recorded on a cash-on-delivery order that was
+  then cancelled …") so a person settles the row. Any other captured payment is still
+  `REFUND_NOT_AUTOMATIC`.
+- **The auto-cancel's flip is guarded.** The auto-cancel cancels through the store's guarded flip
+  from `awaiting_payment`. The generic `cancelOrder` re-reads the order and would have cancelled
+  one that a concurrent Mark paid had just paid. If the guarded flip loses after the coupon use
+  was freed, a warning names the order and the coupon. The use is not re-redeemed.
+- **A deferred release is not an error.** A coupon release the caller deferred
+  (`CouponReleaseDeferredError`, the tick's budget) is logged at info. A real failure stays at
+  error.
+
 ## Consequences
 
 - With only COD enabled, a store completes checkout, ships, gets paid and completes an order
@@ -301,7 +336,7 @@ Nothing changes until a merchant switches COD on:
 - Follow-ups:
   - a report of old unpaid COD orders;
   - COD instructions in the emails;
-  - checking the new `offlineClientKey` index on UPGRADED installs: a host that creates declared
-    indexes only for new collections would leave the per-network count unindexed. It would still
-    be correct, but slower;
+  - the attestation as a per-store secret rather than a fixed marker (review R3-2). A host other
+    than the reference site that does not strip the header would then fail closed instead of
+    trusting it;
   - copy saying that 0 disables a control (the auto-cancel window, the caps).
