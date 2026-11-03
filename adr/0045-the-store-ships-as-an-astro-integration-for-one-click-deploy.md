@@ -85,15 +85,47 @@ Options considered:
    `@urumi.ai/otta-store`, the plugin, the admin package, `emdash` and `@emdash-cms/cloudflare`,
    because the modules EmDash generates import them from the project root. Updates arrive as one
    grouped Dependabot pull request, which Workers Builds deploys once it is merged.
+
+   **One copy of each runtime.** `@urumi.ai/otta-store` declares EmDash,
+   `@emdash-cms/cloudflare`, Astro, `@astrojs/cloudflare`, `@astrojs/react`, React, the plugin
+   and the admin package as **peer dependencies**, never dependencies (EmDash and its
+   Cloudflare package exactly; the Astro and React packages to the tested minor with `~`; the
+   two Otta packages at the release). As dependencies, a site on another EmDash would get a
+   second copy nested under the package, and the Worker would carry two EmDash runtimes. As
+   peers, npm refuses the install (`ERESOLVE`), which was checked with the packed tarballs and
+   `emdash@1.4.0`. So Dependabot is limited to `@urumi.ai/*` (one group) and Wrangler. A release
+   that moves the other pins raises the template contract, and its upgrade notes list the new
+   versions.
 6. **The template's wrangler config declares what the build actually deploys.** That includes
    `SESSION` (EmDash keeps signed-in users in the Astro session) and `IMAGES` (the
    `@astrojs/cloudflare` 14 default image service binds it). The adapter would add both to its
    generated config anyway, but declared, the button provisions `SESSION`, and `IMAGES` is
    visible. `RATE_LIMIT_AUTH` and `RATE_LIMIT_WRITES` are on, so cash on delivery (ADR-0044) can be
-   offered; `send_email` stays commented out (ADR-0043).
+   offered; their fixed `namespace_id`s are shared by every Worker in the account that uses them,
+   which the template README says. `send_email` stays commented out (ADR-0043).
+   `"preview_urls": false`: a preview version shares the production D1 and would run its
+   migrations on its first request. The README's "turn off non-production branch builds" is the
+   second safeguard.
 7. **Customisation goes through the CMS and Store settings, not code.** That means the site
    title, tagline, menus and products, plus payments, tax and shipping. Tempered stays the only
-   theme (ADR-0024, 2026-10-15 amendment), and overriding a single page is not supported.
+   theme (ADR-0024, 2026-10-15 amendment), and overriding a single page is not supported. A
+   site's own `src/middleware.ts` runs between EmDash's middleware and Otta's, so one that
+   answers a request without `next()` skips Otta's cross-site check and the setup-link gate for
+   it; the template README and UPGRADING.md say so.
+8. **The package's build checks, as hardened after review:**
+   - the build fails on ANY key of Astro's inlined env object outside Astro's own keys and
+     `PUBLIC_*` (a clean build inlines only empty objects), with the builder's `PATH` value as a
+     second layer;
+   - the package's `public/` files never replace a site's own: a site file at one of their
+     paths fails setup by name, the build copy is per file and exclusive, and in dev they answer
+     GET and HEAD only;
+   - the live-collections check ignores comments; page discovery skips `_*`, `*.d.ts` and
+     `*.test.ts` as Astro's router does; the scrub's root also stops at an npm or yarn
+     workspace root;
+   - messages the package ships name no path in this repository, and link the documentation by
+     full URL. The `[site-staging]` log prefix stays: tests pin it, and DEPLOYMENT.md's
+     troubleshooting tells operators to search the logs for it;
+   - every publishable package builds in `prepack`, so `pnpm pack` never packs a stale `dist/`.
 
 ## Found while verifying (2026-11-03)
 
@@ -149,6 +181,20 @@ Deleting and recreating the database (DEPLOYMENT.md §2.3) is therefore the last
 first step. Whether a fresh store's first boot fits in Workers Free's CPU limit has **not** been
 measured: `wrangler dev` does not enforce it. It is a known risk until a real Free account has run
 the button, and the template README tells the merchant how to release the lock.
+
+## Launch gates
+
+The Deploy to Cloudflare button goes into README.md only after all of these:
+
+1. `@urumi.ai/*` 0.2.0 is published to npm, and the template's `package-lock.json` is generated
+   and committed right after, before the template repository is made public.
+2. The links merchants follow resolve publicly: otta.sh is public, or `OTTA_UPGRADE_NOTES_URL`
+   and the documentation URLs in the package's messages and README point somewhere public.
+3. A real Cloudflare account has run the button, and these are checked:
+   - the button creates the D1, R2 and KV resources and rewrites the template's zero-ID
+     placeholders (`wrangler.jsonc` keeps them until then);
+   - the `IMAGES` and rate-limit bindings deploy and work on Workers Free;
+   - a new store's first boot (every migration plus the seed) fits Workers Free's CPU limit.
 
 ## Consequences
 
