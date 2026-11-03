@@ -691,6 +691,21 @@ export async function cancelOrderWithRefund(
 	gateway: PaymentGateway | null,
 	cmd: CancelOrderWithRefundCommand,
 ): Promise<CancelOrderWithRefundOutcome> {
+	return cancelOrderWithRefundAttempt(deps, gateway, cmd, 0);
+}
+
+/**
+ * How many times the decision is re-run when the order moved between the read it
+ * was made on and the guarded flip that acts on it (see the unpaid branch).
+ */
+const CANCEL_DECISION_ATTEMPTS = 3;
+
+async function cancelOrderWithRefundAttempt(
+	deps: CancelOrderWithRefundDeps,
+	gateway: PaymentGateway | null,
+	cmd: CancelOrderWithRefundCommand,
+	attempt: number,
+): Promise<CancelOrderWithRefundOutcome> {
 	const cancelledBy = cmd.cancelledBy.trim();
 	if (cancelledBy.length === 0) return { ok: false, reason: "EMPTY_CANCELLED_BY" };
 	const trimmedDetail = (cmd.detail ?? "").trim();
@@ -741,21 +756,53 @@ export async function cancelOrderWithRefund(
 	}
 	if (order.state === "pending" || OFFLINE_UNPAID_STATES.has(order.state)) {
 		// Nothing was sold and nothing captured: the plain cancel, which releases the
-		// held stock through the store's own release intent.
-		const res = await cancelOrder(
-			{
-				orderStore: deps.orderStore,
-				logger: deps.logger,
-			},
-			cmd,
-		);
-		if (res.ok && res.cancelled && OFFLINE_UNPAID_STATES.has(order.state)) {
-			await revokeOrderEntitlements(deps.entitlementStore, res.order);
-			if (attested !== undefined) await flagAttestedCash(deps, res.order, attested);
+		// held stock through the store's own release intent. Its guarded flip is
+		// PINNED to the state this decision was made on — never the generic
+		// `cancelOrder`, which re-reads and cancels from wherever the order now is: a
+		// settle or a cash Mark paid landing in between would be cancelled with its
+		// money kept, no refund, no flag, and a "cancelled" email (review of round 3).
+		const res = await deps.orderStore.cancelOrder({
+			orderId: cmd.orderId,
+			fromState: order.state,
+			reason: cmd.reason,
+			detail,
+			cancelledBy,
+			idempotencyKey: cmd.idempotencyKey,
+			enqueueEmail: emailTemplateForState("cancelled") !== null,
+		});
+		if (!res.cancelled) {
+			// The order moved since the read. Re-run the WHOLE decision on it as it now
+			// is: a paid order takes the refund path (or REFUND_NOT_AUTOMATIC), one a
+			// concurrent cancel already closed answers as cancelled, and anything else
+			// is refused below as before.
+			if (attempt + 1 < CANCEL_DECISION_ATTEMPTS) {
+				return cancelOrderWithRefundAttempt(deps, gateway, cmd, attempt + 1);
+			}
+			return { ok: false, reason: "NOT_CANCELLABLE" };
 		}
-		return res.ok
-			? { ...res, refund: null, restockedUnits: 0, restockSkipped: [], restockPending: false }
-			: res;
+		const cancelledOrder = res.order ?? order;
+		// An order cancelled while UNPAID may still hold a payable intent: make it
+		// due now, as `cancelOrder` does.
+		if (order.state === "pending") {
+			await expediteIntentCancels(
+				{ orderStore: deps.orderStore, logger: deps.logger },
+				cmd.orderId,
+				res.order,
+			);
+		}
+		if (OFFLINE_UNPAID_STATES.has(order.state)) {
+			await revokeOrderEntitlements(deps.entitlementStore, cancelledOrder);
+			if (attested !== undefined) await flagAttestedCash(deps, cancelledOrder, attested);
+		}
+		return {
+			ok: true,
+			cancelled: true,
+			order: cancelledOrder,
+			refund: null,
+			restockedUnits: 0,
+			restockSkipped: [],
+			restockPending: false,
+		};
 	}
 
 	// 1. REFUND.

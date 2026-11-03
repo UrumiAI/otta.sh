@@ -577,6 +577,76 @@ export function offlinePaymentContract(
 			);
 		});
 
+		/**
+		 * Review of round 3: Cancel order decided on one read and cancelled through a
+		 * second, so a payment landing in between was cancelled with its money kept,
+		 * no refund, no flag, and a "cancelled" email. The flip is now pinned to the
+		 * state the decision read; a lost flip re-runs the decision on the order as
+		 * it now is. The payment lands inside the store's cancel call, just before its
+		 * guarded flip — the exact window.
+		 */
+		for (const method of ["cod", "stripe"] as const) {
+			test(`a payment landing between Cancel order's read and its flip is never cancelled away (${method})`, async () => {
+				const h = await makeHarness();
+				const { order } = await seedOrder(h, `race-${method}`, method);
+				const real = h.settleDeps.orderStore;
+				let landed = false;
+				const racing = new Proxy(real, {
+					get(target, prop, receiver) {
+						if (prop === "cancelOrder") {
+							return async (...args: Parameters<typeof real.cancelOrder>) => {
+								if (!landed) {
+									landed = true;
+									if (method === "cod") {
+										await admin(h, order.id, "paid", `race-click-${method}`);
+									} else {
+										// A card settle: the guarded flip and its payment row.
+										await real.markPaid(order.id, "pi_race");
+										await real.recordPayment({
+											orderId: order.id,
+											gateway: "stripe",
+											providerRef: "pi_race",
+											amount: cents(UNIT_CENTS * QTY),
+											currency: USD,
+											status: "succeeded",
+										});
+									}
+								}
+								return real.cancelOrder(...args);
+							};
+						}
+						const value: unknown = Reflect.get(target, prop, receiver);
+						return typeof value === "function" ? value.bind(target) : value;
+					},
+				});
+				const res = await cancelOrderWithRefund(
+					{
+						orderStore: racing,
+						inventoryStore: h.settleDeps.inventoryStore,
+						entitlementStore: h.settleDeps.entitlementStore,
+						logger: NOOP_LOGGER,
+					},
+					null,
+					{
+						orderId: order.id,
+						reason: "customer_request",
+						cancelledBy: "Ops Person",
+						idempotencyKey: idempotencyKey(`race-cancel-${method}`),
+						restock: true,
+					},
+				);
+				// The now-paid order went down the money path: no gateway can return it
+				// automatically here, so the cancel is refused and the order stays paid.
+				expect(res).toEqual({ ok: false, reason: "REFUND_NOT_AUTOMATIC" });
+				const final = await real.getById(order.id);
+				expect(final?.state).toBe("paid");
+				expect(final?.cancellation).toBeNull();
+				expect(await real.getCapturedPayments(order.id)).toHaveLength(1);
+				// No "cancelled" email was enqueued for it.
+				expect((await outboxRows(h, order.id)).some((r) => r.toState === "cancelled")).toBe(false);
+			});
+		}
+
 		test("an unpaid cod order carrying a payment that is NOT its own attestation is still refused a plain cancel", async () => {
 			const h = await makeHarness();
 			const { order } = await seedOrder(h, "18", "cod");
