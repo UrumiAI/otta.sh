@@ -923,7 +923,9 @@ neither counts as revenue, and neither expires at the checkout hold:
 - **Caps.** A buyer email may hold at most **3** open cash-on-delivery orders
   (`settings:codMaxOpenPerBuyer`). One client network may hold at most **20**
   (`settings:codMaxOpenPerClient`): carrier and office NAT put many honest buyers behind one
-  address.
+  address. A store behind an extra proxy in front of Cloudflare sees every buyer at the proxy's
+  address, so all its buyers share one network and the per-network cap trips at 20: raise it or
+  set it to 0 there.
   "Open" means `awaiting_payment` or `shipped_awaiting_payment`; `0` means no cap. Over a cap,
   checkout refuses the order and asks the buyer to pay another way. Two orders placed at the same
   instant can both pass; the per-IP write limit bounds that.
