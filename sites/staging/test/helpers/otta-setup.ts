@@ -40,7 +40,7 @@ export async function runOttaSetup(
 	const routes: OttaSetup["routes"] = [];
 	const middleware: OttaSetup["middleware"] = [];
 	await (setup as (options: unknown) => unknown)({
-		config: { root: SITE_ROOT, vite: {} },
+		config: { root: SITE_ROOT, publicDir: new URL("public/", SITE_ROOT), vite: {} },
 		command,
 		isRestart: false,
 		updateConfig: (update: AstroUserConfig) => {

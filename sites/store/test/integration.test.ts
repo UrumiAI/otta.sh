@@ -9,7 +9,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import otta, {
 	assertLiveConfig,
@@ -19,7 +19,10 @@ import otta, {
 	OTTA_SEED,
 	OTTA_TEMPLATE_CONTRACT,
 	packageRoot,
+	assertNoPublicCollisions,
 	PUBLIC_DIR,
+	publicCollisions,
+	publicFilesDevPlugin,
 	publicFileFor,
 	storefrontRoutes,
 } from "../src/integration.js";
@@ -291,5 +294,77 @@ describe("text the package ships to a site that is not this repository", () => {
 			}
 		}
 		expect(offenders).toEqual([]);
+	});
+});
+
+describe("the package's public files never replace the site's", () => {
+	let dir: string;
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+	test("a site public/ file at one of the store's paths is named and refused", () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-public-"));
+		mkdirSync(path.join(dir, "scripts"));
+		writeFileSync(path.join(dir, "scripts", "region-picker.js"), "mine");
+		writeFileSync(path.join(dir, "scripts", "mine.js"), "mine");
+		writeFileSync(path.join(dir, "favicon.ico"), "");
+		expect(publicCollisions(dir)).toEqual(["scripts/region-picker.js"]);
+		expect(() => assertNoPublicCollisions(dir)).toThrow(/\/scripts\/region-picker\.js/);
+	});
+
+	test("no site public/ (or no overlap) passes", () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-public-"));
+		expect(() => assertNoPublicCollisions(path.join(dir, "nope"))).not.toThrow();
+		writeFileSync(path.join(dir, "robots.txt"), "");
+		expect(() => assertNoPublicCollisions(dir)).not.toThrow();
+	});
+
+	test("the build copy refuses to overwrite a file already in the client output", async () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-client-"));
+		const integration = otta({ template: 1, env: {} });
+		const done = integration.hooks["astro:config:done"] as (o: unknown) => void;
+		const buildDone = integration.hooks["astro:build:done"] as () => Promise<void>;
+		done({ config: { build: { client: pathToFileURL(`${dir}/`) } } });
+		await buildDone();
+		expect(readFileSync(path.join(dir, "scripts", "region-picker.js"), "utf8")).toBe(
+			readFileSync(path.join(PUBLIC_DIR, "scripts", "region-picker.js"), "utf8"),
+		);
+		// A second copy finds every file already there and must not overwrite it.
+		writeFileSync(path.join(dir, "scripts", "region-picker.js"), "the site's own");
+		await expect(buildDone()).rejects.toThrow(
+			/already has \/\S+, which the store ships/,
+		);
+		expect(readFileSync(path.join(dir, "scripts", "region-picker.js"), "utf8")).toBe(
+			"the site's own",
+		);
+	});
+
+	test("in dev, only GET and HEAD are answered from public/", () => {
+		type Handler = (
+			req: { url?: string; method?: string },
+			res: { setHeader(n: string, v: string): void; end(b: Buffer): void },
+			next: () => void,
+		) => void;
+		let handler: Handler | undefined;
+		publicFilesDevPlugin().configureServer({
+			middlewares: { use: (h: Handler) => (handler = h) },
+		});
+		const call = (method: string) => {
+			const out = { next: false, body: undefined as Buffer | undefined, type: "" };
+			handler?.(
+				{ url: "/scripts/region-picker.js", method },
+				{ setHeader: (_n, v) => (out.type = v), end: (b) => (out.body = b) },
+				() => (out.next = true),
+			);
+			return out;
+		};
+		expect(call("POST").next).toBe(true);
+		expect(call("PUT").next).toBe(true);
+		const get = call("GET");
+		expect(get.next).toBe(false);
+		expect(get.type).toMatch(/^text\/javascript/);
+		expect(get.body?.length).toBeGreaterThan(0);
+		const head = call("HEAD");
+		expect(head.next).toBe(false);
+		expect(head.body?.length).toBe(0);
 	});
 });

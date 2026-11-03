@@ -27,8 +27,8 @@
  * will not strip types from a file under `node_modules`. Everything it points
  * Astro at (pages, middleware, worker, theme) ships as source for Vite.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { cp } from "node:fs/promises";
+import { constants, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@astrojs/react";
@@ -288,7 +288,9 @@ export function storefrontRoutes(
  * The package's static files, served at the same path under every site that
  * uses it: `/scripts/<name>.js` (the first-party scripts pages load by URL) and
  * `/playground-products/<name>.jpg` (the sample products' photographs, which
- * the seed names). A site's own `public/` is untouched.
+ * the seed names). They share the URL space with the site's own `public/`, so a
+ * site file at one of these paths is refused, never overwritten: the build fails
+ * naming it ({@link publicCollisions}), in dev and in a build alike.
  */
 export const PUBLIC_DIR = path.join(PACKAGE_ROOT, "public");
 
@@ -303,6 +305,35 @@ export function publicFileFor(urlPath: string): string | undefined {
 	const file = path.resolve(PUBLIC_DIR, `.${pathname}`);
 	if (!file.startsWith(PUBLIC_DIR + path.sep)) return undefined;
 	return existsSync(file) && statSync(file).isFile() ? file : undefined;
+}
+
+/** Every file under `dir`, as a `/`-separated path relative to it. */
+function filesUnder(dir: string): string[] {
+	if (!existsSync(dir)) return [];
+	return readdirSync(dir, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile())
+		.map((entry) =>
+			path.relative(dir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/"),
+		);
+}
+
+/** The package's public files that `siteDir` (a site's `public/`) also has. */
+export function publicCollisions(siteDir: string): string[] {
+	const ours = new Set(filesUnder(PUBLIC_DIR));
+	return filesUnder(siteDir)
+		.filter((file) => ours.has(file))
+		.toSorted();
+}
+
+/** Throws, naming each path, when the site's `public/` has a file the package ships. */
+export function assertNoPublicCollisions(siteDir: string): void {
+	const clashes = publicCollisions(siteDir);
+	if (clashes.length === 0) return;
+	throw new Error(
+		`${OTTA_INTEGRATION_NAME} serves these paths itself, and ${siteDir} has a file at each: ` +
+			`${clashes.map((file) => `/${file}`).join(", ")}. Rename or remove the site's file; ` +
+			`the store's would otherwise replace it.`,
+	);
 }
 
 const PUBLIC_CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -385,14 +416,14 @@ function buildSetting(
 }
 
 /** The package's static files in dev: Vite serves only the site's own `public/`. */
-function publicFilesDevPlugin() {
+export function publicFilesDevPlugin() {
 	return {
 		name: `${OTTA_INTEGRATION_NAME}:public-files`,
 		configureServer(server: {
 			middlewares: {
 				use(
 					handler: (
-						req: { url?: string },
+						req: { url?: string; method?: string },
 						res: { setHeader(name: string, value: string): void; end(body: Buffer): void },
 						next: () => void,
 					) => void,
@@ -400,6 +431,11 @@ function publicFilesDevPlugin() {
 			};
 		}) {
 			server.middlewares.use((req, res, next) => {
+				// Static files answer GET and HEAD only, as a static host does.
+				if (req.method !== "GET" && req.method !== "HEAD") {
+					next();
+					return;
+				}
 				const file = publicFileFor(req.url ?? "/");
 				if (file === undefined) {
 					next();
@@ -409,7 +445,7 @@ function publicFilesDevPlugin() {
 					"Content-Type",
 					PUBLIC_CONTENT_TYPES[path.extname(file)] ?? "application/octet-stream",
 				);
-				res.end(readFileSync(file));
+				res.end(req.method === "HEAD" ? Buffer.alloc(0) : readFileSync(file));
 			});
 		},
 	};
@@ -515,6 +551,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 					),
 				});
 
+				assertNoPublicCollisions(fileURLToPath(config.publicDir));
 				if (!playground) assertSeedFound(root);
 				assertLiveConfig(root);
 
@@ -603,7 +640,26 @@ export default function otta(options: OttaOptions): AstroIntegration {
 			   files keep their URLs (`/scripts/…`, `/playground-products/…`). */
 			"astro:build:done": async () => {
 				if (clientDir === undefined) return;
-				await cp(PUBLIC_DIR, fileURLToPath(clientDir), { recursive: true });
+				// Never over a file already there (the setup check refused the site's own;
+				// this catches anything else the build put at one of these paths).
+				const client = fileURLToPath(clientDir);
+				for (const file of filesUnder(PUBLIC_DIR)) {
+					const target = path.join(client, ...file.split("/"));
+					await mkdir(path.dirname(target), { recursive: true });
+					try {
+						await copyFile(
+							path.join(PUBLIC_DIR, ...file.split("/")),
+							target,
+							constants.COPYFILE_EXCL,
+						);
+					} catch (error) {
+						throw new Error(
+							`${OTTA_INTEGRATION_NAME}: the build output already has /${file}, which the store ` +
+								`ships itself; it was left as it is. Rename or remove the other file.`,
+							{ cause: error },
+						);
+					}
+				}
 			},
 		},
 	};
