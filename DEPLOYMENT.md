@@ -447,7 +447,7 @@ order of appearance in a deployment's life:
 | `OTTA_WH_TOKEN` | Worker secret **+** admin Settings (same value, both halves) | optional outer gate on the settle routes | with the Stripe webhook secret |
 | Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments — **together with the secret key** (see below) | before enabling Stripe |
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
-| Email sender (`OTTA_EMAIL_FROM`; SPF, DKIM at Cloudflare) | a **build variable**, not a secret, plus an onboarded Cloudflare Email Sending domain (§3 Email); or another EmDash email provider plugin | optional | when wiring real email |
+| Email sender (`OTTA_EMAIL_FROM`; SPF, DKIM at Cloudflare) | a **build variable**, not a secret, plus the `send_email` binding `EMAIL` in your wrangler config (the build refuses a sender without it), an active Cloudflare Email Sending domain and Workers Paid; set it LAST (§3 Email); or another EmDash email provider plugin | optional | when wiring real email |
 
 > **Never put a secret in the build environment.** Set every secret only as a Worker secret
 > (`wrangler secret put`) or in admin Settings. Do not export it in the shell or CI job that
@@ -777,14 +777,16 @@ order of appearance in a deployment's life:
      domain's DNS must be on Cloudflare; Cloudflare adds the MX, SPF, DKIM and DMARC records
      (usually live in 5-15 minutes, up to 24 hours). Wait until the domain shows **active**.
   3. **Add the binding** `"send_email": [{ "name": "EMAIL" }]` to your `wrangler.local.jsonc`
-     (an unrestricted sender binding, so it can mail any buyer). The tracked `wrangler.jsonc`
+     (or uncomment it in `wrangler.jsonc` if you build without a local file). Keep it unrestricted: the build refuses `destination_address` / `allowed_destination_addresses` (they block sends to buyers) and an `allowed_sender_addresses` that omits your sender. The tracked `wrangler.jsonc`
      carries it COMMENTED OUT (opt-in: it is not verified to deploy on a Free account with no
      Email Sending). An **existing** `wrangler.local.jsonc` does not get it by itself; add it.
   4. **Prove a send works first** (a test send from the dashboard, or `wrangler email sending`
      / a Worker using the binding to an address you control) BEFORE the next step.
-  5. **Set `OTTA_EMAIL_FROM`** at **build** time (shell env or `sites/staging/.env`; for local
-     dev keep it out of `.env`), e.g. `OTTA_EMAIL_FROM=store@mail.example.com`, optionally
-     `OTTA_EMAIL_FROM_NAME="Acme Goods"`. A plain ASCII address only. Rebuild and redeploy to
+  5. **Set `OTTA_EMAIL_FROM`** at **build** time. For deploy builds set it in the shell or CI
+     environment. A value in `sites/staging/.env` also reaches `astro dev` (and registers the
+     provider there), so keep it out of `.env` for local dev. Example:
+     `OTTA_EMAIL_FROM=store@mail.example.com`, optionally `OTTA_EMAIL_FROM_NAME="Acme Goods"`.
+     A plain ASCII address only. Rebuild and redeploy to
      change it. The **build fails** on a malformed address, and on a set address whose selected
      wrangler config (`wrangler.local.jsonc` if present, else `wrangler.jsonc`) has no
      `send_email` binding named `EMAIL`. Unset registers **no** provider (fail-closed below).

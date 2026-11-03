@@ -32,7 +32,9 @@ active provider.
 4. A BUILD GUARD ties the two together: with `OTTA_EMAIL_FROM` set, the wrangler config the
    build uses (`wrangler.local.jsonc` if present, else `wrangler.jsonc`) must declare
    `send_email` named `EMAIL`, or the build throws naming the file
-   (`src/lib/email-binding.ts`).
+   (`src/lib/email-binding.ts`). It also refuses a binding that sets `destination_address` or
+   `allowed_destination_addresses` (blocked buyer sends are counted attempts too) or an
+   `allowed_sender_addresses` that omits the sender.
 5. The **playground** does not get it. `buildEmdashOptions` takes the sender as a parameter
    and never reads the environment, and the playground never passes one.
 6. Core stays vendor-free: no email code in `packages/*`, no new Otta `allowedHosts`.
@@ -46,8 +48,10 @@ active provider.
   (DEPLOYMENT.md §3, Email).
 - The site depends on EmDash's provider and its `EMAIL` binding name; an EmDash change to
   either is a site change, not a core change.
-- With the provider plus `astro dev`'s console provider, two providers are active; select one
-  in EmDash Settings > Email.
+- In `astro dev` with the provider registered, a fresh local D1 auto-selects neither it nor
+  the console provider, so dev mail is not captured until one is picked in EmDash Settings >
+  Email; an existing D1 keeps its saved selection. Keep `OTTA_EMAIL_FROM` out of
+  `sites/staging/.env` for local dev (DEPLOYMENT.md §3).
 - **Selected-but-broken is worse than unset.** EmDash auto-selects the only provider and
   persists the choice. With the binding missing, the domain not active, or Workers Free,
   every send throws a plain Error (not `EmailNotConfiguredError`). Each is a counted attempt,

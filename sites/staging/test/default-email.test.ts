@@ -4,7 +4,7 @@
  * `cloudflareEmail` provider when `OTTA_EMAIL_FROM` is set at build time, and
  * registers nothing otherwise (fail-closed "no provider").
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -188,7 +188,10 @@ describe("OTTA_EMAIL_FROM at config load", () => {
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
 
-	test(
+	// Imports the REAL config, which reads a developer's gitignored
+	// wrangler.local.jsonc if there is one, so it only runs where there is none.
+	// The select + read + guard logic is covered by fixtures in email-binding-guard.test.ts.
+	test.skipIf(existsSync(path.join(root, "wrangler.local.jsonc")))(
 		"a valid value with no send_email binding in the selected wrangler config THROWS",
 		async () => {
 			vi.stubEnv("OTTA_EMAIL_FROM", "store@example.com");
