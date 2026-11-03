@@ -842,37 +842,89 @@ order of appearance in a deployment's life:
 
 ### Cash on delivery (no Stripe needed)
 
-Cash on delivery is a second payment method beside Stripe, and each is enabled on its own
-([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md)). It has **no secrets
-and no webhook**, and it needs no egress. A store with only cash on delivery takes orders with
-none of the Stripe values above.
+Cash on delivery is a second payment method beside Stripe, and each is enabled on its own. The
+design is [ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md). It has **no
+secrets and no webhook**, and it needs no egress. A store with only cash on delivery takes orders
+with none of the Stripe values above.
+
+**Before you switch it on:**
+
+- **The site must have the `RATE_LIMIT_WRITES` binding (§2.5).** Cash on delivery mints unpaid
+  orders that hold stock, so the per-IP write limit is what bounds how fast one client can do
+  that. Without the binding the site leaves cash on delivery out of checkout, and
+  `/checkout/place` refuses it with "That payment method isn't available for this order", even
+  with the setting on. The plugin cannot see the site's bindings: the site checks, and sends the
+  client's network (an IPv4 address or an IPv6 /64) with each cash-on-delivery order. The plugin
+  stores only a one-way hash of it.
+  (The tracked `wrangler.jsonc` template leaves the binding commented out, so a plain local
+  `astro dev` offers no cash on delivery. The Playwright e2e stack runs on
+  `sites/staging/wrangler.e2e.jsonc`, the template plus this one binding, selected by
+  `OTTA_E2E_WRITE_LIMIT=1`; `astro build` refuses that variable, so it never reaches a deploy.)
+- **Physical carts only.** Cash on delivery is offered only for a cart with at least one item to
+  deliver. A digital-only cart never sees it.
+- **Address and phone required.** A cash-on-delivery order needs a full delivery address and a
+  phone number for the courier, on every store, including stores with no shipping zones.
+- **Email.** The buyer is emailed when the order is placed, when it ships and when it is marked
+  paid, so configure an email provider: see
+  [ADR-0043](./adr/0043-site-default-cloudflare-email-provider.md).
+
+**Switching it on:**
 
 1. In the admin, open **Otta → Store settings → General** and find the **Cash on delivery**
    group under Payments.
 2. Switch on **Offer cash on delivery at checkout**. Optionally, add instructions for buyers, up to
    500 characters, for example "Please have the exact amount ready." The checkout shows them
    under the method.
-3. Click **Save cash on delivery**. It is stored as plain plugin kv: `settings:codEnabled`, which
-   only a saved `true` turns on, and `settings:codInstructions`.
+3. Review the auto-cancel window and the two caps (below), then click **Save cash on delivery**.
+   It is stored as plain plugin kv: `settings:codEnabled` (only a saved `true` turns it on),
+   `settings:codInstructions`, `settings:codAutoCancelDays`, `settings:codMaxOpenPerBuyer` and
+   `settings:codMaxOpenPerClient`.
 
-What changes:
+**The order's life.** A cash-on-delivery order has two states of its own. Neither is `pending`,
+neither counts as revenue, and neither expires at the checkout hold:
 
-- **Checkout.** With Stripe set up too, the buyer chooses between Card and Cash on delivery.
-  With only cash on delivery, there is no choice to make. A cash-on-delivery order skips the pay
-  page and lands on its confirmation page. The buyer is emailed "Order received, pay on
-  delivery", so an email provider should be configured (ADR-0031).
-- **Stock.** Placing the order sets its items aside, and they stay set aside until the order is
-  marked paid or cancelled. The checkout hold timer does **not** apply, and such an order never
-  expires. Cancel orders that will not be delivered: **Cancel order** returns their stock.
-- **Getting paid.** When the cash is in hand, open the order in **Orders** and click
-  **Mark paid**. This records the payment for the order total, commits the stock, grants any
-  downloads and sends the "payment received" confirmation. Then move the order on as usual (for
-  example, Mark completed). The state machine fulfils only from paid, so record shipping after
-  Mark paid.
+| State | Meaning | What you can do |
+|---|---|---|
+| `awaiting_payment` ("awaiting payment") | Placed, unpaid, not shipped. Its stock is set aside. | **Mark paid**, **Record shipment**, **Cancel order** |
+| `shipped_awaiting_payment` ("shipped, awaiting payment") | Shipped before payment. The cash is due at the door. | **Mark paid (delivered)**, **Cancel order** |
+
+- **Checkout.** With Stripe set up too, the buyer chooses between Card and Cash on delivery, and
+  the button reads "Place order" for cash on delivery. A cash-on-delivery order skips the pay
+  page. Its confirmation page says "Order placed. You'll pay in cash when your order is
+  delivered", and the next add to cart starts a new cart.
+- **Ship before pay (the usual flow).** In **Orders**, open the order, go to the **Fulfilment**
+  tab and **Record shipment** with the carrier and tracking. The order moves to
+  `shipped_awaiting_payment`, and the buyer is emailed the tracking and the amount to have ready.
+  When the courier hands over the cash, click **Mark paid (delivered)**. The order moves to
+  `delivered`; then **Mark completed** as usual.
+- **Paid first** (collected in store, say). Click **Mark paid** on an `awaiting_payment` order.
+  It moves to `paid`, and from there the ordinary processing, shipped, delivered and completed
+  steps follow.
+- **Mark paid asks first.** Both Mark paid buttons open a confirm: "Confirm you received {total}
+  in cash. This records the payment and emails the buyer." Only then does Otta record a payment
+  for the order total, commit the stock, grant any downloads and send the "payment received"
+  email. History records who marked it paid. Clicking again after a failure is safe: it
+  finishes the same payment, never a second one.
+- **Stock.** The items stay set aside until the order is marked paid (the stock is committed) or
+  cancelled (the stock goes back on sale). Cancelling a `shipped_awaiting_payment` order means
+  the parcel came back, so its units go back on sale too.
+- **Auto-cancel.** An `awaiting_payment` order not paid or shipped within the window (**14 days**
+  by default, `settings:codAutoCancelDays`; `0` turns it off) is cancelled by the scheduled
+  sweep, with "Not paid within N days". That releases its stock and its coupon use and emails the
+  buyer. A shipped order is never auto-cancelled. The window applies to every open order, so
+  lowering it cancels older orders on the next tick.
+- **Caps.** A buyer email may hold at most **3** open cash-on-delivery orders
+  (`settings:codMaxOpenPerBuyer`), and so may one client network (`settings:codMaxOpenPerClient`).
+  "Open" means `awaiting_payment` or `shipped_awaiting_payment`; `0` means no cap. Over a cap,
+  checkout refuses the order and asks the buyer to pay another way. Two orders placed at the same
+  instant can both pass; the per-IP write limit bounds that.
+- **Orders list.** A cash-on-delivery order carries a "Cash on delivery" badge, and the Status
+  filter's **awaiting payment (COD)** lists the orders still waiting for their cash.
 - **Refunds.** Return the cash yourself, then record it in **Money → Refunds**. That records a
-  manual refund; Otta moves no money for cash on delivery.
+  manual refund; Otta moves no money for cash on delivery. **Cancel order** on a paid
+  cash-on-delivery order is refused until it has been refunded.
 - **Turning it off** stops checkout offering it. Orders already placed with it are unchanged and
-  can still be marked paid, cancelled or refunded.
+  can still be marked paid, shipped, cancelled or refunded.
 
 ## 4. Egress and `allowedHosts`
 
