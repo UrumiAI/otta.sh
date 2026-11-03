@@ -46,6 +46,8 @@ import {
 } from "../payments/card-payment-readiness.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
 import {
+	COD_AUTO_CANCEL_DAYS,
+	COD_AUTO_CANCEL_DAYS_KEY,
 	COD_ENABLED_KEY,
 	COD_INSTRUCTIONS_KEY,
 	COD_INSTRUCTIONS_MAX,
@@ -150,6 +152,24 @@ export { STORE_DISPLAY_NAME_KEY };
 const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
 /** ADR-0044: the cash-on-delivery toggle and its buyer instructions, one form. */
 export const SAVE_CASH_ON_DELIVERY_ACTION = "save-cash-on-delivery";
+
+/** B flag 4: the confirm step's button, shown when a COD save LOWERS the
+ *  auto-cancel window so that open unpaid orders fall inside it (the next sweep
+ *  cancels them). Carries `{ values, from }` — the submitted COD form and the
+ *  window it was compared against; clicking it runs the same save. */
+const CONFIRM_COD_AUTO_CANCEL_ACTION = "confirm-cod-auto-cancel";
+
+/** The COD form's fields, as a confirm carries them back. */
+const COD_FORM_FIELDS: readonly string[] = [
+	"codEnabled",
+	"codInstructions",
+	...COD_NUMBER_SETTINGS.map((spec) => spec.field),
+];
+
+/** The affected-orders count stops here, and reads "100+" from it on: the
+ *  listing asks for one more, but the host clamps a query page at 100, so 100
+ *  back may mean more. */
+const COD_LOWERING_COUNT_CAP = 100;
 
 /** The "Store currency" form's submit — a settings-store save. */
 const SAVE_STORE_CURRENCY_ACTION = "save-store-currency";
@@ -575,6 +595,7 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-operational",
 	SAVE_BACKGROUND_WORK_ACTION,
 	SAVE_CASH_ON_DELIVERY_ACTION,
+	CONFIRM_COD_AUTO_CANCEL_ACTION,
 	SAVE_STORE_CURRENCY_ACTION,
 	CONFIRM_STORE_CURRENCY_ACTION,
 	// INC-C3: the payment secrets, from the one table that also builds
@@ -657,8 +678,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		settings?: OperationalSettingsWire,
 		currencySwitch?: CurrencySwitchAsk,
 		peekCountry?: boolean,
+		codLowering?: CodLoweringAsk,
 	): Promise<BlockResponse> =>
-		renderSettingsPage(ctx, client, notice, paymentRefusal, settings, currencySwitch, peekCountry);
+		renderSettingsPage(
+			ctx,
+			client,
+			notice,
+			paymentRefusal,
+			settings,
+			currencySwitch,
+			peekCountry,
+			codLowering,
+		);
 	const handle = async (
 		routeCtx: SandboxedRouteContext<SettingsFormInput>,
 		ctx: PluginContext,
@@ -718,9 +749,36 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// The toggle is saved only as a real boolean (an absent or malformed value
 		// refuses the save, never reads as "off"); the instructions are trimmed and
 		// bounded, and a blank clears them.
-		if (action === SAVE_CASH_ON_DELIVERY_ACTION) {
-			const enabled = input.values?.codEnabled;
-			const rawInstructions = input.values?.codInstructions;
+		//
+		// B flag 4: LOWERING the auto-cancel window (to a value above 0) cancels the
+		// open unpaid orders now older than it on the next sweep, so a save that would
+		// do that to any asks first; the confirm button runs this same branch with
+		// the submitted form carried back, and saves.
+		if (action === SAVE_CASH_ON_DELIVERY_ACTION || action === CONFIRM_COD_AUTO_CANCEL_ACTION) {
+			const confirming = action === CONFIRM_COD_AUTO_CANCEL_ACTION;
+			const carried =
+				confirming && typeof input.value === "object" && input.value !== null
+					? (input.value as Record<string, unknown>)
+					: undefined;
+			const carriedValues = carried?.["values"];
+			const values: Record<string, unknown> | undefined = confirming
+				? typeof carriedValues === "object" && carriedValues !== null
+					? (carriedValues as Record<string, unknown>)
+					: {}
+				: input.values;
+			const refuseCod = async (description: string): Promise<BlockResponse> => {
+				const page = await renderPage(ctx, client, {
+					variant: "error",
+					title: "Cash on delivery not saved",
+					description,
+				});
+				return {
+					...page,
+					toast: { message: "Cash on delivery not saved", type: "error" },
+				} satisfies BlockResponse;
+			};
+			const enabled = values?.codEnabled;
+			const rawInstructions = values?.codInstructions;
 			const instructions = typeof rawInstructions === "string" ? rawInstructions.trim() : "";
 			// The window and the two caps: whole numbers within bounds. One that is
 			// absent from the submit is kept as stored; one present and unusable
@@ -728,7 +786,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const numbers: { key: string; value: number }[] = [];
 			let numberRefusal: string | undefined;
 			for (const spec of COD_NUMBER_SETTINGS) {
-				const raw = input.values?.[spec.field];
+				const raw = values?.[spec.field];
 				if (raw === undefined) continue;
 				const checked = validateCodNumber(spec, raw);
 				if (!checked.ok) {
@@ -744,15 +802,69 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						? `Instructions must be at most ${String(COD_INSTRUCTIONS_MAX)} characters.`
 						: numberRefusal;
 			if (refusal !== undefined || typeof enabled !== "boolean") {
-				const page = await renderPage(ctx, client, {
-					variant: "error",
-					title: "Cash on delivery not saved",
-					description: `${refusal ?? ""} Nothing was changed.`,
-				});
-				return {
-					...page,
-					toast: { message: "Cash on delivery not saved", type: "error" },
-				} satisfies BlockResponse;
+				return refuseCod(`${refusal ?? ""} Nothing was changed.`);
+			}
+			const newWindow = numbers.find((n) => n.key === COD_AUTO_CANCEL_DAYS_KEY)?.value;
+			if (newWindow !== undefined) {
+				let stored: number;
+				try {
+					stored = await readCodNumber(ctx, COD_AUTO_CANCEL_DAYS);
+				} catch (err) {
+					console.error("[otta] admin settings: the COD auto-cancel window read failed:", err);
+					return refuseCod(
+						"Couldn't read the current auto-cancel window. Nothing was changed — try again.",
+					);
+				}
+				if (confirming) {
+					// The count the operator confirmed was against `from`. A window that
+					// moved since is not overwritten on it.
+					if (stored !== carried?.["from"]) {
+						return refuseCod(
+							"The auto-cancel window changed since you were asked. Nothing was changed — reload and try again.",
+						);
+					}
+				} else if (newWindow > 0 && newWindow < stored) {
+					let affected: number;
+					try {
+						affected = await countCodOrdersPastWindow(ctx, newWindow);
+					} catch (err) {
+						console.error("[otta] admin settings: the COD auto-cancel count failed:", err);
+						return refuseCod(
+							"Couldn't check which unpaid orders the new window would cancel. Nothing was changed — try again.",
+						);
+					}
+					if (affected > 0) {
+						const ask: CodLoweringAsk = {
+							days: newWindow,
+							from: stored,
+							affected,
+							values: Object.fromEntries(
+								COD_FORM_FIELDS.filter((field) => values?.[field] !== undefined).map((field) => [
+									field,
+									values?.[field],
+								]),
+							),
+						};
+						const page = await renderPage(
+							ctx,
+							client,
+							{
+								variant: "default",
+								title: "Confirm the shorter auto-cancel window",
+								description: `${codLoweringText(ask)} Nothing was changed yet.`,
+							},
+							undefined,
+							undefined,
+							undefined,
+							undefined,
+							ask,
+						);
+						return {
+							...page,
+							toast: { message: "Confirm the shorter auto-cancel window", type: "info" },
+						} satisfies BlockResponse;
+					}
+				}
 			}
 			for (const { key, value } of numbers) await ctx.kv.set(key, value);
 			await ctx.kv.set(COD_INSTRUCTIONS_KEY, instructions);
@@ -1316,6 +1428,7 @@ async function renderSettingsPage(
 	alreadyRead?: OperationalSettingsWire,
 	currencySwitch?: CurrencySwitchAsk,
 	peekCountry?: boolean,
+	codLowering?: CodLoweringAsk,
 ): Promise<BlockResponse> {
 	const state = await readPageState(ctx, peekCountry);
 	try {
@@ -1330,6 +1443,7 @@ async function renderSettingsPage(
 				notice,
 				paymentRefusal,
 				currencySwitch,
+				codLowering,
 			}),
 		};
 	} catch {
@@ -1341,6 +1455,7 @@ async function renderSettingsPage(
 				notice,
 				paymentRefusal,
 				currencySwitch,
+				codLowering,
 			}),
 		};
 	}
@@ -1498,6 +1613,8 @@ function buildSettingsBlocks(args: {
 	paymentRefusal?: PaymentRefusal;
 	/** #447: the switch waiting on a confirm, rendered under the notice. */
 	currencySwitch?: CurrencySwitchAsk;
+	/** B flag 4: the shorter COD window waiting on a confirm, under the notice. */
+	codLowering?: CodLoweringAsk;
 }): Block[] {
 	const blocks: Block[] = [
 		{ type: "header", text: SETTINGS_HEADING },
@@ -1510,6 +1627,7 @@ function buildSettingsBlocks(args: {
 	const keyWarning = encryptionKeyBanner(args.encryptionKey);
 	if (keyWarning !== undefined) blocks.push(keyWarning);
 	if (args.currencySwitch !== undefined) blocks.push(currencySwitchActions(args.currencySwitch));
+	if (args.codLowering !== undefined) blocks.push(codLoweringActions(args.codLowering));
 	blocks.push(
 		...storeGroup(args.displayName, args.persisted),
 		...checkoutGroup(args.settings, args.persisted, args.backgroundWork),
@@ -1610,6 +1728,69 @@ function cashOnDeliveryGroup(state: CashOnDeliveryState | null): Block[] {
 					]),
 		],
 	});
+}
+
+/** B flag 4: a COD save that lowers the auto-cancel window onto open orders. */
+interface CodLoweringAsk {
+	/** The new window, in days (> 0). */
+	days: number;
+	/** The stored window it was compared against. */
+	from: number;
+	/** Open unpaid orders the next sweep would cancel — `COD_LOWERING_COUNT_CAP`
+	 *  or more reads "100+". */
+	affected: number;
+	/** The submitted COD form, carried back by the confirm. */
+	values: Record<string, unknown>;
+}
+
+/**
+ * How many open `awaiting_payment` orders a window of `days` puts past due — the
+ * sweep's own listing (`listAwaitingPaymentBefore`, the `["state", "createdAt"]`
+ * index), asked for one past {@link COD_LOWERING_COUNT_CAP} (a host may clamp the
+ * page to the cap itself). Throws when the list cannot be read.
+ */
+async function countCodOrdersPastWindow(ctx: PluginContext, days: number): Promise<number> {
+	const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+	const due = await createInProcessCommerceStores(ctx).orderStore.listAwaitingPaymentBefore(
+		cutoff,
+		COD_LOWERING_COUNT_CAP + 1,
+	);
+	return due.length;
+}
+
+function codLoweringText(ask: CodLoweringAsk): string {
+	const count =
+		ask.affected >= COD_LOWERING_COUNT_CAP
+			? `${String(COD_LOWERING_COUNT_CAP)}+ unpaid cash-on-delivery orders`
+			: ask.affected === 1
+				? "1 unpaid cash-on-delivery order"
+				: `${String(ask.affected)} unpaid cash-on-delivery orders`;
+	const days = ask.days === 1 ? "1 day" : `${String(ask.days)} days`;
+	return `Lowering the window to ${days} cancels ${count} on the next sweep (their stock goes back on sale and the buyers are emailed). Save anyway?`;
+}
+
+/** The confirm step's one button, behind the confirm dialog, like the currency
+ *  switch's. */
+function codLoweringActions(ask: CodLoweringAsk): Block {
+	return {
+		type: "actions",
+		elements: [
+			{
+				type: "button",
+				action_id: CONFIRM_COD_AUTO_CANCEL_ACTION,
+				label: `Save with a ${String(ask.days)}-day window`,
+				style: "danger",
+				value: { values: ask.values, from: ask.from },
+				confirm: {
+					title: "Shorten the auto-cancel window?",
+					text: codLoweringText(ask),
+					confirm: "Yes, save",
+					deny: `Keep ${String(ask.from)} days`,
+					style: "danger",
+				},
+			},
+		],
+	};
 }
 
 /** The Store heading carries the name itself, so the one thing this group
