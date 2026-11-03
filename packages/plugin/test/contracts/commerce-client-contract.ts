@@ -3907,6 +3907,8 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					customerId: null,
 					holdExpiresAt: "2099-01-01T00:00:00.000Z",
 					createdAt: expect.any(String) as unknown as string,
+					// ADR-0044 §6 (B-N6): only an awaiting-payment COD order auto-cancels.
+					autoCancelAt: null,
 					reconciliationFlag: null,
 					reconciliationResolution: null,
 					fulfillment: null,
