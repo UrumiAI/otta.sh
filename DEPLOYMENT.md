@@ -573,7 +573,9 @@ order of appearance in a deployment's life:
     put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.dev.vars` or `sites/staging/.env`
     (both gitignored; generate a separate dev key). `.dev.vars` is the safer choice because
     Astro never reads it into a build (above). When it exists, the dev Worker reads it instead
-    of `.env`. Exporting the key in the shell does **not** work: the dev Worker runs in
+    of `.env`, so keep every local secret in the one file: a key left in `.env` beside a
+    `.dev.vars` (for example one holding only `OTTA_SETUP_TOKEN`) is silently ignored, and
+    saving payment keys then fails. Exporting the key in the shell does **not** work: the dev Worker runs in
     workerd, which does not inherit the shell environment. The Playwright stack and CI's
     e2e job use a throwaway test key (`playwright.config.ts`).
   - **Missing:** saving any of those three keys fails, and a key already saved encrypted

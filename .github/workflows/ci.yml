@@ -191,7 +191,12 @@ jobs:
       # ADR-0042: the setup-claim link, followed cross-site in a real browser, on
       # a SECOND stack over a fresh, unseeded state (the one above is claimed by
       # its seed). After the main suite: Astro allows one dev server per project.
-      - run: pnpm test:e2e:claim
+      # Runs even when the main suite failed (Playwright has stopped that server
+      # by then), so one failure never hides the other. The upload below already
+      # runs on any failure and carries both suites' artifacts.
+      - name: Setup-claim link (fresh stack)
+        if: ${{ !cancelled() }}
+        run: pnpm test:e2e:claim
       # Traces and screenshots are kept for failing specs only
       # (`trace: "retain-on-failure"`), plus the JUnit report.
       - name: Upload the e2e report and traces

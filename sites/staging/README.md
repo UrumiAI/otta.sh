@@ -30,7 +30,9 @@ not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.m
 `/_emdash/*` (the bypass included) answers 403 without the setup token, and there is no
 development exception. Open the claim link first. With no `OTTA_SETUP_TOKEN` the dev server
 prints it on the first `/_emdash` request (a line starting `[otta-setup]`); to choose the
-token, put `OTTA_SETUP_TOKEN=<32+ random characters>` in `sites/staging/.dev.vars` and open
+token, put `OTTA_SETUP_TOKEN=<32+ random characters>` in `sites/staging/.dev.vars`, in the
+same file as `EMDASH_ENCRYPTION_KEY` (once a `.dev.vars` exists the dev Worker stops reading
+`.env`, so a key left in `.env` is silently dropped and saving payment keys fails), and open
 `/_emdash/admin/setup?setup_token=<it>`. Then use the bypass as before; once it has run, the
 store is claimed and the token is not asked for again. `pnpm test:e2e` with
 `OTTA_E2E_START_STACK=1` hands its own throwaway token to the server it boots
@@ -39,6 +41,10 @@ host). A `sites/staging/.dev.vars` replaces that injected env entirely: if you h
 `OTTA_SETUP_TOKEN` in it (the harness reads it from there and presents that value), or the
 fresh stack generates a token the suite cannot know and every `/_emdash` call 403s. A server you
 started yourself on fresh state needs the same token, or to be claimed first.
+Behind a TLS-terminating proxy that forwards plain HTTP to the dev server without
+`X-Forwarded-Proto`, the claim link loops: the gate sends every non-loopback `http://` claim
+link to `https://` (307), and the proxy hands it back as `http://`. Open it on `localhost`
+instead, or have the proxy keep the scheme.
 `pnpm test:e2e:claim` runs the claim-link spec against its own fresh, unseeded stack
 (`playwright.claim.config.ts`); stop any other `astro dev` in this worktree first, since Astro
 allows one per project.

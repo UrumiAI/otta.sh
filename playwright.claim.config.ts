@@ -13,10 +13,30 @@
  * run it after `pnpm test:e2e`, as CI does. It always boots its own server and
  * never adopts one (`reuseExistingServer: false`).
  */
+import { existsSync, readFileSync } from "node:fs";
 import { defineConfig } from "@playwright/test";
+import { DEV_VARS_PATH } from "./sites/staging/scripts/setup-claim-cookie.js";
+import { parseDotEnv } from "./sites/staging/src/lib/dot-env.js";
 import { E2E_SETUP_TOKEN, E2E_VIEWPORT } from "./sites/staging/e2e/harness.js";
 import { CLAIM_PORT, CLAIM_SITE, CLAIM_STATE_DIR } from "./sites/staging/e2e/claim/claim-stack.js";
 import { SETUP_TOKEN_SECRET } from "./sites/staging/src/lib/setup-claim-contract.js";
+
+// A `sites/staging/.dev.vars` replaces the env this config injects into the dev
+// Worker, so without OTTA_SETUP_TOKEN in it the fresh stack would generate a
+// token the spec cannot know, and every assertion would fail as a confusing 403.
+// Say so up front instead.
+if (existsSync(DEV_VARS_PATH)) {
+	const devVars = parseDotEnv(readFileSync(DEV_VARS_PATH, "utf8"));
+	if ((devVars[SETUP_TOKEN_SECRET] ?? "") === "") {
+		throw new Error(
+			`playwright.claim.config.ts: ${DEV_VARS_PATH} exists but does not set ` +
+				`${SETUP_TOKEN_SECRET}. Wrangler gives the dev Worker that file INSTEAD of the ` +
+				`env this config injects, so the fresh stack would mint a setup token this run ` +
+				`cannot know. Add ${SETUP_TOKEN_SECRET}=<32+ random characters> to it (the spec ` +
+				`then presents that value), or move the file aside, and run again.`,
+		);
+	}
+}
 
 // The spec and the server hold the same token (e2e/harness.ts).
 process.env[SETUP_TOKEN_SECRET] = E2E_SETUP_TOKEN;
