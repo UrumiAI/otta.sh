@@ -138,7 +138,8 @@ const order = result !== null && result.ok ? result.order : null;
 const outcome = orderReadOutcome(result);
 Astro.response.status = outcome.status;
 
-/* A FINISHED order (no longer pending — paid, expired, failed…) leaves its cart
+/* A FINISHED order (no longer pending — paid, expired, failed, and a placed
+   cash-on-delivery order, which is `awaiting_payment`: ADR-0044) leaves its cart
    spent: it can never produce another order. If the cart cookie still names it,
    forget it here, so the shopper's next "Add to cart" starts a new cart instead
    of failing CART_CHECKED_OUT. A PENDING order's cart is kept: the cart page's
@@ -182,7 +183,10 @@ const isPending = state === "pending";
  * they get the confirming copy.
  */
 const holdLapsed =
-	order !== null && isPending && !returnedFromStripe && !isOrderPayable(order, new Date());
+	order !== null &&
+	isPending &&
+	!returnedFromStripe &&
+	!isOrderPayable(order, new Date());
 
 /**
  * The bounded poll (`lib/order-poll.ts`): only for a pending order the buyer has
@@ -229,6 +233,7 @@ const stamp = orderStamp({
 	polling: shouldPoll,
 	returnedPaid,
 	returnedProcessing,
+	settlement: order?.settlement ?? null,
 });
 
 /**
@@ -299,6 +304,9 @@ const canResume =
    offers it (QA2 M3). */
 const lateRefundUnrecorded =
 	deadEnd && !holdLapsed && returnedPaid && (order?.latePayment ?? "none") !== "refunded";
+/* A placed cash-on-delivery order is never pending (ADR-0044: it is
+   `awaiting_payment`), so it gets no Check again: it changes only when the
+   merchant acts, days later, on delivery. */
 const canCheckAgain = (isPending || lateRefundUnrecorded) && !shouldPoll;
 const hasActions = deadEnd || canResume || canCheckAgain;
 

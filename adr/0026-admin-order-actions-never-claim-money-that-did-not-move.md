@@ -18,6 +18,13 @@
   outside-Otta shortcut no longer exists in code). A future method that refunds outside Otta must
   re-add a per-method refund declaration, read by `markRefundedRefusal`, together with tests for
   it.
+- Note (2026-11-03): [ADR-0044](./0044-cash-on-delivery-is-an-offline-payment-method.md)
+  declares the first offline method, cash on delivery (`cod`). The Consequence "the admin surface
+  can no longer move an order to `paid` at all" no longer holds for it. A COD order is marked paid
+  by hand, from `awaiting_payment` to `paid` or from `shipped_awaiting_payment` to `delivered`.
+  That Mark paid records a `payments` row and the operator's name, so it still claims no money
+  that did not move: a person attests the cash arrived. A gateway order is unchanged and is still
+  refused `MANUAL_PAYMENT_NOT_ALLOWED`.
 - Date: 2026-10-02
 - Decided by: the maintainer, 2026-10-02 (QA findings T1-3, T1-4, T1-6)
 - Refines: the Phase-5 order state machine, as the admin console applies it. Amends no earlier

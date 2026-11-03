@@ -80,11 +80,23 @@ describe("parseCheckoutPlaceInput", () => {
 			}),
 		).toEqual({
 			cartId: "cart-1",
+			// ADR-0044: no method named is card, as before cash on delivery existed.
+			paymentMethod: "stripe",
 			buyerRef: "Buyer@Example.com",
 			idempotencyKey: "checkout:cart-1",
 			locale: "en",
 			selection: {},
 		});
+	});
+
+	test("ADR-0044 §7 (round 2, M1): a body clientKey is IGNORED — whatever it holds, nothing carries it", () => {
+		// The network is the REQUEST's (payments/cod-request.ts), never the caller's.
+		const base = { cartId: "cart-1", buyerRef: "a@b.co", idempotencyKey: "k" };
+		for (const sent of ["203.0.113.7", "k".repeat(500), 7, {}, null]) {
+			const parsed = parseCheckoutPlaceInput({ ...base, clientKey: sent } as never);
+			expect(parsed, JSON.stringify(sent)).not.toBeNull();
+			expect(parsed).not.toHaveProperty("clientKey");
+		}
 	});
 
 	test("the locale is display-only — canonicalized when given, defaulted when not", () => {

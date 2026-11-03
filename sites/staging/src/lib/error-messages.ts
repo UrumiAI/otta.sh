@@ -52,6 +52,10 @@ const SELECTION_MESSAGES = {
 	// For API callers: no page of this site sends a method for a cart with
 	// nothing to ship (the summary drops a stale one silently).
 	SHIPPING_METHOD_NOT_APPLICABLE: "Your order doesn't need delivery.",
+	// ADR-0044: cash on delivery needs a phone number for the courier. The phone
+	// field is marked too (place.ts).
+	SHIPPING_PHONE_REQUIRED:
+		"Enter a phone number for cash on delivery — the courier uses it to arrange delivery.",
 } satisfies Record<
 	Extract<CheckoutFailureReason, `COUPON_${string}` | `SHIPPING_${string}`>,
 	string
@@ -174,6 +178,18 @@ const MESSAGES: Record<string, string> = {
 		"This order was already placed in another tab or window, with a different email, so the one you typed wasn't used.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
+	// ADR-0044: the chosen method is not on offer for this order — switched off
+	// since the page loaded, or (cash on delivery) not available on this site.
+	PAYMENT_METHOD_UNAVAILABLE:
+		"That payment method isn't available for this order. Please choose another way to pay.",
+	// ADR-0044 decision D: cash on delivery is for carts with something to deliver.
+	OFFLINE_NEEDS_PHYSICAL:
+		"Cash on delivery is only available for orders with items we deliver. Please choose another way to pay.",
+	// ADR-0044 decision C2: too many open cash-on-delivery orders for this buyer
+	// or network. Neutral: the count may be a shared network's, so it says what to
+	// do and never implies the buyer has orders open.
+	OFFLINE_ORDER_LIMIT:
+		"Cash on delivery isn't available for this order right now. Please choose another payment method.",
 	...SELECTION_MESSAGES,
 	// ── Customer account (issue #306, ADR-0004) ─────────────────────────────
 	// A failed magic link. Each says what to do next, and none says anything

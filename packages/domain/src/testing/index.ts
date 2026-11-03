@@ -86,6 +86,10 @@ export {
 } from "./paid-amount-mismatch-contract.js";
 export { orderExpiryContract, type OrderExpiryContractOptions } from "./order-expiry-contract.js";
 export {
+	offlinePaymentContract,
+	type OfflinePaymentContractOptions,
+} from "./offline-payment-contract.js";
+export {
 	orderTimelineContract,
 	type OrderTimelineHarness,
 	type OrderTimelineContractOptions,
@@ -132,6 +136,8 @@ export {
 } from "./entitlement-store-contract.js";
 export {
 	paymentGatewayContract,
+	offlinePaymentGatewayContract,
+	type OfflinePaymentGatewayContractOptions,
 	type PaymentGatewayContractOptions,
 } from "./payment-gateway-contract.js";
 export {

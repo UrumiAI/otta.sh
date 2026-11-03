@@ -416,6 +416,9 @@ export interface PublicOrderView {
 	state: string;
 	currency: string;
 	paymentMethod: string | null;
+	/** ADR-0044: `"offline"` (cash on delivery) | `"gateway"` | null — what
+	 *  readers branch on, never the method's name. */
+	settlement: "gateway" | "offline" | null;
 	holdExpiresAt: string;
 	createdAt: string;
 	totals: CheckoutTotalsView;
@@ -476,6 +479,8 @@ export function buildOrderView(order: PublicOrderWire, locale: string): PublicOr
 		state: order.state,
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
+		// ADR-0044: carried through; an older plugin's wire has none (null).
+		settlement: order.settlement ?? null,
 		holdExpiresAt: order.holdExpiresAt,
 		createdAt: order.createdAt,
 		totals: buildCheckoutTotals(order.totals, { locale, ...orderTotalsFlags(order.totals) }),

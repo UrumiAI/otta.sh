@@ -72,7 +72,7 @@ export function makeAdminClients(ctx: PluginContext): Promise<AdminClients> {
 		hasOutsideTaxCalculator: getTaxCalculator() !== undefined,
 	});
 	const reporting = new InProcessReportingSettingsClient(ctx);
-	return resolvePaymentGateways(ctx).then((gateways) => ({
+	return resolvePaymentGateways(ctx, { cashOnDelivery: "always" }).then((gateways) => ({
 		products,
 		orders: new InProcessAdminOrdersClient(ctx, { gateways }),
 		rules,

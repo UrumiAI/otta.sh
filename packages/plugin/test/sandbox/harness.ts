@@ -72,6 +72,9 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{
 	// (`tsdown.config.ts` `noExternal`). Absent from this list, the worker fails to
 	// boot at all with `No such module "@urumi.ai/otta-payments-stripe"`.
 	{ name: "payments-stripe", exports: { ".": "./src/index.ts" } },
+	// ADR-0044: the cash-on-delivery gateway, a runtime import of the gateway
+	// resolver — bundled and materialized for the same reason as Stripe's.
+	{ name: "payments-cod", exports: { ".": "./src/index.ts" } },
 	{ name: "store-emdash", exports: { ".": "./src/index.ts" } },
 ];
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —

@@ -71,7 +71,7 @@ module.exports = {
 				"three store-emdash-* rules below hold it to the same perimeter as this " +
 				"one, type-only imports included.\n\n" +
 				"THIRD NARROWING (work order 02, INC-C1b): `payments-[^/]+` became " +
-				"`(?!payments-stripe(/|$))payments-[^/]+`, in all three clauses, " +
+				"`(?!payments-(stripe|cod)(/|$))payments-[^/]+`, in all three clauses, " +
 				"so @urumi.ai/otta-payments-stripe is admitted and " +
 				"every other payments-* package stays banned by default. The reason is " +
 				"the same shape as store-emdash's, and it is a statement about that one " +
@@ -88,6 +88,12 @@ module.exports = {
 				"rule, which the carve-out does not touch. " +
 				"packages/plugin/test/depcruise-boundary.test.ts pins both halves: that " +
 				"package admitted, a second payments-* package still forbidden.\n\n" +
+				"FIFTH NARROWING (ADR-0044): the lookahead admits payments-cod beside " +
+				"payments-stripe — `(?!payments-(stripe|cod)(/|$))`. Cash on delivery " +
+				"is an offline gateway with no IO at all: it imports only the domain's " +
+				"types, and its own sandbox-clean guard " +
+				"(packages/payments-cod/test/sandbox-clean-guard.test.ts) holds it there. " +
+				"Every other payments-* package stays banned by default.\n\n" +
 				"FOURTH CHANGE (INC-D3c): no clause names a `service` package, because " +
 				"none exists (ADR-0020). Any other store-* is still caught by the " +
 				"`(?!store-emdash(/|$))store-[^/]+` lookahead; a second deployable would " +
@@ -95,7 +101,7 @@ module.exports = {
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@urumi\\.ai/otta-((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@urumi\\.ai/otta-((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@urumi\\.ai/otta-((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|cod)(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@urumi\\.ai/otta-((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|cod)(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|cod)(/|$))payments-[^/]+|admin-react)/)",
 			},
 		},
 		{

@@ -63,6 +63,10 @@ export interface OrderSummary {
 	readonly buyerRef: string;
 	readonly customerId: string | null;
 	readonly paymentMethod: string | null;
+	/** ADR-0044: how the order's money is confirmed — `"offline"` (cash on
+	 *  delivery) | `"gateway"` | null. What the console branches on, never the
+	 *  method's name. Absent from an older server. */
+	readonly settlement?: "gateway" | "offline" | null;
 	readonly createdAt: string;
 	readonly totalCents: number;
 	readonly reconciliationFlag: boolean | string | null;
@@ -143,9 +147,17 @@ export interface OrderDetail {
 	readonly state: string;
 	readonly currency: string;
 	readonly paymentMethod: string | null;
+	/** ADR-0044: how the order's money is confirmed — `"offline"` (cash on
+	 *  delivery) | `"gateway"` | null. What the console branches on, never the
+	 *  method's name. Absent from an older server. */
+	readonly settlement?: "gateway" | "offline" | null;
 	readonly buyerRef: string;
 	readonly customerId: string | null;
 	readonly createdAt: string;
+	/** ADR-0044 §6 (B-N6): when the `cod-auto-cancel` sweep cancels this unpaid
+	 *  COD order — null when none will (not awaiting payment, not offline, or the
+	 *  window is off). Absent from an older server. */
+	readonly autoCancelAt?: string | null;
 	readonly reconciliationFlag: string | null;
 	readonly reconciliationResolution: {
 		readonly outcome?: string | null;
@@ -188,6 +200,10 @@ export interface RefundsSummary {
 	readonly ceilingCents: number;
 	readonly remainingCents: number;
 	readonly paymentMethod: string | null;
+	/** ADR-0044: how the order's money is confirmed — `"offline"` (cash on
+	 *  delivery) | `"gateway"` | null. What the console branches on, never the
+	 *  method's name. Absent from an older server. */
+	readonly settlement?: "gateway" | "offline" | null;
 	readonly refundable: boolean;
 	/** A current provider captured this order's money, so a manual refund keeps
 	 *  the currency's payment step (#447). Absent from an older plugin ⇒ true. */

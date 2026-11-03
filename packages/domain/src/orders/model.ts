@@ -21,6 +21,15 @@ export type OrderState =
 	| "failed"
 	| "expired"
 	// Phase 5 additions:
+	// ADR-0044 — an OFFLINE (cash-on-delivery) order, placed and unpaid:
+	/** Placed with an offline method, not paid, not shipped. Its stock is held for
+	 *  it (adopted holds); it never expires. → paid | shipped_awaiting_payment |
+	 *  cancelled. Not a revenue state. */
+	| "awaiting_payment"
+	/** Shipped before it was paid; the cash is due at the door. → delivered (Mark
+	 *  paid: the courier collected it) | cancelled (delivery refused, returned).
+	 *  Not a revenue state. */
+	| "shipped_awaiting_payment"
 	| "processing"
 	| "shipped"
 	| "delivered"
@@ -32,8 +41,13 @@ export type OrderState =
  *  the order line so settle's commit-vs-grant branch has a stable input (§4). */
 export type FulfillmentKind = "physical" | "digital";
 
-/** The payment gateways (§5). One today; the alias is the seam a second gateway slots into. */
-export type PaymentMethod = "stripe";
+/**
+ * The payment methods (§5). `stripe` is settled by its gateway's webhook; `cod`
+ * (cash on delivery, ADR-0044) is OFFLINE: no online payment exists, and a
+ * person marks the order paid once the cash is in hand. How each one settles is
+ * declared once, in `orders/payment-methods.ts` (`PAYMENT_METHOD_SETTLEMENT`).
+ */
+export type PaymentMethod = "stripe" | "cod";
 
 /**
  * A customer email about an order that is NOT a state transition. The outbox was

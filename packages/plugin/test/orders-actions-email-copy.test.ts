@@ -62,6 +62,7 @@ function surface(state: string, email: InlineEmailStatus | undefined): AdminOrde
 				ceilingCents: 2400,
 				remainingCents: 2400,
 				paymentMethod: "stripe",
+				settlement: "gateway",
 				refundable: true,
 				providerCaptured: true,
 			}),
@@ -178,6 +179,90 @@ describe("each admin write's notice states what became of the buyer's email", ()
 			variant: "default",
 			title: "Order marked processing",
 			description: SENT,
+		});
+	});
+
+	// ADR-0044: the cash-on-delivery moves read as what they mean.
+	describe("cash on delivery", () => {
+		/** `surface`, its order a COD (offline) one, its fulfilment reporting `state`. */
+		function codSurface(
+			state: string,
+			email: InlineEmailStatus | undefined,
+			shippedTo?: string,
+		): AdminOrdersSurface {
+			const base = surface(state, email);
+			return {
+				...base,
+				getOrder: () =>
+					Promise.resolve({
+						order: { id: ORDER_ID, state, settlement: "offline" } as OrderDetailResult["order"],
+						allowedTransitions: [],
+					}),
+				recordFulfillment: () =>
+					Promise.resolve({
+						ok: true,
+						recorded: true,
+						...(email === undefined ? {} : { email }),
+						...(shippedTo === undefined ? {} : { state: shippedTo }),
+					}),
+			};
+		}
+
+		test("a move to shipped_awaiting_payment: 'Order marked shipped — cash due on delivery'", async () => {
+			const result = await act(
+				codSurface("awaiting_payment", "sent"),
+				"orders:transition-shipped_awaiting_payment",
+				{ orderId: ORDER_ID, toState: "shipped_awaiting_payment", state: "awaiting_payment" },
+			);
+			expect(result.notice).toEqual({
+				variant: "default",
+				title: "Order marked shipped — cash due on delivery",
+				description: SENT,
+			});
+		});
+
+		test("Record shipment of an unpaid COD order says the cash is due", async () => {
+			const result = await act(
+				codSurface("awaiting_payment", "sent", "shipped_awaiting_payment"),
+				"orders:record-fulfillment",
+				{ orderId: ORDER_ID, carrier: "UPS", trackingNumber: "1Z", recordedBy: "carol" },
+			);
+			expect(result.notice?.title).toBe("Order marked shipped — cash due on delivery");
+		});
+
+		test.each([
+			["awaiting_payment", "paid"],
+			["shipped_awaiting_payment", "delivered"],
+		])(
+			"Mark paid from %s (→ %s) says 'Payment recorded', with the email status",
+			async (from, to) => {
+				const result = await act(codSurface(from, "sent"), `orders:transition-${to}`, {
+					orderId: ORDER_ID,
+					toState: to,
+					state: from,
+				});
+				expect(result.notice).toEqual({
+					variant: "default",
+					title: "Payment recorded",
+					description: `The cash payment is recorded on the order. ${SENT}`,
+				});
+				// Even with no email to report, the payment is stated.
+				const quiet = await act(codSurface(from, undefined), `orders:transition-${to}`, {
+					orderId: ORDER_ID,
+					toState: to,
+					state: from,
+				});
+				expect(quiet.notice?.title).toBe("Payment recorded");
+			},
+		);
+
+		test("a card order's move to delivered keeps its plain copy", async () => {
+			const result = await act(surface("shipped", "sent"), "orders:transition-delivered", {
+				orderId: ORDER_ID,
+				toState: "delivered",
+				state: "shipped",
+			});
+			expect(result.notice?.title).toBe("Order marked delivered");
 		});
 	});
 

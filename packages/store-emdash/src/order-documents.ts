@@ -202,6 +202,8 @@ export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDecl
 			"emailDueAt",
 			"holdExpiresAt",
 			"holdsPendingAt",
+			// ADR-0044: the per-network cap on open cash-on-delivery orders.
+			"offlineClientKey",
 			// The late-payment refund-retry sweep's due scan (`listRefundRetriesDue`).
 			"refundRetryAt",
 			// The late-refund give-up escalation's age scan (`listRefundRetriesStale`).
@@ -526,6 +528,9 @@ export interface OrderDoc {
 	/** The buyer-address-requirement snapshot (issue #382); absent on documents
 	 *  written before it existed. Written once by the creating write. */
 	buyerAddressRequired?: boolean;
+	/** ADR-0044: the opaque client-network key an offline order was placed under
+	 *  (a one-way hash, never an address); absent on every other order. */
+	offlineClientKey?: string;
 	/** The payment that won the `pending → paid` flip, written in that flip's own
 	 *  compare-and-set (#543); absent on documents paid before it existed. */
 	paidProviderRef?: string;

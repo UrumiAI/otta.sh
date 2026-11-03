@@ -291,7 +291,8 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// one per order state + one per ONE-CLICK cancellation reason. `other` has no
 		// one-click control, so it derives no id (and the deleted `-review` pair
 		// derives none either).
-		expect(ORDERS_ACTION_IDS.size).toBe(8 + 10 + 4);
+		// Twelve order states since ADR-0044 (awaiting_payment, shipped_awaiting_payment).
+		expect(ORDERS_ACTION_IDS.size).toBe(8 + 12 + 4);
 		expect(ORDERS_ACTION_IDS.has("orders:revoke-downloads")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-confirmed")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-voided")).toBe(true);
@@ -388,7 +389,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Only the payment provider can mark this order paid");
 		expect(result.notice?.description).toBe(
-			"Nothing was changed. Otta marks an order paid only when its payment provider confirms the charge. Otta can’t record a payment taken outside it yet.",
+			"Nothing was changed. Otta marks a card order paid only when its payment provider confirms the charge. Only a cash-on-delivery order is marked paid by hand.",
 		);
 		const order = await readOrder(id);
 		expect(order.state).toBe("pending");

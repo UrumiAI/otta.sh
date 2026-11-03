@@ -137,6 +137,13 @@ const stack: WebServer[] = [
 			// dev`, and `astro build` refuses to run with it set
 			// (sites/staging/src/lib/e2e-stripe-offline.ts).
 			OTTA_E2E_STRIPE_OFFLINE: "1",
+			// ADR-0044 decision C1: cash on delivery is offered only where the site
+			// has the RATE_LIMIT_WRITES binding, which the tracked template leaves
+			// commented out. This runs the stack on sites/staging/wrangler.e2e.jsonc
+			// (the template plus that binding, at a limit far above the suite's
+			// traffic). `astro dev` only: `astro build` refuses it
+			// (sites/staging/src/lib/e2e-wrangler.ts).
+			OTTA_E2E_WRITE_LIMIT: "1",
 			// No STRIPE_PUBLIC_KEY (issue #498): the publishable key is a Settings
 			// value, which e2e/global-setup.ts saves on a stack this run starts.
 			// ADR-0037: payment keys are stored encrypted, so the dev Worker needs a

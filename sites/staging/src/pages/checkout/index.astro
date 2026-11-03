@@ -51,6 +51,7 @@ import {
 } from "@urumi.ai/otta-plugin";
 import { subdivisionName } from "@urumi.ai/otta-plugin/subdivisions";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import { env } from "virtual:emdash/env";
 import RegionPicker from "../../components/RegionPicker.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { checkoutEmailNote, signedInEmail } from "../../lib/account.js";
@@ -83,7 +84,12 @@ import {
 	errorTitle,
 } from "../../lib/error-notice.js";
 import { checkoutFootnote } from "../../lib/totals.js";
-import { readStripePublishableKey } from "../../lib/stripe-config.js";
+import { hasWriteLimit } from "../../lib/rate-limit.js";
+import {
+	checkoutMethodsFor,
+	paymentMethodName,
+	readCheckoutPaymentConfig,
+} from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 import type { CheckoutModel } from "../../themes/contract.js";
 
@@ -157,9 +163,34 @@ const { lines, totals } = summary;
  *  both Stripe secrets (#499), all Settings values read per request (#498); a
  *  read that failed is busy, never "not set up" — the same 303 to
  *  /cart?error=BUSY a busy summary takes. */
-const stripeKey = await readStripePublishableKey(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
-if (stripeKey.state === "unavailable") return Astro.redirect(`/cart?error=BUSY#${CART_ERROR_ID}`, 303);
-const paymentConfigured = stripeKey.state === "configured";
+const paymentConfig = await readCheckoutPaymentConfig(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
+if (paymentConfig.state === "unavailable") return Astro.redirect(`/cart?error=BUSY#${CART_ERROR_ID}`, 303);
+/** ADR-0044: card and cash on delivery are offered independently — either one
+ *  is enough to place an order. Cash on delivery only where the site's per-IP
+ *  write limit runs (decision C1: no `RATE_LIMIT_WRITES` binding, no COD) and
+ *  only for a cart with something to deliver (decision D). place.ts holds the
+ *  same line. */
+const offered = checkoutMethodsFor(paymentConfig.methods, {
+	writeLimit: hasWriteLimit(env),
+	ships: summary.requiresShipping,
+});
+const paymentConfigured = offered.methods.length > 0;
+const paymentMethods = offered.methods.map((value) => ({
+	value,
+	label: paymentMethodName(value) ?? value,
+	note:
+		value === "cod"
+			? (paymentConfig.codInstructions ?? "Pay in cash when your order is delivered.")
+			: "Pay securely by card on the next step.",
+}));
+/** Cash on delivery needs a full delivery address and a phone (ADR-0044 §8), on
+ *  every store — zones or not: always when it is the only method, else when it
+ *  is the one chosen. */
+const codDetails = offered.methods.includes("cod")
+	? offered.methods.length === 1
+		? ("always" as const)
+		: ("when-chosen" as const)
+	: null;
 
 /** The dead-cart trap's exit, offered only where it applies. */
 const checkedOut = error === "CART_CHECKED_OUT";
@@ -179,6 +210,13 @@ const shownError = reviewErrorToken(error, locked !== null);
  *  the form from the draft cookie (lib/checkout-draft.ts), never from the URL.
  *  A locked review has no form to fill. */
 const draft = locked === null ? readCheckoutDraft(Astro.cookies) : null;
+/** The method a refused place was for (the draft keeps it), when still offered
+ *  — so a buyer sent back to add a phone finds cash on delivery still chosen.
+ *  Else the first offered: card, when there is a choice. */
+const chosenMethod =
+	paymentMethods.find((offer) => offer.value === draft?.method)?.value ??
+	paymentMethods[0]?.value ??
+	null;
 
 /** A coupon refused AT PLACE: the redirect dropped it from the URL (so the
  *  totals are priced without it), and it comes back into the coupon field with
@@ -421,16 +459,24 @@ const model: CheckoutModel = {
 	chosenOption,
 	notReadyCopy,
 	paymentConfigured,
+	paymentMethods,
+	chosenMethod,
+	codDetails,
 	/* Quoted from error-messages.ts's STRIPE_NOT_CONFIGURED rather than
-	   restated (§10). */
-	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
+	   restated (§10) — unless cash on delivery is switched on but withheld from
+	   this checkout (ADR-0044), when that is the honest reason. */
+	notConfiguredLead:
+		offered.codWithheld === null
+			? cartErrorMessage("STRIPE_NOT_CONFIGURED")
+			: "Cash on delivery isn't available for this order, and card payment isn't set up on this store yet.",
 	emailValue: draft?.values.email ?? accountEmail ?? "",
 	addressValues,
 	/* Issue #382: on an India Stripe account the address may not be left blank,
 	   so a missing field says only to fill it in. (A zoned delivery still gets
 	   the older copy — unchanged here, flagged as a follow-up.) */
 	fieldErrors: shownFieldErrors(draft, shownError, {
-		addressRequired: summary.paymentAccountNeedsAddress,
+		/* ADR-0044: so is a cash-on-delivery place's — never "leave it blank". */
+		addressRequired: summary.paymentAccountNeedsAddress || draft?.method === "cod",
 	}),
 	emailNote: checkoutEmailNote(accountEmail),
 	ledgerRows,

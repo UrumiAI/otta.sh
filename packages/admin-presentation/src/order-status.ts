@@ -17,7 +17,7 @@
  */
 
 /**
- * The ten order states, and the ONE source the per-state transition ids and the
+ * The twelve order states, and the ONE source the per-state transition ids and the
  * Block Kit dispatcher's registration are both derived from (DA-6).
  *
  * WHY THIS MATTERS: `ORDERS_ACTION_IDS` is fixed at module load, `admin-route.ts`
@@ -39,6 +39,9 @@ export const ORDER_STATES = [
 	"completed",
 	"cancelled",
 	"refunded",
+	// ADR-0044: cash on delivery — placed and unpaid, then shipped and unpaid.
+	"awaiting_payment",
+	"shipped_awaiting_payment",
 ] as const;
 
 export type OrderState = (typeof ORDER_STATES)[number];
@@ -112,7 +115,36 @@ export const TERMINAL_ORDER_STATES: ReadonlySet<string> = new Set([
  * was reaching for: in a column of bare words, the long cells are the marks.
  */
 export function orderStateCell(state: string): string {
-	return TERMINAL_ORDER_STATES.has(state) ? `${state} · closed` : state;
+	if (TERMINAL_ORDER_STATES.has(state)) return `${state} · closed`;
+	return SPELLED_STATES[state] ?? state;
+}
+
+/** The states whose token is two words or more, spelled out (ADR-0044). A
+ *  comma, never a middot: ` · ` is this vocabulary's "closed" mark and the
+ *  Block Kit picker's separator (above). */
+const SPELLED_STATES: Readonly<Record<string, string>> = {
+	awaiting_payment: "awaiting payment",
+	shipped_awaiting_payment: "shipped, awaiting payment",
+};
+
+/**
+ * The states in which no money has been taken (ADR-0044): `pending`, and cash
+ * on delivery's two — placed, and shipped before the cash. Cancelling one
+ * refunds nothing and releases its held stock.
+ */
+export const UNPAID_ORDER_STATES: ReadonlySet<string> = new Set([
+	"pending",
+	"awaiting_payment",
+	"shipped_awaiting_payment",
+]);
+
+/** The Status filter's option for a state: the state as is (the filter has
+ *  always listed the bare tokens), except cash on delivery's two, spelled out
+ *  and naming the method, so "awaiting payment" is not read as a card order
+ *  waiting at the pay page (review finding 6). */
+export function orderStatusFilterLabel(state: string): string {
+	const spelled = SPELLED_STATES[state];
+	return spelled === undefined ? state : `${spelled} (COD)`;
 }
 
 /**

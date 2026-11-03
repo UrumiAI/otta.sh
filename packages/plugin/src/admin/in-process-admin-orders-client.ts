@@ -140,6 +140,7 @@ import {
 	type RefundRecord,
 	type ResolveFollowUp,
 	roundingEntry,
+	settlementOf,
 } from "@urumi.ai/otta-domain";
 import {
 	CommerceInputError,
@@ -158,6 +159,7 @@ import {
 	sendOrderEmailsNow,
 	type SendOrderEmailsNowOptions,
 } from "../email/send-order-emails-now.js";
+import { readCodAutoCancelDays } from "../payments/cash-on-delivery.js";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import { CONSOLE_LOGGER } from "../logging/console-logger.js";
 import type { PluginContext } from "../types.js";
@@ -190,6 +192,9 @@ import type {
  *  `min(1).max(100)`, default 25). Mirrored, not imported — the service package
  *  goes away. */
 const MAX_LIMIT = 100;
+
+/** One day, for the auto-cancel date (the sweep's own `cutoff` arithmetic). */
+const DAY_MS = 86_400_000;
 const DEFAULT_LIMIT = 25;
 
 /** The refund amount ceiling the request schema carried (`refundOrderBody`: a
@@ -361,10 +366,28 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		if (ledger === null) return null;
 		const downloads = await this.#downloadAccess(ledger.order);
 		return {
-			order: toOrderDetailWire(ledger.order),
+			order: toOrderDetailWire(ledger.order, await this.#autoCancelAt(ledger.order)),
 			allowedTransitions: adminNextStates(ledger.order, ledger),
 			...(downloads !== undefined ? { downloads } : {}),
 		};
+	}
+
+	/**
+	 * When the `cod-auto-cancel` sweep cancels this order if it is still unpaid
+	 * (ADR-0044 §6, B-N6): `createdAt` plus the live window, for an
+	 * `awaiting_payment` order of an offline settlement only — the sweep lists no
+	 * other. The window is read only for such an order, FAIL-SOFT: a kv failure
+	 * reads as 0, and 0 (off) means no date.
+	 */
+	async #autoCancelAt(order: Order): Promise<string | null> {
+		if (order.state !== "awaiting_payment" || settlementOf(order.paymentMethod) !== "offline") {
+			return null;
+		}
+		const days = await readCodAutoCancelDays(this.#ctx);
+		if (days <= 0) return null;
+		const created = Date.parse(order.createdAt);
+		if (!Number.isFinite(created)) return null;
+		return new Date(created + days * DAY_MS).toISOString();
 	}
 
 	/**
@@ -411,8 +434,18 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const key = fallbackKey(opts.idempotencyKey, `admin:transition:${orderId}:${toState}`);
 		const actor = opts.actor?.trim() || undefined;
 		const res = await transitionOrderAsAdmin(
-			// Mark refunded revokes the order's download access (issue #376).
-			{ orderStore: this.#stores.orderStore, entitlementStore: this.#stores.entitlementStore },
+			// Mark refunded revokes the order's download access (issue #376). Mark paid
+			// on a cash-on-delivery order records the payment, commits its stock and
+			// grants its downloads (ADR-0044), so it needs the settle-side stores too.
+			{
+				orderStore: this.#stores.orderStore,
+				entitlementStore: this.#stores.entitlementStore,
+				offlinePayment: {
+					inventoryStore: this.#stores.inventory,
+					paymentEventStore: this.#stores.paymentEventStore,
+					clock: this.#stores.clock,
+				},
+			},
 			{
 				orderId: toOrderId(orderId),
 				toState: target,
@@ -481,8 +514,10 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	}
 
 	/** POST record shipping fulfillment. Recording fulfillment IS shipping the
-	 *  order (`processing → shipped`, atomically with the tracking envelope and the
-	 *  shipped email), so a non-`processing` order is `NOT_FULFILLABLE` (409). */
+	 *  order (`processing → shipped`, or ADR-0044's `awaiting_payment →
+	 *  shipped_awaiting_payment` for an unpaid COD order — the domain picks the
+	 *  target — atomically with the tracking envelope and the shipped email), so any
+	 *  other order is `NOT_FULFILLABLE` (409). */
 	async recordFulfillment(
 		orderId: string,
 		fulfillment: {
@@ -526,13 +561,18 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		);
 		if (res.ok) {
 			if (!res.recorded) return { ok: true, recorded: false };
+			// The state the shipment moved the order to: `shipped`, or — for an unpaid
+			// cash-on-delivery order (ADR-0044) — `shipped_awaiting_payment`, whose
+			// shipped email carries the tracking and the amount due.
+			const shippedState: OrderState =
+				res.order.state === "shipped_awaiting_payment" ? "shipped_awaiting_payment" : "shipped";
 			const email = await this.#sendEmailsNow(
 				toOrderId(orderId),
 				deadline,
-				(row) => isStateRow(row, "shipped"),
+				(row) => isStateRow(row, shippedState),
 				res.order,
 			);
-			return { ok: true, recorded: true, email };
+			return { ok: true, recorded: true, email, state: shippedState };
 		}
 		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404, reason: res.reason };
 		if (res.reason === "NOT_FULFILLABLE") return { ok: false, status: 409, reason: res.reason };
@@ -757,6 +797,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			ceilingCents: ceiling,
 			remainingCents: remaining,
 			paymentMethod: order.paymentMethod,
+			settlement: settlementOf(order.paymentMethod),
 			refundable: gateway?.refundable ?? false,
 			providerCaptured: captured,
 		};
@@ -1151,6 +1192,7 @@ function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
 		buyerRef: summary.buyerRef,
 		customerId: summary.customerId,
 		paymentMethod: summary.paymentMethod,
+		settlement: settlementOf(summary.paymentMethod),
 		createdAt: summary.createdAt,
 		totalCents: summary.total,
 		reconciliationFlag: summary.reconciliationFlag,
@@ -1168,7 +1210,7 @@ function adminTaxRows(order: Order): Pick<OrderTotalsWire, "taxRows"> {
  *  (lines and totals were frozen at purchase time; `shippingAddress` was captured
  *  at checkout, ADR-0009, and is read off the order rather than the live address
  *  book). */
-function toOrderDetailWire(order: Order): OrderDetailWire {
+function toOrderDetailWire(order: Order, autoCancelAt: string | null): OrderDetailWire {
 	const taxStatusOf = frozenLineTaxStatuses(order);
 	return {
 		id: order.id,
@@ -1176,10 +1218,12 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 		state: order.state,
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
+		settlement: settlementOf(order.paymentMethod),
 		buyerRef: order.buyerRef,
 		customerId: order.customerId,
 		holdExpiresAt: order.holdExpiresAt,
 		createdAt: order.createdAt,
+		autoCancelAt,
 		reconciliationFlag: order.reconciliationFlag,
 		reconciliationResolution: order.reconciliationResolution,
 		fulfillment: order.fulfillment,

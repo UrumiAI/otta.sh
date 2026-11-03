@@ -26,6 +26,7 @@ import {
 	money,
 	cancelOrder,
 	escalateStaleLateRefunds,
+	cancelUnpaidOfflineOrders,
 	expireOrdersBatch,
 	cancelDueIntents,
 	COUPON_RECOUNT_SETTLE_MS,
@@ -63,6 +64,7 @@ import { createInProcessCommerceStores } from "../src/commerce/in-process-commer
 import {
 	CONTENT_MISS_QUERIES,
 	CONTENT_READ_QUERIES,
+	COD_AUTO_CANCEL_UNIT,
 	COUPON_RECOUNT_CALLS,
 	COUPON_RELEASE_CALLS,
 	GUEST_COUPON_RELEASE_CALLS,
@@ -71,6 +73,7 @@ import {
 	legReserveQueries,
 	legStartCalls,
 	MAINTENANCE_LEGS,
+	NEVER_AHEAD_OF_CANCELS,
 	PRODUCT_ORPHAN_DELETE_CALLS,
 	REPORTING_LINES_BUILD_CALLS,
 	REPORTING_MONTH_BUILD_CALLS,
@@ -224,6 +227,7 @@ async function placeOrder(
 	lines = 1,
 	appliedCouponCode?: string,
 	adopt = true,
+	paymentMethod: "stripe" | "cod" = "stripe",
 ) {
 	const s = counted();
 	const skus: string[] = [];
@@ -260,7 +264,7 @@ async function placeOrder(
 		idempotencyKey: idempotencyKey(`create-${suffix}`),
 		holdExpiresAt,
 		buyerRef: `buyer-${suffix}@example.test`,
-		paymentMethod: "stripe",
+		paymentMethod,
 		lines: held.map((reservationId, i) => ({
 			productId: toProductId(`prod-${suffix}-${String(i)}`),
 			sku: toSku(skus[i] ?? ""),
@@ -715,6 +719,74 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 
 	// #619: the worst unit is the confirming look that writes — the coupon read, the
 	// in-flight count, the applied count and the correcting compare-and-set.
+	// ADR-0044: one stale COD order auto-cancelled. The unit is the order with no
+	// coupon, as `expire-orders`' is: a coupon release is begun only inside the commit
+	// window when all of it fits (`COUPON_RELEASE_CALLS`), and a skipped one is freed
+	// by `coupon-orphans` (its auto-cancel arm) — measured here too.
+	test.each([
+		{ coupon: false, release: 0 },
+		{ coupon: true, release: COUPON_RELEASE_CALLS },
+	])(
+		"cod-auto-cancel: one stale COD order cancelled (coupon: $coupon)",
+		async ({ coupon, release }) => {
+			const s = counted();
+			const tag = `cod-auto-cancel-${String(coupon)}`;
+			const code = coupon ? "COSTCOD" : undefined;
+			const couponId = coupon ? await costCoupon(s, "coupon-cost-cod", "COSTCOD") : undefined;
+			const createdAt = new Date();
+			const placed = await placeOrder(
+				tag,
+				new Date(createdAt.getTime() + 15 * MINUTE_MS).toISOString(),
+				1,
+				code,
+				true,
+				"cod",
+			);
+			const flipped = await s.orderStore.transition({
+				orderId: toOrderId(placed.id),
+				fromState: "pending",
+				toState: "awaiting_payment",
+				idempotencyKey: idempotencyKey(`create-${tag}`),
+				enqueueEmail: true,
+			});
+			expect(flipped.transitioned).toBe(true);
+			if (couponId !== undefined) {
+				const claimed = await s.couponStore.redeem({
+					couponId,
+					orderId: toOrderId(placed.id),
+					idempotencyKey: idempotencyKey(`create-${tag}`),
+					customerId: toCustomerId("cust-cost-cod"),
+					createdAt: createdAt.toISOString(),
+				});
+				if (!claimed.ok) throw new Error("redeem failed");
+			}
+			// Created "now" by the store's clock: list as if twenty days have passed.
+			const later = new Date(createdAt.getTime() + 20 * DAY_MS);
+			const used = await cost(() =>
+				cancelUnpaidOfflineOrders(
+					{
+						orderStore: s.orderStore,
+						couponStore: s.couponStore,
+						clock: { now: () => later },
+						logger: NOOP_LOGGER,
+					},
+					{ maxAgeDays: 14, limit: 1 },
+				),
+			);
+			expect((await s.orderStore.getById(toOrderId(placed.id)))?.state).toBe("cancelled");
+			if (couponId !== undefined) {
+				expect((await s.couponStore.findById(couponId))?.usesCount).toBe(0);
+			}
+			for (const sku of placed.skus) expect(await s.inventory.getOnHand(toSku(sku))).toBe(10);
+			// The listing is the leg's entry (with the window's kv read); the rest is the unit.
+			const unit = used - 1;
+			expect(unit - release).toBeLessThanOrEqual(LEG_QUERY_COSTS["cod-auto-cancel"].unit);
+			// Pinned on the shape it was measured on, so a change that moves it shows up
+			// here and in `LEG_QUERY_COSTS` together.
+			if (!coupon) expect(unit).toBe(COD_AUTO_CANCEL_UNIT);
+		},
+	);
+
 	test("coupon-recount: one coupon's confirmed correction", async () => {
 		const s = counted();
 		const couponId = await costCoupon(s, "coupon-cost-recount", "COSTRECOUNT");
@@ -1083,7 +1155,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 				},
 			},
 		} as unknown as PluginContext;
-		const used = await cost(() => resolvePaymentGateways(ctx));
+		const used = await cost(() => resolvePaymentGateways(ctx, { cashOnDelivery: "never" }));
 		// Exactly Stripe's two secret reads: the entry is sized to it, no headroom.
 		expect(used).toBe(2);
 		expect(LEG_QUERY_COSTS["cancel-intents"].entry).toBe(used);
@@ -1100,7 +1172,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			},
 		} as unknown as PluginContext;
 		// The due list is the leg's due check, charged before the entry.
-		const used = await cost(() => resolvePaymentGateways(ctx));
+		const used = await cost(() => resolvePaymentGateways(ctx, { cashOnDelivery: "never" }));
 		// Exactly Stripe's two secret reads: the entry is sized to it, no headroom.
 		expect(used).toBe(2);
 		expect(LEG_QUERY_COSTS["late-refunds"].entry).toBe(used);
@@ -1241,6 +1313,12 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 				legStartCalls(leg, FREE) +
 				legReserveQueries(leg);
 			if (fixed + cancel + own <= FREE) continue;
+			// Never ahead of the cancels (ADR-0044's auto-cancel): it must fit behind an
+			// IDLE cancel — its one due check — where aging places it once cancels drain.
+			if (NEVER_AHEAD_OF_CANCELS.includes(leg)) {
+				expect(fixed + 1 + own, `${leg} behind an idle cancel`).toBeLessThanOrEqual(FREE);
+				continue;
+			}
 			needsHead.push(leg);
 			expect(fixed + own, `${leg} alone at the head`).toBeLessThanOrEqual(FREE);
 		}

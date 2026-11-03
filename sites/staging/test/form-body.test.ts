@@ -20,8 +20,15 @@ const { getEmDashEntry } = vi.hoisted(() => ({ getEmDashEntry: vi.fn() }));
 vi.mock("emdash", () => ({ getEmDashEntry }));
 // Under vitest the publishable key (a build-time define) is undefined; stub it
 // so /checkout/place reaches the body read instead of the no-key redirect.
-vi.mock("../src/lib/stripe-config.js", () => ({
+vi.mock("../src/lib/stripe-config.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/lib/stripe-config.js")>()),
 	readStripePublishableKey: async () => ({ state: "configured", key: "pk_test_fake" }),
+	// ADR-0044: card is the one method this store offers.
+	readCheckoutPaymentConfig: async () => ({
+		state: "ok",
+		methods: ["stripe"],
+		codInstructions: null,
+	}),
 }));
 
 import { POST as LOGIN_REQUEST_POST } from "../src/pages/account/login/request.js";

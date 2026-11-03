@@ -220,7 +220,7 @@ export interface ArrangedOrder {
 	unitPrice?: CommerceMoney;
 	quantity?: number;
 	/** The method the order was placed with. Defaults to `stripe`. */
-	paymentMethod?: "stripe";
+	paymentMethod?: "stripe" | "cod";
 	/**
 	 * A SETTLED payment for the order, in the order's currency: the order is
 	 * flipped `pending → paid` and one `succeeded` payment row is recorded under
@@ -3764,6 +3764,8 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					buyerRef: "shape@example.test",
 					customerId: null,
 					paymentMethod: "stripe",
+					// ADR-0044: the method's settlement, read off the domain's one table.
+					settlement: "gateway",
 					createdAt: expect.any(String) as unknown as string,
 					totalCents: 1500,
 					// The list carries the BADGE, never the free-text detail (which the
@@ -3899,10 +3901,14 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					state: "pending",
 					currency: "USD",
 					paymentMethod: "stripe",
+					// ADR-0044: the method's settlement, read off the domain's one table.
+					settlement: "gateway",
 					buyerRef: "detail@example.test",
 					customerId: null,
 					holdExpiresAt: "2099-01-01T00:00:00.000Z",
 					createdAt: expect.any(String) as unknown as string,
+					// ADR-0044 §6 (B-N6): only an awaiting-payment COD order auto-cancels.
+					autoCancelAt: null,
 					reconciliationFlag: null,
 					reconciliationResolution: null,
 					fulfillment: null,
@@ -4442,6 +4448,8 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				ceilingCents: 0,
 				remainingCents: 0,
 				paymentMethod: "stripe",
+				// ADR-0044: the method's settlement, read off the domain's one table.
+				settlement: "gateway",
 				// The gateway's HONEST capability: a tier that composes a Stripe gateway
 				// answers `true`, because Stripe genuinely supports refunds; a tier with
 				// no gateway composed answers `false`. The panel reads this to decide

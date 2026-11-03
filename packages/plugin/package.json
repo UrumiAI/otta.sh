@@ -63,6 +63,7 @@
 	"dependencies": {
 		"@urumi.ai/otta-admin-presentation": "workspace:*",
 		"@urumi.ai/otta-domain": "workspace:*",
+		"@urumi.ai/otta-payments-cod": "workspace:*",
 		"@urumi.ai/otta-payments-stripe": "workspace:*",
 		"@urumi.ai/otta-store-emdash": "workspace:*"
 	},

@@ -279,15 +279,28 @@ function emailSentence(email: InlineEmailStatus | undefined): string {
 /**
  * A manual mark-paid (QA T1-3). Otta marks an order paid only when its payment
  * provider confirms the charge; a person marking it paid would tell the buyer their
- * payment arrived and count revenue nobody captured. No payment method is declared
- * offline today, so this is every manual mark-paid — including an order with no
- * method on file, which nothing will ever settle (so no "it becomes paid by itself").
+ * payment arrived and count revenue nobody captured. Only an OFFLINE method (cash on
+ * delivery, ADR-0044) is marked paid by hand, and the console offers Mark paid only
+ * there; this is every other manual mark-paid — including an order with no method on
+ * file, which nothing will ever settle (so no "it becomes paid by itself").
  */
 const PAID_BY_PROVIDER_ONLY: Notice = {
 	variant: "error",
 	title: "Only the payment provider can mark this order paid",
 	description:
-		"Nothing was changed. Otta marks an order paid only when its payment provider confirms the charge. Otta can’t record a payment taken outside it yet.",
+		"Nothing was changed. Otta marks a card order paid only when its payment provider confirms the charge. Only a cash-on-delivery order is marked paid by hand.",
+};
+
+/**
+ * ADR-0044: a cash-on-delivery Mark paid that lost its flip to a Record shipment
+ * made at the same moment. The cash is recorded once whatever happens next; the
+ * order is now shipped and awaiting payment, so the merchant clicks again.
+ */
+const MARK_PAID_RETRY: Notice = {
+	variant: "default",
+	title: "The order was shipped at the same moment",
+	description:
+		"Someone recorded the shipment while you were marking it paid, so it was not marked paid yet. Click Mark paid again to record the cash — the order will be marked delivered.",
 };
 
 /**
@@ -362,6 +375,8 @@ function transitionRefusalNotice(
 			return REFUND_THROUGH_MONEY; // QA2 M4
 		case "REFUND_IN_FLIGHT":
 			return REFUND_IN_FLIGHT;
+		case "MARK_PAID_RETRY":
+			return MARK_PAID_RETRY; // ADR-0044
 		case "ORDER_NOT_FOUND":
 		case "INVALID_TRANSITION":
 			return STATUS_CHANGE_FAILED;
@@ -373,6 +388,11 @@ function transitionRefusalNotice(
 function assertNever(value: never): never {
 	throw new Error(`unhandled transition refusal: ${String(value)}`);
 }
+
+/** ADR-0044: an unpaid cash-on-delivery order moved to `shipped_awaiting_payment`. */
+const SHIPPED_CASH_DUE_TITLE = "Order marked shipped — cash due on delivery";
+/** ADR-0044: Mark paid on a cash-on-delivery order (`paid` or `delivered`). */
+const PAYMENT_RECORDED_TITLE = "Payment recorded";
 
 /** A Mark refunded that applied (ADR-0026 Decision 3): bookkeeping for a refund
  *  made outside Otta — it says so, because nothing else on the screen will. */
@@ -442,11 +462,20 @@ function transitionAction(toState: string): OrdersAction {
 		// every other applied move says what became of the buyer's email (T1-6).
 		if (toState === "refunded" && result.email === undefined) return applied(MARKED_REFUNDED);
 		const email = emailSentence(result.email).trim();
-		return applied(
-			email.length === 0
-				? null
-				: { variant: "default", title: `Order marked ${toState}`, description: email },
-		);
+		// ADR-0044: the cash-on-delivery moves say what they mean, not the state name —
+		// and Mark paid always says the payment was recorded, email or not.
+		const offlinePaid =
+			live.order.settlement === "offline" && (toState === "paid" || toState === "delivered");
+		if (offlinePaid) {
+			return applied({
+				variant: "default",
+				title: PAYMENT_RECORDED_TITLE,
+				description: `The cash payment is recorded on the order.${email.length > 0 ? ` ${email}` : ""}`,
+			});
+		}
+		const title =
+			toState === "shipped_awaiting_payment" ? SHIPPED_CASH_DUE_TITLE : `Order marked ${toState}`;
+		return applied(email.length === 0 ? null : { variant: "default", title, description: email });
 	};
 }
 
@@ -640,7 +669,7 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
 						variant: "error",
 						title: "Order can’t be shipped right now",
 						description:
-							"This order is no longer “processing” — it may have shipped or been cancelled. Reload and check its status.",
+							"This order is no longer waiting to ship — it may have shipped or been cancelled. Reload and check its status.",
 					}
 				: {
 						variant: "error",
@@ -659,7 +688,8 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
 	}
 	return applied({
 		variant: "default",
-		title: "Order shipped",
+		// ADR-0044: an unpaid cash-on-delivery order ships before it is paid.
+		title: result.state === "shipped_awaiting_payment" ? SHIPPED_CASH_DUE_TITLE : "Order shipped",
 		description:
 			result.email === "sent"
 				? "Fulfilment recorded. The buyer has been emailed their tracking."

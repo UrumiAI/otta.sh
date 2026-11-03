@@ -23,6 +23,10 @@ export const DOWNLOAD_DELIVERABLE_STATES: Readonly<Record<OrderState, boolean>> 
 	expired: false,
 	cancelled: false,
 	refunded: false,
+	// ADR-0044: unpaid. An offline Mark paid grants a download just BEFORE its flip
+	// (so a crash heals), and the gate serves it only once the order is paid.
+	awaiting_payment: false,
+	shipped_awaiting_payment: false,
 };
 
 /** Whether an order in `state` may deliver its downloads. */

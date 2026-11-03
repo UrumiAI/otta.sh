@@ -1187,13 +1187,15 @@ describe("the walk fits the budget and pages across ticks", () => {
 		for (const id of ids) {
 			expect(await lifecycleOf(id), id).toBe(gone.includes(id) ? "deleted" : "live");
 		}
-		// Measured: the first pass ends in 18 ticks; the orphans go on the third
+		// Measured: the first pass ends in 18 ticks (21 at most); the orphans go on the third
 		// pass, each pass a maintenance interval after the last finished. A
 		// 1000-product catalog measured one pass in about 350 ticks on Workers Free
 		// (about six hours; 7 ticks on Paid), and an orphan in it went after about 900
 		// ticks: three passes, up to about eighteen hours.
 		expect(firstPass, "the first pass never ended").not.toBeNull();
-		expect(firstPass!).toBeLessThanOrEqual(20);
+		// 21 since ADR-0044's `cod-auto-cancel` due check (two calls) shares the
+		// first maintenance tick.
+		expect(firstPass!).toBeLessThanOrEqual(21);
 		expect(doneAt, "the orphans were never struck out").not.toBeNull();
 		expect(doneAt!).toBeLessThanOrEqual(90);
 	});

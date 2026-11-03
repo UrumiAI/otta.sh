@@ -101,7 +101,7 @@ import { UPLOAD_MIN_ROLE } from "./lib/download-upload.js";
 import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { rejectCrossOrigin } from "./lib/origin-guard.js";
-import { enforceRateLimit } from "./lib/rate-limit.js";
+import { enforceRateLimit, refuseCodAttestHeader } from "./lib/rate-limit.js";
 import { isPlaygroundBuild, playgroundGate, withPlaygroundBanner } from "./lib/playground-gate.js";
 import { setupClaimGate } from "./lib/setup-claim.js";
 import { themeFor } from "./themes/registry.js";
@@ -170,6 +170,13 @@ async function handle(context: APIContext, next: MiddlewareNext): Promise<Respon
 	// itself — a wait page, or a redirect from the CMS admin onto the shop.
 	const gated = await playgroundGate(context);
 	if (gated !== null) return gated;
+
+	// ADR-0044 §7 (round 2, M1): the COD attestation header is the site's OWN, set
+	// only on its in-process dispatch from /checkout/place when the write limit
+	// exists. No outside request may carry it — refused before anything else, so a
+	// direct call to the plugin mount can never present it.
+	const attestRefused = refuseCodAttestHeader(context.request);
+	if (attestRefused !== null) return attestRefused;
 
 	// CSRF first: a refused write never reaches its endpoint.
 	const forbidden = rejectCrossOrigin(context);

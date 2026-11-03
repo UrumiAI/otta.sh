@@ -25,6 +25,7 @@
  */
 
 import { makeLoginEmailSender } from "../email/ctx-email-sender.js";
+import { readCodCheckoutPolicy } from "../payments/cash-on-delivery.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import { checkoutRequiresBuyerAddress } from "../payments/stripe-account-country.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
@@ -55,7 +56,14 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 	// so console refunds reach the same gateways checkout charged through.
 	const taxCalculator = getTaxCalculator();
 	return new InProcessCommerceClient(ctx, {
-		gateways: await resolvePaymentGateways(ctx),
+		// ADR-0044: the cod gateway is ALWAYS armed at checkout, so a same-key replay
+		// of an order placed while COD was on still finds it once it is switched off.
+		// Whether a FRESH COD placement is accepted is the domain's call, from the
+		// policy below.
+		gateways: await resolvePaymentGateways(ctx, { cashOnDelivery: "always" }),
+		// Lazy: three kv reads, only when the buyer chose cash on delivery. Fails soft
+		// to COD off.
+		resolveOfflinePolicy: () => readCodCheckoutPolicy(ctx),
 		// ADR-0030: the site's registered calculator, if any (`createOttaPlugin`);
 		// absent ⇒ the built-in rate table.
 		...(taxCalculator !== undefined ? { taxCalculator } : {}),
@@ -67,7 +75,11 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 		// Lazy too: only "Start a new cart" that actually cancelled an order uses it
 		// (QA2 X4). Built with the cancel's own short, fixed bound — not checkout's.
 		resolveWithdrawGateways: () =>
-			resolvePaymentGateways(ctx, { requestTimeoutMs: ABANDON_CANCEL_CALL_MS }),
+			// ADR-0044: withdrawing intents only — a COD order has none to withdraw.
+			resolvePaymentGateways(ctx, {
+				requestTimeoutMs: ABANDON_CANCEL_CALL_MS,
+				cashOnDelivery: "never",
+			}),
 		// Issue #382: an India-based Stripe account needs every buyer's name and
 		// address. A kv read of the cached account country — Stripe is asked only
 		// when nothing usable is cached (see stripe-account-country.ts).

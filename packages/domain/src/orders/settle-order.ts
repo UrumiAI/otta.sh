@@ -33,6 +33,10 @@ export type SettleResult =
 /** The success-side of a verified confirmation, after narrowing. */
 type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
 
+/** The payment the paid side-effects record: a verified gateway settlement, or an
+ *  offline payment a person attested (ADR-0044, `transitionOrderAsAdmin`). */
+export type PaidPayment = Pick<VerifiedSuccess, "gateway" | "providerRef" | "amount" | "currency">;
+
 /**
  * The gateway-agnostic settlement use-case (§5): **verify → dedupe → transition →
  * commit-or-grant**. Every gateway's verified confirmation
@@ -428,7 +432,8 @@ async function settlePaidOrder(
 }
 
 /**
- * The paid-order side-effects, each individually idempotent so the whole block
+ * The paid-order side-effects — shared by `settleOrder` and an offline Mark paid
+ * (ADR-0044) — each individually idempotent so the whole block
  * can be re-driven by any retry (crash-window healing):
  *  - `payments` record — keyed on `provider_ref` (INSERT … ON CONFLICT DO NOTHING);
  *  - physical lines — state-guarded `commit` (already-`committed` is a benign
@@ -436,9 +441,9 @@ async function settlePaidOrder(
  *    flag, gated on the flag so a retry storm records the incident once);
  *  - digital lines — grant-once entitlement (`ent:{order}:{sku}` UNIQUE key).
  */
-async function applyPaidSideEffects(
+export async function applyPaidSideEffects(
 	deps: SettleDeps,
-	conf: VerifiedSuccess,
+	conf: PaidPayment,
 	order: Order,
 	now: string,
 ): Promise<void> {

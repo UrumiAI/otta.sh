@@ -214,13 +214,14 @@ export const CANCEL_CONFIRM = {
  * - `refundAutomatic` — whether the order's gateway can return it. False means the
  *   cancel will be refused: Otta does not cancel while keeping the money.
  * - `stock` — `release` (a pending order's held stock goes back), `restock` (sold
- *   units return), `keep` (the operator unticked Return to stock) or `none` (no
- *   physical units).
+ *   units return), `keep` (the operator unticked Return to stock), `none` (no
+ *   physical units) or `returned` (a shipped, unpaid cash-on-delivery order: its
+ *   units go back on sale at once, though the parcel is still out).
  */
 export interface CancelEffects {
 	readonly refund: string | null;
 	readonly refundAutomatic: boolean;
-	readonly stock: "release" | "restock" | "keep" | "none";
+	readonly stock: "release" | "restock" | "keep" | "none" | "returned";
 }
 
 /** A pending order's cancellation: no money, held stock released. */
@@ -228,6 +229,15 @@ export const PENDING_CANCEL_EFFECTS: CancelEffects = {
 	refund: null,
 	refundAutomatic: true,
 	stock: "release",
+};
+
+/** A shipped, unpaid cash-on-delivery order's cancellation (ADR-0044, B-N5):
+ *  no money, and its units go back on sale the moment it is cancelled — so
+ *  the copy says to cancel only once the parcel has come back. */
+export const SHIPPED_UNPAID_CANCEL_EFFECTS: CancelEffects = {
+	refund: null,
+	refundAutomatic: true,
+	stock: "returned",
 };
 
 /** The Return-to-stock box beside the cancel controls of a paid order. */
@@ -250,6 +260,9 @@ export function cancelConfirmText(reasonLabel: string, effects: CancelEffects): 
 	if (effects.stock === "release") {
 		return `Cancel this order as “${reasonLabel}”? This is permanent — the order cannot be un-cancelled, and the held stock is released.`;
 	}
+	if (effects.stock === "returned") {
+		return `Cancel this order as “${reasonLabel}”? This is permanent — the items go back on sale at once, so do it only when the parcel has come back.`;
+	}
 	const money =
 		effects.refund === null ? "nothing is refunded" : `${effects.refund} is refunded to the buyer`;
 	const stock =
@@ -265,6 +278,9 @@ export function cancelConfirmText(reasonLabel: string, effects: CancelEffects): 
  *  {@link CANCEL_BANNER}'s, unchanged. */
 export function cancelBannerText(effects: CancelEffects): string {
 	if (effects.stock === "release") return CANCEL_BANNER.description;
+	if (effects.stock === "returned") {
+		return "Cancelling returns the items to stock at once — do it when the parcel has come back. It moves this order to “cancelled” and emails the buyer. It cannot be undone.";
+	}
 	if (effects.refund !== null && !effects.refundAutomatic) {
 		return `Otta can’t refund this order’s ${effects.refund} automatically, so it can’t be cancelled here — that would keep the buyer’s money. Send the refund yourself and record it as a manual refund in Money → Refunds — a full refund closes the order as refunded, so restock the items by hand if they came back.`;
 	}
@@ -289,6 +305,7 @@ export function cancelBannerText(effects: CancelEffects): string {
 /** The Cancel group's label for these effects (D-6a: it carries the consequence). */
 export function cancelGroupLabel(effects: CancelEffects): string {
 	if (effects.stock === "release") return CANCEL_GROUP_LABEL;
+	if (effects.stock === "returned") return "Cancel order — permanent, returns the items to stock";
 	return effects.refund === null
 		? "Cancel order — permanent"
 		: "Cancel order — permanent, refunds the buyer";

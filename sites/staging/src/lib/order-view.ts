@@ -18,6 +18,12 @@ const PAID_STATES: ReadonlySet<string> = new Set([
 	"completed",
 ]);
 
+/** ADR-0044: placed, not yet paid — paid in cash at the door (an offline method). */
+const UNPAID_PLACED_STATES: ReadonlySet<string> = new Set([
+	"awaiting_payment",
+	"shipped_awaiting_payment",
+]);
+
 /* The total's LABEL is not here: it is the domain's `orderTotalLabel` (through
    `@urumi.ai/otta-plugin`), shared with the order emails so the three surfaces cannot
    drift. */
@@ -61,6 +67,8 @@ export interface OrderProgress {
  *
  *  - paid and every state after it (refunded too: it was paid first) → at
  *    Order, Payment done;
+ *  - `awaiting_payment`, `shipped_awaiting_payment` (ADR-0044, cash on
+ *    delivery) → at Order: nothing is left to pay online;
  *  - `pending` → Payment is the step in progress;
  *  - `expired`, `failed` → stopped AT Payment, which the tracker says;
  *  - `cancelled`, or a state this site does not know → no tracker at all. A
@@ -69,6 +77,9 @@ export interface OrderProgress {
  */
 export function orderProgress(state: string): OrderProgress | null {
 	if (PAID_STATES.has(state) || state === "refunded") return { current: "order", halted: false };
+	// ADR-0044: a placed cash-on-delivery order — shipped or not — has no payment
+	// step left online: the cash is paid at the door.
+	if (UNPAID_PLACED_STATES.has(state)) return { current: "order", halted: false };
 	if (state === "pending") return { current: "payment", halted: false };
 	if (state === "expired" || state === "failed") return { current: "payment", halted: true };
 	return null;

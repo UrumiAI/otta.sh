@@ -340,7 +340,8 @@ describe("the order-status vocabulary", () => {
 	});
 
 	test("every declared state renders, and only the four are marked", () => {
-		const marked = ORDER_STATES.filter((state) => orderStateCell(state) !== state);
+		// ADR-0044's two-word states are spelled out — not marked.
+		const marked = ORDER_STATES.filter((state) => orderStateCell(state).endsWith(" · closed"));
 		expect(marked.toSorted()).toEqual(["cancelled", "expired", "failed", "refunded"]);
 	});
 });
