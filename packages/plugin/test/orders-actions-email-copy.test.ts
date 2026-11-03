@@ -62,6 +62,7 @@ function surface(state: string, email: InlineEmailStatus | undefined): AdminOrde
 				ceilingCents: 2400,
 				remainingCents: 2400,
 				paymentMethod: "stripe",
+				settlement: "gateway",
 				refundable: true,
 				providerCaptured: true,
 			}),

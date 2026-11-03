@@ -746,6 +746,10 @@ export interface ShippingAddressWire {
 
 export interface CheckoutRequestWire {
 	cartId: string;
+	/** ADR-0044: the client's network key (the site's `clientNetwork`), sent only
+	 *  once the site's per-IP write limit has run. Required for cash on delivery;
+	 *  the client hashes it before it is stored. */
+	clientKey?: string;
 	/** The method the buyer chose (ADR-0044): `stripe` (card) or `cod` (cash on
 	 *  delivery). The checkout route refuses one the store has not enabled. */
 	paymentMethod: "stripe" | "cod";
@@ -793,6 +797,10 @@ export interface PublicOrderWire {
 	state: string;
 	currency: string;
 	paymentMethod: string | null;
+	/** ADR-0044: how the method's money is confirmed — `"offline"` (cash on
+	 *  delivery: a person marks it paid) or `"gateway"`; null for no or an unknown
+	 *  method. Readers branch on this, never on the method's name. */
+	settlement: "gateway" | "offline" | null;
 	holdExpiresAt: string;
 	createdAt: string;
 	/** `shippingZoneId` / `shippingMethodId` are read off the order's shipping
@@ -865,7 +873,16 @@ export type CheckoutFailureReason =
 	| "COUPON_MAX_PER_CUSTOMER"
 	| "COUPON_CURRENCY_MISMATCH"
 	/** ADR-0030: the outside tax calculator could not answer; nothing was placed. */
-	| "TAX_UNAVAILABLE";
+	| "TAX_UNAVAILABLE"
+	// ADR-0044 — cash on delivery; nothing was placed in any of these:
+	/** COD is switched off, or the caller sent no client key (no per-IP limit). */
+	| "PAYMENT_METHOD_UNAVAILABLE"
+	/** COD for a cart with no physical line. */
+	| "OFFLINE_NEEDS_PHYSICAL"
+	/** A COD delivery address with no phone number. */
+	| "SHIPPING_PHONE_REQUIRED"
+	/** The buyer or the client network already has the most open COD orders. */
+	| "OFFLINE_ORDER_LIMIT";
 
 /**
  * NOTE the asymmetry, deliberate and load-bearing: `POST /checkout/orders`
@@ -965,6 +982,10 @@ export interface OrderSummaryWire {
 	state: string;
 	currency: string;
 	paymentMethod: string | null;
+	/** ADR-0044: how the method's money is confirmed — `"offline"` (cash on
+	 *  delivery: a person marks it paid) or `"gateway"`; null for no or an unknown
+	 *  method. Readers branch on this, never on the method's name. */
+	settlement: "gateway" | "offline" | null;
 	holdExpiresAt: string;
 	/** When the order was placed (ISO-8601) — the account list dates its rows by it. */
 	createdAt: string;

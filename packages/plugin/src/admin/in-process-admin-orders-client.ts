@@ -140,6 +140,7 @@ import {
 	type RefundRecord,
 	type ResolveFollowUp,
 	roundingEntry,
+	settlementOf,
 } from "@urumi.ai/otta-domain";
 import {
 	CommerceInputError,
@@ -767,6 +768,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			ceilingCents: ceiling,
 			remainingCents: remaining,
 			paymentMethod: order.paymentMethod,
+			settlement: settlementOf(order.paymentMethod),
 			refundable: gateway?.refundable ?? false,
 			providerCaptured: captured,
 		};
@@ -1161,6 +1163,7 @@ function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
 		buyerRef: summary.buyerRef,
 		customerId: summary.customerId,
 		paymentMethod: summary.paymentMethod,
+		settlement: settlementOf(summary.paymentMethod),
 		createdAt: summary.createdAt,
 		totalCents: summary.total,
 		reconciliationFlag: summary.reconciliationFlag,
@@ -1186,6 +1189,7 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 		state: order.state,
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
+		settlement: settlementOf(order.paymentMethod),
 		buyerRef: order.buyerRef,
 		customerId: order.customerId,
 		holdExpiresAt: order.holdExpiresAt,

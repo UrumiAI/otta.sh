@@ -22,6 +22,9 @@ export interface OrderSummaryWire {
 	buyerRef: string;
 	customerId: string | null;
 	paymentMethod: string | null;
+	/** ADR-0044: `"offline"` (cash on delivery) | `"gateway"` | null — what
+	 *  readers branch on, never the method's name. */
+	settlement: "gateway" | "offline" | null;
 	createdAt: string;
 	totalCents: number;
 	reconciliationFlag: boolean;
@@ -139,6 +142,9 @@ export interface OrderDetailWire {
 	state: string;
 	currency: string;
 	paymentMethod: string | null;
+	/** ADR-0044: `"offline"` (cash on delivery) | `"gateway"` | null — what
+	 *  readers branch on, never the method's name. */
+	settlement: "gateway" | "offline" | null;
 	buyerRef: string;
 	customerId: string | null;
 	holdExpiresAt: string;
@@ -300,6 +306,9 @@ export interface RefundsSummaryWire {
 	ceilingCents: number;
 	remainingCents: number;
 	paymentMethod: string | null;
+	/** ADR-0044: `"offline"` (cash on delivery) | `"gateway"` | null — what
+	 *  readers branch on, never the method's name. */
+	settlement: "gateway" | "offline" | null;
 	refundable: boolean;
 	/** True when a current provider captured this order's money (a `succeeded`
 	 *  payment through the refund's gateway). A manual refund then keeps the

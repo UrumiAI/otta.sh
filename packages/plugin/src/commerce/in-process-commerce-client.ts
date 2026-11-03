@@ -129,6 +129,7 @@ import {
 	type TaxTotalsDisplay,
 	type ZoneResolution,
 	roundingEntry,
+	settlementOf,
 } from "@urumi.ai/otta-domain";
 import type {
 	AbandonCartOrderResult,
@@ -1874,6 +1875,7 @@ function serializeOrderSummary(
 		state: order.state,
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
+		settlement: settlementOf(order.paymentMethod),
 		holdExpiresAt: order.holdExpiresAt,
 		createdAt: order.createdAt,
 		totals: {
@@ -2018,6 +2020,7 @@ function serializePublicOrder(
 		state: order.state,
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
+		settlement: settlementOf(order.paymentMethod),
 		holdExpiresAt: order.holdExpiresAt,
 		createdAt: order.createdAt,
 		totals: {

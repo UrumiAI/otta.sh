@@ -78,6 +78,8 @@ const DELIVERABLE: Record<OrderState, boolean> = {
 	expired: false,
 	cancelled: false,
 	refunded: false,
+	awaiting_payment: false,
+	shipped_awaiting_payment: false,
 };
 
 export function downloadRouteContract(tier: DownloadRouteTier): void {
