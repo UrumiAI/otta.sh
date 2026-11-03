@@ -491,6 +491,9 @@ export type RevokeDownloadAccessResult =
  *  caller comparing against it is checked by the compiler and the in-process client
  *  cannot return a reason missing from it. */
 export type TransitionRefusal =
+	/** ADR-0044: a cash-on-delivery Mark paid lost to a concurrent Record shipment;
+	 *  nothing changed but the shipment — click Mark paid again (→ delivered). */
+	| "MARK_PAID_RETRY"
 	| "ORDER_NOT_FOUND"
 	| "INVALID_TRANSITION"
 	| "MANUAL_PAYMENT_NOT_ALLOWED"

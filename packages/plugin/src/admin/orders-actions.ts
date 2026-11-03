@@ -292,6 +292,18 @@ const PAID_BY_PROVIDER_ONLY: Notice = {
 };
 
 /**
+ * ADR-0044: a cash-on-delivery Mark paid that lost its flip to a Record shipment
+ * made at the same moment. The cash is recorded once whatever happens next; the
+ * order is now shipped and awaiting payment, so the merchant clicks again.
+ */
+const MARK_PAID_RETRY: Notice = {
+	variant: "default",
+	title: "The order was shipped at the same moment",
+	description:
+		"Someone recorded the shipment while you were marking it paid, so it was not marked paid yet. Click Mark paid again to record the cash — the order will be marked delivered.",
+};
+
+/**
  * A bare `cancelled` move (QA T1-4), from any state — keyed on the state the
  * operator SAW. It records no reason and releases no stock hold, so Cancel order is
  * the one way to cancel. An unpaid order's advice is about its held stock. A paid
@@ -363,6 +375,8 @@ function transitionRefusalNotice(
 			return REFUND_THROUGH_MONEY; // QA2 M4
 		case "REFUND_IN_FLIGHT":
 			return REFUND_IN_FLIGHT;
+		case "MARK_PAID_RETRY":
+			return MARK_PAID_RETRY; // ADR-0044
 		case "ORDER_NOT_FOUND":
 		case "INVALID_TRANSITION":
 			return STATUS_CHANGE_FAILED;
