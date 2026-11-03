@@ -2302,6 +2302,12 @@ export class EmdashOrderStore implements OrderStore {
 			// the SAME write that recorded one — so an outstanding bracket is findable
 			// the instant it exists, and never a moment after it is closed.
 			next.holdsPendingAt = computeHoldsPendingAt(next);
+			// ADR-0044 §7: an offline order keeps its network key only while it is open
+			// (it is what the per-network cap counts); leaving the open states — paid,
+			// delivered, cancelled — drops it in this same write.
+			if (next.offlineClientKey !== undefined && !OFFLINE_UNPAID_STATES.has(input.toState)) {
+				delete next.offlineClientKey;
+			}
 			const written = await this.#orders.compareAndSet(input.orderId, current.revision, next);
 			if (!written.applied) return CAS_RETRY;
 			// The locator, bracketed AFTER the flip (see `#recordOutboxLocator`). Only the
