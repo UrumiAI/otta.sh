@@ -321,7 +321,9 @@ export async function transitionOrderAsAdmin(
 	if (cmd.toState === "paid" && !manualPaymentAllowed(order.paymentMethod)) {
 		return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
 	}
-	if (cmd.toState === "paid") return markOfflineOrderPaid(deps, order);
+	// The wiring is checked HERE, in this function's own frame, before any write.
+	if (cmd.toState === "paid")
+		return markOfflineOrderPaid(deps, order, requireOfflinePaymentDeps(deps));
 	if (cmd.toState === "cancelled") return { ok: false, reason: "USE_CANCEL" };
 	if (cmd.toState === "refunded") {
 		// The one admin move decided by the money: read the ledgers (only for it).
@@ -353,15 +355,15 @@ export async function transitionOrderAsAdmin(
 async function markOfflineOrderPaid(
 	deps: TransitionOrderDeps,
 	order: Order,
+	settle: SettleDeps,
 ): Promise<TransitionOrderAsAdminResult> {
 	const method = order.paymentMethod;
-	const settle = requireOfflinePaymentDeps(deps);
 	if (method === null) return { ok: false, reason: "MANUAL_PAYMENT_NOT_ALLOWED" };
 	const won = await deps.orderStore.markPaid(order.id, offlinePaymentRef(method, order.id));
 	const fresh = (await deps.orderStore.getById(order.id)) ?? order;
 	if (!won) {
 		if (fresh.state !== "paid") return { ok: false, reason: "INVALID_TRANSITION" };
-		if (isOfflinePaidBy(fresh)) await applyOfflinePayment(deps, fresh);
+		if (isOfflinePaidBy(fresh)) await applyOfflinePayment(deps, fresh, settle);
 		return { ok: true, transitioned: false, order: fresh };
 	}
 	await applyOfflinePayment(deps, fresh, settle);
