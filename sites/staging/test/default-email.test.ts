@@ -8,13 +8,16 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { buildEmdashOptions } from "../src/emdash-options.js";
-import { assertEmailBindingDeclared } from "../src/lib/email-binding.js";
-import { parseEmailFrom } from "../src/lib/email-from.js";
-import { parseWrangler } from "../src/lib/wrangler-jsonc.js";
-import { buildPlaygroundEmdashOptions } from "../src/playground-options.js";
+import { buildEmdashOptions } from "../../store/src/emdash-options.js";
+import { assertEmailBindingDeclared } from "../../store/src/lib/email-binding.js";
+import { parseEmailFrom } from "../../store/src/lib/email-from.js";
+import { parseWrangler } from "../../store/src/lib/wrangler-jsonc.js";
+import { buildPlaygroundEmdashOptions } from "../../store/src/playground-options.js";
+import { runOttaSetup } from "./helpers/otta-setup.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** The `otta()` integration's source: where the site's build settings are read now (ADR-0045). */
+const INTEGRATION = path.resolve(root, "../store/src/integration.ts");
 const CONFIG_IMPORT_TIMEOUT_MS = 60_000;
 
 describe("parseEmailFrom", () => {
@@ -130,9 +133,27 @@ describe("the playground gets NO default email (it is disposable)", () => {
 	test("astro.config.playground.ts does not read OTTA_EMAIL_FROM", () => {
 		const src = readFileSync(path.join(root, "astro.config.playground.ts"), "utf8");
 		expect(src).not.toMatch(/OTTA_EMAIL_FROM/);
-		const opts = readFileSync(path.join(root, "src/playground-options.ts"), "utf8");
+		const opts = readFileSync(path.join(root, "../store/src/playground-options.ts"), "utf8");
 		expect(opts).not.toMatch(/OTTA_EMAIL_FROM|cloudflareEmail/);
+		// otta() in playground mode never reads the sender at all.
+		expect(readFileSync(INTEGRATION, "utf8")).toMatch(
+			/const emailFrom = playground\s*\?\s*undefined\s*:/,
+		);
 	});
+
+	test(
+		"the playground build ignores a set OTTA_EMAIL_FROM (no provider, so no binding is demanded)",
+		async () => {
+			vi.stubEnv("OTTA_EMAIL_FROM", "store@example.com");
+			vi.resetModules();
+			const config = (await import("../astro.config.playground.js")).default;
+			const setup = await runOttaSetup(config);
+			expect(setup.config.vite.define?.["__OTTA_PLAYGROUND__"]).toBe(JSON.stringify(true));
+			vi.unstubAllEnvs();
+			vi.resetModules();
+		},
+		CONFIG_IMPORT_TIMEOUT_MS,
+	);
 
 	test("wrangler.playground.jsonc declares no send_email binding", () => {
 		const cfg = parseWrangler(
@@ -198,19 +219,30 @@ describe("OTTA_EMAIL_FROM at config load", () => {
 			vi.resetModules();
 			// The template has no active binding, so a valid sender with no binding
 			// must be refused by the build guard (selected-but-unbound burns attempts).
-			await expect(import("../astro.config.js")).rejects.toThrow(
+			// otta() runs it once Astro gives it the project root (ADR-0045).
+			const config = (await import("../astro.config.js")).default;
+			await expect(runOttaSetup(config)).rejects.toThrow(
 				/declares no send_email binding named "EMAIL"/,
 			);
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
 
-	test("astro.config.ts reads both variables through the process.env-then-.env pattern", () => {
-		const src = readFileSync(path.join(root, "astro.config.ts"), "utf8");
-		expect(src).toMatch(/process\.env\.OTTA_EMAIL_FROM\s*\?\?\s*readDotEnv\("OTTA_EMAIL_FROM"\)/);
+	test("otta() reads both variables through the option, then process.env, then .env", () => {
+		const src = readFileSync(INTEGRATION, "utf8");
 		expect(src).toMatch(
-			/process\.env\.OTTA_EMAIL_FROM_NAME\s*\?\?\s*readDotEnv\("OTTA_EMAIL_FROM_NAME"\)/,
+			/options\.emailFrom\s*\?\?\s*buildSetting\("OTTA_EMAIL_FROM", env, envDir\)/,
+		);
+		expect(src).toMatch(
+			/options\.emailFromName\s*\?\?\s*buildSetting\("OTTA_EMAIL_FROM_NAME", env, envDir\)/,
+		);
+		// buildSetting: the environment first, then <envDir>/.env.
+		expect(src).toMatch(
+			/const fromEnv = env\[name\];\s*if \(fromEnv !== undefined\) return fromEnv;[\s\S]{0,80}parseDotEnv\(readFileSync\(path\.join\(envDir, "\.env"\)/,
 		);
 		expect(src).toMatch(/buildEmdashOptions\(egress,\s*emailFrom\)/);
+		// ...and this site points envDir at its own directory, where its .env lives.
+		const site = readFileSync(path.join(root, "astro.config.ts"), "utf8");
+		expect(site).toMatch(/envDir: new URL\("\.", import\.meta\.url\)/);
 	});
 });

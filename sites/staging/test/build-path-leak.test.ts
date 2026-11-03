@@ -29,7 +29,9 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { AstroUserConfig } from "astro";
 import { afterEach, describe, expect, test } from "vitest";
+import { runOttaSetup } from "./helpers/otta-setup.js";
 import {
 	BUILD_PATH_SCRUB_INTEGRATION,
 	BUILD_SECRET_ENV_KEYS,
@@ -45,7 +47,7 @@ import {
 	scrubBuildPaths,
 	scrubBuildPathsInDir,
 	workspaceRoot,
-} from "../src/lib/build-path-scrub.js";
+} from "../../store/src/lib/build-path-scrub.js";
 
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dist = path.join(siteRoot, "dist");
@@ -249,14 +251,25 @@ describe("astro config wiring", () => {
 	test("workspaceRoot is the repo root (it holds pnpm-workspace.yaml)", () => {
 		expect(existsSync(path.join(workspaceRoot(), "pnpm-workspace.yaml"))).toBe(true);
 		expect(path.resolve(siteRoot, "../..")).toBe(workspaceRoot());
+		// From this site's root too, which is where otta() starts it (ADR-0045).
+		expect(workspaceRoot(siteRoot)).toBe(path.resolve(siteRoot, "../.."));
+	});
+
+	test("with no pnpm-workspace.yaml above it, the root is the project itself (a template site)", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "otta-root-"));
+		try {
+			expect(workspaceRoot(dir)).toBe(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test.each([
 		["astro.config.ts", "../astro.config.js"],
 		["astro.config.playground.ts", "../astro.config.playground.js"],
-	])("%s registers the scrub integration", async (_name, specifier) => {
-		const config = (await import(specifier)).default as { integrations?: unknown[] };
-		const names = (config.integrations ?? []).flat().map((i) => (i as { name?: string })?.name);
+	])("%s registers the scrub integration (through otta())", async (_name, specifier) => {
+		const config = (await import(specifier)).default as AstroUserConfig;
+		const names = (await runOttaSetup(config)).integrationNames;
 		expect(names).toContain(BUILD_PATH_SCRUB_INTEGRATION);
 	});
 

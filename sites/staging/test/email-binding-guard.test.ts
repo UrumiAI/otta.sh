@@ -10,8 +10,8 @@ import { describe, expect, test } from "vitest";
 import {
 	assertEmailBindingDeclared,
 	assertEmailBindingForBuild,
-} from "../src/lib/email-binding.js";
-import { buildEmdashOptions } from "../src/emdash-options.js";
+} from "../../store/src/lib/email-binding.js";
+import { buildEmdashOptions } from "../../store/src/emdash-options.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 

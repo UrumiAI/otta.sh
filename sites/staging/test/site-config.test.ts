@@ -52,10 +52,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 // before a single assertion and redded the whole unit suite. The registry is
 // plain data with no imports at all.
 import { MIGRATED_SCREENS } from "../e2e/registry.js";
-import { buildEmdashOptions } from "../src/emdash-options.js";
-import { violatesPairing, wranglerCompatibilityFlags } from "../src/lib/wrangler-pairing.js";
-import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
-import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
+import { buildEmdashOptions } from "../../store/src/emdash-options.js";
+import {
+	violatesPairing,
+	wranglerCompatibilityFlags,
+} from "../../store/src/lib/wrangler-pairing.js";
+import { ottaConsoleDescriptor } from "../../store/src/otta-console-descriptor.js";
+import { ottaPluginDescriptor } from "../../store/src/otta-plugin-descriptor.js";
+import { assertDownloadsBucketPrivate } from "../../store/src/lib/downloads-bucket.js";
+import { runOttaSetup } from "./helpers/otta-setup.js";
 import { readFile } from "node:fs/promises";
 
 /** The hosts every build grants: Stripe's API alone. No email host — email goes
@@ -344,11 +349,13 @@ describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
  * operator-provisioned into write-only plugin kv through the Settings form.
  */
 describe("payment/email secrets never leave kv for the site's build surface", () => {
-	test("no payment secret name appears in astro.config.ts as a define", async () => {
-		const config = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
-		for (const key of PAYMENT_SECRET_KEYS) {
-			const name = key.slice("settings:".length);
-			expect(config).not.toContain(name);
+	test("no payment secret name appears in astro.config.ts or otta() as a define", async () => {
+		for (const file of ["../astro.config.ts", "../../store/src/integration.ts"]) {
+			const config = await readFile(new URL(file, import.meta.url), "utf8");
+			for (const key of PAYMENT_SECRET_KEYS) {
+				const name = key.slice("settings:".length);
+				expect(config).not.toContain(name);
+			}
 		}
 	});
 
@@ -773,16 +780,20 @@ describe("astro.config", () => {
 		"output:'server', checkOrigin not disabled, plugin never externalized",
 		async () => {
 			const config = (await import("../astro.config.js")).default;
+			// otta() contributes the store's settings through updateConfig (ADR-0045).
+			const store = (await runOttaSetup(config)).config;
 
-			expect(config.output).toBe("server");
+			expect(store.output).toBe("server");
 
-			// Our config must never explicitly disable checkOrigin. (The emdash
-			// integration disables it anyway and substitutes its own /_emdash-only
-			// CSRF layer — which is exactly why the site middleware runs its own
-			// origin check, pinned by origin-middleware.test.ts.)
+			// Our config must never explicitly disable checkOrigin — neither the site's
+			// own nor what otta() contributes. (The emdash integration disables it
+			// anyway and substitutes its own /_emdash-only CSRF layer — which is exactly
+			// why the site middleware runs its own origin check, pinned by
+			// origin-middleware.test.ts.)
 			expect(config.security?.checkOrigin).not.toBe(false);
+			expect(store.security?.checkOrigin).not.toBe(false);
 
-			const noExternal = config.vite?.ssr?.noExternal;
+			const noExternal = store.vite.ssr?.noExternal;
 			const noExternalList = Array.isArray(noExternal) ? noExternal : [noExternal];
 			expect(noExternalList).toContain("@urumi.ai/otta-plugin");
 			// @urumi.ai/otta-admin-react for a different reason: its workspace exports
@@ -793,13 +804,13 @@ describe("astro.config", () => {
 			// INC-D3a: `__OTTA_COMMERCE_SERVICE_URL__` is GONE. There is no commerce
 			// service, so there is no URL to bake — and a build that reintroduced
 			// one would be reintroducing the transport this increment retired.
-			const define = config.vite?.define as Record<string, string>;
+			const define = store.vite.define as Record<string, string>;
 			expect(Object.keys(define)).not.toContain("__OTTA_COMMERCE_SERVICE_URL__");
 			expect(Object.keys(define)).not.toContain("__OTTA_COMMERCE_MODE__");
 
 			// Issue #568: the two deps the admin discovers late are pre-bundled, so
 			// Vite does not re-optimize and reload the admin mid-e2e-test.
-			expect(config.vite?.optimizeDeps?.include).toEqual(
+			expect(store.vite.optimizeDeps?.include).toEqual(
 				expect.arrayContaining(["emdash/internal/routes/PluginRegistry", "emdash/plugin-utils"]),
 			);
 		},
@@ -810,7 +821,7 @@ describe("astro.config", () => {
 		"#498: the Stripe publishable key is NOT a build-time define any more (it is a Settings value)",
 		async () => {
 			const config = (await import("../astro.config.js")).default;
-			const define = config.vite?.define as Record<string, string>;
+			const define = (await runOttaSetup(config)).config.vite.define as Record<string, string>;
 			expect(Object.keys(define)).not.toContain("__OTTA_STRIPE_PUBLIC_KEY__");
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
@@ -824,7 +835,7 @@ describe("astro.config", () => {
 			// with its payment rail. The one operator define left is
 			// `__OTTA_EXTRA_ALLOWED_HOSTS__`, which carries hosts, not a URL.
 			const config = (await import("../astro.config.js")).default;
-			const define = config.vite?.define as Record<string, string>;
+			const define = (await runOttaSetup(config)).config.vite.define as Record<string, string>;
 			expect(Object.keys(define).filter((name) => name.endsWith("_URL__"))).toEqual([]);
 			expect(Object.keys(define)).toContain("__OTTA_EXTRA_ALLOWED_HOSTS__");
 			expect(typeof JSON.parse(define["__OTTA_EXTRA_ALLOWED_HOSTS__"] ?? "null")).toBe("string");
@@ -839,7 +850,7 @@ describe("astro.config", () => {
 			// ADR-0024's amendment of 2026-10-02: the store ships one theme (Tempered) and
 			// the admin offers no theme choice, so nothing reads this define.
 			const config = (await import("../astro.config.js")).default;
-			const define = config.vite?.define as Record<string, string>;
+			const define = (await runOttaSetup(config)).config.vite.define as Record<string, string>;
 			expect(Object.keys(define)).not.toContain("__OTTA_STORE_THEMES__");
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
@@ -859,7 +870,11 @@ describe("astro.config", () => {
 			//
 			// So read the source and require that ONE NAMED CONST feeds both consumers.
 			// Same technique this file already uses for the wrangler pairing invariant.
-			const source = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
+			// The registration moved into the store's otta() integration (ADR-0045).
+			const source = await readFile(
+				new URL("../../store/src/integration.ts", import.meta.url),
+				"utf8",
+			);
 			const registration = /emdash\(\s*buildEmdashOptions\(([^)]*)\)/.exec(source);
 			expect(registration?.[1], "the config must register via buildEmdashOptions(...)").toBeTypeOf(
 				"string",
@@ -868,7 +883,7 @@ describe("astro.config", () => {
 			// Argument 1 is the egress const (review round 3, B1). An omitted argument
 			// fails here as `undefined`; every egress define must be baked from it too.
 			expect(args[0], "buildEmdashOptions must be passed the egress const").toBe("egress");
-			expect(source).toMatch(/\nconst egress\b/);
+			expect(source).toMatch(/\n\tconst egress\b/);
 			// ...and the extra-hosts define is baked from that same const, never from
 			// process.env directly (which could drift from the descriptor allowlist).
 			expect(source).toMatch(
@@ -946,12 +961,36 @@ describe("astro.config", () => {
 				);
 				vi.resetModules();
 				const config = (await import("../astro.config.js")).default;
-				const define = config.vite?.define as Record<string, string>;
+				const define = (await runOttaSetup(config)).config.vite.define as Record<string, string>;
 				expect(JSON.parse(define["__OTTA_EXTRA_ALLOWED_HOSTS__"] ?? "null")).toBe(
 					"api.example.com,hooks.example.org",
 				);
 			},
 			CONFIG_IMPORT_TIMEOUT_MS,
 		);
+	});
+});
+
+/** Issue #376: the guard checks the file the build USES (ADR-0045 moved the
+ *  guard into otta(); the choice of file stays with this site). */
+describe("the tracked template, and the build wiring", () => {
+	test("the template passes its own downloads-bucket guard", () => {
+		expect(() =>
+			assertDownloadsBucketPrivate(
+				readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+				"wrangler.jsonc",
+			),
+		).not.toThrow();
+	});
+
+	test("astro.config.ts hands otta() the SAME wrangler file the adapter builds from", () => {
+		const config = readFileSync(new URL("../astro.config.ts", import.meta.url), "utf8");
+		// The local file when it exists, else the template — the same choice the
+		// adapter's `configPath` makes.
+		expect(config).toMatch(
+			/const selectedWranglerConfig = localWranglerConfig \?\? "wrangler\.jsonc";/,
+		);
+		expect(config).toMatch(/configPath: localWranglerConfig/);
+		expect(config).toMatch(/wranglerConfig: selectedWranglerConfig/);
 	});
 });

@@ -19,8 +19,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { STOREFRONT_PAYMENT_CONFIG_ROUTE } from "@urumi.ai/otta-plugin";
 import { describe, expect, test } from "vitest";
-import { isPlausibleEmail } from "../src/lib/email.js";
-import { readCheckoutPaymentConfig, readStripePublishableKey } from "../src/lib/stripe-config.js";
+import { isPlausibleEmail } from "../../store/src/lib/email.js";
+import {
+	readCheckoutPaymentConfig,
+	readStripePublishableKey,
+} from "../../store/src/lib/stripe-config.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENV_EXAMPLE = readFileSync(path.resolve(HERE, "../.env.example"), "utf8");
@@ -105,8 +108,14 @@ describe("8b — the guards around the degraded state", () => {
 		// Hiding the button alone is a UI convention, not a guarantee — a direct
 		// POST would still hold stock for 15 minutes against a payment that
 		// cannot happen.
-		const page = readFileSync(path.resolve(HERE, "../src/pages/checkout/index.astro"), "utf8");
-		const endpoint = readFileSync(path.resolve(HERE, "../src/pages/checkout/place.ts"), "utf8");
+		const page = readFileSync(
+			path.resolve(HERE, "../../store/src/pages/checkout/index.astro"),
+			"utf8",
+		);
+		const endpoint = readFileSync(
+			path.resolve(HERE, "../../store/src/pages/checkout/place.ts"),
+			"utf8",
+		);
 		// ADR-0044: per METHOD — card only when Stripe is ready, cash on delivery
 		// only when switched on; the endpoint refuses a method not on offer.
 		expect(page).toContain("readCheckoutPaymentConfig");
@@ -120,7 +129,10 @@ describe("8b — the guards around the degraded state", () => {
 			["place.ts", 'paymentConfig.state === "unavailable"'],
 			["pay.astro", 'stripeKey.state === "unavailable"'],
 		] as const) {
-			const source = readFileSync(path.resolve(HERE, `../src/pages/checkout/${file}`), "utf8");
+			const source = readFileSync(
+				path.resolve(HERE, `../../store/src/pages/checkout/${file}`),
+				"utf8",
+			);
 			expect(source, file).toContain(guard);
 		}
 	});
@@ -172,7 +184,7 @@ describe("8c — isPlausibleEmail (the buyerRef guard nothing upstream provides)
 	test("TRIMS but NEVER lowercases — the service stores buyer_ref verbatim and claiming is already case-insensitive", () => {
 		// The guard is a predicate; the normalization it sanctions is trim only.
 		// This is the pin that stops a future "helpful" .toLowerCase().
-		const source = readFileSync(path.resolve(HERE, "../src/lib/email.ts"), "utf8");
+		const source = readFileSync(path.resolve(HERE, "../../store/src/lib/email.ts"), "utf8");
 		expect(source).toContain(".trim()");
 		expect(source).not.toContain("toLowerCase");
 	});

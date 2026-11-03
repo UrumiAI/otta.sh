@@ -18,8 +18,8 @@ import {
 	E2E_WRITE_LIMIT_VAR,
 	e2eWranglerConfig,
 } from "../src/lib/e2e-wrangler.js";
-import { RATE_LIMIT_BINDINGS } from "../src/lib/rate-limit.js";
-import { parseWrangler } from "../src/lib/wrangler-jsonc.js";
+import { RATE_LIMIT_BINDINGS } from "../../store/src/lib/rate-limit.js";
+import { parseWrangler } from "../../store/src/lib/wrangler-jsonc.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file: string): string => readFileSync(path.join(ROOT, file), "utf8");

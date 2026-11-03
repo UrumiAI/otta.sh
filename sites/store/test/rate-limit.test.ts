@@ -474,7 +474,9 @@ function bindingLines(file: string): Map<string, { limit: number; period: number
 }
 
 describe("the configured limits", () => {
-	const template = bindingLines(path.join(SRC, "..", "wrangler.jsonc"));
+	// The reference site's tracked template (sites/staging), which carries the
+	// bindings commented out; the one-click template repository turns them on.
+	const template = bindingLines(path.join(SRC, "..", "..", "staging", "wrangler.jsonc"));
 	const runbook = bindingLines(path.join(SRC, "..", "..", "..", "DEPLOYMENT.md"));
 
 	test("the template and DEPLOYMENT.md give both bindings, with the same numbers", () => {

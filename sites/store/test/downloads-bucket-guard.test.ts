@@ -149,25 +149,21 @@ describe("r2BucketScopes", () => {
 	});
 });
 
-describe("the tracked template, and the build wiring", () => {
-	test("the template passes its own guard", () => {
-		expect(() =>
-			assertDownloadsBucketPrivate(read("wrangler.jsonc"), "wrangler.jsonc"),
-		).not.toThrow();
-	});
-
-	test("astro.config.ts runs the guard on the wrangler file the BUILD selects", () => {
-		const config = read("astro.config.ts");
-		expect(config).toMatch(
-			/import \{ assertDownloadsBucketPrivate \} from "\.\/src\/lib\/downloads-bucket\.js";/,
+describe("the build wiring", () => {
+	// The tracked template, and the site's choice of file, are pinned beside the
+	// site config that makes it (sites/staging/test/site-config.test.ts).
+	test("otta() runs the guard on the wrangler file the BUILD selects", () => {
+		const integration = read("src/integration.ts");
+		expect(integration).toMatch(
+			/import \{ assertDownloadsBucketPrivate \} from "\.\/lib\/downloads-bucket\.js";/,
 		);
-		// The local file when it exists, else the template — the same choice the
-		// adapter's `configPath` makes.
-		expect(config).toMatch(
-			/const selectedWranglerConfig = localWranglerConfig \?\? "wrangler\.jsonc";/,
+		// The file the site names as its build's config (the adapter's
+		// `configPath`), else the template.
+		expect(integration).toMatch(
+			/const wranglerConfig = options\.wranglerConfig \?\? "wrangler\.jsonc";/,
 		);
-		expect(config).toMatch(
-			/assertDownloadsBucketPrivate\(\s*readFileSync\(new URL\(selectedWranglerConfig, import\.meta\.url\), "utf8"\),\s*selectedWranglerConfig,?\s*\);/,
+		expect(integration).toMatch(
+			/assertDownloadsBucketPrivate\(read\(wranglerConfig\), wranglerConfig\);/,
 		);
 	});
 });
