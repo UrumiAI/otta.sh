@@ -763,7 +763,7 @@ order of appearance in a deployment's life:
 - **Email** — otta sends every email through the EmDash host's `ctx.email`
   ([ADR-0031](./adr/0031-email-through-emdash-host.md)). otta core ships no email provider and
   holds no email credential. The reference **site** registers EmDash's first-party Cloudflare
-  provider for you ([ADR-0042](./adr/0042-site-default-cloudflare-email-provider.md)):
+  provider for you ([ADR-0043](./adr/0043-site-default-cloudflare-email-provider.md)):
 
   1. **Onboard a sending domain** on Cloudflare (dashboard: Compute > Email Service > Email
      Sending > Onboard Domain, or `npx wrangler email sending enable mail.example.com`). The

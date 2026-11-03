@@ -35,7 +35,7 @@
  *    the SAME array (ADR-0014). Two entries, one kind of registration: still
  *    `plugins: []`, still no sandbox runner.
  *  - OPTIONALLY, EmDash's own first-party `cloudflareEmail` provider, appended
- *    after the two Otta descriptors, only when a sender is given (ADR-0042).
+ *    after the two Otta descriptors, only when a sender is given (ADR-0043).
  *    Otta core stays vendor-free (ADR-0031); this is the SITE's default.
  */
 import { d1, r2 } from "@emdash-cms/cloudflare";
@@ -80,7 +80,7 @@ export interface StagingEmdashOptions {
  * @param emailFrom the sender for the default Cloudflare email provider
  *   (`parseEmailFrom` of `OTTA_EMAIL_FROM`). A PARAMETER, never read from the
  *   environment here: the playground calls this builder too and must not
- *   inherit an email provider (ADR-0042). Undefined registers nothing, which is
+ *   inherit an email provider (ADR-0043). Undefined registers nothing, which is
  *   the fail-closed "no provider" state of ADR-0031.
  */
 export function buildEmdashOptions(

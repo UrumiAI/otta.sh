@@ -1,4 +1,4 @@
-# 0042. The reference site registers EmDash's Cloudflare email provider when `OTTA_EMAIL_FROM` is set
+# 0043. The reference site registers EmDash's Cloudflare email provider when `OTTA_EMAIL_FROM` is set
 
 - Status: accepted
 - Date: 2026-11-03

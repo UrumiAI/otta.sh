@@ -43,7 +43,7 @@ function readDotEnv(name: string): string | undefined {
  *
  * NO EMAIL URL. Email goes through EmDash's `ctx.email` (ADR-0031): install and
  * select an EmDash email provider; otta grants itself no email host. The site's
- * default provider is wired below (`emailFrom`, ADR-0042).
+ * default provider is wired below (`emailFrom`, ADR-0043).
  *
  * NEVER SECRETS. API credentials live in write-only plugin kv (the `settings:`
  * keys `payment-secrets.ts` owns), provisioned through the admin Settings form —
@@ -65,7 +65,7 @@ const egress = {
 };
 
 /**
- * The default email provider's sender (ADR-0042). Unset registers NO provider
+ * The default email provider's sender (ADR-0043). Unset registers NO provider
  * (fail-closed, ADR-0031). Validated here so a malformed address fails the
  * build. Not a secret and not a wrangler `vars` entry: it is baked into the
  * provider's descriptor at build time. The playground does not receive it.

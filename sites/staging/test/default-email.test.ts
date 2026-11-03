@@ -1,5 +1,5 @@
 /**
- * The reference site's default email provider (ADR-0042). Core ships no email
+ * The reference site's default email provider (ADR-0043). Core ships no email
  * vendor code (ADR-0031); the SITE registers EmDash's first-party
  * `cloudflareEmail` provider when `OTTA_EMAIL_FROM` is set at build time, and
  * registers nothing otherwise (fail-closed "no provider").

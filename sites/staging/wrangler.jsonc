@@ -80,7 +80,7 @@
 			"bucket_name": "your-downloads-bucket",
 		},
 	],
-	// Default email provider (ADR-0042): the `send_email` binding EmDash's
+	// Default email provider (ADR-0043): the `send_email` binding EmDash's
 	// first-party Cloudflare provider sends through, named EMAIL. Unrestricted
 	// sender binding (no destination_address), so it can mail any buyer. It does
 	// nothing until OTTA_EMAIL_FROM is set at BUILD time AND the sender's domain is

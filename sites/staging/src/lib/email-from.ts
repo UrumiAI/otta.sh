@@ -1,6 +1,6 @@
 /**
  * Build-time sender for the reference site's default email provider
- * (ADR-0042). `OTTA_EMAIL_FROM` is a plain address, `OTTA_EMAIL_FROM_NAME` an
+ * (ADR-0043). `OTTA_EMAIL_FROM` is a plain address, `OTTA_EMAIL_FROM_NAME` an
  * optional display name. Neither is a secret. Validated HERE so a typo fails
  * the build loudly rather than surfacing as a bounced sign-in email.
  *
