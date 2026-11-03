@@ -257,8 +257,17 @@ describe("assertLiveConfig", () => {
 		expect(() => assertLiveConfig(dir)).toThrow(/defineLiveCollection to that file only/);
 	});
 
+	test("the store's module is NAMED live.config.ts: defineLiveCollection checks its caller's file", () => {
+		const pkg = JSON.parse(readFileSync(path.join(PKG, "package.json"), "utf8")) as {
+			exports: Record<string, string>;
+			publishConfig: { exports: Record<string, unknown> };
+		};
+		expect(pkg.exports["./live-config"]).toBe("./src/live.config.ts");
+		expect(pkg.publishConfig.exports["./live-config"]).toBe("./src/live.config.ts");
+	});
+
 	test("the store's own module never imports defineLiveCollection as a value", () => {
-		const source = readFileSync(path.join(PKG, "src", "live-config.ts"), "utf8");
+		const source = readFileSync(path.join(PKG, "src", "live.config.ts"), "utf8");
 		expect(source).toMatch(/^import type \{ defineLiveCollection \} from "astro:content";$/m);
 		expect(source).not.toMatch(/^import \{[^}]*defineLiveCollection[^}]*\} from "astro:content"/m);
 	});

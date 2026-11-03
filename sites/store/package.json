@@ -32,7 +32,7 @@
 		".": "./src/integration.ts",
 		"./worker": "./src/worker.ts",
 		"./playground-worker": "./src/playground-worker.ts",
-		"./live-config": "./src/live-config.ts",
+		"./live-config": "./src/live.config.ts",
 		"./package.json": "./package.json"
 	},
 	"publishConfig": {
@@ -43,7 +43,7 @@
 			},
 			"./worker": "./src/worker.ts",
 			"./playground-worker": "./src/playground-worker.ts",
-			"./live-config": "./src/live-config.ts",
+			"./live-config": "./src/live.config.ts",
 			"./package.json": "./package.json"
 		},
 		"access": "public"

@@ -102,11 +102,16 @@ and run under `wrangler dev`: claimed through the logged setup link, cash on del
 in Store settings, a COD order placed, shipped and marked paid, and a fake `0.2.1` installed by
 a version bump alone. Three things only the packed form showed:
 
-- **Astro hands `defineLiveCollection` to the site's own `src/live.config.ts` only** (it
-  compares the importer's path). Re-exporting finished collections from the package built
-  cleanly and then failed every catalog read with "Top-level await in module is unsettled". The
-  package exports `ottaLiveCollections(define)`, the site file passes `defineLiveCollection` in,
-  and `otta()` fails the build, saying what to write, when the site file does not.
+- **Astro guards live collections twice.** It hands the real `defineLiveCollection` only to
+  the site's own `src/live.config.ts` (it compares the importer's path), and the real one
+  reads its caller's file name off the stack and throws unless it contains `live.config`.
+  Re-exporting finished collections from the package failed every catalog read in the
+  built Worker ("Top-level await in module is unsettled"); passing the function in from the
+  site file fixed the build but still failed under `astro dev`, where the caller was
+  `src/live-config.ts`. The package's module is now named `src/live.config.ts` (exported as
+  `@urumi.ai/otta-store/live-config`) and exports `ottaLiveCollections(define)`; the site
+  file passes `defineLiveCollection` in; `otta()` fails the build, saying what to write, when
+  the site file does not; and a test pins the module's name.
 - **Astro's env plugin decides by a module's text, comments included.** A mention of
   `import.meta.env` that is not a `.KEY` member read (the plugin's `?.DEV`, and comments
   about it, kept in the published `dist`) makes it inline every build variable whose name
