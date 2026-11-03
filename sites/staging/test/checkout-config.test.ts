@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { STOREFRONT_PAYMENT_CONFIG_ROUTE } from "@urumi.ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { isPlausibleEmail } from "../src/lib/email.js";
-import { readStripePublishableKey } from "../src/lib/stripe-config.js";
+import { readCheckoutPaymentConfig, readStripePublishableKey } from "../src/lib/stripe-config.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENV_EXAMPLE = readFileSync(path.resolve(HERE, "../.env.example"), "utf8");
@@ -107,14 +107,21 @@ describe("8b — the guards around the degraded state", () => {
 		// cannot happen.
 		const page = readFileSync(path.resolve(HERE, "../src/pages/checkout/index.astro"), "utf8");
 		const endpoint = readFileSync(path.resolve(HERE, "../src/pages/checkout/place.ts"), "utf8");
-		expect(page).toContain("readStripePublishableKey");
-		expect(endpoint).toContain('stripeKey.state === "unconfigured"');
+		// ADR-0042: per METHOD — card only when Stripe is ready, cash on delivery
+		// only when switched on; the endpoint refuses a method not on offer.
+		expect(page).toContain("readCheckoutPaymentConfig");
+		expect(page).toContain("paymentConfig.methods.length > 0");
+		expect(endpoint).toContain("paymentConfig.methods.find(");
 	});
 
 	test("every page answers an UNAVAILABLE read as busy, never as 'not set up'", () => {
-		for (const file of ["index.astro", "place.ts", "pay.astro"]) {
+		for (const [file, guard] of [
+			["index.astro", 'paymentConfig.state === "unavailable"'],
+			["place.ts", 'paymentConfig.state === "unavailable"'],
+			["pay.astro", 'stripeKey.state === "unavailable"'],
+		] as const) {
 			const source = readFileSync(path.resolve(HERE, `../src/pages/checkout/${file}`), "utf8");
-			expect(source, file).toContain('stripeKey.state === "unavailable"');
+			expect(source, file).toContain(guard);
 		}
 	});
 
@@ -168,5 +175,47 @@ describe("8c — isPlausibleEmail (the buyerRef guard nothing upstream provides)
 		const source = readFileSync(path.resolve(HERE, "../src/lib/email.ts"), "utf8");
 		expect(source).toContain(".trim()");
 		expect(source).not.toContain("toLowerCase");
+	});
+});
+
+describe("8c — readCheckoutPaymentConfig (ADR-0042)", () => {
+	const card = { ok: true, stripePublishableKey: "pk_test_x", cardPaymentReady: true };
+	const noCard = { ok: true, stripePublishableKey: null, cardPaymentReady: false };
+
+	test("card and cash on delivery are offered independently, card first", async () => {
+		const both = answering({
+			...card,
+			cashOnDelivery: { enabled: true, instructions: "Exact change, please." },
+		});
+		expect(await readCheckoutPaymentConfig(both.handler, SITE)).toEqual({
+			state: "ok",
+			methods: ["stripe", "cod"],
+			codInstructions: "Exact change, please.",
+		});
+		const codOnly = answering({ ...noCard, cashOnDelivery: { enabled: true, instructions: null } });
+		expect(await readCheckoutPaymentConfig(codOnly.handler, SITE)).toEqual({
+			state: "ok",
+			methods: ["cod"],
+			codInstructions: null,
+		});
+	});
+
+	test("nothing set up offers no method; a plugin without the field is card-only", async () => {
+		const none = answering({ ...noCard, cashOnDelivery: { enabled: false, instructions: "x" } });
+		expect(await readCheckoutPaymentConfig(none.handler, SITE)).toEqual({
+			state: "ok",
+			methods: [],
+			codInstructions: null,
+		});
+		const older = answering(card);
+		expect(await readCheckoutPaymentConfig(older.handler, SITE)).toMatchObject({
+			methods: ["stripe"],
+		});
+	});
+
+	test("a failed read is unavailable, never 'nothing set up'", async () => {
+		expect(await readCheckoutPaymentConfig(answering(null).handler, SITE)).toEqual({
+			state: "unavailable",
+		});
 	});
 });

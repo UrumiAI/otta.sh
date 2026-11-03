@@ -78,6 +78,7 @@ const {
 	chosenOption,
 	notReadyCopy,
 	paymentConfigured,
+	paymentMethods,
 	notConfiguredLead,
 	emailValue,
 	emailNote,
@@ -763,11 +764,46 @@ const {
 					}
 
 					{
+						/* ADR-0042: the method choice — a radio when the store offers more
+						   than one, else the one method, carried hidden. Card comes first
+						   and is the default. */
+						paymentMethods.length > 1 ? (
+							<fieldset class="checkout-payment" data-testid="payment-methods">
+								<legend>Payment</legend>
+								{paymentMethods.map((method, index) => (
+									<label class="checkout-payment-option">
+										<input
+											type="radio"
+											name="paymentMethod"
+											value={method.value}
+											checked={index === 0}
+											data-testid={`payment-method-${method.value}`}
+										/>
+										<span>
+											<strong>{method.label}</strong>
+											<span class="checkout-note">{method.note}</span>
+										</span>
+									</label>
+								))}
+							</fieldset>
+						) : paymentMethods.length === 1 && paymentMethods[0] !== undefined ? (
+							<>
+								<input type="hidden" name="paymentMethod" value={paymentMethods[0].value} />
+								{paymentMethods[0].value === "cod" && (
+									<p class="checkout-note" data-testid="payment-method-cod-only">
+										Payment: {paymentMethods[0].label}. {paymentMethods[0].note}
+									</p>
+								)}
+							</>
+						) : null
+					}
+
+					{
 						paymentConfigured ? (
 							summary.readyToPlace ? (
 								<div>
 									<button type="submit" class="u-btn">
-										Continue to payment
+										{paymentMethods.some((m) => m.value === "cod") ? "Place order" : "Continue to payment"}
 									</button>
 								</div>
 							) : (

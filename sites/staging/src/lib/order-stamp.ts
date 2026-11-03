@@ -41,6 +41,9 @@ export interface OrderStampInput {
 	/** …and was that only `processing` — not yet settled? Then the refund is
 	 *  promised only IF the payment goes through. Absent ⇒ `false`. */
 	returnedProcessing?: boolean;
+	/** The order's payment method (ADR-0042). A pending CASH-ON-DELIVERY order is
+	 *  placed, not awaiting an online payment. Absent ⇒ a card order. */
+	paymentMethod?: string | null;
 }
 
 const EXPIRED_LEAD = "Payment didn't complete in time, so the items went back on sale.";
@@ -122,6 +125,14 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 	if (state === null) return null;
 
 	if (state === "pending") {
+		// ADR-0042: cash on delivery. The order is placed and its items set aside;
+		// nothing is due online, and it never times out.
+		if (input.paymentMethod === "cod") {
+			return {
+				headline: "Order placed.",
+				body: "You'll pay in cash when your order is delivered. We've emailed you the details.",
+			};
+		}
 		if (input.returnedFromStripe) {
 			// Even past the hold: the buyer just paid, and a pending order still
 			// settles. The page polls; the state decides.

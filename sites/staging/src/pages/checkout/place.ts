@@ -74,7 +74,7 @@ import {
 	DELIVERY_ERROR_ID,
 	placeRefusalNoticeId,
 } from "../../lib/error-notice.js";
-import { readStripePublishableKey } from "../../lib/stripe-config.js";
+import { readCheckoutPaymentConfig } from "../../lib/stripe-config.js";
 import {
 	busyResponse,
 	dispatchOttaRoute,
@@ -95,6 +95,7 @@ import { hasRegionList, regionOutsideCountry, regionToDropSilently } from "../..
 const INVALID_EMAIL = "INVALID_EMAIL";
 const INVALID_SHIPPING_ADDRESS = "INVALID_SHIPPING_ADDRESS";
 const STRIPE_NOT_CONFIGURED = "STRIPE_NOT_CONFIGURED";
+const PAYMENT_METHOD_UNAVAILABLE = "PAYMENT_METHOD_UNAVAILABLE";
 /** The site's own token for a review page placed for a cart the cookie no
  *  longer names (see the module doc). */
 const CHECKOUT_STALE = "CHECKOUT_STALE";
@@ -483,15 +484,21 @@ async function place(context: APIContext): Promise<Response> {
 	// request (#498); a failed read is busy, answered like a busy place — nothing
 	// was created, a reload re-posts. The plugin's place route refuses a missing
 	// secret the same way (STRIPE_NOT_CONFIGURED), for a page that raced a change.
-	const stripeKey = await readStripePublishableKey(routeDispatcher(context), context.url);
-	if (stripeKey.state === "unavailable") {
+	//
+	// ADR-0042: the same holds per METHOD. The buyer's choice (`paymentMethod`,
+	// card when the form sent none) must be one the store offers right now; cash
+	// on delivery is independent of Stripe, so a store with only it places orders
+	// with no Stripe keys.
+	const paymentConfig = await readCheckoutPaymentConfig(routeDispatcher(context), context.url);
+	if (paymentConfig.state === "unavailable") {
 		writeCheckoutDraft(context.cookies, { values: draftValues, errors: {} });
 		return busyResponse("/checkout");
 	}
-	if (stripeKey.state === "unconfigured") {
-		return refuse(placeFailurePath(STRIPE_NOT_CONFIGURED, selection), STRIPE_NOT_CONFIGURED, {
-			fields: staleMark,
-		});
+	const chosenMethod = formString(form.get("paymentMethod")) ?? "stripe";
+	const paymentMethod = paymentConfig.methods.find((method) => method === chosenMethod);
+	if (paymentMethod === undefined) {
+		const token = chosenMethod === "stripe" ? STRIPE_NOT_CONFIGURED : PAYMENT_METHOD_UNAVAILABLE;
+		return refuse(placeFailurePath(token, selection), token, { fields: staleMark });
 	}
 
 	const cartId = currentCartId(context);
@@ -587,6 +594,7 @@ async function place(context: APIContext): Promise<Response> {
 			cartId,
 			buyerRef: email,
 			idempotencyKey,
+			paymentMethod,
 			...(sessionToken !== undefined ? { sessionToken } : {}),
 			...(couponCode !== undefined ? { couponCode } : {}),
 			...(shippingMethodId !== undefined ? { shippingMethodId } : {}),

@@ -33,10 +33,12 @@ import type { OrderRouteResult } from "@urumi.ai/otta-plugin";
  * payable: a card form is never mounted on a guess.
  */
 export function isOrderPayable(
-	order: { state: string; holdExpiresAt: string },
+	order: { state: string; holdExpiresAt: string; paymentMethod?: string | null },
 	now: Date,
 ): boolean {
 	if (order.state !== "pending") return false;
+	// ADR-0042: a cash-on-delivery order is paid at the door, never on this page.
+	if (order.paymentMethod === "cod") return false;
 	const deadline = Date.parse(order.holdExpiresAt);
 	return Number.isFinite(deadline) && deadline > now.getTime();
 }

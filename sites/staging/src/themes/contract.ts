@@ -431,6 +431,11 @@ export interface CheckoutModel {
 	/** The store has a usable Stripe publishable key (a Settings value, read per
 	 *  request, #498; no key ⇒ no order). */
 	paymentConfigured: boolean;
+	/** ADR-0042: the methods the buyer may choose, card first. A view renders a
+	 *  choice when there is more than one, and submits `paymentMethod` either way.
+	 *  `note` is the line under each — for cash on delivery, the merchant's
+	 *  instructions when set. */
+	paymentMethods: { value: "stripe" | "cod"; label: string; note: string }[];
 	/** STRIPE_NOT_CONFIGURED's copy, quoted. */
 	notConfiguredLead: string;
 	/** The email field's initial value: what the buyer typed before a refused

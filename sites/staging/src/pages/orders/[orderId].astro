@@ -182,7 +182,12 @@ const isPending = state === "pending";
  * they get the confirming copy.
  */
 const holdLapsed =
-	order !== null && isPending && !returnedFromStripe && !isOrderPayable(order, new Date());
+	order !== null &&
+	isPending &&
+	!returnedFromStripe &&
+	/* ADR-0042: a cash-on-delivery order has no hold to lapse. */
+	order.paymentMethod !== "cod" &&
+	!isOrderPayable(order, new Date());
 
 /**
  * The bounded poll (`lib/order-poll.ts`): only for a pending order the buyer has
@@ -229,6 +234,7 @@ const stamp = orderStamp({
 	polling: shouldPoll,
 	returnedPaid,
 	returnedProcessing,
+	paymentMethod: order?.paymentMethod ?? null,
 });
 
 /**
@@ -292,6 +298,8 @@ const returnOver = returnPollIsOver({ returnedFromStripe, pending: isPending, po
 if (returnOver && order !== null) forgetStripeReturn(Astro.cookies, order.id);
 const canResume =
 	state === "pending" &&
+	/* ADR-0042: a cash-on-delivery order has nothing to pay online. */
+	order?.paymentMethod !== "cod" &&
 	!holdLapsed &&
 	(!returnedFromStripe || (returnOver && order !== null && isOrderPayable(order, new Date())));
 /* A late payment on a dead order whose refund is not recorded yet, once the
@@ -373,7 +381,7 @@ const model: OrderModel = {
 	orderNumber: number,
 	failureMessage: cartErrorMessage(outcome.failure ?? "SERVICE_UNAVAILABLE"),
 	/* The tracker never says Payment is completed on an order nobody paid. */
-	progress: state === null ? null : orderProgress(state),
+	progress: state === null ? null : orderProgress(state, order?.paymentMethod ?? null),
 	shouldPoll,
 	pollHop,
 	pollMax: MAX_ORDER_POLLS,

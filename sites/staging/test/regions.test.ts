@@ -232,6 +232,9 @@ describe("the Tempered review, rendered", () => {
 			chosenOption: null,
 			notReadyCopy: "",
 			paymentConfigured: true,
+			paymentMethods: [
+				{ value: "stripe", label: "Card", note: "Pay securely by card on the next step." },
+			],
 			notConfiguredLead: "",
 			emailValue: "",
 			emailNote: "",

@@ -83,7 +83,7 @@ import {
 	errorTitle,
 } from "../../lib/error-notice.js";
 import { checkoutFootnote } from "../../lib/totals.js";
-import { readStripePublishableKey } from "../../lib/stripe-config.js";
+import { paymentMethodName, readCheckoutPaymentConfig } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 import type { CheckoutModel } from "../../themes/contract.js";
 
@@ -157,9 +157,19 @@ const { lines, totals } = summary;
  *  both Stripe secrets (#499), all Settings values read per request (#498); a
  *  read that failed is busy, never "not set up" — the same 303 to
  *  /cart?error=BUSY a busy summary takes. */
-const stripeKey = await readStripePublishableKey(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
-if (stripeKey.state === "unavailable") return Astro.redirect(`/cart?error=BUSY#${CART_ERROR_ID}`, 303);
-const paymentConfigured = stripeKey.state === "configured";
+const paymentConfig = await readCheckoutPaymentConfig(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
+if (paymentConfig.state === "unavailable") return Astro.redirect(`/cart?error=BUSY#${CART_ERROR_ID}`, 303);
+/** ADR-0042: card and cash on delivery are offered independently — either one
+ *  is enough to place an order. */
+const paymentConfigured = paymentConfig.methods.length > 0;
+const paymentMethods = paymentConfig.methods.map((value) => ({
+	value,
+	label: paymentMethodName(value) ?? value,
+	note:
+		value === "cod"
+			? (paymentConfig.codInstructions ?? "Pay in cash when your order is delivered.")
+			: "Pay securely by card on the next step.",
+}));
 
 /** The dead-cart trap's exit, offered only where it applies. */
 const checkedOut = error === "CART_CHECKED_OUT";
@@ -421,6 +431,7 @@ const model: CheckoutModel = {
 	chosenOption,
 	notReadyCopy,
 	paymentConfigured,
+	paymentMethods,
 	/* Quoted from error-messages.ts's STRIPE_NOT_CONFIGURED rather than
 	   restated (§10). */
 	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),

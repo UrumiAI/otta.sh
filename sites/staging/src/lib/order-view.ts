@@ -67,8 +67,13 @@ export interface OrderProgress {
  *    cancelled order may have been paid first or not, and the public read does
  *    not say which, so any position would be a guess.
  */
-export function orderProgress(state: string): OrderProgress | null {
+export function orderProgress(
+	state: string,
+	paymentMethod: string | null = null,
+): OrderProgress | null {
 	if (PAID_STATES.has(state) || state === "refunded") return { current: "order", halted: false };
+	// ADR-0042: a placed cash-on-delivery order has no payment step left online.
+	if (state === "pending" && paymentMethod === "cod") return { current: "order", halted: false };
 	if (state === "pending") return { current: "payment", halted: false };
 	if (state === "expired" || state === "failed") return { current: "payment", halted: true };
 	return null;

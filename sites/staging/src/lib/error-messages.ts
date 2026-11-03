@@ -174,6 +174,9 @@ const MESSAGES: Record<string, string> = {
 		"This order was already placed in another tab or window, with a different email, so the one you typed wasn't used.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
+	// ADR-0042: the chosen method was switched off since the page loaded.
+	PAYMENT_METHOD_UNAVAILABLE:
+		"That payment method isn't available on this store any more. Please choose another.",
 	...SELECTION_MESSAGES,
 	// ── Customer account (issue #306, ADR-0004) ─────────────────────────────
 	// A failed magic link. Each says what to do next, and none says anything

@@ -62,15 +62,31 @@ vi.mock("astro:middleware", () => ({
  * above the imports above by vitest.)
  */
 const stripeKey = vi.hoisted(() => ({ value: "pk_test_fake" as string | null | undefined }));
-vi.mock("../src/lib/stripe-config.js", () => ({
+vi.mock("../src/lib/stripe-config.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/lib/stripe-config.js")>();
 	// #498: the key is read per request; `null` stands for a read that failed.
-	readStripePublishableKey: async () =>
+	const readStripePublishableKey = async () =>
 		stripeKey.value === null
 			? { state: "unavailable" }
 			: stripeKey.value === undefined
 				? { state: "unconfigured" }
-				: { state: "configured", key: stripeKey.value },
-}));
+				: { state: "configured", key: stripeKey.value };
+	return {
+		...actual,
+		readStripePublishableKey,
+		// ADR-0042: the methods checkout offers — card only, by the key above.
+		readCheckoutPaymentConfig: async () => {
+			const key = await readStripePublishableKey();
+			return key.state === "unavailable"
+				? key
+				: {
+						state: "ok",
+						methods: key.state === "configured" ? ["stripe"] : [],
+						codInstructions: null,
+					};
+		},
+	};
+});
 
 afterEach(() => {
 	stripeKey.value = "pk_test_fake";
