@@ -58,7 +58,12 @@ Options considered:
      isolates each try to insert. Exactly one wins and every other reads that row back, so
      there is only ever ONE token, and only the winner logs it. The winner writes the full
      claim link once with `console.log`, tagged `[otta-setup]`. Console logs are on in
-     `wrangler.jsonc` (`observability`), so only the Cloudflare account can read them. The
+     `wrangler.jsonc` (`observability`), so only the Cloudflare account can read them, **unless
+     the account exports them**: Logpush jobs and tail Workers forward every console line,
+     the claim link included, to their sinks. A deployer who exports Worker logs sets
+     `OTTA_SETUP_TOKEN`, and then nothing is logged. The link is always written for
+     `https://` unless the host is loopback, so a first request that arrived over plain
+     HTTP never yields a cleartext link. The
      row is also the fallback when the log has aged out:
      `wrangler d1 execute … "SELECT value FROM options WHERE name = 'otta:setup_token'"`.
      While the store is unclaimed, none of the routes left open can read the `options` table.
@@ -80,6 +85,10 @@ Options considered:
    calls carry the cookie. A write is admitted by the cookie only, never by the query
    string. Tokens are compared with the plugin's `constantTimeEquals`.
 
+   A link opened over plain HTTP on a non-loopback host gets a `307` to the same URL on
+   `https://`, before the token is checked: the browser would drop the `Secure` cookie of
+   an HTTP response, and the claim would end on the 403 page with no reason given.
+
    A request without a valid token gets a 403. Under `/_emdash/api` it is JSON
    (`SETUP_CLAIM_REQUIRED`); anywhere else it is an HTML page that says where the deployer
    finds the link (Workers Logs, or the secret). The page is byte-identical in every mode
@@ -88,7 +97,12 @@ Options considered:
 
 4. **Once claimed, inert.** Setup is complete when `emdash:setup_complete` is true **and** a
    user exists. That is EmDash's own test in passkey mode, and the reference site uses
-   passkey auth. One query reads the completion flag, whether a user exists, and the
+   passkey auth. The gate is written for **passkey mode only**. In EmDash's external-auth
+   mode (e.g. Cloudflare Access), EmDash's `handleExternalAuth`, a `pre` middleware that
+   runs before this one, already makes the identity provider the gate: in production, no
+   private `/_emdash` request gets past it without the provider's verified identity. There the
+   setup flag alone marks completion, so this gate would stay closed after setup. A site
+   switching to external auth must revisit it. One query reads the completion flag, whether a user exists, and the
    stored token. The first gated request that finds the store complete caches that in
    isolate memory, and from then on the gate makes no query. An "unclaimed" answer is never
    cached, so the request right after the wizard finishes is let through. While unclaimed,
@@ -97,10 +111,16 @@ Options considered:
 
 5. **No development exception.** Local dev and the e2e suite get through the gate the way a
    deployer does. With no secret set, the dev server prints the link. `playwright.config.ts`
-   gives a throwaway `E2E_SETUP_TOKEN` (in `e2e/harness.ts`) to the dev server it boots as
+   gives a throwaway token (`E2E_SETUP_TOKEN` in `e2e/harness.ts`) to the dev server it boots as
    `OTTA_SETUP_TOKEN`, and to its own processes. The suite then presents that token: as the
    cookie in browser contexts (`grantSetupClaim`) and in scripts' `fetch`
-   (`scripts/setup-claim-cookie.ts`). The one build that skips the gate is the
+   (`scripts/setup-claim-cookie.ts`). That throwaway token,
+   `PUBLIC_E2E_SETUP_TOKEN` in `src/lib/setup-claim-contract.ts`, is public, so the gate
+   refuses it as `OTTA_SETUP_TOKEN` on any host but loopback (fail closed, with the same
+   warning as a weak secret). `pnpm test:e2e:claim` (`playwright.claim.config.ts`) boots its
+   own stack on a fresh, unseeded state directory and follows the link from a page on
+   another site, so the cross-site cookie hand-off is tested in a real browser. The one
+   build that skips the gate is the
    **playground** build (`__OTTA_PLAYGROUND__`, baked `false` in the storefront build).
    There, EmDash creates every visitor's database already claimed and does not install its
    own setup and auth middlewares.
@@ -149,6 +169,14 @@ Options considered:
 - A token stays in `options` after the claim. It is inert, because the gate never consults
   it once setup is complete. If setup were ever undone (EmDash's dev-only reset), the same
   token would claim it again. An isolate that has cached "complete" stays open until it is
-  recycled, which only matters in dev.
+  recycled, which only matters in dev. **Audited, no TTL re-check:** in emdash@1.3.1 the only
+  code that clears `emdash:setup_complete` or deletes every user is `setup/dev-reset`, which
+  answers 403 outside `astro dev`. The transfer/backup import resets only
+  `byline_fields_version` and `_redirect_loop_ids`. `UserRepository.delete` has no caller,
+  the admin users routes disable and enable but never delete, and demoting the last admin is
+  refused. So a cached "complete" cannot go stale in production. An EmDash upgrade that adds
+  such a path must add a re-check here.
+- Exported logs (Logpush, tail Workers) carry the generated claim link to wherever they are
+  sent. Set `OTTA_SETUP_TOKEN` on such accounts.
 - A local store or a hand-started e2e server on fresh state is locked until claimed. The
   site README says how.

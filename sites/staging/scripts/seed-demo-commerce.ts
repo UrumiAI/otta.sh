@@ -117,7 +117,7 @@ import {
 	OTTA_PLUGIN_ID,
 	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
 } from "@urumi.ai/otta-plugin";
-import { setupClaimHeaders } from "./setup-claim-cookie.js";
+import { setupClaimCookie, setupClaimHeaders } from "./setup-claim-cookie.js";
 
 export interface DemoPricing {
 	sku: string;
@@ -386,7 +386,10 @@ export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, st
 		);
 	}
 	console.info("[otta] using the dev auth bypass (no EMDASH_TOKEN set)");
-	return { Cookie: cookies.join("; ") };
+	// Keep the claim cookie too (ADR-0042): until the store is claimed, every
+	// later /_emdash call this session makes needs it as much as the bypass did.
+	const claim = setupClaimCookie();
+	return { Cookie: [...cookies, ...(claim === undefined ? [] : [claim])].join("; ") };
 }
 
 /** Split one CMS list payload into usable entries and unusable ones. Pure, so a

@@ -26,7 +26,9 @@
 // Unset, the site generates a token on the first /_emdash request, keeps it in
 // D1 (`options`, name `otta:setup_token`) and logs the claim link once — which
 // is why console logs must stay on in `observability` below: only this
-// Cloudflare account can read them. Unused once setup is finished.
+// Cloudflare account can read them — unless the account exports Worker logs:
+// a Logpush job or a tail Worker forwards the claim link to its sink, so set
+// OTTA_SETUP_TOKEN there (nothing is logged then). Unused once setup is finished.
 //
 // OPTIONAL, for the Stripe webhook edge (`src/pages/webhooks/stripe.ts`):
 //   wrangler secret put OTTA_WH_TOKEN

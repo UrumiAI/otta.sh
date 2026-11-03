@@ -50,11 +50,8 @@ import {
 	type Page,
 	type TestInfo,
 } from "@playwright/test";
-import {
-	SETUP_CLAIM_COOKIE,
-	SETUP_CLAIM_COOKIE_PATH,
-	SETUP_TOKEN_SECRET,
-} from "../src/lib/setup-claim-contract.js";
+import { e2eSetupToken } from "../scripts/setup-claim-cookie.js";
+import { SETUP_CLAIM_COOKIE, SETUP_CLAIM_COOKIE_PATH } from "../src/lib/setup-claim-contract.js";
 import { probeSite } from "./site-probe.js";
 
 /**
@@ -177,21 +174,10 @@ export const E2E_SEEDS = process.env["OTTA_E2E_SEED"] === "1";
  */
 export const DEV_BYPASS_SIGNIN_PATH = "/_emdash/api/auth/dev-bypass";
 
-/**
- * A THROWAWAY setup token (ADR-0042) for the stack this suite boots, and for
- * nothing else. An unclaimed store refuses its `/_emdash/*` routes, dev-bypass
- * included, to anyone without the setup token, with no development exception.
- * So `playwright.config.ts` hands this value to the dev server it starts as
- * `OTTA_SETUP_TOKEN` and to its own processes, and the suite presents it: as
- * the claim cookie in the browser ({@link grantSetupClaim}) and in a script's
- * `fetch` (`scripts/setup-claim-cookie.ts`). A token already in the
- * environment wins. It is public, so never set it on a real store.
- *
- * A dev server you started yourself and have not claimed yet needs the same
- * value: start it with `OTTA_SETUP_TOKEN` set to this (or export yours to both).
- */
-export const E2E_SETUP_TOKEN =
-	process.env[SETUP_TOKEN_SECRET] ?? "_3ouNlu8f91xzqLPeDpRl8xUjNGzvb6o69tpEOM3K8M";
+/** The setup token the suite presents (ADR-0042): the dev server's own, as
+ *  {@link e2eSetupToken} resolves it (`.dev.vars`, then the env, then the
+ *  public throwaway token). */
+export const E2E_SETUP_TOKEN = e2eSetupToken();
 
 /** Put the setup-claim cookie in a browser context, as the claim link would.
  *  Harmless on a claimed store, which never reads it. */

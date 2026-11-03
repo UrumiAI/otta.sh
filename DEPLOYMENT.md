@@ -244,6 +244,12 @@ expired holds and queued emails drain at the Free pace (§5).
 
      (the value is JSON: drop the quotes). Setting `OTTA_SETUP_TOKEN` later replaces it.
 
+   > **If your account exports Worker logs** (a Logpush job or a tail Worker), the generated
+   > link goes wherever those logs go. Set `OTTA_SETUP_TOKEN` before the first visit
+   > (§2.1 step 3): with the secret, nothing is logged. The link is always written for
+   > `https://`, and a link opened over plain `http://` is moved to `https://` before the
+   > token is checked.
+
    The link sets a one-hour, `HttpOnly`, `SameSite=Strict` cookie scoped to `/_emdash/`,
    takes the token out of the address bar and opens the wizard. Complete it **with "include
    sample content" enabled** (that is what applies the 3 sample products; skip it and you
@@ -528,7 +534,11 @@ order of appearance in a deployment's life:
 > `sites/staging/.dev.vars` also replaces the env that the e2e stack injects (its throwaway
 > `EMDASH_ENCRYPTION_KEY` arrives through `CLOUDFLARE_INCLUDE_PROCESS_ENV`, which wrangler
 > ignores when `.dev.vars` exists), so move it aside, or put the e2e key in it, for
-> `pnpm test:e2e`. A dev `.env`
+> `pnpm test:e2e`. The same goes for the e2e setup token (`OTTA_SETUP_TOKEN`, ADR-0042): with a
+> `.dev.vars`, a fresh e2e stack only knows the token the suite presents if the file sets
+> `OTTA_SETUP_TOKEN` (the harness then presents that value); a `.dev.vars` without it makes the
+> dev Worker generate its own, and every `/_emdash` call of the run is refused until you claim the
+> store by hand. A dev `.env`
 > that holds only `EMDASH_ENCRYPTION_KEY` still builds: no server module names that key today,
 > and the build fails if one ever does.
 >

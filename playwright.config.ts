@@ -159,6 +159,9 @@ export default defineConfig({
 	// console spec happens to run first. A no-op with no site up (issue #378).
 	globalSetup: "./sites/staging/e2e/global-setup.ts",
 	testMatch: /.*\.spec\.ts$/,
+	// The setup-claim link spec needs a FRESH, unclaimed store of its own:
+	// playwright.claim.config.ts (`pnpm test:e2e:claim`), never this stack.
+	testIgnore: ["**/e2e/claim/**"],
 	// Artifacts land under node_modules/ so a run never dirties the tree; the
 	// repo has no ignore entry for Playwright output and this increment does
 	// not add one.

@@ -63,8 +63,19 @@ pnpm --filter @urumi.ai/otta-site-staging exec emdash secrets generate --write .
 pnpm --filter @urumi.ai/otta-site-staging dev
 ```
 
-Then open the dev-only setup bypass, which claims the site and applies the full seed
-including three sample products:
+A fresh store is **locked until it is claimed** with its one-time setup token
+([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)), locally too: without it,
+every `/_emdash` URL (the bypass below included) answers 403. Claim it first, either way:
+
+- open the link the dev server prints on the first `/_emdash` request, a console line
+  starting `[otta-setup]` (`http://localhost:4321/_emdash/admin/setup?setup_token=…`); or
+- put `OTTA_SETUP_TOKEN=<32+ random characters, e.g. openssl rand -hex 32>` in
+  `sites/staging/.dev.vars` before starting the server, then open
+  `http://localhost:4321/_emdash/admin/setup?setup_token=<that value>`.
+
+The link sets a cookie in your browser and opens the setup wizard. You don't have to finish
+the wizard: in the same browser, open the dev-only setup bypass, which claims the site and
+applies the full seed including three sample products:
 
 ```
 http://localhost:4321/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin

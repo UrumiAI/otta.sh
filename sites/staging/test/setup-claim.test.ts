@@ -5,12 +5,15 @@
  * Runs against a REAL database: EmDash's own migrations on in-memory SQLite,
  * so the options and users tables are the ones the gate reads in production.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { OptionsRepository } from "emdash";
 import { runMigrations } from "emdash/db";
 import { Kysely, SqliteDialect } from "kysely";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	PUBLIC_E2E_SETUP_TOKEN,
 	SETUP_CLAIM_COOKIE,
 	SETUP_CLAIM_COOKIE_PATH,
 	SETUP_CLAIM_MAX_AGE_SECONDS,
@@ -23,6 +26,7 @@ import {
 	createSetupClaimGate,
 	ensureStoredSetupToken,
 	generateSetupToken,
+	SETUP_GATE_EXEMPT_ROUTES,
 	SETUP_TOKEN_OPTION,
 	setupGateApplies,
 	validateSetupTokenSecret,
@@ -547,5 +551,174 @@ describe("storefront requests never touch the gate", () => {
 			expect(await g.check(ctx({ method, path }, trap), {})).toBeNull();
 		}
 		expect(queries).toBe(0);
+	});
+});
+
+// ── review round 1 ────────────────────────────────────────────────────────
+
+const PLUGIN_ROUTE = "/_emdash/api/plugins/[pluginId]/[...path]";
+const HTTP_SITE = "http://shop.example";
+
+describe("every method: the gate is not a GET/POST special case", () => {
+	test.each(["HEAD", "OPTIONS", "PUT", "PATCH", "DELETE"])(
+		"%s to a gated route: 403 without the token, through with the cookie",
+		async (method) => {
+			const { g } = gate();
+			const env = { [SETUP_TOKEN_SECRET]: SECRET };
+			const req = { method, path: SETUP_ADMIN_API, routePattern: SETUP_ADMIN_API };
+			expect((await g.check(ctx(req), env))?.status).toBe(403);
+			expect(await g.check(ctx({ ...req, cookie: SECRET }), env)).toBeNull();
+		},
+	);
+
+	test.each(["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"])(
+		"%s to an exempt route (plugin catch-all): through without a token",
+		async (method) => {
+			const { g } = gate();
+			const req = {
+				method,
+				path: "/_emdash/api/plugins/otta/storefront/cart/create",
+				routePattern: PLUGIN_ROUTE,
+			};
+			expect(await g.check(ctx(req), { [SETUP_TOKEN_SECRET]: SECRET })).toBeNull();
+		},
+	);
+});
+
+describe("drift: the exempt routes are routes the installed EmDash injects", () => {
+	const emdashAstro = fileURLToPath(
+		new URL("../node_modules/emdash/dist/astro/index.mjs", import.meta.url),
+	);
+	const injected = new Set(
+		[...readFileSync(emdashAstro, "utf8").matchAll(/pattern:\s*"([^"]+)"/g)].map((m) => m[1]),
+	);
+
+	test("the route list was read", () => {
+		expect(injected.size).toBeGreaterThan(100);
+	});
+
+	test.each([...SETUP_GATE_EXEMPT_ROUTES.keys()])(
+		"%s is still an injected route pattern (a rename would 403 it while unclaimed)",
+		(route) => {
+			expect(injected).toContain(route);
+		},
+	);
+
+	test("the claim link's page is served by the admin catch-all", () => {
+		expect(injected).toContain(ADMIN_PAGE);
+	});
+});
+
+describe("plain HTTP: no cleartext link, no silently dropped cookie", () => {
+	test("a first request over HTTP logs an https:// link", async () => {
+		const token = "H".repeat(43);
+		const { g, log } = gate({ tokens: [token] });
+		await g.check(ctx({ site: HTTP_SITE, path: SETUP_CLAIM_PATH, routePattern: ADMIN_PAGE }), {});
+		expect(log).toHaveBeenCalledTimes(1);
+		expect(log.mock.calls[0]?.[0]).toContain(setupClaimUrl("https://shop.example", token));
+		expect(log.mock.calls[0]?.[0]).not.toContain("http://shop.example");
+	});
+
+	test("on loopback the logged link stays http:// (the dev server has no TLS)", async () => {
+		const token = "L".repeat(43);
+		const { g, log } = gate({ tokens: [token] });
+		await g.check(ctx({ site: LOCAL_SITE, path: SETUP_CLAIM_PATH, routePattern: ADMIN_PAGE }), {});
+		expect(log.mock.calls[0]?.[0]).toContain(setupClaimUrl(LOCAL_SITE, token));
+	});
+
+	test.each([
+		["the right token", SECRET],
+		["a wrong token", "nope"],
+	])(
+		"a link with %s over HTTP off loopback is moved to HTTPS, with no cookie",
+		async (_why, token) => {
+			const { g } = gate();
+			const res = await g.check(
+				ctx({
+					site: HTTP_SITE,
+					path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${token}`,
+					routePattern: ADMIN_PAGE,
+				}),
+				{ [SETUP_TOKEN_SECRET]: SECRET },
+			);
+			expect(res?.status).toBe(307);
+			expect(res?.headers.get("location")).toBe(
+				`https://shop.example${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${token}`,
+			);
+			expect(res?.headers.get("set-cookie")).toBeNull();
+			expect(res?.headers.get("referrer-policy")).toBe("no-referrer");
+		},
+	);
+});
+
+describe("the public e2e token", () => {
+	test("is a token the length/entropy check alone would accept", () => {
+		expect(validateSetupTokenSecret(PUBLIC_E2E_SETUP_TOKEN).kind).toBe("valid");
+	});
+
+	test("is refused as OTTA_SETUP_TOKEN off loopback: fails closed, with the secret warning", async () => {
+		const { g, warn, log } = gate();
+		const env = { [SETUP_TOKEN_SECRET]: PUBLIC_E2E_SETUP_TOKEN };
+		const write = {
+			method: "POST",
+			path: SETUP_ADMIN_API,
+			routePattern: SETUP_ADMIN_API,
+			cookie: PUBLIC_E2E_SETUP_TOKEN,
+		};
+		expect((await g.check(ctx(write), env))?.status).toBe(403);
+		const link = await g.check(
+			ctx({
+				path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${PUBLIC_E2E_SETUP_TOKEN}`,
+				routePattern: ADMIN_PAGE,
+			}),
+			env,
+		);
+		expect(link?.status).toBe(403);
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(warn.mock.calls[0]?.[0]).toContain(SETUP_TOKEN_SECRET);
+		expect(warn.mock.calls[0]?.[0]).toContain("public e2e token");
+		expect(log).not.toHaveBeenCalled();
+		expect(await new OptionsRepository(db).get(SETUP_TOKEN_OPTION)).toBeNull();
+	});
+
+	test("is accepted on a loopback host (the e2e dev server)", async () => {
+		const { g } = gate();
+		const res = await g.check(
+			ctx({
+				site: LOCAL_SITE,
+				method: "POST",
+				path: SETUP_ADMIN_API,
+				routePattern: SETUP_ADMIN_API,
+				cookie: PUBLIC_E2E_SETUP_TOKEN,
+			}),
+			{ [SETUP_TOKEN_SECRET]: PUBLIC_E2E_SETUP_TOKEN },
+		);
+		expect(res).toBeNull();
+	});
+});
+
+describe("operator warnings are once per isolate", () => {
+	test("no database: refused every time, warned once", async () => {
+		const { g, warn } = gate();
+		for (let i = 0; i < 3; i += 1) {
+			const res = await g.check(
+				ctx({ method: "POST", path: SETUP_ADMIN_API, routePattern: SETUP_ADMIN_API }, null),
+				{},
+			);
+			expect(res?.status).toBe(503);
+		}
+		expect(warn).toHaveBeenCalledTimes(1);
+	});
+
+	test("the refusal names the dev server's console as well as the Worker's logs", async () => {
+		const { g } = gate();
+		const res = await g.check(
+			ctx({ method: "POST", path: SETUP_ADMIN_API, routePattern: SETUP_ADMIN_API }),
+			{},
+		);
+		const body = (await res?.json()) as { error: { message: string } };
+		expect(body.error.message).toContain("dev server's console");
+		const page = await g.check(ctx({ path: SETUP_CLAIM_PATH, routePattern: ADMIN_PAGE }), {});
+		expect(await page?.text()).toContain("dev server's console");
 	});
 });

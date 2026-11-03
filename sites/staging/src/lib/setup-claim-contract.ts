@@ -32,6 +32,14 @@ export const SETUP_CLAIM_MAX_AGE_SECONDS = 3600;
  *  search Workers Logs for it. */
 export const SETUP_CLAIM_LOG_TAG = "[otta-setup]";
 
+/**
+ * A THROWAWAY setup token for the e2e suite's disposable dev stacks
+ * (`e2e/harness.ts`, `playwright.config.ts`). It is public, so the gate refuses
+ * it as `OTTA_SETUP_TOKEN` on any host but a loopback one (ADR-0042): a store
+ * that copied it from here fails closed instead of being claimable by anyone.
+ */
+export const PUBLIC_E2E_SETUP_TOKEN = "_3ouNlu8f91xzqLPeDpRl8xUjNGzvb6o69tpEOM3K8M";
+
 /** The claim link for a token, on a site origin. */
 export function setupClaimUrl(origin: string, token: string): string {
 	const url = new URL(SETUP_CLAIM_PATH, origin);

@@ -47,6 +47,7 @@ import { OptionsRepository } from "emdash";
 import { sql } from "kysely";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 import {
+	PUBLIC_E2E_SETUP_TOKEN,
 	SETUP_CLAIM_COOKIE,
 	SETUP_CLAIM_COOKIE_PATH,
 	SETUP_CLAIM_LOG_TAG,
@@ -165,6 +166,22 @@ function isLoopback(url: URL): boolean {
 	return LOOPBACK_HOSTS.has(url.hostname) || url.hostname.endsWith(".localhost");
 }
 
+/**
+ * The origin a claim link is written for: HTTPS unless the host is loopback.
+ * A store's first `/_emdash` request may arrive over plain HTTP, and a link
+ * built from it would carry the token in cleartext, and its Secure cookie
+ * would be dropped by the browser.
+ */
+export function claimOrigin(url: URL): string {
+	return isLoopback(url) ? url.origin : `https://${url.host}`;
+}
+
+/** The committed e2e token is refused anywhere but a loopback host: it is
+ *  public, so a store that adopted it would be claimable by anyone. */
+export function isPublicTokenOffLoopback(token: string, url: URL): boolean {
+	return token === PUBLIC_E2E_SETUP_TOKEN && !isLoopback(url);
+}
+
 function escapeHtml(value: string): string {
 	return value
 		.replaceAll("&", "&amp;")
@@ -232,7 +249,8 @@ export async function ensureStoredSetupToken(
 
 const REFUSAL_MESSAGE =
 	"This store has not been claimed yet. Setup needs the private setup link, " +
-	"which only the person who deployed the store can see.";
+	"which only the person who deployed the store can see: it is in the Worker's logs " +
+	`(search for ${SETUP_CLAIM_LOG_TAG}) or the dev server's console.`;
 
 /** The 403 for a document. Identical in every mode, so it says nothing about
  *  whether a token exists or where it came from. */
@@ -252,6 +270,7 @@ const REFUSAL_PAGE = `<!doctype html>
 <h2>Deployed it yourself?</h2>
 <ul>
 <li>Open your Cloudflare dashboard, go to <strong>Workers &amp; Pages</strong>, choose this store's Worker and open <strong>Workers Logs</strong>. Search for <code>${SETUP_CLAIM_LOG_TAG}</code> and open the link in that line.</li>
+<li>Running it locally? The dev server's console prints the same <code>${SETUP_CLAIM_LOG_TAG}</code> line.</li>
 <li>If you set the <code>${SETUP_TOKEN_SECRET}</code> secret, open <code>${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=</code> followed by its value.</li>
 </ul>
 <p>The link keeps working until setup is finished, so you can open it again in another browser.</p>
@@ -284,6 +303,15 @@ function unavailable(): Response {
 	return new Response("Store setup is temporarily unavailable. Try again in a moment.", {
 		status: 503,
 		headers: { ...REFUSAL_HEADERS, "Retry-After": "5" },
+	});
+}
+
+function toHttps(url: URL): Response {
+	const secure = new URL(url);
+	secure.protocol = "https:";
+	return new Response(null, {
+		status: 307,
+		headers: { ...REFUSAL_HEADERS, Location: secure.toString() },
 	});
 }
 
@@ -361,6 +389,19 @@ export function createSetupClaimGate(options: SetupClaimGateOptions = {}): Setup
 	const warn = options.warn ?? ((line: string) => console.error(line));
 	let complete = false;
 	let warnedSecret = false;
+	let warnedNoDb = false;
+
+	function refuseSecret(reason: string): null {
+		if (!warnedSecret) {
+			warnedSecret = true;
+			warn(
+				`${SETUP_CLAIM_LOG_TAG} ${SETUP_TOKEN_SECRET} is set but refused: ${reason}. ` +
+					`Store setup stays LOCKED until it is fixed (use at least ${String(MIN_SETUP_TOKEN_LENGTH)} ` +
+					`random URL-safe characters, e.g. \`openssl rand -hex 32\`) or deleted.`,
+			);
+		}
+		return null;
+	}
 
 	async function expectedToken(
 		db: SetupClaimDb,
@@ -369,24 +410,18 @@ export function createSetupClaimGate(options: SetupClaimGateOptions = {}): Setup
 		url: URL,
 	): Promise<string | null> {
 		const secret = validateSetupTokenSecret(env?.[SETUP_TOKEN_SECRET]);
-		if (secret.kind === "valid") return secret.token;
-		if (secret.kind === "invalid") {
-			if (!warnedSecret) {
-				warnedSecret = true;
-				warn(
-					`${SETUP_CLAIM_LOG_TAG} ${SETUP_TOKEN_SECRET} is set but refused: ${secret.reason}. ` +
-						`Store setup stays LOCKED until it is fixed (use at least ${String(MIN_SETUP_TOKEN_LENGTH)} ` +
-						`random URL-safe characters, e.g. \`openssl rand -hex 32\`) or deleted.`,
-				);
-			}
-			return null;
+		if (secret.kind === "valid") {
+			return isPublicTokenOffLoopback(secret.token, url)
+				? refuseSecret("it is the public e2e token committed to the Otta repository")
+				: secret.token;
 		}
+		if (secret.kind === "invalid") return refuseSecret(secret.reason);
 		if (state.storedToken !== null) return state.storedToken;
 		const { token, minted } = await ensureStoredSetupToken(db, generate);
 		if (minted) {
 			log(
 				`${SETUP_CLAIM_LOG_TAG} This store is unclaimed. To set it up and become its admin, ` +
-					`open: ${setupClaimUrl(url.origin, token)} (written once; it works until setup is finished)`,
+					`open: ${setupClaimUrl(claimOrigin(url), token)} (written once; it works until setup is finished)`,
 			);
 		}
 		return token;
@@ -400,7 +435,10 @@ export function createSetupClaimGate(options: SetupClaimGateOptions = {}): Setup
 
 			const db = context.locals.emdash?.db;
 			if (db === undefined) {
-				warn(`${SETUP_CLAIM_LOG_TAG} no EmDash database on a gated request; refusing.`);
+				if (!warnedNoDb) {
+					warnedNoDb = true;
+					warn(`${SETUP_CLAIM_LOG_TAG} no EmDash database on a gated request; refusing.`);
+				}
 				return unavailable();
 			}
 			let expected: string | null;
@@ -419,6 +457,10 @@ export function createSetupClaimGate(options: SetupClaimGateOptions = {}): Setup
 			const method = request.method.toUpperCase();
 			const presented = url.searchParams.get(SETUP_TOKEN_PARAM);
 			if (presented !== null && (method === "GET" || method === "HEAD")) {
+				// Over plain HTTP off loopback the Secure cookie would be dropped and
+				// the claim would end on the 403 page with no reason given. Move the
+				// same request to HTTPS first; the token is checked there.
+				if (url.protocol === "http:" && !isLoopback(url)) return toHttps(url);
 				return expected !== null && constantTimeEquals(presented, expected)
 					? claimed(expected, url)
 					: refusal(url);

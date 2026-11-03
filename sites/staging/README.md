@@ -34,8 +34,14 @@ token, put `OTTA_SETUP_TOKEN=<32+ random characters>` in `sites/staging/.dev.var
 `/_emdash/admin/setup?setup_token=<it>`. Then use the bypass as before; once it has run, the
 store is claimed and the token is not asked for again. `pnpm test:e2e` with
 `OTTA_E2E_START_STACK=1` hands its own throwaway token to the server it boots
-(`E2E_SETUP_TOKEN` in `e2e/harness.ts`); a server you started yourself on fresh state needs
-that same value, or to be claimed first.
+(`PUBLIC_E2E_SETUP_TOKEN` in `src/lib/setup-claim-contract.ts`, refused on any non-loopback
+host). A `sites/staging/.dev.vars` replaces that injected env entirely: if you have one, put
+`OTTA_SETUP_TOKEN` in it (the harness reads it from there and presents that value), or the
+fresh stack generates a token the suite cannot know and every `/_emdash` call 403s. A server you
+started yourself on fresh state needs the same token, or to be claimed first.
+`pnpm test:e2e:claim` runs the claim-link spec against its own fresh, unseeded stack
+(`playwright.claim.config.ts`); stop any other `astro dev` in this worktree first, since Astro
+allows one per project.
 
 ### Plugin settings are namespaced by plugin id
 
