@@ -431,11 +431,13 @@ const offersCod = paymentMethods.some((method) => method.value === "cod");
 		    to fill in — no email field (the order keeps the one it was placed
 		    with, and a typed one would be silently ignored), no address. The way
 		    on is the page's resume path, which re-stashes the order's own intent
-		    and shows its email on the pay step. */}
+		    and shows its email on the pay step. A locked review only exists for
+		    a pending CARD order, so the way on needs card on offer — not merely
+		    some method (cash on delivery alone cannot pay it). */}
 		{
 			locked !== null && !ended && (
 				<div class="checkout-details">
-					{paymentConfigured ? (
+					{offersCard ? (
 						summary.readyToPlace && (
 							<div>
 								<a class="u-btn" href={locked.resumeHref}>

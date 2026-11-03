@@ -481,6 +481,46 @@ describe("the review (CheckoutView) — cash on delivery", () => {
 		expect(html).toContain("Optional for card payment");
 	});
 
+	// The locked review exists only for a pending CARD order: "Continue to
+	// payment" there needs card on offer, not merely some method configured.
+	const locked = {
+		id: "o1",
+		resumeHref: "/checkout/pay?order=o1",
+		otherEmailNotice: null,
+	} as const;
+
+	test("locked, card offered: 'Continue to payment' links to the resume path", async () => {
+		const html = await render(model({ locked }));
+		expect(html).toMatch(
+			/<a class="u-btn" href="\/checkout\/pay\?order=o1">\s*Continue to payment/,
+		);
+		expect(html).not.toContain("Card payment isn't set up");
+	});
+
+	test("locked, COD alone: no 'Continue to payment'; the card notice says it can't be paid", async () => {
+		const html = await render(
+			model({
+				locked,
+				paymentConfigured: true,
+				paymentMethods: [{ value: "cod", label: "Cash on delivery", note: "Pay the courier." }],
+				chosenMethod: "cod",
+				codDetails: "always",
+			}),
+		);
+		expect(html).not.toContain("Continue to payment");
+		expect(html).toContain(
+			"Card payment isn't set up on this store, so this order can't be paid right now.",
+		);
+	});
+
+	test("locked, nothing configured: the card notice", async () => {
+		const html = await render(
+			model({ locked, paymentConfigured: false, paymentMethods: [], codDetails: null }),
+		);
+		expect(html).not.toContain("Continue to payment");
+		expect(html).toContain("Card payment isn't set up on this store");
+	});
+
 	test("a refused phone is marked beside the field", async () => {
 		const html = await render(
 			model({ fieldErrors: { phone: "Enter a phone number — it's needed for cash on delivery." } }),
