@@ -241,6 +241,7 @@ export {
 	TIMELINE_EMPTY,
 	TIMELINE_UNAVAILABLE,
 	PENDING_CANCEL_EFFECTS,
+	SHIPPED_UNPAID_CANCEL_EFFECTS,
 	cancelBannerText,
 	cancelConfirmText,
 	cancelGroupLabel,

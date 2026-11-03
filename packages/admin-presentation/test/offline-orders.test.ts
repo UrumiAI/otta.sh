@@ -10,6 +10,11 @@ import {
 	TERMINAL_ORDER_STATES,
 	isOfflineMarkPaid,
 	markPaidConfirm,
+	PENDING_CANCEL_EFFECTS,
+	SHIPPED_UNPAID_CANCEL_EFFECTS,
+	cancelBannerText,
+	cancelConfirmText,
+	cancelGroupLabel,
 	offlinePaymentBadge,
 	orderStateCell,
 	orderStatusFilterLabel,
@@ -80,6 +85,20 @@ describe("the transition buttons", () => {
 		expect(isOfflineMarkPaid("paid", { fromState: "pending", settlement: null })).toBe(false);
 	});
 
+	test("an offline order stuck in pending (placement's crash window) is a Mark paid too (B-N9)", () => {
+		// The server lets Mark paid finish a COD order whose placement crashed before
+		// its flip to awaiting_payment; that records cash like any other, so it is
+		// confirmed and named the same.
+		const stuck = { fromState: "pending", settlement: "offline" } as const;
+		expect(isOfflineMarkPaid("paid", stuck)).toBe(true);
+		expect(transitionButtonLabel("paid", stuck)).toBe("Mark paid");
+		// A pending CARD order's → paid stays an ordinary move (the server refuses it).
+		expect(isOfflineMarkPaid("paid", { fromState: "pending", settlement: "gateway" })).toBe(false);
+		// And no other move from pending is one.
+		expect(isOfflineMarkPaid("cancelled", stuck)).toBe(false);
+		expect(isOfflineMarkPaid("delivered", stuck)).toBe(false);
+	});
+
 	test("the Mark paid confirm states the cash and the email (review finding 5)", () => {
 		const confirm = markPaidConfirm("₹1,250.00");
 		expect(confirm.text).toBe(
@@ -108,5 +127,38 @@ describe("refundCapabilityText branches on settlement", () => {
 		expect(refundCapabilityText(false, "cod", "offline")).toMatch(/cash on delivery.*RECORD-ONLY/i);
 		// The method's NAME alone decides nothing.
 		expect(refundCapabilityText(false, "cod", "gateway")).toMatch(/^Automatic refunds/);
+	});
+});
+
+describe("cancelling a shipped, unpaid COD order (B-N5)", () => {
+	// The parcel is out: a cancel puts its units back on sale AT ONCE, so the copy
+	// says to cancel only once the parcel has come back. Copy only — no restock box.
+	const effects = SHIPPED_UNPAID_CANCEL_EFFECTS;
+
+	test("refunds nothing — it was never paid", () => {
+		expect(effects.refund).toBeNull();
+		expect(effects.refundAutomatic).toBe(true);
+	});
+
+	test("the banner says the items go back on sale at once, and when to cancel", () => {
+		const banner = cancelBannerText(effects);
+		expect(banner).toContain(
+			"Cancelling returns the items to stock at once — do it when the parcel has come back.",
+		);
+		expect(banner).toContain("emails the buyer");
+		expect(banner).toContain("cannot be undone");
+		expect(banner).not.toContain("held stock");
+		expect(banner).not.toContain("refund");
+	});
+
+	test("the group label and the confirm carry the same consequence", () => {
+		expect(cancelGroupLabel(effects)).toBe("Cancel order — permanent, returns the items to stock");
+		expect(cancelConfirmText("Other", effects)).toBe(
+			"Cancel this order as “Other”? This is permanent — the items go back on sale at once, so do it only when the parcel has come back.",
+		);
+	});
+
+	test("an awaiting-payment order keeps the pending copy (its stock is only held)", () => {
+		expect(cancelBannerText(PENDING_CANCEL_EFFECTS)).toContain("releases the held stock");
 	});
 });

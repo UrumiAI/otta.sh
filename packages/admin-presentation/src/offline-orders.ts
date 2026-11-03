@@ -18,12 +18,16 @@ export interface TransitionContext {
 /**
  * Is this transition an offline Mark paid — a person attesting the cash — rather
  * than a bookkeeping move? `→ paid` from an unpaid offline order, and
- * `shipped_awaiting_payment → delivered` (the courier collected it). The
- * console confirms these first.
+ * `shipped_awaiting_payment → delivered` (the courier collected it). An offline
+ * order still `pending` (its placement crashed before the flip to
+ * `awaiting_payment`) can be marked paid too, and records cash the same way
+ * (B-N9). The console confirms these first.
  */
 export function isOfflineMarkPaid(toState: string, context: TransitionContext): boolean {
 	if (context.settlement !== "offline") return false;
-	if (toState === "paid") return context.fromState === "awaiting_payment";
+	if (toState === "paid") {
+		return context.fromState === "awaiting_payment" || context.fromState === "pending";
+	}
 	return toState === "delivered" && context.fromState === "shipped_awaiting_payment";
 }
 

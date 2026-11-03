@@ -248,20 +248,46 @@ test("an awaiting-payment order offers Record shipment (the Fulfilment form)", a
 	expect(view.container.querySelector('[data-testid="detail-record-fulfilment"]')).not.toBeNull();
 });
 
-test.each(["awaiting_payment", "shipped_awaiting_payment"])(
-	"%s can be cancelled: nothing to refund, the held stock released",
-	async (state) => {
-		const view = await show(detailFor(state, []));
-		await fulfilmentTab(view);
-		const banner = one(view, '[data-testid="cancel-banner"]').textContent ?? "";
-		expect(banner).not.toMatch(/refunds/);
-		expect(view.container.querySelector('[data-testid="cancel-restock"]')).toBeNull();
-		await fire(one<HTMLButtonElement>(view, '[data-testid="cancel-customer_request"]'), "click");
-		expect(one(view, '[data-testid="otta-confirm-text"]').textContent).toContain(
-			"the held stock is released",
-		);
-	},
-);
+test("awaiting_payment can be cancelled: nothing to refund, the held stock released", async () => {
+	const view = await show(detailFor("awaiting_payment", []));
+	await fulfilmentTab(view);
+	const banner = one(view, '[data-testid="cancel-banner"]').textContent ?? "";
+	expect(banner).not.toMatch(/refunds/);
+	expect(view.container.querySelector('[data-testid="cancel-restock"]')).toBeNull();
+	await fire(one<HTMLButtonElement>(view, '[data-testid="cancel-customer_request"]'), "click");
+	expect(one(view, '[data-testid="otta-confirm-text"]').textContent).toContain(
+		"the held stock is released",
+	);
+});
+
+test("shipped_awaiting_payment's cancel says the items go back on sale at once (B-N5)", async () => {
+	const view = await show(detailFor("shipped_awaiting_payment", []));
+	await fulfilmentTab(view);
+	const banner = one(view, '[data-testid="cancel-banner"]').textContent ?? "";
+	expect(banner).toContain(
+		"Cancelling returns the items to stock at once — do it when the parcel has come back.",
+	);
+	expect(banner).not.toMatch(/refunds|held stock/);
+	expect(one(view, '[data-testid="detail-cancel"]').textContent).toContain(
+		"returns the items to stock",
+	);
+	// Copy only: no restock choice.
+	expect(view.container.querySelector('[data-testid="cancel-restock"]')).toBeNull();
+	await fire(one<HTMLButtonElement>(view, '[data-testid="cancel-customer_request"]'), "click");
+	const confirm = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	expect(confirm).toContain("the items go back on sale at once");
+	expect(confirm).not.toContain("held stock");
+});
+
+test("an offline order stuck in pending: Mark paid confirms the cash too (B-N9)", async () => {
+	const view = await show(detailFor("pending", ["paid"]));
+	await fulfilmentTab(view);
+	const button = one<HTMLButtonElement>(view, '[data-testid="transition-paid"]');
+	expect(button.textContent).toContain("Mark paid");
+	await fire(button, "click");
+	expect(one(view, '[data-testid="otta-confirm-text"]').textContent).toContain("in cash");
+	expect((await confirmAndPost(view))?.["action_id"]).toBe("orders:transition-paid");
+});
 
 test("the refund panel's capability line reads the settlement", async () => {
 	expect(refundCapabilityText(false, "cod", "offline")).toMatch(/cash on delivery/i);

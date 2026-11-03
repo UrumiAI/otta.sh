@@ -54,6 +54,7 @@ import {
 	REVOKE_DOWNLOADS_CONFIRM,
 	REVOKE_DOWNLOADS_NOTE,
 	PENDING_CANCEL_EFFECTS,
+	SHIPPED_UNPAID_CANCEL_EFFECTS,
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
@@ -1072,8 +1073,12 @@ export function OrderDetail({
 	// ADR-0044: an unpaid order — pending, or cash on delivery not yet paid — has
 	// no money to refund and holds its stock, which a cancel releases.
 	const unpaid = UNPAID_ORDER_STATES.has(order.state);
+	// A shipped, unpaid COD order's parcel is out: its cancel puts the units back
+	// on sale at once, which its copy says (B-N5).
 	const cancelEffects: CancelEffects = unpaid
-		? PENDING_CANCEL_EFFECTS
+		? order.state === "shipped_awaiting_payment"
+			? SHIPPED_UNPAID_CANCEL_EFFECTS
+			: PENDING_CANCEL_EFFECTS
 		: {
 				refund:
 					refunds !== null && refunds.remainingCents > 0
