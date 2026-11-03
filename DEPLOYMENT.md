@@ -853,9 +853,16 @@ with none of the Stripe values above.
   orders that hold stock, so the per-IP write limit is what bounds how fast one client can do
   that. Without the binding the site leaves cash on delivery out of checkout, and
   `/checkout/place` refuses it with "That payment method isn't available for this order", even
-  with the setting on. The plugin cannot see the site's bindings: the site checks, and sends the
-  client's network (an IPv4 address or an IPv6 /64) with each cash-on-delivery order. The plugin
-  stores only a one-way hash of it.
+  with the setting on. The plugin cannot see the site's bindings, so the site attests to it
+  ([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md) §7).
+  - The site adds the `x-otta-cod-attest` header to its own in-process place request, only with
+    the binding. The site middleware refuses that header (400) on every incoming request, so a
+    direct call to the plugin's public place route can never place a cash-on-delivery order.
+  - The plugin derives the client's network itself from `cf-connecting-ip`: an IPv4 address, or
+    an IPv6 /64. It stores only an HMAC of the network under a random per-store secret
+    (`settings:codNetworkKeySecret`), and drops it once the order is paid or cancelled.
+  - **If you host the plugin behind a site other than the reference one**, that site's edge must
+    strip or refuse `x-otta-cod-attest` too.
   (The tracked `wrangler.jsonc` template leaves the binding commented out, so a plain local
   `astro dev` offers no cash on delivery. The Playwright e2e stack runs on
   `sites/staging/wrangler.e2e.jsonc`, the template plus this one binding, selected by
@@ -914,7 +921,9 @@ neither counts as revenue, and neither expires at the checkout hold:
   buyer. A shipped order is never auto-cancelled. The window applies to every open order, so
   lowering it cancels older orders on the next tick.
 - **Caps.** A buyer email may hold at most **3** open cash-on-delivery orders
-  (`settings:codMaxOpenPerBuyer`), and so may one client network (`settings:codMaxOpenPerClient`).
+  (`settings:codMaxOpenPerBuyer`). One client network may hold at most **20**
+  (`settings:codMaxOpenPerClient`): carrier and office NAT put many honest buyers behind one
+  address.
   "Open" means `awaiting_payment` or `shipped_awaiting_payment`; `0` means no cap. Over a cap,
   checkout refuses the order and asks the buyer to pay another way. Two orders placed at the same
   instant can both pass; the per-IP write limit bounds that.

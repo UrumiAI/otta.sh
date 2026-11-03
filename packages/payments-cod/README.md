@@ -20,9 +20,13 @@ The Otta plugin wires this package itself. A site does not import it.
 
 - **The site needs its per-IP write limit.** Checkout offers cash on delivery only when the site
   has the `RATE_LIMIT_WRITES` binding (DEPLOYMENT.md §2.5). Without it, the site leaves cash on
-  delivery out of checkout even when the setting is on, and a direct place call is refused
-  `PAYMENT_METHOD_UNAVAILABLE`. With it, the site sends the buyer's network key; the plugin
-  stores only a one-way hash of it.
+  delivery out of checkout even when the setting is on.
+  - A place call proves it came through the site's rate-limited path with the
+    `x-otta-cod-attest` header. The site sets the header only on its own in-process dispatch, and
+    its middleware refuses it from any outside request. A direct call to the plugin's place route
+    is refused `PAYMENT_METHOD_UNAVAILABLE`.
+  - The plugin derives the buyer's network from `cf-connecting-ip` and stores only an HMAC of it
+    under a per-store secret, dropped once the order closes.
 - **Physical goods only.** A cart with nothing to deliver cannot use cash on delivery
   (`OFFLINE_NEEDS_PHYSICAL`).
 - **A delivery address with a phone number** is required on every store, even one with no
@@ -34,7 +38,7 @@ The Otta plugin wires this package itself. A site does not import it.
 |---|---|---|
 | Auto-cancel unpaid orders after (days) | 14 | 0 to 365. An order still unpaid and not shipped after this many days is cancelled and its items go back on sale. 0 turns it off. The window applies to every open order, so lowering it cancels older unpaid orders on the next sweep |
 | Most unpaid orders per buyer email | 3 | 0 to 100. A buyer with this many open cash-on-delivery orders cannot place another (`OFFLINE_ORDER_LIMIT`). 0 means no cap |
-| Most unpaid orders per network | 3 | 0 to 100. The same cap, per client network (an IPv4 address or an IPv6 /64). 0 means no cap |
+| Most unpaid orders per network | 20 | 0 to 100. The same cap, per client network (an IPv4 address or an IPv6 /64), set high because carrier and office NAT share one address. 0 means no cap |
 
 "Open" means awaiting payment, or shipped and awaiting payment. The caps are soft under a true
 race: two placements at the same instant may both pass. The per-IP write limit bounds that.
