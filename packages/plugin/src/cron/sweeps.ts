@@ -1506,6 +1506,8 @@ export async function runCommerceSweeps(
 				clearDeferral(leg);
 				// A slow-cadence leg that found nothing waits out its cadence, as one
 				// whose body found nothing does — never re-asked every minute.
+				// This applies to ANY slow-cadence leg with an `isDue` hook, not only
+				// `cod-auto-cancel` (the first to have one).
 				if (maintenance) {
 					state.lastRun[leg] = nowIso;
 					stateChanged = true;
@@ -2092,14 +2094,28 @@ export async function runCommerceSweeps(
 					const maxAgeDays = await codAutoCancelDays();
 					if (maxAgeDays <= 0) return { count: 0 };
 					// The coupon release is begun only when all of it fits, like an expiry's
-					// (#621), so it is never cut half-way. Skipped, the order is already
-					// cancelled by the auto-cancel, and `coupon-orphans` frees the use (its
-					// auto-cancel arm). One skipped ends the batch.
+					// (#621), so it is never cut half-way — and it comes BEFORE the cancel
+					// (ADR-0044 §6, review round 2 M2). A release the tick cannot afford
+					// therefore FAILS rather than skips: the domain leaves that order
+					// uncancelled and listed, and a later tick frees the use and cancels it.
+					// (Skipped AFTER a cancel, the use would be stranded: coupon-orphans
+					// judges a redemption once.) One deferred ends the batch.
 					let releaseSkipped = false;
-					const couponStore = wholeReleasesOnly(stores.couponStore, budget, () => {
+					const wholeOnly = wholeReleasesOnly(stores.couponStore, budget, () => {
 						releaseSkipped = true;
 						legBudget.stopped = true;
 					});
+					const couponStore = {
+						async releaseByOrder(order: Parameters<typeof wholeOnly.releaseByOrder>[0]) {
+							const released = await wholeOnly.releaseByOrder(order);
+							if (releaseSkipped) {
+								throw new Error(
+									"coupon release deferred to a later tick (the tick's query budget)",
+								);
+							}
+							return released;
+						},
+					};
 					const gate = legBudget.gate(0, LEG_QUERY_COSTS["cod-auto-cancel"].unit);
 					const result = await cancelUnpaidOfflineOrders(
 						{
@@ -4740,7 +4756,9 @@ function isObservation(value: unknown): value is CouponUsesObservation {
  * `releaseAdoptedMany(ids, orderId)`, the call that order's own transition would
  * have made: order-scoped (only a hold THAT order adopted), idempotent, and a
  * no-op on a hold that is already terminal. Never released:
- *  - a hold whose order is `pending`, `paid` or any later state. A paid order's
+ *  - a hold whose order is `pending`, `paid` or any later state, or an unpaid
+ *    cash-on-delivery order (`awaiting_payment`, `shipped_awaiting_payment`,
+ *    ADR-0044), which holds its stock until it is paid or cancelled. A paid order's
  *    adopted hold is owed a COMMIT, not a release;
  *  - a hold whose order still owes an intent (`holdsPendingAt` set). That order is
  *    mid-transition and `hold-intents` owns it;
@@ -4748,9 +4766,11 @@ function isObservation(value: unknown): value is CouponUsesObservation {
  *    should not happen; the leg leaves it rather than guess.
  *
  * WHY A LATE SETTLE CANNOT COMMIT WHAT THIS RETURNS. The three states are terminal:
- * the order state machine has no way out of them, and `markPaid` is a guarded
- * `pending → paid` flip. Once this leg has READ one of them, the order can never
- * be paid, and `settleOrder` commits an order's holds only after it is paid (it
+ * the order state machine has no way out of them, and `markPaid` is a guarded flip
+ * from a live state only — `pending → paid` for a settle, `awaiting_payment → paid`
+ * or `shipped_awaiting_payment → delivered` for a cash-on-delivery Mark paid
+ * (ADR-0044); never from a terminal state. Once this leg has READ one of them, the
+ * order can never be paid, and `settleOrder` commits an order's holds only after it is paid (it
  * won the flip, or found the order paid). A payment that arrives for an expired
  * or cancelled order takes the late-payment path instead: recorded, refunded or
  * flagged, and nothing committed. The one transition into `cancelled` from a paid

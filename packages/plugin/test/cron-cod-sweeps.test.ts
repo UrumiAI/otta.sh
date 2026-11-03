@@ -283,6 +283,56 @@ describe("coupon-orphans and an auto-cancelled COD order", () => {
 	});
 });
 
+describe("auto-cancel's coupon release is durable (review round 2, M2)", () => {
+	test("coupon-orphans has ALREADY passed the redemption and the release fails: the order is not cancelled, and the next sweep frees the use and cancels it", async () => {
+		const { storage } = await makeSqliteStorage(commerceStorageLayout());
+		await seedCoupon(storage, "coupon-durable", "CODDURABLE");
+		const createdAt = new Date(NOW.getTime() - 20 * DAY_MS);
+		const order = await placeCodOrder(storage, "durable", createdAt, {
+			coupon: { id: "coupon-durable", code: "CODDURABLE" },
+		});
+		const s = adapters(storage, NOW);
+		const cursors = memoryCursors();
+		const run = async (kv: Record<string, unknown>, at = NOW) =>
+			await runCommerceSweeps(
+				sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: PAID, ...kv }),
+				SWEEP_TASK_NAME,
+				{ cursors, emailSender: recordingSender([]), now: at, queryBudget: PAID },
+			);
+
+		// 1. With auto-cancel off, coupon-orphans judges the redemption (the order is
+		//    unpaid: live) and its cursor moves PAST it — it will never look again.
+		await run({ [COD_AUTO_CANCEL_DAYS_KEY]: 0 });
+		expect(await cursors.read("coupon-orphans")).toBe(
+			new Date(createdAt.getTime() - CURSOR_OVERLAP_MS).toISOString(),
+		);
+		// 2. An auto-cancel whose coupon release FAILS: released first, so nothing is
+		//    cancelled — the order stays listed.
+		const failed = await cancelUnpaidOfflineOrders(
+			{
+				orderStore: s.orderStore,
+				couponStore: {
+					releaseByOrder: async () => {
+						throw new Error("coupon store busy");
+					},
+				},
+				clock: s.clock,
+				logger: NOOP_LOGGER,
+			},
+			{ maxAgeDays: 14, limit: 1 },
+		);
+		expect(failed).toMatchObject({ cancelled: 0, skipped: 1 });
+		expect((await s.orderStore.getById(toOrderId(order.id)))?.state).toBe("awaiting_payment");
+		expect((await coupons(storage, NOW).findById("coupon-durable"))?.usesCount).toBe(1);
+		// 3. The leg's next run (its slow cadence: a quarter-hour on) frees the use
+		//    and cancels.
+		const healed = await run({}, new Date(NOW.getTime() + 16 * 60 * 1000));
+		expect(leg(healed, "cod-auto-cancel")).toMatchObject({ ok: true, count: 1 });
+		expect((await s.orderStore.getById(toOrderId(order.id)))?.state).toBe("cancelled");
+		expect((await coupons(storage, NOW).findById("coupon-durable"))?.usesCount).toBe(0);
+	});
+});
+
 describe("coupon-orphans and an unpaid COD order (review finding 2)", () => {
 	test.each(["awaiting_payment", "shipped_awaiting_payment"] as const)(
 		"a redemption whose order is %s is ruled live: kept, and the cursor advances past it",
