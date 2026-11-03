@@ -33,7 +33,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@astrojs/react";
 import { parseExtraAllowedHosts } from "@urumi.ai/otta-plugin";
-import type { AstroIntegration, AstroUserConfig } from "astro";
+import type { AstroIntegration } from "astro";
 import { fontProviders } from "astro/config";
 import emdash from "emdash/astro";
 import { buildEmdashOptions } from "./emdash-options.js";
@@ -200,7 +200,7 @@ function fontFile(relative: string): string {
  *
  * The paths are absolute, into this package: the site has no copy of them.
  */
-export const OTTA_FONTS: NonNullable<AstroUserConfig["fonts"]> = [
+const OTTA_FONTS = [
 	{
 		provider: fontProviders.local(),
 		name: "Bricolage Grotesque",
@@ -251,6 +251,15 @@ export const OTTA_FONTS: NonNullable<AstroUserConfig["fonts"]> = [
 		},
 	},
 ];
+
+/**
+ * The font list, for tests. Not the constant itself: its inferred type names a
+ * module inside astro, which a published declaration file cannot reference;
+ * `updateConfig` below still type-checks the constant as it is.
+ */
+export function ottaFonts(): readonly unknown[] {
+	return OTTA_FONTS;
+}
 
 /**
  * One injected route per file under the package's `src/pages`, with the

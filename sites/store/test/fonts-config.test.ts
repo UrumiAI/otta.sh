@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { LATIN_UNICODE_RANGE, OTTA_FONTS } from "../src/integration.js";
+import { LATIN_UNICODE_RANGE, ottaFonts } from "../src/integration.js";
 import { STORE_THEMES } from "../src/themes/manifest.js";
 import { fvarAxes, woff2Tables } from "./helpers/woff2.js";
 
@@ -48,7 +48,7 @@ interface ConfiguredFont {
 }
 
 // The fonts are the otta() integration's (ADR-0045): it hands Astro this list.
-const fonts = OTTA_FONTS as unknown as ConfiguredFont[];
+const fonts = ottaFonts() as ConfiguredFont[];
 const byVariable = new Map(fonts.map((font) => [font.cssVariable, font]));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
