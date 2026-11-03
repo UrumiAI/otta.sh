@@ -87,7 +87,6 @@ import {
 	cardPaymentsNotReadyLog,
 	readStripeGatewayReadiness,
 } from "../payments/card-payment-readiness.js";
-import { readCodEnabled } from "../payments/cash-on-delivery.js";
 import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { storeRegionFacts } from "./store-region-facts.js";
 
@@ -133,6 +132,11 @@ export interface CheckoutPlaceRouteInput {
 	/** ADR-0044: `"stripe"` (card, the default when absent) or `"cod"` (cash on
 	 *  delivery). A method the store has not enabled is `PAYMENT_METHOD_UNAVAILABLE`. */
 	paymentMethod?: unknown;
+	/** ADR-0044: the client's network key (`clientNetwork`: an IPv4 address or an
+	 *  IPv6 /64), sent by the site only once its per-IP write limit has run. A
+	 *  trimmed string of at most 128 characters, or INVALID_INPUT. Cash on
+	 *  delivery without one is `PAYMENT_METHOD_UNAVAILABLE`. */
+	clientKey?: unknown;
 	/** The same selection the summary priced — see {@link CheckoutSummaryRouteInput}. */
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
@@ -744,11 +748,15 @@ const STRIPE_NOT_CONFIGURED = Symbol("STRIPE_NOT_CONFIGURED");
  */
 async function placeOrRefuseUnconfigured<T>(
 	ctx: PluginContext,
+	paymentMethod: "stripe" | "cod",
 	create: () => Promise<T>,
 ): Promise<T | typeof STRIPE_NOT_CONFIGURED> {
 	try {
 		return await create();
 	} catch (err) {
+		// A cash-on-delivery place never needs Stripe (ADR-0044): its throw is the
+		// guard's, never "card payment isn't set up".
+		if (paymentMethod !== "stripe") throw err;
 		const gateway = await readStripeGatewayReadiness(ctx).catch(() => undefined);
 		if (gateway === undefined || gateway.ready) throw err;
 		console.error(cardPaymentsNotReadyLog(STOREFRONT_CHECKOUT_PLACE_ROUTE, gateway));
@@ -792,18 +800,17 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				return { ok: false as const, reason: "CHECKOUT_STALE" as const };
 			}
 
-			// ADR-0044, fail closed: cash on delivery only while the merchant has it
-			// on. Asked before anything is created — the gateway map would refuse it
-			// too, but as a throw this route could only call "card isn't set up".
-			if (input.paymentMethod === "cod" && !(await readCodEnabled(ctx))) {
-				return { ok: false as const, reason: "PAYMENT_METHOD_UNAVAILABLE" as const };
-			}
+			// ADR-0044: NO up-front COD toggle check here. The domain checks it, with
+			// the caps, for a FRESH placement only — so a same-key replay whose first
+			// reply was lost still answers its order after COD is switched off (review
+			// finding 11). Its refusals come back as typed reasons below.
 			const client = await makeCommerceClient(ctx);
-			const result = await placeOrRefuseUnconfigured(ctx, () =>
+			const result = await placeOrRefuseUnconfigured(ctx, input.paymentMethod, () =>
 				client.createOrder(
 					{
 						cartId: input.cartId,
 						paymentMethod: input.paymentMethod,
+						...(input.clientKey !== undefined ? { clientKey: input.clientKey } : {}),
 						buyerRef: input.buyerRef,
 						...quoteSelection(input.selection),
 						...(input.shippingAddress !== undefined

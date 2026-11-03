@@ -27,6 +27,7 @@ import {
 	COUNTRY_SHAPE,
 	COUPON_CODE_MAX,
 	isIdToken,
+	CLIENT_KEY_MAX,
 } from "../commerce/commerce-input.js";
 import type {
 	BillingLocationWire,
@@ -125,6 +126,10 @@ export interface CheckoutPlaceParsedInput {
 	selection: CheckoutSelection;
 	/** ADR-0044: the method the buyer chose; `stripe` when the call named none. */
 	paymentMethod: "stripe" | "cod";
+	/** ADR-0044: the client's network key the site sends once its per-IP write
+	 *  limit has run (trimmed, at most {@link CLIENT_KEY_MAX}). Cash on delivery
+	 *  requires it; the client hashes it before anything stores it. */
+	clientKey?: string;
 	/** The signed-in shopper's session, when one came along — a bearer the client
 	 *  resolves to its customer, never trusted here. Absent ⇔ a guest checkout. */
 	sessionToken?: string;
@@ -252,6 +257,7 @@ export function parseCheckoutPlaceInput(input: {
 	shippingMethodId?: unknown;
 	sessionToken?: unknown;
 	paymentMethod?: unknown;
+	clientKey?: unknown;
 }): CheckoutPlaceParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	// Trimmed, but NOT otherwise rewritten — never lowercased (§1.5): the
@@ -281,6 +287,14 @@ export function parseCheckoutPlaceInput(input: {
 		selection,
 		paymentMethod,
 	};
+
+	// ADR-0044: optional, but present-and-malformed is a reject — a key the site
+	// meant to send and mangled must not read as "no rate limit ran".
+	if (input.clientKey !== undefined) {
+		const clientKey = nonEmptyString(input.clientKey, CLIENT_KEY_MAX);
+		if (clientKey === null) return null;
+		parsed.clientKey = clientKey;
+	}
 
 	if (input.shippingAddress !== undefined) {
 		const address = parseShippingAddress(input.shippingAddress);

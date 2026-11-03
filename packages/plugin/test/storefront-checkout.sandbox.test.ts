@@ -483,6 +483,26 @@ const LINE_PRODUCT_IDS = [`prod-${NS}-1`, `prod-${NS}-2`, `prod-${NS}-3`];
  *  change what "the subtotal" means below. */
 const SUBTOTAL_CENTS = 1999 + 2 * 1000 + 3 * 333;
 
+/** ADR-0044: a COD delivery address — complete, with the phone a courier needs. */
+const COD_ADDRESS = {
+	name: "Cash Buyer",
+	line1: "1 Main St",
+	city: "Springfield",
+	region: "IL",
+	postalCode: "62701",
+	country: "US",
+	phone: "+1 217 555 0100",
+};
+
+/** Switch cash on delivery on or off through the Settings form, as a merchant does. */
+function saveCod(codEnabled: boolean, codInstructions = ""): Promise<unknown> {
+	return sandboxHandle.invokeRoute("admin", {
+		type: "form_submit",
+		action_id: "save-cash-on-delivery",
+		values: { codEnabled, codInstructions },
+	});
+}
+
 async function seedThreeLineCart(): Promise<string> {
 	const cartId = await createCart();
 	await addLine(cartId, LINE_SKUS[0]!, LINE_PRODUCT_IDS[0]!, 1);
@@ -1402,26 +1422,25 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	/**
 	 * ADR-0044: cash on delivery is independent of Stripe. On this boot (no Stripe
 	 * at all) it is refused while off, then — once the merchant switches it on in
-	 * Settings — the order is placed with no pay step: an `offline` action, no
-	 * intent, a pending order that never expires. Card checkout stays refused.
+	 * Settings — a physical cart with a delivery address and phone, sent with the
+	 * site's client key, is placed with no pay step: an `offline` action, no intent,
+	 * an `awaiting_payment` order. Card checkout stays refused. Switched off again,
+	 * a same-key replay still answers the order (review finding 11).
 	 */
-	test("cash on delivery with no Stripe: refused while off, placed once switched on, card still refused", async () => {
+	test("cash on delivery with no Stripe: refused while off, placed once switched on, replayable after it is off, card still refused", async () => {
 		const codCart = await seedThreeLineCart();
-		const placeCod = async (cartId: string) =>
+		const placeCod = async (cartId: string, extra: Record<string, unknown> = {}) =>
 			resultOf(
 				await sandboxHandle.invokeRoute("storefront/checkout/place", {
 					cartId,
 					buyerRef: "cod-buyer@example.com",
 					idempotencyKey: `checkout:${cartId}`,
 					paymentMethod: "cod",
+					clientKey: "203.0.113.7",
+					shippingAddress: COD_ADDRESS,
+					...extra,
 				}),
 			);
-		const saveCod = (codEnabled: boolean, codInstructions = "") =>
-			sandboxHandle.invokeRoute("admin", {
-				type: "form_submit",
-				action_id: "save-cash-on-delivery",
-				values: { codEnabled, codInstructions },
-			});
 		const config = async () =>
 			resultOf(await sandboxHandle.invokeRoute("storefront/payment-config", {}));
 
@@ -1431,33 +1450,37 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		expect(await placeCod(codCart)).toEqual({ ok: false, reason: "PAYMENT_METHOD_UNAVAILABLE" });
 
 		expect(await saveCod(true, "  Please have the exact amount ready.  ")).toHaveProperty("result");
+		let orderId: string;
 		try {
 			expect(await config()).toMatchObject({
 				cardPaymentReady: false,
 				cashOnDelivery: { enabled: true, instructions: "Please have the exact amount ready." },
 			});
+			// No client key (the site's per-IP limit did not run): refused.
+			expect(await placeCod(codCart, { clientKey: undefined })).toEqual({
+				ok: false,
+				reason: "PAYMENT_METHOD_UNAVAILABLE",
+			});
+			// No phone on the delivery address: refused, typed.
+			const { phone: _phone, ...noPhone } = COD_ADDRESS;
+			expect(await placeCod(codCart, { shippingAddress: noPhone })).toEqual({
+				ok: false,
+				reason: "SHIPPING_PHONE_REQUIRED",
+			});
 			const placed = await placeCod(codCart);
 			expect(placed, JSON.stringify(placed)).toMatchObject({
 				ok: true,
-				state: "pending",
+				state: "awaiting_payment",
 				alreadyPlaced: false,
 				clientAction: { kind: "offline" },
 			});
-			const orderId = placed["orderId"] as string;
+			orderId = placed["orderId"] as string;
 			// A same-key replay is the same order, still offline.
-			expect(await placeCod(codCart)).toMatchObject({
-				ok: true,
-				orderId,
-				clientAction: { kind: "offline" },
-			});
+			expect(await placeCod(codCart)).toMatchObject({ ok: true, orderId });
 			const read = resultOf(await sandboxHandle.invokeRoute("storefront/order", { orderId }));
 			expect(read).toMatchObject({
 				ok: true,
-				order: {
-					paymentMethod: "cod",
-					state: "pending",
-					holdExpiresAt: "9999-12-31T23:59:59.999Z",
-				},
+				order: { paymentMethod: "cod", state: "awaiting_payment", settlement: "offline" },
 			});
 
 			// Card checkout on this Stripe-less store is still refused.
@@ -1476,6 +1499,65 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 			await saveCod(false);
 		}
 		expect(await config()).toMatchObject({ cashOnDelivery: { enabled: false } });
+		// Switched off: a fresh COD place is refused, the replay still answers.
+		expect(await placeCod(await seedThreeLineCart())).toEqual({
+			ok: false,
+			reason: "PAYMENT_METHOD_UNAVAILABLE",
+		});
+		expect(await placeCod(codCart)).toMatchObject({ ok: true, orderId });
+	});
+
+	/**
+	 * ADR-0044 review finding 1: "Start a new cart" and the next add-to-cart never
+	 * touch a placed COD order. The abandon cancels only a `pending` order, and a
+	 * fresh cart is just that — the COD order stays `awaiting_payment`, its stock
+	 * still held for it. Nor can a resume pay it online.
+	 */
+	test("cash on delivery: abandon, a new cart and a resume leave the awaiting_payment order and its held stock alone", async () => {
+		const sku = LINE_SKUS[0]!;
+		const cartId = await createCart();
+		await addLine(cartId, sku, LINE_PRODUCT_IDS[0]!, 2);
+		expect(await saveCod(true)).toHaveProperty("result");
+		try {
+			const placed = resultOf(
+				await sandboxHandle.invokeRoute("storefront/checkout/place", {
+					cartId,
+					buyerRef: "cod-abandon@example.com",
+					idempotencyKey: `checkout:${cartId}`,
+					paymentMethod: "cod",
+					clientKey: "198.51.100.9",
+					shippingAddress: COD_ADDRESS,
+				}),
+			);
+			expect(placed).toMatchObject({ ok: true, state: "awaiting_payment" });
+			const orderId = placed["orderId"] as string;
+			// A hold takes its units off `onHand` (the embedded-holds model): what is
+			// on sale once the order holds its two.
+			const onSaleAfterPlace = await inventoryStore().getOnHand(sku);
+
+			expect(
+				resultOf(await sandboxHandle.invokeRoute("storefront/order/abandon", { cartId })),
+			).toEqual({ ok: true, cancelled: false });
+			expect(
+				resultOf(await sandboxHandle.invokeRoute("storefront/order/resume", { orderId, cartId })),
+			).toEqual({ ok: false, reason: "ORDER_NOT_PAYABLE" });
+			// The spent cart's replacement, then an add to a fresh cart.
+			const replaced = resultOf(
+				await sandboxHandle.invokeRoute("storefront/cart/create", { replacesCartId: cartId }),
+			);
+			expect(replaced).toMatchObject({ ok: true });
+			await addLine(replaced["cartId"] as string, sku, LINE_PRODUCT_IDS[0]!, 1);
+			const fresh = await createCart();
+			await addLine(fresh, sku, LINE_PRODUCT_IDS[0]!, 1);
+
+			const read = resultOf(await sandboxHandle.invokeRoute("storefront/order", { orderId }));
+			expect(read).toMatchObject({ ok: true, order: { state: "awaiting_payment" } });
+			// Its two units are still held for it: only the two new carts' units came
+			// off sale since. A cancelled order would have put its two back.
+			expect(await inventoryStore().getOnHand(sku)).toBe(onSaleAfterPlace - 2);
+		} finally {
+			await saveCod(false);
+		}
 	});
 
 	test("an unknown payment method is malformed input", async () => {

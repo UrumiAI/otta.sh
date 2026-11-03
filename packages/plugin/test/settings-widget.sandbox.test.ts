@@ -174,6 +174,14 @@ function toggleOf(blocks: unknown): { initial_value?: unknown } | undefined {
 	return found;
 }
 
+/** ADR-0044: the COD form's fields, by action id, with their prefilled values. */
+function codFieldValues(blocks: unknown): Record<string, unknown> {
+	const form = formFor(sectionBlocks(blocks as never, "settings:cod"), "save-cash-on-delivery") as
+		| { fields: { action_id: string; initial_value?: unknown }[] }
+		| undefined;
+	return Object.fromEntries((form?.fields ?? []).map((f) => [f.action_id, f.initial_value]));
+}
+
 describe("Settings admin form (workerd sandbox)", () => {
 	test("saving the display name re-renders the FULL screen — every real form survives (Bug A)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
@@ -1022,6 +1030,66 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		const off = blocksOf(await save({ codEnabled: false, codInstructions: "" }));
 		expect(groupLabels(off).get("settings:cod")).toBe("Cash on delivery — off");
+	});
+
+	// ADR-0044 (revised): the auto-cancel window and the two caps on open COD orders
+	// share the COD form — whole numbers within bounds, refused (nothing written)
+	// otherwise, prefilled with their defaults (14, 3, 3) until saved. A submit
+	// without one of them keeps what is stored.
+	test("cash on delivery: the auto-cancel window and the two caps are validated, saved and prefilled", async () => {
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+		const save = async (values: Record<string, unknown>) =>
+			boot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-cash-on-delivery",
+				values: { codEnabled: true, codInstructions: "", ...values },
+			});
+
+		// Defaults before any save, and the static copy the group must carry.
+		const first = await save({});
+		expect(codFieldValues(blocksOf(first))).toMatchObject({
+			codAutoCancelDays: "14",
+			codMaxOpenPerBuyer: "3",
+			codMaxOpenPerClient: "3",
+		});
+		const copy = JSON.stringify(sectionBlocks(blocksOf(first), "settings:cod"));
+		expect(copy).toContain("RATE_LIMIT_WRITES");
+		expect(copy).toContain("lowering it cancels older unpaid orders on the next sweep");
+
+		for (const [values, message] of [
+			[{ codAutoCancelDays: "366" }, "from 0 to 365"],
+			[{ codAutoCancelDays: "-1" }, "from 0 to 365"],
+			[{ codMaxOpenPerBuyer: "101" }, "from 0 to 100"],
+			[{ codMaxOpenPerClient: "2.5" }, "from 0 to 100"],
+			[{ codMaxOpenPerClient: "" }, "got nothing"],
+		] as const) {
+			const refused = await save({ codEnabled: false, ...values });
+			const text = JSON.stringify(refused);
+			expect(text, JSON.stringify(values)).toContain("Cash on delivery not saved");
+			expect(text).toContain(message);
+		}
+		// Every refusal wrote nothing — not even the toggle beside it.
+		expect(groupLabels(blocksOf(await save({}))).get("settings:cod")).toBe("Cash on delivery — on");
+
+		const saved = await save({
+			codAutoCancelDays: " 0 ",
+			codMaxOpenPerBuyer: "1",
+			codMaxOpenPerClient: "100",
+		});
+		expect(JSON.stringify(saved)).toContain("Cash on delivery saved");
+		expect(codFieldValues(blocksOf(saved))).toMatchObject({
+			codAutoCancelDays: "0",
+			codMaxOpenPerBuyer: "1",
+			codMaxOpenPerClient: "100",
+		});
+		// Absent from a submit: kept.
+		expect(codFieldValues(blocksOf(await save({})))).toMatchObject({
+			codAutoCancelDays: "0",
+			codMaxOpenPerBuyer: "1",
+			codMaxOpenPerClient: "100",
+		});
+		await save({ codEnabled: false });
 	});
 
 	// The old "a label states an unset or unreadable value as a FACT" case used a

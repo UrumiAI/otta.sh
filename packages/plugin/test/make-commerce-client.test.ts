@@ -98,13 +98,10 @@ describe("makeCommerceClient", () => {
 		// it is configured means reading BOTH its kv keys on every construction —
 		// that is the two reads below, in the order `stripeGatewayFromCtx` issues
 		// them. The login email sender is built lazily, so the retired email key is
-		// not read here. Cash on delivery's toggle is the third read (ADR-0044):
-		// checkout arms it only while the merchant has it on.
-		expect(kvReads).toEqual([
-			STRIPE_SECRET_KEY_KEY,
-			STRIPE_WEBHOOK_SECRET_KEY,
-			"settings:codEnabled",
-		]);
+		// not read here. Cash on delivery's settings are not read either (ADR-0044):
+		// its gateway is always armed at checkout, and its policy is read lazily, by a
+		// COD placement only — so a card-only store pays nothing for it.
+		expect(kvReads).toEqual([STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY]);
 	});
 
 	test("the client spans the whole port — 38 methods (listShippingOptions joined at #305 part 2; replaceCart and getMyAccount on 2026-10-02; resumeOrderPayment for QA U-2; getShopperState for the header, QA U-14; abandonCartOrder for QA2 X4; getShopPriceDisplay and getCartPriceDisplay for #423; restoreProductCommerce for #447; replaceStaleCurrencyCart for #440; getStorefrontSettings for #547 — the saved currency, the hold window and the hold-timer flag in one read, replacing getSavedStoreCurrency, getShowHoldTimer and the public getCartHoldTtlMinutes; getCartWithSettings for #547 — getCart plus those settings from its own read; applyProductVariantSync for #602 — one save's variant declares and drops in one write), none of them a stub's", async () => {

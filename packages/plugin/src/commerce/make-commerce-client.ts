@@ -25,6 +25,7 @@
  */
 
 import { makeLoginEmailSender } from "../email/ctx-email-sender.js";
+import { readCodCheckoutPolicy } from "../payments/cash-on-delivery.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import { checkoutRequiresBuyerAddress } from "../payments/stripe-account-country.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
@@ -55,7 +56,14 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 	// so console refunds reach the same gateways checkout charged through.
 	const taxCalculator = getTaxCalculator();
 	return new InProcessCommerceClient(ctx, {
-		gateways: await resolvePaymentGateways(ctx),
+		// ADR-0044: the cod gateway is ALWAYS armed at checkout, so a same-key replay
+		// of an order placed while COD was on still finds it once it is switched off.
+		// Whether a FRESH COD placement is accepted is the domain's call, from the
+		// policy below.
+		gateways: await resolvePaymentGateways(ctx, { cashOnDelivery: "always" }),
+		// Lazy: three kv reads, only when the buyer chose cash on delivery. Fails soft
+		// to COD off.
+		resolveOfflinePolicy: () => readCodCheckoutPolicy(ctx),
 		// ADR-0030: the site's registered calculator, if any (`createOttaPlugin`);
 		// absent ⇒ the built-in rate table.
 		...(taxCalculator !== undefined ? { taxCalculator } : {}),

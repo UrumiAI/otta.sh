@@ -89,6 +89,20 @@ describe("parseCheckoutPlaceInput", () => {
 		});
 	});
 
+	test("ADR-0044: an optional clientKey is trimmed and carried; anything but a string of at most 128 characters is malformed", () => {
+		const base = { cartId: "cart-1", buyerRef: "a@b.co", idempotencyKey: "k" };
+		expect(parseCheckoutPlaceInput(base)).not.toHaveProperty("clientKey");
+		expect(parseCheckoutPlaceInput({ ...base, clientKey: "  203.0.113.7  " })?.clientKey).toBe(
+			"203.0.113.7",
+		);
+		expect(parseCheckoutPlaceInput({ ...base, clientKey: "k".repeat(128) })?.clientKey).toBe(
+			"k".repeat(128),
+		);
+		for (const bad of ["k".repeat(129), "   ", "", 7, {}, ["a"], null, "a\u0000b"]) {
+			expect(parseCheckoutPlaceInput({ ...base, clientKey: bad }), JSON.stringify(bad)).toBeNull();
+		}
+	});
+
 	test("the locale is display-only — canonicalized when given, defaulted when not", () => {
 		// It formats the order total this route hands back (the pay button's
 		// amount) and reaches no upstream call.

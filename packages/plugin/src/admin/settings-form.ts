@@ -49,8 +49,11 @@ import {
 	COD_ENABLED_KEY,
 	COD_INSTRUCTIONS_KEY,
 	COD_INSTRUCTIONS_MAX,
+	COD_NUMBER_SETTINGS,
 	readCodEnabled,
 	readCodInstructions,
+	readCodNumber,
+	validateCodNumber,
 } from "../payments/cash-on-delivery.js";
 import {
 	clearStripeWebhookLastVerified,
@@ -492,10 +495,17 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		// #531: never throws; a failed read is its own state, never "never".
 		readStripeWebhookLastVerified(ctx),
 		// ADR-0044: fail-soft — an unread toggle leaves its form out, never "off".
-		Promise.all([readCodEnabled(ctx), readCodInstructions(ctx)]).then(
-			([enabled, instructions]): CashOnDeliveryState => ({
+		Promise.all([
+			readCodEnabled(ctx),
+			readCodInstructions(ctx),
+			Promise.all(COD_NUMBER_SETTINGS.map((spec) => readCodNumber(ctx, spec))),
+		]).then(
+			([enabled, instructions, numbers]): CashOnDeliveryState => ({
 				enabled,
 				instructions: instructions ?? "",
+				numbers: Object.fromEntries(
+					COD_NUMBER_SETTINGS.map((spec, i) => [spec.field, numbers[i] ?? spec.fallback]),
+				),
 			}),
 			() => null,
 		),
@@ -712,21 +722,41 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const enabled = input.values?.codEnabled;
 			const rawInstructions = input.values?.codInstructions;
 			const instructions = typeof rawInstructions === "string" ? rawInstructions.trim() : "";
-			if (typeof enabled !== "boolean" || instructions.length > COD_INSTRUCTIONS_MAX) {
+			// The window and the two caps: whole numbers within bounds. One that is
+			// absent from the submit is kept as stored; one present and unusable
+			// refuses the WHOLE save, so nothing is half-written.
+			const numbers: { key: string; value: number }[] = [];
+			let numberRefusal: string | undefined;
+			for (const spec of COD_NUMBER_SETTINGS) {
+				const raw = input.values?.[spec.field];
+				if (raw === undefined) continue;
+				const checked = validateCodNumber(spec, raw);
+				if (!checked.ok) {
+					numberRefusal ??= checked.message;
+					continue;
+				}
+				numbers.push({ key: spec.key, value: checked.value });
+			}
+			const refusal =
+				typeof enabled !== "boolean"
+					? "The on/off choice didn't come through."
+					: instructions.length > COD_INSTRUCTIONS_MAX
+						? `Instructions must be at most ${String(COD_INSTRUCTIONS_MAX)} characters.`
+						: numberRefusal;
+			if (refusal !== undefined || typeof enabled !== "boolean") {
 				const page = await renderPage(ctx, client, {
 					variant: "error",
 					title: "Cash on delivery not saved",
-					description:
-						typeof enabled !== "boolean"
-							? "The on/off choice didn't come through. Nothing was changed."
-							: `Instructions must be at most ${String(COD_INSTRUCTIONS_MAX)} characters. Nothing was changed.`,
+					description: `${refusal ?? ""} Nothing was changed.`,
 				});
 				return {
 					...page,
 					toast: { message: "Cash on delivery not saved", type: "error" },
 				} satisfies BlockResponse;
 			}
+			for (const { key, value } of numbers) await ctx.kv.set(key, value);
 			await ctx.kv.set(COD_INSTRUCTIONS_KEY, instructions);
+			// The toggle last: switching COD on is the write that makes the rest live.
 			await ctx.kv.set(COD_ENABLED_KEY, enabled);
 			const page = await renderPage(ctx, client, {
 				variant: "default",
@@ -1501,6 +1531,8 @@ function buildSettingsBlocks(args: {
 interface CashOnDeliveryState {
 	enabled: boolean;
 	instructions: string;
+	/** The auto-cancel window and the two caps, by form field (`COD_NUMBER_SETTINGS`). */
+	numbers: Record<string, number>;
 }
 
 /**
@@ -1518,6 +1550,26 @@ function cashOnDeliveryGroup(state: CashOnDeliveryState | null): Block[] {
 			{
 				type: "context",
 				text: "Buyers place the order without paying online and pay in cash on delivery. Their items are set aside until you mark the order paid in Orders, or cancel it. Card payments above are not affected.",
+			},
+			{
+				type: "context",
+				text: "Checkout offers cash on delivery only when the site has its per-IP write limit (RATE_LIMIT_WRITES, DEPLOYMENT.md §2.5). Without it, checkout leaves it out even when it is on here.",
+			},
+			{
+				type: "context",
+				text: "Only orders with physical items can use it, and the buyer must give a delivery address with a phone number.",
+			},
+			{
+				type: "context",
+				text: "Unpaid orders not yet shipped are cancelled after the number of days below, and their items go back on sale (0 turns this off).",
+			},
+			{
+				type: "context",
+				text: "The window applies to every open order, so lowering it cancels older unpaid orders on the next sweep.",
+			},
+			{
+				type: "context",
+				text: "The caps limit how many unpaid cash-on-delivery orders one buyer email, or one network, may have open at once (0 means no cap).",
 			},
 			...(state === null
 				? [
@@ -1545,6 +1597,12 @@ function cashOnDeliveryGroup(state: CashOnDeliveryState | null): Block[] {
 										placeholder: "Please have the exact amount ready.",
 										initial_value: state.instructions,
 									},
+									...COD_NUMBER_SETTINGS.map((spec) => ({
+										type: "text_input" as const,
+										action_id: spec.field,
+										label: `${spec.label} (${String(spec.min)}–${String(spec.max)}${spec.min === 0 ? ", 0 = off" : ""})`,
+										initial_value: String(state.numbers[spec.field] ?? spec.fallback),
+									})),
 								],
 								submit: { label: "Save cash on delivery", action_id: SAVE_CASH_ON_DELIVERY_ACTION },
 							},

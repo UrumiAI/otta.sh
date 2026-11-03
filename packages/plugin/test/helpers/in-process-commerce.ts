@@ -30,6 +30,7 @@ import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
 } from "../../src/commerce/in-process-commerce-stores.js";
+import type { OfflinePolicy } from "../../src/payments/cash-on-delivery.js";
 import type { KvAccess, PluginContext } from "../../src/types.js";
 import { commerceStorageLayout } from "../sandbox/storage-layout.js";
 
@@ -98,6 +99,9 @@ export interface MakeInProcessCommerceOptions {
 	 *  what `makeCommerceClient` resolves from the Stripe account's country.
 	 *  Omitted ⇒ not wired: ADR-0021's rules alone. */
 	resolveAddressRequired?: () => Promise<boolean>;
+	/** ADR-0044: cash on delivery's live policy, as `makeCommerceClient` reads it
+	 *  from kv. Omitted ⇒ not wired: COD off. */
+	resolveOfflinePolicy?: () => Promise<OfflinePolicy>;
 	/** An id source the caller controls, for a suite that pins whole documents
 	 *  byte for byte. Omitted ⇒ random UUIDs, which is what a deployment gets. */
 	idGen?: IdGen;
@@ -141,6 +145,9 @@ export async function makeInProcessCommerce(
 				? { resolveAddressRequired: options.resolveAddressRequired }
 				: {}),
 			...(options.taxCalculator !== undefined ? { taxCalculator: options.taxCalculator } : {}),
+			...(options.resolveOfflinePolicy !== undefined
+				? { resolveOfflinePolicy: options.resolveOfflinePolicy }
+				: {}),
 		}),
 		stores,
 		ctx,

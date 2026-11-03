@@ -130,6 +130,7 @@ import {
 	type ZoneResolution,
 	roundingEntry,
 	settlementOf,
+	type CreateOrderCommand,
 } from "@urumi.ai/otta-domain";
 import type {
 	AbandonCartOrderResult,
@@ -177,6 +178,11 @@ import { CONSOLE_LOGGER } from "../logging/console-logger.js";
 import { LOGIN_LINK_TTL_MS, loginLinkUrl } from "../storefront/login-link.js";
 import { buyerRefHint } from "./buyer-ref-hint.js";
 import { emailMatchesBuyer, resumeDeviceThrottleKey, resumeThrottleKey } from "./resume-proof.js";
+import {
+	logCodReadFailure,
+	OFFLINE_POLICY_OFF,
+	type OfflinePolicy,
+} from "../payments/cash-on-delivery.js";
 import type { PluginContext } from "../types.js";
 import {
 	CommerceInputError,
@@ -192,6 +198,7 @@ import {
 	CART_LINE_MAX_QTY,
 	LOGIN_TOKEN_MAX,
 	BUYER_REF_MAX,
+	CLIENT_KEY_MAX,
 	requireIdToken,
 	requireDocumentIdempotencyKey,
 	requireIdempotencyKey,
@@ -251,6 +258,15 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 	 * a resolver that throws (logged), ⇒ not required: ADR-0021's rules alone.
 	 */
 	resolveAddressRequired?: () => Promise<boolean>;
+	/**
+	 * ADR-0044: cash on delivery's live policy — the toggle and the two caps on
+	 * open COD orders — asked by `createOrder` only for a COD placement, and handed
+	 * to the domain, which checks it for a FRESH placement only (a same-key replay
+	 * answers its order whatever it says now). `makeCommerceClient` reads it from
+	 * kv (`readCodCheckoutPolicy`). Absent, or a resolver that throws (logged),
+	 * ⇒ COD off.
+	 */
+	resolveOfflinePolicy?: () => Promise<OfflinePolicy>;
 	/** ADR-0030: an outside tax calculator for quotes and orders; absent ⇒ built-in. */
 	taxCalculator?: TaxCalculator;
 }
@@ -281,6 +297,13 @@ export const ABANDON_CANCEL_CALL_MS = 1_500;
  *  still fits, so the shopper's redirect waits at most this long for it. */
 export const ABANDON_WITHDRAW_BUDGET_MS = 2_500;
 
+/** ADR-0044: the one-way hash a client network key is stored as — hex SHA-256,
+ *  through Web Crypto (in workerd and Node alike). */
+async function sha256Hex(text: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * Server-side notices that are logged ONCE per isolate rather than once per
  * request — a misconfiguration is a fact about the deployment, and a log line per
@@ -304,6 +327,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		| (() => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>)
 		| undefined;
 	readonly #resolveAddressRequired: (() => Promise<boolean>) | undefined;
+	readonly #resolveOfflinePolicy: (() => Promise<OfflinePolicy>) | undefined;
 	readonly #taxCalculator: TaxCalculator | undefined;
 
 	/**
@@ -321,6 +345,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		this.#resolveEmailSender = options.resolveEmailSender;
 		this.#resolveWithdrawGateways = options.resolveWithdrawGateways;
 		this.#resolveAddressRequired = options.resolveAddressRequired;
+		this.#resolveOfflinePolicy = options.resolveOfflinePolicy;
 		this.#taxCalculator = options.taxCalculator;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
@@ -1374,6 +1399,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		if (input.shippingAddress !== undefined) requireShippingAddress(input.shippingAddress);
 		if (input.billingLocation !== undefined) requireBillingLocation(input.billingLocation);
+		if (input.clientKey !== undefined) {
+			requireBoundedText("clientKey", input.clientKey.trim(), 1, CLIENT_KEY_MAX);
+		}
 		const customerId =
 			opts.sessionToken === undefined
 				? undefined
@@ -1393,6 +1421,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		// Issue #382: the Stripe account's address rule, a kv read — a rule about
 		// the card payment, so a cash-on-delivery order (ADR-0044) skips it.
 		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
+		// ADR-0044: what the domain needs to place (or refuse) a COD order. Read
+		// only for COD, so card checkout pays no extra kv read for it.
+		const offline =
+			input.paymentMethod === "cod" ? await this.#offlineCommand(input.clientKey) : undefined;
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
@@ -1400,6 +1432,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			...(customerId !== undefined ? { customerId } : {}),
 			...(addressRequired ? { addressRequired } : {}),
 			paymentMethod: input.paymentMethod,
+			...(offline !== undefined ? { offline } : {}),
 			...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
 			...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 			...(input.shippingAddress !== undefined ? { shippingAddress: input.shippingAddress } : {}),
@@ -1424,6 +1457,31 @@ export class InProcessCommerceClient implements CommerceClient {
 			// was placed with (QA2 X2): masked, and whether it is this request's.
 			buyerRefHint: buyerRefHint(result.order.buyerRef),
 			buyerRefMatches: sameBuyerRef(result.order.buyerRef, input.buyerRef),
+		};
+	}
+
+	/**
+	 * The `offline` block of a COD placement: the live policy (failing CLOSED — a
+	 * resolver that cannot answer is COD off, which refuses only a FRESH placement)
+	 * and the client's network key as a hex SHA-256, so the order never stores the
+	 * address itself (ADR-0044 §7). No key ⇒ none passed, which the domain refuses.
+	 */
+	async #offlineCommand(
+		clientKey: string | undefined,
+	): Promise<NonNullable<CreateOrderCommand["offline"]>> {
+		let policy: OfflinePolicy = OFFLINE_POLICY_OFF;
+		if (this.#resolveOfflinePolicy !== undefined) {
+			try {
+				policy = await this.#resolveOfflinePolicy();
+			} catch (err) {
+				logCodReadFailure("checkout", err);
+			}
+		}
+		return {
+			enabled: policy.enabled,
+			maxOpenPerBuyer: policy.maxOpenPerBuyer,
+			maxOpenPerClient: policy.maxOpenPerClient,
+			...(clientKey !== undefined ? { clientKey: await sha256Hex(clientKey.trim()) } : {}),
 		};
 	}
 
@@ -1546,7 +1604,11 @@ export class InProcessCommerceClient implements CommerceClient {
 			// A stored method that is not a current one (removed like x402, or unknown):
 			// no gateway can ever take it. A current method whose gateway did not
 			// resolve (kv down) still falls through and throws, retryable, as before.
-			!isCurrentPaymentMethod(order.paymentMethod)
+			!isCurrentPaymentMethod(order.paymentMethod) ||
+			// ADR-0044: an OFFLINE order is paid at the door, never online — not even
+			// one still `pending` because its placement died before its flip (the
+			// same-key place finishes that one). Refused before any replay.
+			settlementOf(order.paymentMethod) === "offline"
 		) {
 			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
 		}
