@@ -193,7 +193,7 @@ export function demoRows(slugs: string[], page: CmsProductPage): DemoRow[] {
 	const unpriced = slugs.filter((s) => DEMO_PRICING[s] === undefined);
 	if (unpriced.length > 0) {
 		throw new Error(
-			`seed/seed.json declares product(s) with no entry in DEMO_PRICING: ${unpriced.join(", ")}. Add them to sites/store/scripts/seed-demo-commerce.ts — a seeded product with no commerce row is listed but cannot be bought.`,
+			`seed/seed.json declares product(s) with no entry in DEMO_PRICING: ${unpriced.join(", ")}. Add them to scripts/seed-demo-commerce.ts — a seeded product with no commerce row is listed but cannot be bought.`,
 		);
 	}
 	// Returned but unusable is a DIFFERENT failure from not returned at all, and

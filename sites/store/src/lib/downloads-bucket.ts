@@ -109,7 +109,7 @@ export function assertDownloadsBucketPrivate(wranglerText: string, fileName: str
 				`publicly at /_emdash/api/media/file/<key>, so paid downloads would be ` +
 				`readable by anyone who learns a key. Create a separate private bucket ` +
 				`(wrangler r2 bucket create <name>), set it as "${DOWNLOADS_BINDING}"'s ` +
-				`bucket_name in ${fileName}, then build again (DEPLOYMENT.md §2.1).`,
+				`bucket_name in ${fileName}, then build again (Otta's DEPLOYMENT.md §2.1: https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md).`,
 		);
 	}
 }

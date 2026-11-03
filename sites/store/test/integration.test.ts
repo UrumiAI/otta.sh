@@ -272,3 +272,24 @@ describe("assertLiveConfig", () => {
 		expect(source).not.toMatch(/^import \{[^}]*defineLiveCollection[^}]*\} from "astro:content"/m);
 	});
 });
+
+describe("text the package ships to a site that is not this repository", () => {
+	test("no code line (comments aside) names sites/staging or sites/store", () => {
+		const offenders: string[] = [];
+		for (const dir of ["src", "scripts"]) {
+			const root = path.join(PKG, dir);
+			for (const file of readdirSync(root, { recursive: true }).map(String)) {
+				if (!/\.(ts|astro)$/.test(file)) continue;
+				readFileSync(path.join(root, file), "utf8")
+					.split("\n")
+					.forEach((line, index) => {
+						const code = line.trim();
+						if (/^(\*|\/\/|\/\*)/.test(code)) return;
+						if (/sites\/(staging|store)\b/.test(code))
+							offenders.push(`${dir}/${file}:${String(index + 1)}`);
+					});
+			}
+		}
+		expect(offenders).toEqual([]);
+	});
+});

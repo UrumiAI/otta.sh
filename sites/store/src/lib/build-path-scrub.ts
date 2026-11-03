@@ -431,7 +431,7 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 					logger.warn(
 						`ignored ${dropped.length} secret(s) set in the build environment, so none can be ` +
 							`inlined into the worker: ${dropped.toSorted().join(", ")}. Set secrets as Worker ` +
-							`secrets (\`wrangler secret put\`), never in the build shell (DEPLOYMENT.md §3).`,
+							`secrets (\`wrangler secret put\`), never in the build shell (Otta's DEPLOYMENT.md §3: https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md).`,
 					);
 				}
 				// Astro's own `.env` lookup: `vite.envDir`, else the project root.

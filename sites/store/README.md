@@ -23,9 +23,9 @@ downloads bucket, the `EMAIL` binding for a sender, the seed and live-collection
 secrets and build paths kept out of the bundle).
 
 The easiest way to use it is the one-click store template: see the repository's
-[`DEPLOYMENT.md`](../../DEPLOYMENT.md) §2.6 for what a site needs besides this file
+[`DEPLOYMENT.md`](https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md) §2.6 for what a site needs besides this file
 (`wrangler.jsonc`, `src/worker.ts`, `src/live.config.ts`, the pinned dependencies), and
-[`UPGRADING.md`](../../UPGRADING.md) for the template contract.
+[`UPGRADING.md`](https://github.com/UrumiAI/otta.sh/blob/main/UPGRADING.md) for the template contract.
 
 ## Options
 
