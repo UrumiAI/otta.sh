@@ -39,6 +39,7 @@ import {
 	dropBuildSecretEnv,
 	dropShellPathEnv,
 	findInlinedEnvKeysInDir,
+	inlinedEnvKeysByClass,
 	findInlinedSecretsInDir,
 	findLeakedSecretValuesInDir,
 	MIN_SEARCHED_SECRET_LENGTH,
@@ -502,6 +503,41 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 			expect(existsSync(server)).toBe(false);
 		}));
 
+	test.each([
+		["SITE_URL", "https://shop.example.com"],
+		["EMDASH_SITE_URL", "https://shop.example.com"],
+		["EMDASH_TRUSTED_PROXY_HEADERS", "x-real-ip"],
+	])("EmDash's build-time config %s may be inlined (no failure, no warning)", (key, value) =>
+		withTempDir(async (dir) => {
+			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(`\t${key}: ${JSON.stringify(value)}`));
+			const { failure, warnings } = await runHooks("build", { serverDir: dir });
+			expect(failure).toBeUndefined();
+			expect(warnings.join("\n")).not.toContain(key);
+		}),
+	);
+
+	test("an unknown non-secret key WARNS, naming it, and the build goes on", () =>
+		withTempDir(async (dir) => {
+			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(`\tSHOP_REGION: "eu"`));
+			const { failure, warnings } = await runHooks("build", { serverDir: dir });
+			expect(failure).toBeUndefined();
+			expect(warnings.join("\n")).toContain("ok.mjs: SHOP_REGION");
+			expect(warnings.join("\n")).not.toContain('"eu"');
+			expect(existsSync(path.join(dir, "ok.mjs"))).toBe(true);
+		}));
+
+	test.each(["USER", "SHELL", "npm_config_user_agent", "WORKERS_CI_BRANCH"])(
+		"a shell or CI variable (%s) fails it: the build environment was inlined",
+		(key) =>
+			withTempDir(async (dir) => {
+				const server = path.join(dir, "server");
+				mkdirSync(server);
+				writeFileSync(path.join(server, "x.mjs"), withInlinedEnv(`\t${key}: "v"`));
+				const { failure } = await runHooks("build", { serverDir: server });
+				expect(failure).toContain(`x.mjs: ${key}`);
+			}),
+	);
+
 	test("Astro's own keys and PUBLIC_* may be inlined", () =>
 		withTempDir(async (dir) => {
 			writeFileSync(
@@ -752,8 +788,9 @@ describe.runIf(existsSync(dist) || process.env.CI !== undefined)("the built site
 		expect(findInlinedSecretsInDir(path.join(dist, "server")), rebuildHint).toEqual([]);
 	});
 
-	test("inlines NO build variable at all outside the allowlist (ADR-0045)", () => {
+	test("inlines no secret, no shell variable and no unknown key (ADR-0045)", () => {
 		expect(existsSync(dist), "no sites/staging/dist — run `pnpm -r build` first").toBe(true);
 		expect(findInlinedEnvKeysInDir(path.join(dist, "server")), rebuildHint).toEqual([]);
+		expect(inlinedEnvKeysByClass(path.join(dist, "server")).unknown, rebuildHint).toEqual([]);
 	});
 });

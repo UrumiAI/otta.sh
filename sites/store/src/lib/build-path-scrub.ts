@@ -271,12 +271,16 @@ export function findInlinedSecretsInDir(dir: string): string[] {
 }
 
 /**
- * The keys Astro's inlined env object may legitimately carry: Astro's own build
- * keys, and `PUBLIC_*`, which Astro promises are public. A clean build of the
- * store inlines no others at all (every such object is empty; checked against
- * real `sites/staging` and template builds, ADR-0045).
+ * Keys Astro's inlined env object may carry without comment: Astro's own build
+ * keys, `PUBLIC_*` (Astro's promise that a value is public), and EmDash 1.3.1's
+ * documented non-secret build-time configuration, which Astro inlines from a
+ * module that reads them whenever they are set at build time (found by grepping
+ * emdash's dist for `import.meta.env` reads and for the names its env-object
+ * modules look up: `public-url-*`, `trusted-proxy-*`, the OAuth provider and
+ * migration and preview modules). EmDash's secrets (`*_SECRET`, `*_KEY`, `*_SALT`)
+ * are not here: they are secret-shaped.
  */
-const ASTRO_ENV_KEYS: ReadonlySet<string> = new Set([
+const ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
 	"SSR",
 	"DEV",
 	"PROD",
@@ -284,31 +288,72 @@ const ASTRO_ENV_KEYS: ReadonlySet<string> = new Set([
 	"BASE_URL",
 	"SITE",
 	"ASSETS_PREFIX",
+	"SITE_URL",
+	"EMDASH_SITE_URL",
+	"EMDASH_ALLOWED_ORIGINS",
+	"EMDASH_TRUSTED_PROXY_HEADERS",
+	"EMDASH_MIGRATIONS_MODE",
+	"EMDASH_PREVIEW_PATH_PATTERN",
+	"EMDASH_OAUTH_GITHUB_CLIENT_ID",
+	"EMDASH_OAUTH_GOOGLE_CLIENT_ID",
+	"EMDASH_OAUTH_MICROSOFT_CLIENT_ID",
+	"EMDASH_OAUTH_MICROSOFT_TENANT_ID",
 ]);
 
-/** Whether an inlined env key is one a bundle may carry ({@link ASTRO_ENV_KEYS}, `PUBLIC_*`). */
-export function isAllowedInlinedEnvKey(key: string): boolean {
-	return ASTRO_ENV_KEYS.has(key) || key.startsWith("PUBLIC_");
+/**
+ * Variables no module reads as configuration, set in every shell or CI job. One
+ * of them inlined means a module handed Astro a bare `import.meta.env` and it
+ * inlined the build environment wholesale (HOME, PATH and TERM in the case
+ * ADR-0045 records).
+ */
+const WHOLE_ENV_KEYS: ReadonlySet<string> = new Set([
+	"PATH",
+	"HOME",
+	"USER",
+	"TERM",
+	"SHELL",
+	"PWD",
+	"HOSTNAME",
+]);
+
+/** How the build treats one inlined env key. */
+export type InlinedEnvKeyClass = "allowed" | "secret" | "whole-env" | "unknown";
+
+export function classifyInlinedEnvKey(key: string): InlinedEnvKeyClass {
+	if (isBuildSecretEnvKey(key)) return "secret";
+	if (WHOLE_ENV_KEYS.has(key) || key.startsWith("npm_") || key.startsWith("WORKERS_CI")) {
+		return "whole-env";
+	}
+	if (ALLOWED_ENV_KEYS.has(key) || key.startsWith("PUBLIC_")) return "allowed";
+	return "unknown";
 }
 
-/**
- * Every `<file>: <KEY>` for ANY build variable inlined into a `.mjs`/`.js` file
- * under `dir` that is not {@link isAllowedInlinedEnvKey} — secret-shaped or not.
- * A module that mentions `import.meta.env` other than as a `.KEY` read makes
- * Astro inline every build variable whose name appears in it (HOME, PATH, TERM
- * in the case ADR-0045 records), so the check is by key, not by value.
- * {@link findInlinedSecretsInDir} is the secret-only subset. Names only.
- */
-export function findInlinedEnvKeysInDir(dir: string): string[] {
-	const found: string[] = [];
+/** Every `<file>: <KEY>` of each inlined env key under `dir`, by class. Names only. */
+export function inlinedEnvKeysByClass(dir: string): Record<InlinedEnvKeyClass, string[]> {
+	const found: Record<InlinedEnvKeyClass, string[]> = {
+		allowed: [],
+		secret: [],
+		"whole-env": [],
+		unknown: [],
+	};
 	for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
 		if (!entry.isFile() || !/\.m?js$/.test(entry.name)) continue;
 		const file = path.join(entry.parentPath, entry.name);
 		for (const key of inlinedEnvKeys(readFileSync(file, "utf8"))) {
-			if (!isAllowedInlinedEnvKey(key)) found.push(`${path.relative(dir, file)}: ${key}`);
+			found[classifyInlinedEnvKey(key)].push(`${path.relative(dir, file)}: ${key}`);
 		}
 	}
 	return found;
+}
+
+/**
+ * The inlined keys that FAIL the build: secrets, and the whole-environment
+ * markers. An unknown key only warns ({@link inlinedEnvKeysByClass}): a site's
+ * own build-time configuration may be legitimately inlined.
+ */
+export function findInlinedEnvKeysInDir(dir: string): string[] {
+	const found = inlinedEnvKeysByClass(dir);
+	return [...found.secret, ...found["whole-env"]];
 }
 
 /**
@@ -382,8 +427,9 @@ const LEAK_HELP =
 	"that reads it as `import.meta.env.KEY`. If the name is a secret, remove it from the build " +
 	"environment and from the project's .env, set it as a Worker secret (`wrangler secret put`), " +
 	"and build again; for `astro dev`, keep local secrets in the project's .dev.vars, which Astro " +
-	"never reads. If it is not a secret (HOME, PATH, …), a dependency spells `import.meta.env` " +
-	"another way: report it. See " +
+	"never reads. If it is a shell variable no code reads as configuration (HOME, PATH, npm_…), " +
+	"some module in the bundle spells the bare `import.meta.env` and the build environment was " +
+	"inlined wholesale: find that module (the file is named above). See " +
 	"https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md#3-secrets--tokens-checklist.";
 
 function escapeRegExp(text: string): string {
@@ -489,6 +535,16 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 					// output, which is uploaded as public static assets: search it too.
 					const client =
 						clientDir !== undefined && existsSync(clientDir) ? fileURLToPath(clientDir) : undefined;
+					// A key that is neither a secret, a shell marker nor known config may be the
+					// site's own build-time setting: say so, do not fail.
+					const unknown = inlinedEnvKeysByClass(server).unknown;
+					if (unknown.length > 0) {
+						logger.warn(
+							`build variables were inlined into the worker by name (values not shown): ` +
+								`${unknown.toSorted().join(", ")}. Fine if they are your own non-secret build ` +
+								`settings; if one is a secret, make it a Worker secret instead.`,
+						);
+					}
 					const serverLeaks = [
 						...new Set([
 							...findInlinedEnvKeysInDir(server),
