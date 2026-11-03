@@ -1,103 +1,26 @@
 /**
- * Otta staging storefront + admin — EmDash on Cloudflare Workers.
+ * Otta staging storefront + admin — the reference site, built the way a
+ * merchant's site is: `@urumi.ai/otta-store`'s `otta()` integration supplies
+ * the whole store (EmDash, the trusted Otta plugin, the routes, middleware,
+ * theme, fonts and build guards; ADR-0045). The one-click template repository
+ * is this file without the repository-only switches below.
  *
- * Modeled on em-dash's `templates/starter-cloudflare/astro.config.mjs`
- * (no Access / Images / Stream / sandbox), plus the trusted Otta plugin
- * descriptor (ADR-0006). Commerce runs IN-PROCESS in this Worker: there is no
- * separate service to point at. Deployment-supplied egress goes in the `egress`
- * const below, which is baked into the bundle AND fed to the descriptor's
- * allowlist from one place — today only OTTA_EXTRA_ALLOWED_HOSTS.
+ * What only this repository adds:
+ *  - `wrangler.local.jsonc`, the gitignored real deploy config, preferred over
+ *    the tracked `wrangler.jsonc` placeholder template when it exists;
+ *  - the Playwright e2e stack's own config and its fresh-state directory;
+ *  - the e2e Stripe-offline switch (`astro dev` only).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
-import react from "@astrojs/react";
-import { defineConfig, fontProviders } from "astro/config";
-import emdash from "emdash/astro";
-import { parseExtraAllowedHosts } from "@urumi.ai/otta-plugin";
-import { parseDotEnv } from "./src/lib/dot-env.js";
-import { buildEmdashOptions } from "./src/emdash-options.js";
-import { assertEmailBindingForBuild } from "./src/lib/email-binding.js";
-import { parseEmailFrom } from "./src/lib/email-from.js";
-import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
-import { buildPathScrub } from "./src/lib/build-path-scrub.js";
+import otta from "@urumi.ai/otta-store";
+import { defineConfig } from "astro/config";
 import { devStripeOfflineIntegration } from "./src/lib/e2e-stripe-offline.js";
 import {
 	E2E_WRITE_LIMIT_VAR,
 	e2eWranglerConfig,
 	e2eWranglerIntegration,
 } from "./src/lib/e2e-wrangler.js";
-
-/** Astro does NOT load .env into process.env for THIS module (verified —
- *  see src/lib/dot-env.ts), so fall back to sites/staging/.env explicitly:
- *  shell env wins, then .env, then unset. */
-function readDotEnv(name: string): string | undefined {
-	try {
-		return parseDotEnv(readFileSync(new URL(".env", import.meta.url), "utf8"))[name];
-	} catch {
-		return undefined; // no .env — fine
-	}
-}
-
-/**
- * THE IN-PROCESS EGRESS — resolved ONCE, here (review round 3, B1).
- *
- * One value and two consumers. The plugin BUNDLE reads it through Vite defines
- * (`manifest.ts`), and the registered DESCRIPTOR needs the same value to put its
- * hosts on `allowedHosts` — the one ADR-0006 gate that still bites in trusted
- * mode. Feed only the defines and you get a bundle that calls a host the gate
- * refuses. So one const, both consumers. Operator-supplied egress plugs in here.
- *
- * NO EMAIL URL. Email goes through EmDash's `ctx.email` (ADR-0031): install and
- * select an EmDash email provider; otta grants itself no email host. The site's
- * default provider is wired below (`emailFrom`, ADR-0043).
- *
- * NEVER SECRETS. API credentials live in write-only plugin kv (the `settings:`
- * keys `payment-secrets.ts` owns), provisioned through the admin Settings form —
- * which is what keeps wrangler-config.test.ts's /SECRET|KEY|TOKEN|PASSWORD/i ban
- * on `vars` intact and unroutable-around, and why site-config.test.ts can assert
- * this file names none of them.
- *
- * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED: with no OTTA_EXTRA_ALLOWED_HOSTS,
- * staging's allowlist is the constant part alone — Stripe's API host.
- */
-const egress = {
-	// OTTA_EXTRA_ALLOWED_HOSTS: comma-separated extra egress hostnames. Validated
-	// HERE so a typo fails the build loudly (parseExtraAllowedHosts throws naming
-	// the entry); the normalized list is what both the descriptor and the Vite
-	// define below receive, so they agree by construction.
-	extraAllowedHosts: parseExtraAllowedHosts(
-		process.env.OTTA_EXTRA_ALLOWED_HOSTS ?? readDotEnv("OTTA_EXTRA_ALLOWED_HOSTS"),
-	),
-};
-
-/**
- * The default email provider's sender (ADR-0043). Unset registers NO provider
- * (fail-closed, ADR-0031). Validated here so a malformed address fails the
- * build. Not a secret and not a wrangler `vars` entry: it is baked into the
- * provider's descriptor at build time. The playground does not receive it.
- */
-const emailFrom = parseEmailFrom(
-	process.env.OTTA_EMAIL_FROM ?? readDotEnv("OTTA_EMAIL_FROM"),
-	process.env.OTTA_EMAIL_FROM_NAME ?? readDotEnv("OTTA_EMAIL_FROM_NAME"),
-);
-
-/** The playground config (`astro.config.playground.ts`) registers the same
- *  egress. Re-exported so the two builds cannot resolve hosts twice. */
-export { egress };
-
-/**
- * Issue #498: the Stripe publishable key is no longer a build setting — it is
- * entered in admin Settings and read per request. A build that still sets the
- * old variable FAILS, naming where the key goes now: left unread, it would look
- * like configuration while checkout says card payment isn't set up.
- */
-if ((process.env.STRIPE_PUBLIC_KEY ?? readDotEnv("STRIPE_PUBLIC_KEY") ?? "").trim() !== "") {
-	throw new Error(
-		"STRIPE_PUBLIC_KEY is no longer read (issue #498). Remove it from the environment and " +
-			"sites/staging/.env, and enter the publishable key in the admin: Otta Settings → " +
-			"Payments & email → Stripe publishable key.",
-	);
-}
 
 /**
  * Real deploy identifiers live in the gitignored `wrangler.local.jsonc`
@@ -118,62 +41,18 @@ const localWranglerConfig =
 		: undefined);
 
 /**
- * A guard on the config this build actually uses — the gitignored local config
- * when there is one, which no test sees; with no local file, the tracked
- * template. It throws naming the file: the private downloads bucket must never
- * be the public media bucket (issue #376): EmDash serves every MEDIA key without
- * auth (`src/lib/downloads-bucket.ts`).
+ * The config this build actually uses — the gitignored local config when there
+ * is one, which no test sees; with no local file, the tracked template. The
+ * adapter reads it (`configPath`) and `otta()` runs its guards on the SAME file
+ * (`wranglerConfig`): the private downloads bucket must never be the public
+ * media bucket (issue #376), and a configured sender needs the `EMAIL` binding
+ * (ADR-0043).
  */
 const selectedWranglerConfig = localWranglerConfig ?? "wrangler.jsonc";
-assertDownloadsBucketPrivate(
-	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
-	selectedWranglerConfig,
-);
-
-/**
- * A configured sender needs the `EMAIL` send_email binding in the config this
- * build uses (ADR-0043): selected-but-unbound burns order-email attempts.
- */
-assertEmailBindingForBuild(emailFrom, {
-	...(localWranglerConfig !== undefined
-		? { localText: readFileSync(new URL(localWranglerConfig, import.meta.url), "utf8") }
-		: {}),
-	templateText: readFileSync(new URL("wrangler.jsonc", import.meta.url), "utf8"),
-});
-
-/**
- * The latin `unicode-range`: the range on the face Google Fonts' css2 response
- * comments as "latin", copied verbatim. It is what the Google provider emitted
- * before the fonts were vendored and what the vendored latin-subset files
- * cover. All three faces share it; `test/fonts-config.test.ts` pins each face
- * to this list.
- */
-export const LATIN_UNICODE_RANGE: [string, ...string[]] = [
-	"U+0000-00FF",
-	"U+0131",
-	"U+0152-0153",
-	"U+02BB-02BC",
-	"U+02C6",
-	"U+02DA",
-	"U+02DC",
-	"U+0304",
-	"U+0308",
-	"U+0329",
-	"U+2000-206F",
-	"U+20AC",
-	"U+2122",
-	"U+2191",
-	"U+2193",
-	"U+2212",
-	"U+2215",
-	"U+FEFF",
-	"U+FFFD",
-];
 
 export default defineConfig({
-	output: "server",
 	// NOT `cloudflare({ imageService: "cloudflare" })` — that's the paid
-	// image resizing product; Astro's built-in service is fine for staging.
+	// image resizing product. The adapter's default image service binds IMAGES.
 	adapter: cloudflare({
 		...(localWranglerConfig !== undefined ? { configPath: localWranglerConfig } : {}),
 		// DEV ONLY (`astro dev`; a build has no local state). The claim e2e config
@@ -185,154 +64,19 @@ export default defineConfig({
 			? { persistState: { path: process.env["OTTA_E2E_PERSIST_DIR"] } }
 			: {}),
 	}),
-	image: {
-		layout: "constrained",
-		responsiveStyles: true,
-	},
-	/**
-	 * The theme's three faces (docs/theme/TEMPERED.md §3), SELF-HOSTED from files
-	 * checked in under `src/fonts/<family>/` (each with its SIL OFL beside it).
-	 * Astro serves them from this origin, so a shopper's browser never talks to
-	 * fonts.googleapis.com or fonts.gstatic.com. Variables are namespaced per
-	 * theme (`--f-<themeId>-<role>`) so two themes' faces never collide:
-	 * `src/themes/tempered/theme.css` maps the `--f-tempered-*` variables these
-	 * declare onto the shared `--u-display` / `--u-body` / `--u-data` names, and
-	 * `src/themes/tempered/Layout.astro` emits the <Font> tags — only the ACTIVE
-	 * theme's Layout emits its own.
-	 *
-	 * VENDORED, not the Google provider, and the reason is measured, not taste.
-	 * Astro's Google provider (unifont) fetches css2 with a pinned macOS
-	 * Chrome/121 user agent, and Google answers a macOS UA with builds that have
-	 * NO `prep` table (macOS ignores hinting). Otherwise the files are the same:
-	 * for all three faces the only table that differs is `prep`. That table is
-	 * a 7-byte scan-control program (PUSHW 511 SCANCTRL PUSHB 4 SCANTYPE), not
-	 * real hinting — but its presence is what makes FreeType take the native
-	 * TrueType path. A font with no instructions is handed to FreeType's
-	 * AUTOHINTER instead (Chromium on Linux and Android), which rounds each
-	 * glyph's advance at text sizes, so body copy spaces unevenly. The files
-	 * here are the builds a Windows/Linux browser gets from Google, which carry
-	 * `prep`.
-	 *
-	 * Each file is the full variable font (same axes as the previous Google
-	 * download): Bricolage Grotesque opsz 12–96,
-	 * wdth 75–100, wght 200–800; Schibsted Grotesk wght 400–900; Martian Mono
-	 * wdth 75–112.5, wght 100–800. The width contrast between the narrow display
-	 * face and the wide data face is the theme's loudest move, so
-	 * `font-variation-settings: "wdth" …` must never be a silent no-op.
-	 * `weight` keeps the ranges the theme uses (and the descriptors the Google
-	 * provider emitted), and no `stretch` descriptor is declared, exactly as
-	 * before, so matching and rendering are unchanged apart from the hinting.
-	 * `test/fonts-config.test.ts` pins the provider, the files, a non-empty
-	 * `prep` table, the axes, `display` and the unicode range.
-	 */
-	fonts: [
-		{
-			provider: fontProviders.local(),
-			name: "Bricolage Grotesque",
-			cssVariable: "--f-tempered-display",
-			options: {
-				variants: [
-					{
-						// Wordmark and titles sit at 700–800; 400 is the muted counter-voice.
-						src: ["./src/fonts/bricolage-grotesque/bricolage-grotesque-variable-latin.woff2"],
-						weight: "400 800",
-						style: "normal",
-						display: "swap",
-						unicodeRange: LATIN_UNICODE_RANGE,
-					},
-				],
-			},
-		},
-		{
-			provider: fontProviders.local(),
-			name: "Schibsted Grotesk",
-			cssVariable: "--f-tempered-body",
-			options: {
-				variants: [
-					{
-						src: ["./src/fonts/schibsted-grotesk/schibsted-grotesk-variable-latin.woff2"],
-						weight: "400 700",
-						style: "normal",
-						display: "swap",
-						unicodeRange: LATIN_UNICODE_RANGE,
-					},
-				],
-			},
-		},
-		{
-			provider: fontProviders.local(),
-			name: "Martian Mono",
-			cssVariable: "--f-tempered-data",
-			options: {
-				variants: [
-					{
-						src: ["./src/fonts/martian-mono/martian-mono-variable-latin.woff2"],
-						weight: "300 700",
-						style: "normal",
-						display: "swap",
-						unicodeRange: LATIN_UNICODE_RANGE,
-					},
-				],
-			},
-		},
-	],
-	// The last one bakes `__OTTA_DEV_STRIPE_OFFLINE__` — `true` only under
-	// `astro dev` with OTTA_E2E_STRIPE_OFFLINE=1, for the e2e suite's order seed
-	// (issue #378). An integration because only a hook can see the command; see
-	// src/lib/e2e-stripe-offline.ts.
-	// `buildPathScrub` (issue #121) removes the builder's absolute paths from the
-	// worker bundle once the build is done; see src/lib/build-path-scrub.ts.
+	// `devStripeOfflineIntegration` bakes `__OTTA_DEV_STRIPE_OFFLINE__` — `true`
+	// only under `astro dev` with OTTA_E2E_STRIPE_OFFLINE=1, for the e2e suite's
+	// order seed (issue #378). An integration because only a hook can see the
+	// command; see src/lib/e2e-stripe-offline.ts.
 	integrations: [
-		react(),
-		emdash(buildEmdashOptions(egress, emailFrom)),
+		otta({
+			template: 1,
+			// OTTA_EXTRA_ALLOWED_HOSTS / OTTA_EMAIL_FROM fall back to THIS site's
+			// `.env` (Astro does not load it into process.env for the config).
+			envDir: new URL(".", import.meta.url),
+			wranglerConfig: selectedWranglerConfig,
+		}),
 		devStripeOfflineIntegration(),
 		e2eWranglerIntegration(),
-		buildPathScrub(),
 	],
-	// CSRF: Astro's `security.checkOrigin` does NOT protect the storefront's
-	// endpoints — the emdash integration force-injects `checkOrigin: false`
-	// and its replacement layer covers only /_emdash/api/* routes. The
-	// protection is the site-owned origin check in src/middleware.ts
-	// (src/lib/origin-guard.ts, ADR-0006). We still never set checkOrigin:false
-	// ourselves (pinned by the site-config test) so nothing regresses if emdash
-	// stops overriding.
-	vite: {
-		// Build-time globals the @urumi.ai/otta-plugin bundle reads through `typeof`
-		// guards (manifest.ts, src/lib/stripe-config.ts).
-		define: {
-			// Validated extra egress hosts, comma-joined, from the SAME `egress` const
-			// that decides what the descriptor allowlists (see its note above).
-			// ALWAYS a string: baking `undefined` would leave the identifier
-			// undeclared, and `""` is what the plugin's `typeof` guard reads as none.
-			__OTTA_EXTRA_ALLOWED_HOSTS__: JSON.stringify(egress.extraAllowedHosts.join(",")),
-			// The disposable playground build sets this true and seeds demo
-			// commerce. The storefront deploy must stay false — see
-			// astro.config.playground.ts.
-			__OTTA_PLAYGROUND__: JSON.stringify(false),
-		},
-		ssr: {
-			// UNCONDITIONAL: if @urumi.ai/otta-plugin is ever externalized the defines
-			// it reads (the egress defines above, `__OTTA_DEV_STRIPE_OFFLINE__`)
-			// silently never apply. (It is also consumed as TS
-			// source via its workspace `"."`/`"./plugin"` exports, which
-			// requires bundling anyway.)
-			//
-			// @urumi.ai/otta-admin-react is here for the second reason only: its
-			// workspace `"."`/`"./admin"` exports point at TS/TSX SOURCE, so it
-			// cannot be externalized. It carries no build-time define.
-			noExternal: ["@urumi.ai/otta-plugin", "@urumi.ai/otta-admin-react"],
-		},
-		optimizeDeps: {
-			// Dev only (issue #568). Both are first imported when the admin loads —
-			// PluginRegistry by EmDash's admin.astro, plugin-utils by
-			// packages/admin-react/src/console-api.ts — so Vite's crawl misses them,
-			// discovers them mid-session, re-bundles and reloads the admin SPA under
-			// a running e2e test. Listing them pre-bundles both at startup. Bare
-			// specifiers resolve from this site, which depends on emdash directly
-			// (same 1.3.1 instance admin-react gets). Merged with the emdash
-			// integration's own `include`; a production build does not use it.
-			include: ["emdash/internal/routes/PluginRegistry", "emdash/plugin-utils"],
-		},
-	},
-	devToolbar: { enabled: false },
 });

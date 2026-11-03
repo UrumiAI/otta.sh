@@ -25,7 +25,7 @@
  * IT WRITES: a cart, an order, a capture and a sign-in request. Point it only
  * at a local stack.
  */
-import { cmsAuthHeaders } from "../scripts/seed-demo-commerce.js";
+import { cmsAuthHeaders } from "../../store/scripts/seed-demo-commerce.js";
 import {
 	E2E_WEBHOOK_SECRET,
 	provisionWebhookSecret,

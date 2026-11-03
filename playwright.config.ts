@@ -26,7 +26,7 @@ import {
 	E2E_STARTS_STACK,
 	E2E_VIEWPORT,
 } from "./sites/staging/e2e/harness.js";
-import { SETUP_TOKEN_SECRET } from "./sites/staging/src/lib/setup-claim-contract.js";
+import { SETUP_TOKEN_SECRET } from "./sites/store/src/lib/setup-claim-contract.js";
 import {
 	markServerStartedCommand,
 	serverStartedMarkerPath,

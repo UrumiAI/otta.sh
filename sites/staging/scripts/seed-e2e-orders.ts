@@ -62,7 +62,7 @@ import {
 	STOREFRONT_PAYMENT_CONFIG_ROUTE,
 } from "@urumi.ai/otta-plugin";
 import { signStripeWebhook } from "@urumi.ai/otta-payments-stripe";
-import { cmsAuthHeaders } from "./seed-demo-commerce.js";
+import { cmsAuthHeaders } from "../../store/scripts/seed-demo-commerce.js";
 
 /** The webhook secret the seed provisions and signs with. A placeholder: it
  *  only ever authenticates this script to a local dev server. */

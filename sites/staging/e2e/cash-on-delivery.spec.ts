@@ -26,7 +26,7 @@
  * IT WRITES. One COD order is placed, shipped, paid and completed, and its
  * stock is committed. Point it only at a local stack.
  */
-import { cmsAuthHeaders } from "../scripts/seed-demo-commerce.js";
+import { cmsAuthHeaders } from "../../store/scripts/seed-demo-commerce.js";
 import {
 	E2E_WEBHOOK_SECRET,
 	stripeSecretKeyIsSet,

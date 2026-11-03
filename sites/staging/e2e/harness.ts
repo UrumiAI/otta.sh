@@ -50,8 +50,11 @@ import {
 	type Page,
 	type TestInfo,
 } from "@playwright/test";
-import { e2eSetupToken } from "../scripts/setup-claim-cookie.js";
-import { SETUP_CLAIM_COOKIE, SETUP_CLAIM_COOKIE_PATH } from "../src/lib/setup-claim-contract.js";
+import { e2eSetupToken } from "./setup-token.js";
+import {
+	SETUP_CLAIM_COOKIE,
+	SETUP_CLAIM_COOKIE_PATH,
+} from "../../store/src/lib/setup-claim-contract.js";
 import { probeSite } from "./site-probe.js";
 
 /**
