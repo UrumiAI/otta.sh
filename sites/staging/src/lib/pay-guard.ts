@@ -33,12 +33,14 @@ import type { OrderRouteResult } from "@urumi.ai/otta-plugin";
  * payable: a card form is never mounted on a guess.
  */
 export function isOrderPayable(
-	order: { state: string; holdExpiresAt: string; paymentMethod?: string | null },
+	order: { state: string; holdExpiresAt: string; settlement?: "gateway" | "offline" | null },
 	now: Date,
 ): boolean {
 	if (order.state !== "pending") return false;
-	// ADR-0044: a cash-on-delivery order is paid at the door, never on this page.
-	if (order.paymentMethod === "cod") return false;
+	// ADR-0044: an OFFLINE order (cash on delivery) is paid at the door, never on
+	// this page. It leaves `pending` the moment it is placed; this covers the
+	// instant before that flip, which a same-key replay finishes.
+	if (order.settlement === "offline") return false;
 	const deadline = Date.parse(order.holdExpiresAt);
 	return Number.isFinite(deadline) && deadline > now.getTime();
 }

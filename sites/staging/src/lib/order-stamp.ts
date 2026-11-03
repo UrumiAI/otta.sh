@@ -41,9 +41,10 @@ export interface OrderStampInput {
 	/** …and was that only `processing` — not yet settled? Then the refund is
 	 *  promised only IF the payment goes through. Absent ⇒ `false`. */
 	returnedProcessing?: boolean;
-	/** The order's payment method (ADR-0044). A pending CASH-ON-DELIVERY order is
-	 *  placed, not awaiting an online payment. Absent ⇒ a card order. */
-	paymentMethod?: string | null;
+	/** How the order's money is confirmed (ADR-0044): `"offline"` for cash on
+	 *  delivery, whose paid and delivered states say the CASH was received.
+	 *  Absent ⇒ not offline. Never the method's name. */
+	settlement?: "gateway" | "offline" | null;
 }
 
 const EXPIRED_LEAD = "Payment didn't complete in time, so the items went back on sale.";
@@ -112,6 +113,24 @@ const EXPIRED: StateCopy = {
 	body: `${EXPIRED_LEAD} Nothing was charged.`,
 };
 
+/**
+ * ADR-0044: cash on delivery. Nothing is due online and nothing times out; the
+ * buyer pays the courier. None of these says "we've emailed you": whether an
+ * email went out is the mail queue's business, not this page's to promise.
+ */
+const OFFLINE_COPY: Record<string, StateCopy> = {
+	awaiting_payment: {
+		headline: "Order placed.",
+		body: "You'll pay in cash when your order is delivered.",
+	},
+	shipped_awaiting_payment: {
+		headline: "Your order is on its way.",
+		body: "You'll pay in cash on delivery.",
+	},
+	paid: { headline: "Payment received.", body: "Thank you — we've received your cash payment." },
+	delivered: { headline: "Order delivered.", body: "Payment received — thank you." },
+};
+
 const COPY: Record<string, StateCopy> = {
 	paid: { headline: "Order confirmed.", body: "Thank you — we've received your payment." },
 	failed: FAILED,
@@ -125,14 +144,6 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 	if (state === null) return null;
 
 	if (state === "pending") {
-		// ADR-0044: cash on delivery. The order is placed and its items set aside;
-		// nothing is due online, and it never times out.
-		if (input.paymentMethod === "cod") {
-			return {
-				headline: "Order placed.",
-				body: "You'll pay in cash when your order is delivered. We've emailed you the details.",
-			};
-		}
 		if (input.returnedFromStripe) {
 			// Even past the hold: the buyer just paid, and a pending order still
 			// settles. The page polls; the state decides.
@@ -175,6 +186,15 @@ export function orderStamp(input: OrderStampInput): StateCopy | null {
 	if (state === "failed") {
 		const late = deadOrderSentence("failed", input);
 		return late === null ? FAILED : { headline: FAILED.headline, body: late };
+	}
+	if (input.settlement === "offline") {
+		const offline = OFFLINE_COPY[state];
+		if (offline !== undefined) return offline;
+	}
+	// The two unpaid states exist only for an offline method; read without one
+	// (an older wire), they still say what is true.
+	if (state === "awaiting_payment" || state === "shipped_awaiting_payment") {
+		return OFFLINE_COPY[state] ?? null;
 	}
 	return COPY[state] ?? { headline: `Order status: ${state}.`, body: null };
 }

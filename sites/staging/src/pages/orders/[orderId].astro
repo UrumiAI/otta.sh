@@ -138,7 +138,8 @@ const order = result !== null && result.ok ? result.order : null;
 const outcome = orderReadOutcome(result);
 Astro.response.status = outcome.status;
 
-/* A FINISHED order (no longer pending — paid, expired, failed…) leaves its cart
+/* A FINISHED order (no longer pending — paid, expired, failed, and a placed
+   cash-on-delivery order, which is `awaiting_payment`: ADR-0044) leaves its cart
    spent: it can never produce another order. If the cart cookie still names it,
    forget it here, so the shopper's next "Add to cart" starts a new cart instead
    of failing CART_CHECKED_OUT. A PENDING order's cart is kept: the cart page's
@@ -185,8 +186,6 @@ const holdLapsed =
 	order !== null &&
 	isPending &&
 	!returnedFromStripe &&
-	/* ADR-0044: a cash-on-delivery order has no hold to lapse. */
-	order.paymentMethod !== "cod" &&
 	!isOrderPayable(order, new Date());
 
 /**
@@ -234,7 +233,7 @@ const stamp = orderStamp({
 	polling: shouldPoll,
 	returnedPaid,
 	returnedProcessing,
-	paymentMethod: order?.paymentMethod ?? null,
+	settlement: order?.settlement ?? null,
 });
 
 /**
@@ -298,8 +297,6 @@ const returnOver = returnPollIsOver({ returnedFromStripe, pending: isPending, po
 if (returnOver && order !== null) forgetStripeReturn(Astro.cookies, order.id);
 const canResume =
 	state === "pending" &&
-	/* ADR-0044: a cash-on-delivery order has nothing to pay online. */
-	order?.paymentMethod !== "cod" &&
 	!holdLapsed &&
 	(!returnedFromStripe || (returnOver && order !== null && isOrderPayable(order, new Date())));
 /* A late payment on a dead order whose refund is not recorded yet, once the
@@ -307,10 +304,10 @@ const canResume =
    offers it (QA2 M3). */
 const lateRefundUnrecorded =
 	deadEnd && !holdLapsed && returnedPaid && (order?.latePayment ?? "none") !== "refunded";
-/* ADR-0044: a placed cash-on-delivery order changes only when the merchant acts
-   — days later, on delivery — so there is nothing to check again for. */
-const canCheckAgain =
-	((isPending && order?.paymentMethod !== "cod") || lateRefundUnrecorded) && !shouldPoll;
+/* A placed cash-on-delivery order is never pending (ADR-0044: it is
+   `awaiting_payment`), so it gets no Check again: it changes only when the
+   merchant acts, days later, on delivery. */
+const canCheckAgain = (isPending || lateRefundUnrecorded) && !shouldPoll;
 const hasActions = deadEnd || canResume || canCheckAgain;
 
 /** A resume that could not reach the pay page says why here — only for the
@@ -384,7 +381,7 @@ const model: OrderModel = {
 	orderNumber: number,
 	failureMessage: cartErrorMessage(outcome.failure ?? "SERVICE_UNAVAILABLE"),
 	/* The tracker never says Payment is completed on an order nobody paid. */
-	progress: state === null ? null : orderProgress(state, order?.paymentMethod ?? null),
+	progress: state === null ? null : orderProgress(state),
 	shouldPoll,
 	pollHop,
 	pollMax: MAX_ORDER_POLLS,

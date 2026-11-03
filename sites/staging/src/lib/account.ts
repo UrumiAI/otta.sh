@@ -267,6 +267,9 @@ const STATE_LABELS: Record<string, string> = {
 	cancelled: "Cancelled",
 	refunded: "Refunded",
 	expired: "Payment not completed — expired",
+	// ADR-0044: cash on delivery, placed or shipped, paid at the door.
+	awaiting_payment: "Placed — pay on delivery",
+	shipped_awaiting_payment: "Shipped — pay on delivery",
 	failed: "Payment didn't go through",
 };
 
@@ -284,11 +287,9 @@ const STATE_LABELS: Record<string, string> = {
  * reads, rather than leaking a snake_case token.
  */
 export function accountOrderStatus(
-	order: { state: string; holdExpiresAt: string; paymentMethod?: string | null },
+	order: { state: string; holdExpiresAt: string; settlement?: "gateway" | "offline" | null },
 	now: Date,
 ): string {
-	// ADR-0044: a cash-on-delivery order is placed, not awaiting an online payment.
-	if (order.state === "pending" && order.paymentMethod === "cod") return "Placed — pay on delivery";
 	if (order.state === "pending" && !isOrderPayable(order, now)) {
 		return "Payment not completed — time ran out";
 	}

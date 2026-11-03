@@ -115,7 +115,7 @@ if (order !== null) {
 		returnedFromStripe: false,
 		holdLapsed: order.state === "pending" && !isOrderPayable(order, now),
 		polling: false,
-		paymentMethod: order.paymentMethod,
+		settlement: order.settlement,
 	});
 	detail = {
 		label,
