@@ -547,9 +547,11 @@ Store settings afterwards.
 > **Turn off non-production branch builds.** Workers Builds also builds other branches, such
 > as Dependabot's, and uploads each as a preview version. A preview version shares your
 > production D1 database, and the first request to its preview URL runs that release's
-> **forward-only migrations against your live data**. In the dashboard: your Worker →
-> Settings → Builds → **Branch control** → turn off builds for non-production branches. Review
-> an update by reading its release notes, not by opening a preview.
+> **forward-only migrations against your live data**. The template's `wrangler.jsonc` sets
+> `"preview_urls": false`, so those versions get no URL; as a second safeguard, turn the builds
+> off too. In the dashboard: your Worker → Settings → Builds → **Branch control** → turn off
+> builds for non-production branches. Review an update by reading its release notes, not by
+> opening a preview.
 
 **Updates.** `.github/dependabot.yml` opens one pull request a week for Otta's packages
 (`@urumi.ai/*`), and its own for Wrangler. Merging it deploys the new version. It never
