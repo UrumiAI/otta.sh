@@ -297,13 +297,6 @@ export const ABANDON_CANCEL_CALL_MS = 1_500;
  *  still fits, so the shopper's redirect waits at most this long for it. */
 export const ABANDON_WITHDRAW_BUDGET_MS = 2_500;
 
-/** ADR-0044: the one-way hash a client network key is stored as — hex SHA-256,
- *  through Web Crypto (in workerd and Node alike). */
-async function sha256Hex(text: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 /**
  * Server-side notices that are logged ONCE per isolate rather than once per
  * request — a misconfiguration is a fact about the deployment, and a log line per
@@ -1463,8 +1456,9 @@ export class InProcessCommerceClient implements CommerceClient {
 	/**
 	 * The `offline` block of a COD placement: the live policy (failing CLOSED — a
 	 * resolver that cannot answer is COD off, which refuses only a FRESH placement)
-	 * and the client's network key as a hex SHA-256, so the order never stores the
-	 * address itself (ADR-0044 §7). No key ⇒ none passed, which the domain refuses.
+	 * and the network key AS GIVEN — the place route derived it from the request
+	 * and keyed it with the store's HMAC (`payments/cod-request.ts`, ADR-0044 §7),
+	 * so it is stored as is. No key ⇒ none passed, which the domain refuses.
 	 */
 	async #offlineCommand(
 		clientKey: string | undefined,
@@ -1481,7 +1475,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			enabled: policy.enabled,
 			maxOpenPerBuyer: policy.maxOpenPerBuyer,
 			maxOpenPerClient: policy.maxOpenPerClient,
-			...(clientKey !== undefined ? { clientKey: await sha256Hex(clientKey.trim()) } : {}),
+			...(clientKey !== undefined ? { clientKey: clientKey.trim() } : {}),
 		};
 	}
 

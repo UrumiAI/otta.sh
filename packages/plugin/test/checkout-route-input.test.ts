@@ -89,17 +89,13 @@ describe("parseCheckoutPlaceInput", () => {
 		});
 	});
 
-	test("ADR-0044: an optional clientKey is trimmed and carried; anything but a string of at most 128 characters is malformed", () => {
+	test("ADR-0044 §7 (round 2, M1): a body clientKey is IGNORED — whatever it holds, nothing carries it", () => {
+		// The network is the REQUEST's (payments/cod-request.ts), never the caller's.
 		const base = { cartId: "cart-1", buyerRef: "a@b.co", idempotencyKey: "k" };
-		expect(parseCheckoutPlaceInput(base)).not.toHaveProperty("clientKey");
-		expect(parseCheckoutPlaceInput({ ...base, clientKey: "  203.0.113.7  " })?.clientKey).toBe(
-			"203.0.113.7",
-		);
-		expect(parseCheckoutPlaceInput({ ...base, clientKey: "k".repeat(128) })?.clientKey).toBe(
-			"k".repeat(128),
-		);
-		for (const bad of ["k".repeat(129), "   ", "", 7, {}, ["a"], null, "a\u0000b"]) {
-			expect(parseCheckoutPlaceInput({ ...base, clientKey: bad }), JSON.stringify(bad)).toBeNull();
+		for (const sent of ["203.0.113.7", "k".repeat(500), 7, {}, null]) {
+			const parsed = parseCheckoutPlaceInput({ ...base, clientKey: sent } as never);
+			expect(parsed, JSON.stringify(sent)).not.toBeNull();
+			expect(parsed).not.toHaveProperty("clientKey");
 		}
 	});
 

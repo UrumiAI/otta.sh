@@ -101,11 +101,6 @@ const ADDRESS = {
 
 const CLIENT_KEY = "203.0.113.7";
 
-async function sha256Hex(text: string): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-	return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 function placeCod(
 	cartId: string,
 	overrides: { buyerRef?: string; clientKey?: string | null } = {},
@@ -124,28 +119,21 @@ function placeCod(
 }
 
 describe("createOrder with cash on delivery", () => {
-	test("places an awaiting_payment order with an offline action, stored under the HASH of the client key", async () => {
+	test("places an awaiting_payment order with an offline action, stored under the key AS GIVEN (the route keyed it)", async () => {
+		// ADR-0044 §7 (round 2): the place route derives the network from the request
+		// and HMACs it (payments/cod-request.ts); the client stores what it is handed.
 		const placed = await placeCod(await physicalCart());
 		expect(placed).toMatchObject({
 			ok: true,
 			order: { state: "awaiting_payment", settlement: "offline" },
 			intent: { clientAction: { kind: "offline" } },
 		});
-		const hashed = await sha256Hex(CLIENT_KEY);
-		expect(hashed).toMatch(/^[0-9a-f]{64}$/);
-		// Counted under the hash, and not under the raw address.
-		expect(
-			await harness.stores.orderStore.countOpenOfflineOrders({
-				buyerRef: "nobody@example.test",
-				clientKey: hashed,
-			}),
-		).toEqual({ byBuyer: 0, byClient: 1 });
 		expect(
 			await harness.stores.orderStore.countOpenOfflineOrders({
 				buyerRef: "nobody@example.test",
 				clientKey: CLIENT_KEY,
 			}),
-		).toEqual({ byBuyer: 0, byClient: 0 });
+		).toEqual({ byBuyer: 0, byClient: 1 });
 	});
 
 	test("with no client key (the site's per-IP limit did not run) it is PAYMENT_METHOD_UNAVAILABLE", async () => {

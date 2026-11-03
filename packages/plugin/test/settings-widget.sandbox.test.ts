@@ -1051,7 +1051,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(codFieldValues(blocksOf(first))).toMatchObject({
 			codAutoCancelDays: "14",
 			codMaxOpenPerBuyer: "3",
-			codMaxOpenPerClient: "3",
+			codMaxOpenPerClient: "20",
 		});
 		const copy = JSON.stringify(sectionBlocks(blocksOf(first), "settings:cod"));
 		expect(copy).toContain("RATE_LIMIT_WRITES");

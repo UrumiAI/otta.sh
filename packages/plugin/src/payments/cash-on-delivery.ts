@@ -13,8 +13,9 @@
  *    this many days are cancelled by the `cod-auto-cancel` sweep leg. 0..365,
  *    default {@link DEFAULT_OFFLINE_AUTO_CANCEL_DAYS} (14); 0 turns it off.
  *  - `settings:codMaxOpenPerBuyer` / `settings:codMaxOpenPerClient` — caps on open
- *    COD orders per buyer email and per client network. 0..100, default 3; 0 means
- *    no cap.
+ *    COD orders per buyer email (default 3) and per client network (default 20 —
+ *    carrier and office NAT put many honest buyers behind one address, ADR-0044
+ *    §7). 0..100; 0 means no cap.
  *
  * WHERE THE TOGGLE IS ENFORCED. The domain checks it, inside
  * `createOrderFromCart`, for a FRESH placement only — so a same-key replay of an
@@ -73,7 +74,8 @@ export const COD_MAX_OPEN_PER_CLIENT: CodNumberSetting = {
 	label: "Most unpaid orders per network",
 	min: 0,
 	max: 100,
-	fallback: 3,
+	// ADR-0044 §7 (round 2): NAT puts many buyers behind one address.
+	fallback: 20,
 };
 /** The three, in the order the Settings form shows them. */
 export const COD_NUMBER_SETTINGS: readonly CodNumberSetting[] = [

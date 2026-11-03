@@ -495,12 +495,25 @@ const COD_ADDRESS = {
 };
 
 /** Switch cash on delivery on or off through the Settings form, as a merchant does. */
-function saveCod(codEnabled: boolean, codInstructions = ""): Promise<unknown> {
+function saveCod(
+	codEnabled: boolean,
+	codInstructions = "",
+	extra: Record<string, unknown> = {},
+): Promise<unknown> {
 	return sandboxHandle.invokeRoute("admin", {
 		type: "form_submit",
 		action_id: "save-cash-on-delivery",
-		values: { codEnabled, codInstructions },
+		values: { codEnabled, codInstructions, ...extra },
 	});
+}
+
+/**
+ * ADR-0044 §7 (round 2, M1): the request a COD place arrives on — the site's
+ * in-process dispatch carries the attestation header (which its middleware refuses
+ * from any outside caller) and forwards the client's `cf-connecting-ip`.
+ */
+function siteCodRequest(ip = "203.0.113.7"): { headers: Record<string, string> } {
+	return { headers: { "x-otta-cod-attest": "rate-limited", "cf-connecting-ip": ip } };
 }
 
 async function seedThreeLineCart(): Promise<string> {
@@ -1429,17 +1442,24 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	 */
 	test("cash on delivery with no Stripe: refused while off, placed once switched on, replayable after it is off, card still refused", async () => {
 		const codCart = await seedThreeLineCart();
-		const placeCod = async (cartId: string, extra: Record<string, unknown> = {}) =>
+		const placeCod = async (
+			cartId: string,
+			extra: Record<string, unknown> = {},
+			request: { headers: Record<string, string> } = siteCodRequest(),
+		) =>
 			resultOf(
-				await sandboxHandle.invokeRoute("storefront/checkout/place", {
-					cartId,
-					buyerRef: "cod-buyer@example.com",
-					idempotencyKey: `checkout:${cartId}`,
-					paymentMethod: "cod",
-					clientKey: "203.0.113.7",
-					shippingAddress: COD_ADDRESS,
-					...extra,
-				}),
+				await sandboxHandle.invokeRoute(
+					"storefront/checkout/place",
+					{
+						cartId,
+						buyerRef: "cod-buyer@example.com",
+						idempotencyKey: `checkout:${cartId}`,
+						paymentMethod: "cod",
+						shippingAddress: COD_ADDRESS,
+						...extra,
+					},
+					request,
+				),
 			);
 		const config = async () =>
 			resultOf(await sandboxHandle.invokeRoute("storefront/payment-config", {}));
@@ -1456,11 +1476,19 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 				cardPaymentReady: false,
 				cashOnDelivery: { enabled: true, instructions: "Please have the exact amount ready." },
 			});
-			// No client key (the site's per-IP limit did not run): refused.
-			expect(await placeCod(codCart, { clientKey: undefined })).toEqual({
-				ok: false,
-				reason: "PAYMENT_METHOD_UNAVAILABLE",
-			});
+			// A DIRECT call to the plugin mount (no attestation): refused — and a body
+			// clientKey proves nothing (ADR-0044 §7, round 2 M1).
+			expect(
+				await placeCod(
+					codCart,
+					{ clientKey: "203.0.113.7" },
+					{ headers: { "cf-connecting-ip": "203.0.113.7" } },
+				),
+			).toEqual({ ok: false, reason: "PAYMENT_METHOD_UNAVAILABLE" });
+			// Attested, but no client address to key: refused.
+			expect(
+				await placeCod(codCart, {}, { headers: { "x-otta-cod-attest": "rate-limited" } }),
+			).toEqual({ ok: false, reason: "PAYMENT_METHOD_UNAVAILABLE" });
 			// No phone on the delivery address: refused, typed.
 			const { phone: _phone, ...noPhone } = COD_ADDRESS;
 			expect(await placeCod(codCart, { shippingAddress: noPhone })).toEqual({
@@ -1508,6 +1536,50 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	});
 
 	/**
+	 * ADR-0044 §7 (round 2, M1): the per-network cap counts the network the REQUEST
+	 * came from. A body clientKey cannot move a buyer to "another network" — it is
+	 * ignored — while a different `cf-connecting-ip` is one.
+	 */
+	test("cash on delivery: the per-network cap counts the request's address, never a body clientKey", async () => {
+		expect(
+			await saveCod(true, "", { codMaxOpenPerClient: "1", codMaxOpenPerBuyer: "0" }),
+		).toHaveProperty("result");
+		const place = async (buyer: string, ip: string, body: Record<string, unknown> = {}) => {
+			const cartId = await createCart();
+			await addLine(cartId, LINE_SKUS[1]!, LINE_PRODUCT_IDS[1]!, 1);
+			return resultOf(
+				await sandboxHandle.invokeRoute(
+					"storefront/checkout/place",
+					{
+						cartId,
+						buyerRef: buyer,
+						idempotencyKey: `checkout:${cartId}`,
+						paymentMethod: "cod",
+						shippingAddress: COD_ADDRESS,
+						...body,
+					},
+					siteCodRequest(ip),
+				),
+			);
+		};
+		try {
+			expect(await place("net-a-1@example.com", "192.0.2.10")).toMatchObject({
+				ok: true,
+				state: "awaiting_payment",
+			});
+			// Same network, another buyer, a "different" body key: the cap holds.
+			expect(await place("net-a-2@example.com", "192.0.2.10", { clientKey: "10.9.8.7" })).toEqual({
+				ok: false,
+				reason: "OFFLINE_ORDER_LIMIT",
+			});
+			// Another network: placed.
+			expect(await place("net-b-1@example.com", "192.0.2.77")).toMatchObject({ ok: true });
+		} finally {
+			await saveCod(false, "", { codMaxOpenPerClient: "20", codMaxOpenPerBuyer: "3" });
+		}
+	});
+
+	/**
 	 * ADR-0044 review finding 1: "Start a new cart" and the next add-to-cart never
 	 * touch a placed COD order. The abandon cancels only a `pending` order, and a
 	 * fresh cart is just that — the COD order stays `awaiting_payment`, its stock
@@ -1520,14 +1592,17 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		expect(await saveCod(true)).toHaveProperty("result");
 		try {
 			const placed = resultOf(
-				await sandboxHandle.invokeRoute("storefront/checkout/place", {
-					cartId,
-					buyerRef: "cod-abandon@example.com",
-					idempotencyKey: `checkout:${cartId}`,
-					paymentMethod: "cod",
-					clientKey: "198.51.100.9",
-					shippingAddress: COD_ADDRESS,
-				}),
+				await sandboxHandle.invokeRoute(
+					"storefront/checkout/place",
+					{
+						cartId,
+						buyerRef: "cod-abandon@example.com",
+						idempotencyKey: `checkout:${cartId}`,
+						paymentMethod: "cod",
+						shippingAddress: COD_ADDRESS,
+					},
+					siteCodRequest("198.51.100.9"),
+				),
 			);
 			expect(placed).toMatchObject({ ok: true, state: "awaiting_payment" });
 			const orderId = placed["orderId"] as string;

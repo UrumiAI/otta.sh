@@ -89,6 +89,7 @@ import {
 } from "../payments/card-payment-readiness.js";
 import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { storeRegionFacts } from "./store-region-facts.js";
+import { codRequestFacts, networkKey } from "../payments/cod-request.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 /** The ONE summary route. There is deliberately no `storefront/checkout/quote`
@@ -132,11 +133,6 @@ export interface CheckoutPlaceRouteInput {
 	/** ADR-0044: `"stripe"` (card, the default when absent) or `"cod"` (cash on
 	 *  delivery). A method the store has not enabled is `PAYMENT_METHOD_UNAVAILABLE`. */
 	paymentMethod?: unknown;
-	/** ADR-0044: the client's network key (`clientNetwork`: an IPv4 address or an
-	 *  IPv6 /64), sent by the site only once its per-IP write limit has run. A
-	 *  trimmed string of at most 128 characters, or INVALID_INPUT. Cash on
-	 *  delivery without one is `PAYMENT_METHOD_UNAVAILABLE`. */
-	clientKey?: unknown;
 	/** The same selection the summary priced — see {@link CheckoutSummaryRouteInput}. */
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
@@ -804,13 +800,24 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 			// the caps, for a FRESH placement only — so a same-key replay whose first
 			// reply was lost still answers its order after COD is switched off (review
 			// finding 11). Its refusals come back as typed reasons below.
+			// ADR-0044 §7 (round 2, M1): cash on delivery only through the site's
+			// rate-limited path (the attestation header), keyed by the network the
+			// REQUEST came from — HMAC'd under the store's own secret. Without both the
+			// placement carries no key, which the domain refuses (a fresh one only).
+			let clientKey: string | undefined;
+			if (input.paymentMethod === "cod") {
+				const facts = codRequestFacts(routeCtx.request);
+				if (facts.attested && facts.network !== null) {
+					clientKey = await networkKey(ctx, facts.network);
+				}
+			}
 			const client = await makeCommerceClient(ctx);
 			const result = await placeOrRefuseUnconfigured(ctx, input.paymentMethod, () =>
 				client.createOrder(
 					{
 						cartId: input.cartId,
 						paymentMethod: input.paymentMethod,
-						...(input.clientKey !== undefined ? { clientKey: input.clientKey } : {}),
+						...(clientKey !== undefined ? { clientKey } : {}),
 						buyerRef: input.buyerRef,
 						...quoteSelection(input.selection),
 						...(input.shippingAddress !== undefined

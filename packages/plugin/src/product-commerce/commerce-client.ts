@@ -746,9 +746,9 @@ export interface ShippingAddressWire {
 
 export interface CheckoutRequestWire {
 	cartId: string;
-	/** ADR-0044: the client's network key (the site's `clientNetwork`), sent only
-	 *  once the site's per-IP write limit has run. Required for cash on delivery;
-	 *  the client hashes it before it is stored. */
+	/** ADR-0044 §7: the client's network, already KEYED (an HMAC under the store's
+	 *  secret) by the place route from the request it received — never a value a
+	 *  caller sent. Required for cash on delivery; stored as is. */
 	clientKey?: string;
 	/** The method the buyer chose (ADR-0044): `stripe` (card) or `cod` (cash on
 	 *  delivery). The checkout route refuses one the store has not enabled. */
