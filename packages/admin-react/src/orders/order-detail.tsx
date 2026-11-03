@@ -81,6 +81,8 @@ import {
 	formatDate,
 	formatMinorUnitsInput,
 	formatTimestamp,
+	isOfflineMarkPaid,
+	markPaidConfirm,
 	maskBuyerEmail,
 	orderLineTaxStatusNote,
 	orderStateCell,
@@ -93,12 +95,27 @@ import {
 	refundConfirmText,
 	refundTooHighInline,
 	refundsGroupLabel,
+	transitionButtonLabel,
+	UNPAID_ORDER_STATES,
 	type CancelEffects,
 } from "@urumi.ai/otta-admin-presentation";
 
 /** The states an order can still be cancelled from — the state machine's own
- *  `→ cancelled` sources. The Cancel group is rendered only for these. */
-const CANCELLABLE_STATES: ReadonlySet<string> = new Set(["pending", "paid", "processing"]);
+ *  `→ cancelled` sources. The Cancel group is rendered only for these. ADR-0044
+ *  adds cash on delivery's two: unpaid, and shipped unpaid (a refused delivery,
+ *  the parcel returned). */
+const CANCELLABLE_STATES: ReadonlySet<string> = new Set([
+	"pending",
+	"paid",
+	"processing",
+	"awaiting_payment",
+	"shipped_awaiting_payment",
+]);
+
+/** The states the Fulfilment form records a shipment from: `processing`, and
+ *  an unpaid cash-on-delivery order, which ships before the cash (ADR-0044:
+ *  it moves to `shipped_awaiting_payment`). */
+const SHIPPABLE_STATES: ReadonlySet<string> = new Set(["processing", "awaiting_payment"]);
 
 /** The Cancel group's alert title — the same on every order. */
 const CANCEL_BANNER_TITLE = CANCEL_BANNER.title;
@@ -651,7 +668,11 @@ export function RefundsPanel({
 				*/}
 				{refundMode !== "empty" && (
 					<p style={{ fontSize: 12, color: KUMO.subtle }} data-testid="refund-capability">
-						{refundCapabilityText(refunds.refundable, refunds.paymentMethod)}
+						{refundCapabilityText(
+							refunds.refundable,
+							refunds.paymentMethod,
+							refunds.settlement ?? null,
+						)}
 					</p>
 				)}
 
@@ -1048,27 +1069,30 @@ export function OrderDetail({
 	// and refunds nothing; a paid one refunds what remains refundable (the server
 	// computes the same remainder) and restocks unless the box is unticked.
 	const hasPhysical = order.lines.some((line) => line.fulfillmentKind === "physical");
-	const cancelEffects: CancelEffects =
-		order.state === "pending"
-			? PENDING_CANCEL_EFFECTS
-			: {
-					refund:
-						refunds !== null && refunds.remainingCents > 0
-							? formatAmount(refunds.remainingCents, cur)
-							: null,
-					refundAutomatic: refunds?.refundable ?? false,
-					stock: !hasPhysical ? "none" : restock ? "restock" : "keep",
-				};
+	// ADR-0044: an unpaid order — pending, or cash on delivery not yet paid — has
+	// no money to refund and holds its stock, which a cancel releases.
+	const unpaid = UNPAID_ORDER_STATES.has(order.state);
+	const cancelEffects: CancelEffects = unpaid
+		? PENDING_CANCEL_EFFECTS
+		: {
+				refund:
+					refunds !== null && refunds.remainingCents > 0
+						? formatAmount(refunds.remainingCents, cur)
+						: null,
+				refundAutomatic: refunds?.refundable ?? false,
+				stock: !hasPhysical ? "none" : restock ? "restock" : "keep",
+			};
 	// A refund Otta cannot issue means the server will refuse the cancel, so no
 	// control is offered for it — only the banner saying what to do instead.
 	// An unreadable ledger on a paid order: what the cancel would refund is UNKNOWN,
 	// so it is blocked too rather than described as refunding nothing.
-	const refundsUnknown = order.state !== "pending" && refunds === null;
+	const refundsUnknown = !unpaid && refunds === null;
 	const cancelBlocked =
 		refundsUnknown || (cancelEffects.refund !== null && !cancelEffects.refundAutomatic);
 	// Sent with every cancel of a paid order; a pending order's cancel ignores it.
-	const restockValue: Record<string, string> =
-		order.state === "pending" ? {} : { restock: restock ? "true" : "false" };
+	const restockValue: Record<string, string> = unpaid
+		? {}
+		: { restock: restock ? "true" : "false" };
 
 	// The cancel reasons as the operator reads them, for History (QA round 2).
 	const reasonLabels: ReadonlyMap<string, string> = new Map(
@@ -1530,7 +1554,7 @@ export function OrderDetail({
 							</Group>
 						)}
 
-						{order.fulfillment === null && order.state === "processing" && (
+						{order.fulfillment === null && SHIPPABLE_STATES.has(order.state) && (
 							<Group testId="detail-record-fulfilment" label={FULFILMENT_LABELS.submit}>
 								<FulfilmentForm
 									busy={busy}
@@ -1582,37 +1606,57 @@ export function OrderDetail({
 						{detail.transitions.length > 0 && (
 							<Group label="Status">
 								<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-									{detail.transitions.map((toState) => (
-										<Button
-											key={toState}
-											testId={`transition-${toState}`}
-											label={`Mark ${toState}`}
-											danger={DANGER_TRANSITIONS.has(toState)}
-											disabled={busy}
-											onClick={() => {
-												const value = { orderId: order.id, toState, state: order.state };
-												if (!DANGER_TRANSITIONS.has(toState)) {
-													dispatch({
+									{detail.transitions.map((toState) => {
+										const context = { fromState: order.state, settlement: order.settlement };
+										return (
+											<Button
+												key={toState}
+												testId={`transition-${toState}`}
+												label={transitionButtonLabel(toState, context)}
+												danger={DANGER_TRANSITIONS.has(toState)}
+												disabled={busy}
+												onClick={() => {
+													const value = { orderId: order.id, toState, state: order.state };
+													// ADR-0044 (review finding 5): an offline Mark paid records a
+													// payment and emails the buyer on the operator's word alone, so
+													// it is confirmed with the amount, as the cash in hand.
+													if (isOfflineMarkPaid(toState, context)) {
+														const confirm = markPaidConfirm(
+															formatAmount(order.totals.totalCents, order.totals.currency),
+														);
+														setPending({
+															actionId: `orders:transition-${toState}`,
+															value,
+															title: confirm.title,
+															text: confirm.text,
+															confirmLabel: confirm.confirm,
+															denyLabel: confirm.deny,
+														});
+														return;
+													}
+													if (!DANGER_TRANSITIONS.has(toState)) {
+														dispatch({
+															actionId: `orders:transition-${toState}`,
+															value,
+															title: "",
+															text: "",
+															confirmLabel: "",
+															denyLabel: "",
+														});
+														return;
+													}
+													setPending({
 														actionId: `orders:transition-${toState}`,
 														value,
-														title: "",
-														text: "",
-														confirmLabel: "",
-														denyLabel: "",
+														title: MARK_REFUNDED_CONFIRM.title,
+														text: MARK_REFUNDED_CONFIRM.text,
+														confirmLabel: MARK_REFUNDED_CONFIRM.confirm,
+														denyLabel: MARK_REFUNDED_CONFIRM.deny,
 													});
-													return;
-												}
-												setPending({
-													actionId: `orders:transition-${toState}`,
-													value,
-													title: MARK_REFUNDED_CONFIRM.title,
-													text: MARK_REFUNDED_CONFIRM.text,
-													confirmLabel: MARK_REFUNDED_CONFIRM.confirm,
-													denyLabel: MARK_REFUNDED_CONFIRM.deny,
-												});
-											}}
-										/>
-									))}
+												}}
+											/>
+										);
+									})}
 								</div>
 							</Group>
 						)}
@@ -1630,7 +1674,7 @@ export function OrderDetail({
 									}
 									testId="cancel-banner"
 								/>
-								{!cancelBlocked && order.state !== "pending" && hasPhysical && (
+								{!cancelBlocked && !unpaid && hasPhysical && (
 									<label style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 13 }}>
 										<input
 											type="checkbox"

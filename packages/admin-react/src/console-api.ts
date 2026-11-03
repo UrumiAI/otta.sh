@@ -63,6 +63,10 @@ export interface OrderSummary {
 	readonly buyerRef: string;
 	readonly customerId: string | null;
 	readonly paymentMethod: string | null;
+	/** ADR-0044: how the order's money is confirmed — `"offline"` (cash on
+	 *  delivery) | `"gateway"` | null. What the console branches on, never the
+	 *  method's name. Absent from an older server. */
+	readonly settlement?: "gateway" | "offline" | null;
 	readonly createdAt: string;
 	readonly totalCents: number;
 	readonly reconciliationFlag: boolean | string | null;
@@ -143,6 +147,10 @@ export interface OrderDetail {
 	readonly state: string;
 	readonly currency: string;
 	readonly paymentMethod: string | null;
+	/** ADR-0044: how the order's money is confirmed — `"offline"` (cash on
+	 *  delivery) | `"gateway"` | null. What the console branches on, never the
+	 *  method's name. Absent from an older server. */
+	readonly settlement?: "gateway" | "offline" | null;
 	readonly buyerRef: string;
 	readonly customerId: string | null;
 	readonly createdAt: string;
@@ -188,6 +196,10 @@ export interface RefundsSummary {
 	readonly ceilingCents: number;
 	readonly remainingCents: number;
 	readonly paymentMethod: string | null;
+	/** ADR-0044: how the order's money is confirmed — `"offline"` (cash on
+	 *  delivery) | `"gateway"` | null. What the console branches on, never the
+	 *  method's name. Absent from an older server. */
+	readonly settlement?: "gateway" | "offline" | null;
 	readonly refundable: boolean;
 	/** A current provider captured this order's money, so a manual refund keeps
 	 *  the currency's payment step (#447). Absent from an older plugin ⇒ true. */

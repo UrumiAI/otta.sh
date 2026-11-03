@@ -7,7 +7,9 @@
  * the Block Kit cell cannot drift apart on wording — only the ink is React's.
  *
  * THE TONE SAYS WHAT HAPPENS NEXT, not how good the state is:
- *  - `warn` — waiting on the buyer or the provider (`pending`);
+ *  - `warn` — waiting on the buyer or the provider (`pending`), or on the
+ *             cash at the door (ADR-0044: `awaiting_payment`,
+ *             `shipped_awaiting_payment`);
  *  - `info` — in progress (`processing`, `shipped`);
  *  - `ok`   — the money is in, or the job is done (`paid`, `delivered`,
  *             `completed`);
@@ -33,6 +35,8 @@ const TONES = {
 	completed: "ok",
 	cancelled: "neutral",
 	refunded: "neutral",
+	awaiting_payment: "warn",
+	shipped_awaiting_payment: "warn",
 } as const satisfies Record<OrderState, StatusTone>;
 
 export function orderStateTone(state: string): StatusTone {

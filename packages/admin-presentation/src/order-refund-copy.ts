@@ -91,8 +91,13 @@ export function refundConfirmText(
  *  moves money; anything else (no secret, or no gateway for the order's method)
  *  is record-only, and says why. Takes primitives rather than a summary object
  *  so this module stays free of wire types. */
-export function refundCapabilityText(refundable: boolean, paymentMethod: string | null): string {
-	if (paymentMethod === "cod") {
+export function refundCapabilityText(
+	refundable: boolean,
+	paymentMethod: string | null,
+	settlement: "gateway" | "offline" | null = null,
+): string {
+	// ADR-0044: branched on how the money was confirmed, never on the method's name.
+	if (settlement === "offline") {
 		// ADR-0044: cash went to the merchant at the door; it comes back by hand.
 		return "Paid in cash on delivery — refunds here are RECORD-ONLY. Return the cash to the buyer yourself, then record it here.";
 	}

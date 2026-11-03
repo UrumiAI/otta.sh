@@ -138,10 +138,20 @@ export {
 	ORDER_STATE_SET,
 	ORDER_STATES,
 	TERMINAL_ORDER_STATES,
+	UNPAID_ORDER_STATES,
 	orderStateCell,
+	orderStatusFilterLabel,
 	reconciliationSummary,
 	type OrderState,
 } from "./order-status.js";
+export {
+	isOfflineMarkPaid,
+	markPaidConfirm,
+	offlinePaymentBadge,
+	transitionButtonLabel,
+	type Settlement,
+	type TransitionContext,
+} from "./offline-orders.js";
 export {
 	UNNAMED_REFUND_RECIPIENT,
 	paymentMethodLabel,
