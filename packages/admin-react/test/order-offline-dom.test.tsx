@@ -222,6 +222,26 @@ test("a card order's Mark delivered is unchanged: no cash confirm", async () => 
 	expect(posted).toBeDefined();
 });
 
+test("the shipping address shows the phone the courier calls", async () => {
+	const payload = detailFor("awaiting_payment", []);
+	const view = await show({
+		...payload,
+		order: {
+			...payload.order,
+			shippingAddress: {
+				name: "Asha",
+				line1: "1 Road",
+				city: "Pune",
+				postalCode: "411001",
+				country: "IN",
+				phone: "+91 98765 43210",
+			},
+		},
+	});
+	await fulfilmentTab(view);
+	expect(one(view, '[data-testid="detail-shipping"]').textContent).toContain("+91 98765 43210");
+});
+
 test("an awaiting-payment order offers Record shipment (the Fulfilment form)", async () => {
 	const view = await show(detailFor("awaiting_payment", ["paid"]));
 	await fulfilmentTab(view);

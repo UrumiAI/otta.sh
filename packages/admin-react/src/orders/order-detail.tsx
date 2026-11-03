@@ -1518,6 +1518,9 @@ export function OrderDetail({
 										["City", order.shippingAddress.city ?? "—"],
 										["Region", order.shippingAddress.region ?? "—"],
 										["Postal code", order.shippingAddress.postalCode ?? "—"],
+										// ADR-0044: the courier calls it — a cash-on-delivery order
+										// always has one.
+										["Phone", order.shippingAddress.phone ?? "—"],
 										[
 											"Email",
 											order.shippingAddress.email != null ? (
