@@ -149,6 +149,11 @@ export interface OrderDetailWire {
 	customerId: string | null;
 	holdExpiresAt: string;
 	createdAt: string;
+	/** ADR-0044 §6 (B-N6): when the `cod-auto-cancel` sweep cancels this order if
+	 *  it is still unpaid — `createdAt` plus the live window. Only an
+	 *  `awaiting_payment` order of an offline settlement has one; null otherwise,
+	 *  when the window is 0 (off), or when it could not be read. */
+	autoCancelAt: string | null;
 	reconciliationFlag: string | null;
 	reconciliationResolution: ReconciliationResolutionWire | null;
 	fulfillment: OrderFulfillmentWire | null;

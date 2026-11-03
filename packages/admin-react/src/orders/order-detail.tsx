@@ -82,6 +82,7 @@ import {
 	formatDate,
 	formatMinorUnitsInput,
 	formatTimestamp,
+	autoCancelNote,
 	isOfflineMarkPaid,
 	markPaidConfirm,
 	maskBuyerEmail,
@@ -1073,6 +1074,7 @@ export function OrderDetail({
 	// ADR-0044: an unpaid order — pending, or cash on delivery not yet paid — has
 	// no money to refund and holds its stock, which a cancel releases.
 	const unpaid = UNPAID_ORDER_STATES.has(order.state);
+	const autoCancel = autoCancelNote(order.autoCancelAt);
 	// A shipped, unpaid COD order's parcel is out: its cancel puts the units back
 	// on sale at once, which its copy says (B-N5).
 	const cancelEffects: CancelEffects = unpaid
@@ -1289,6 +1291,17 @@ export function OrderDetail({
 						],
 						["Total", formatAmount(order.totals.totalCents, order.totals.currency)],
 						["Placed", formatTimestamp(order.createdAt)],
+						// ADR-0044 §6 (B-N6): an unpaid COD order the sweep will cancel.
+						...(autoCancel === null
+							? []
+							: ([
+									[
+										"Auto-cancel",
+										<span key="auto-cancel" data-testid="detail-auto-cancel">
+											{autoCancel}
+										</span>,
+									],
+								] as const)),
 						[
 							"Payment",
 							<span key="payment" data-testid="detail-payment-method">

@@ -4,6 +4,7 @@
  * `settlement` — how its money is confirmed — and never the method's name, so
  * a second offline method needs no change here.
  */
+import { DAY_MS, formatDate } from "./datetime.js";
 import { paymentMethodLabel } from "./order-refund-copy.js";
 
 /** The order's `settlement` as the wire carries it; absent from an older server. */
@@ -64,4 +65,25 @@ export function offlinePaymentBadge(order: {
 	readonly paymentMethod: string | null;
 }): string | null {
 	return order.settlement === "offline" ? paymentMethodLabel(order.paymentMethod) : null;
+}
+
+/**
+ * The order detail's line for an unpaid COD order the `cod-auto-cancel` sweep
+ * will cancel (ADR-0044 §6, B-N6): "Auto-cancels in 14 days (17 Nov 2026) if not
+ * paid". `autoCancelAt` is the server's (createdAt + the live window); null —
+ * the window is off, the order is not an awaiting-payment COD order, or the
+ * server is older or could not read it — means no line. A part day counts as a
+ * whole one; a date already passed means the next sweep.
+ */
+export function autoCancelNote(
+	autoCancelAt: string | null | undefined,
+	now: Date = new Date(),
+): string | null {
+	if (autoCancelAt === null || autoCancelAt === undefined) return null;
+	const at = Date.parse(autoCancelAt);
+	if (!Number.isFinite(at)) return null;
+	const days = Math.ceil((at - now.getTime()) / DAY_MS);
+	const date = formatDate(autoCancelAt);
+	if (days <= 0) return `Auto-cancels on the next sweep (due ${date}) if not paid`;
+	return `Auto-cancels in ${String(days)} ${days === 1 ? "day" : "days"} (${date}) if not paid`;
 }

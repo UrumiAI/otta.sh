@@ -8,6 +8,8 @@ import {
 	ORDER_STATES,
 	ORDER_STATE_SET,
 	TERMINAL_ORDER_STATES,
+	autoCancelNote,
+	formatDate,
 	isOfflineMarkPaid,
 	markPaidConfirm,
 	PENDING_CANCEL_EFFECTS,
@@ -160,5 +162,32 @@ describe("cancelling a shipped, unpaid COD order (B-N5)", () => {
 
 	test("an awaiting-payment order keeps the pending copy (its stock is only held)", () => {
 		expect(cancelBannerText(PENDING_CANCEL_EFFECTS)).toContain("releases the held stock");
+	});
+});
+
+describe("the auto-cancel date on an unpaid COD order (B-N6)", () => {
+	const now = new Date("2026-11-03T10:00:00.000Z");
+
+	test("says how many days are left, the date, and that paying stops it", () => {
+		const at = "2026-11-17T10:00:00.000Z";
+		expect(autoCancelNote(at, now)).toBe(`Auto-cancels in 14 days (${formatDate(at)}) if not paid`);
+	});
+
+	test("rounds a part day up, and says 1 day in the singular", () => {
+		expect(autoCancelNote("2026-11-04T09:00:00.000Z", now)).toMatch(/^Auto-cancels in 1 day \(/);
+		expect(autoCancelNote("2026-11-05T09:00:00.000Z", now)).toMatch(/^Auto-cancels in 2 days \(/);
+	});
+
+	test("a date already passed: the next sweep cancels it", () => {
+		const at = "2026-11-01T10:00:00.000Z";
+		expect(autoCancelNote(at, now)).toBe(
+			`Auto-cancels on the next sweep (due ${formatDate(at)}) if not paid`,
+		);
+	});
+
+	test("no date (off, not COD, an older server, or unreadable): no note", () => {
+		expect(autoCancelNote(null, now)).toBeNull();
+		expect(autoCancelNote(undefined, now)).toBeNull();
+		expect(autoCancelNote("not a date", now)).toBeNull();
 	});
 });

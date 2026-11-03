@@ -21,7 +21,8 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 
 const { OrderDetail } = await import("../src/orders/order-detail.js");
 const { OrdersList } = await import("../src/orders/orders-list.js");
-const { formatAmount, refundCapabilityText } = await import("@urumi.ai/otta-admin-presentation");
+const { formatAmount, formatDate, refundCapabilityText } =
+	await import("@urumi.ai/otta-admin-presentation");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type RefundsSummary = import("../src/console-api.js").RefundsSummary;
 type Vocabulary = import("../src/console-api.js").Vocabulary;
@@ -287,6 +288,27 @@ test("an offline order stuck in pending: Mark paid confirms the cash too (B-N9)"
 	await fire(button, "click");
 	expect(one(view, '[data-testid="otta-confirm-text"]').textContent).toContain("in cash");
 	expect((await confirmAndPost(view))?.["action_id"]).toBe("orders:transition-paid");
+});
+
+test("an awaiting-payment COD order says when it auto-cancels if not paid (B-N6)", async () => {
+	const at = new Date(Date.now() + 14 * 86_400_000 - 60_000).toISOString();
+	const payload = detailFor("awaiting_payment", ["paid"]);
+	const view = await show({ ...payload, order: { ...payload.order, autoCancelAt: at } });
+	expect(one(view, '[data-testid="detail-auto-cancel"]').textContent).toBe(
+		`Auto-cancels in 14 days (${formatDate(at)}) if not paid`,
+	);
+});
+
+test("no auto-cancel date (off, shipped, card, older server): no line", async () => {
+	const payload = detailFor("awaiting_payment", ["paid"]);
+	const off = await show({ ...payload, order: { ...payload.order, autoCancelAt: null } });
+	expect(off.container.querySelector('[data-testid="detail-auto-cancel"]')).toBeNull();
+	expect(off.container.textContent).not.toContain("Auto-cancels");
+	await off.unmount();
+	mounted = null;
+	// An older server sends no field at all.
+	const older = await show(detailFor("awaiting_payment", ["paid"]));
+	expect(older.container.querySelector('[data-testid="detail-auto-cancel"]')).toBeNull();
 });
 
 test("the refund panel's capability line reads the settlement", async () => {

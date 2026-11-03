@@ -628,6 +628,12 @@ describe("the console's read/write branch on the otta admin route", () => {
 			settlement: "offline",
 		});
 		expect(JSON.stringify(result["order"])).toContain('"totalCents":1999');
+		// B-N6: when the sweep cancels it if still unpaid — createdAt + the default
+		// 14-day window (no window saved in this isolate's kv).
+		const order = result["order"] as { createdAt: string; autoCancelAt: string | null };
+		expect(order.autoCancelAt).toBe(
+			new Date(Date.parse(order.createdAt) + 14 * 86_400_000).toISOString(),
+		);
 		// And the list filter takes the COD state ("Cash on delivery — awaiting payment").
 		const listed = await list({ search: "cod-steering", status: "awaiting_payment" });
 		expect((listed["orders"] as Array<{ id: string }>).map((o) => o.id)).toEqual([id]);

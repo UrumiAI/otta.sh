@@ -159,6 +159,7 @@ import {
 	sendOrderEmailsNow,
 	type SendOrderEmailsNowOptions,
 } from "../email/send-order-emails-now.js";
+import { readCodAutoCancelDays } from "../payments/cash-on-delivery.js";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import { CONSOLE_LOGGER } from "../logging/console-logger.js";
 import type { PluginContext } from "../types.js";
@@ -191,6 +192,9 @@ import type {
  *  `min(1).max(100)`, default 25). Mirrored, not imported — the service package
  *  goes away. */
 const MAX_LIMIT = 100;
+
+/** One day, for the auto-cancel date (the sweep's own `cutoff` arithmetic). */
+const DAY_MS = 86_400_000;
 const DEFAULT_LIMIT = 25;
 
 /** The refund amount ceiling the request schema carried (`refundOrderBody`: a
@@ -362,10 +366,28 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		if (ledger === null) return null;
 		const downloads = await this.#downloadAccess(ledger.order);
 		return {
-			order: toOrderDetailWire(ledger.order),
+			order: toOrderDetailWire(ledger.order, await this.#autoCancelAt(ledger.order)),
 			allowedTransitions: adminNextStates(ledger.order, ledger),
 			...(downloads !== undefined ? { downloads } : {}),
 		};
+	}
+
+	/**
+	 * When the `cod-auto-cancel` sweep cancels this order if it is still unpaid
+	 * (ADR-0044 §6, B-N6): `createdAt` plus the live window, for an
+	 * `awaiting_payment` order of an offline settlement only — the sweep lists no
+	 * other. The window is read only for such an order, FAIL-SOFT: a kv failure
+	 * reads as 0, and 0 (off) means no date.
+	 */
+	async #autoCancelAt(order: Order): Promise<string | null> {
+		if (order.state !== "awaiting_payment" || settlementOf(order.paymentMethod) !== "offline") {
+			return null;
+		}
+		const days = await readCodAutoCancelDays(this.#ctx);
+		if (days <= 0) return null;
+		const created = Date.parse(order.createdAt);
+		if (!Number.isFinite(created)) return null;
+		return new Date(created + days * DAY_MS).toISOString();
 	}
 
 	/**
@@ -1188,7 +1210,7 @@ function adminTaxRows(order: Order): Pick<OrderTotalsWire, "taxRows"> {
  *  (lines and totals were frozen at purchase time; `shippingAddress` was captured
  *  at checkout, ADR-0009, and is read off the order rather than the live address
  *  book). */
-function toOrderDetailWire(order: Order): OrderDetailWire {
+function toOrderDetailWire(order: Order, autoCancelAt: string | null): OrderDetailWire {
 	const taxStatusOf = frozenLineTaxStatuses(order);
 	return {
 		id: order.id,
@@ -1201,6 +1223,7 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 		customerId: order.customerId,
 		holdExpiresAt: order.holdExpiresAt,
 		createdAt: order.createdAt,
+		autoCancelAt,
 		reconciliationFlag: order.reconciliationFlag,
 		reconciliationResolution: order.reconciliationResolution,
 		fulfillment: order.fulfillment,

@@ -154,6 +154,10 @@ export interface OrderDetail {
 	readonly buyerRef: string;
 	readonly customerId: string | null;
 	readonly createdAt: string;
+	/** ADR-0044 §6 (B-N6): when the `cod-auto-cancel` sweep cancels this unpaid
+	 *  COD order — null when none will (not awaiting payment, not offline, or the
+	 *  window is off). Absent from an older server. */
+	readonly autoCancelAt?: string | null;
 	readonly reconciliationFlag: string | null;
 	readonly reconciliationResolution: {
 		readonly outcome?: string | null;
