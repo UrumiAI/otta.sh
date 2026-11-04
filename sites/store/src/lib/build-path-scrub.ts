@@ -288,6 +288,10 @@ const ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
 	"BASE_URL",
 	"SITE",
 	"ASSETS_PREFIX",
+	// `CI=true` is set by GitHub Actions and Workers Builds alike. Astro inlines it
+	// into the app chunk whenever a bare-env module there contains the letters "CI"
+	// (its referenced-key scan is a substring match). A boolean flag, never a secret.
+	"CI",
 	"SITE_URL",
 	"EMDASH_SITE_URL",
 	"EMDASH_ALLOWED_ORIGINS",

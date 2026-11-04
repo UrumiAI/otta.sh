@@ -507,13 +507,20 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 		["SITE_URL", "https://shop.example.com"],
 		["EMDASH_SITE_URL", "https://shop.example.com"],
 		["EMDASH_TRUSTED_PROXY_HEADERS", "x-real-ip"],
-	])("EmDash's build-time config %s may be inlined (no failure, no warning)", (key, value) =>
-		withTempDir(async (dir) => {
-			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(`\t${key}: ${JSON.stringify(value)}`));
-			const { failure, warnings } = await runHooks("build", { serverDir: dir });
-			expect(failure).toBeUndefined();
-			expect(warnings.join("\n")).not.toContain(key);
-		}),
+		// GitHub Actions and Workers Builds both set CI=true; Astro inlines it into the app chunk.
+		["CI", "true"],
+	])(
+		"EmDash's build-time config or the CI flag %s may be inlined (no failure, no warning)",
+		(key, value) =>
+			withTempDir(async (dir) => {
+				writeFileSync(
+					path.join(dir, "ok.mjs"),
+					withInlinedEnv(`\t${key}: ${JSON.stringify(value)}`),
+				);
+				const { failure, warnings } = await runHooks("build", { serverDir: dir });
+				expect(failure).toBeUndefined();
+				expect(warnings.join("\n")).not.toContain(key);
+			}),
 	);
 
 	test("an unknown non-secret key WARNS, naming it, and the build goes on", () =>
