@@ -21,6 +21,7 @@ import { createSettingsFormHandler } from "../src/admin/settings-form.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";
 import { STRIPE_ACCOUNT_COUNTRY_KEY } from "../src/payments/stripe-account-country.js";
+import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../src/payments/stripe-publishable-key.js";
 import { createCheckoutPlaceRouteHandler } from "../src/storefront/checkout-routes.js";
 import { createPaymentConfigRouteHandler } from "../src/storefront/payment-config-route.js";
@@ -115,6 +116,7 @@ describe("storefront/payment-config — cardPaymentReady", () => {
 			ok: true,
 			stripePublishableKey: PK_TEST,
 			cardPaymentReady: false,
+			cashOnDelivery: { enabled: false, instructions: null },
 		});
 	});
 
@@ -144,7 +146,12 @@ describe("storefront/payment-config — cardPaymentReady", () => {
 	test("both secrets but no publishable key is not ready", async () => {
 		expect(
 			await call(makeCtx({ [STRIPE_SECRET_KEY_KEY]: SK_TEST, [STRIPE_WEBHOOK_SECRET_KEY]: WHSEC })),
-		).toEqual({ ok: true, stripePublishableKey: null, cardPaymentReady: false });
+		).toEqual({
+			ok: true,
+			stripePublishableKey: null,
+			cardPaymentReady: false,
+			cashOnDelivery: { enabled: false, instructions: null },
+		});
 	});
 
 	test.each([
@@ -163,6 +170,7 @@ describe("storefront/payment-config — cardPaymentReady", () => {
 			ok: true,
 			stripePublishableKey: key,
 			cardPaymentReady: true,
+			cashOnDelivery: { enabled: false, instructions: null },
 		});
 	});
 
@@ -170,6 +178,47 @@ describe("storefront/payment-config — cardPaymentReady", () => {
 		const answer = JSON.stringify(await call(makeCtx(FULL_TEST)));
 		expect(answer).not.toContain(SK_TEST);
 		expect(answer).not.toContain(WHSEC);
+	});
+});
+
+/** Every cash-on-delivery key a storefront route or the gateway resolution reads. */
+const COD_KEYS = [
+	"settings:codEnabled",
+	"settings:codInstructions",
+	"settings:codAutoCancelDays",
+	"settings:codMaxOpenPerBuyer",
+	"settings:codMaxOpenPerClient",
+	"settings:codMaxUnitsPerOrder",
+];
+
+describe("ADR-0044 review finding 10: a kv that fails only for the COD keys never breaks a card store", () => {
+	test("storefront/payment-config still answers card config, with COD off, and logs once", async () => {
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		const route = createPaymentConfigRouteHandler();
+		const answer = await route(
+			{ input: {}, request: req } as never,
+			makeCtx(FULL_TEST, { failingKeys: COD_KEYS }),
+		);
+		expect(answer).toEqual({
+			ok: true,
+			stripePublishableKey: PK_TEST,
+			cardPaymentReady: true,
+			cashOnDelivery: { enabled: false, instructions: null },
+		});
+		expect(errors).toHaveBeenCalledTimes(1);
+		expect(String(errors.mock.calls[0]?.[0])).toMatch(/cash-on-delivery/);
+	});
+
+	test("gateway resolution still arms Stripe, and leaves COD out", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const gateways = await resolvePaymentGateways(makeCtx(FULL_TEST, { failingKeys: COD_KEYS }));
+		expect(Object.keys(gateways)).toEqual(["stripe"]);
+	});
+
+	test("the checkout composition root's gateways ALWAYS include cod, read no COD key, and keep Stripe", async () => {
+		const ctx = makeCtx(FULL_TEST, { failingKeys: COD_KEYS });
+		const gateways = await resolvePaymentGateways(ctx, { cashOnDelivery: "always" });
+		expect(Object.keys(gateways).toSorted()).toEqual(["cod", "stripe"]);
 	});
 });
 

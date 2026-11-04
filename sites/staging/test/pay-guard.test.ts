@@ -20,6 +20,7 @@ function order(over: Partial<PublicOrderView> = {}): PublicOrderView {
 		state: "pending",
 		currency: "USD",
 		paymentMethod: "stripe",
+		settlement: "gateway",
 		holdExpiresAt: "2026-10-02T12:05:00.000Z",
 		createdAt: "2026-10-02T11:50:00.000Z",
 		totals: {} as PublicOrderView["totals"],

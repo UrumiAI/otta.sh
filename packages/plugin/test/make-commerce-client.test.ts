@@ -98,7 +98,9 @@ describe("makeCommerceClient", () => {
 		// it is configured means reading BOTH its kv keys on every construction —
 		// that is the two reads below, in the order `stripeGatewayFromCtx` issues
 		// them. The login email sender is built lazily, so the retired email key is
-		// not read here.
+		// not read here. Cash on delivery's settings are not read either (ADR-0044):
+		// its gateway is always armed at checkout, and its policy is read lazily, by a
+		// COD placement only — so a card-only store pays nothing for it.
 		expect(kvReads).toEqual([STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY]);
 	});
 

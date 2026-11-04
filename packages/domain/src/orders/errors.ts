@@ -5,6 +5,19 @@
 
 /** `createOrderFromCart` outcomes. */
 export type CreateOrderFailure =
+	// ADR-0044 — cash on delivery (an OFFLINE method):
+	/** The method is not offered right now (cash on delivery switched off, or the
+	 *  caller could not attest the per-IP write limit). Checked only for a FRESH
+	 *  placement: a same-key replay returns its order whatever the toggle says. */
+	| "PAYMENT_METHOD_UNAVAILABLE"
+	/** An offline method for a cart with no physical line: nothing to deliver,
+	 *  so nothing to pay on delivery. */
+	| "OFFLINE_NEEDS_PHYSICAL"
+	/** An offline order's delivery address carries no phone number. */
+	| "SHIPPING_PHONE_REQUIRED"
+	/** The buyer, or the client network, already has the maximum number of open
+	 *  (unpaid) offline orders the store allows. */
+	| "OFFLINE_ORDER_LIMIT"
 	| "CART_NOT_FOUND"
 	| "CART_EMPTY"
 	| "CART_CHECKED_OUT"

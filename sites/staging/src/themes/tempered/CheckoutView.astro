@@ -78,6 +78,9 @@ const {
 	chosenOption,
 	notReadyCopy,
 	paymentConfigured,
+	paymentMethods,
+	chosenMethod,
+	codDetails,
 	notConfiguredLead,
 	emailValue,
 	emailNote,
@@ -87,6 +90,14 @@ const {
 	sumRows,
 	footnote,
 } = Astro.props.model;
+
+/** ADR-0044 §8: cash on delivery needs the full address and a phone. As the
+ *  only method, the fields are simply required; beside card, they are required
+ *  FOR cash on delivery, and say so. */
+const addressReq = summary.addressRequired || codDetails === "always";
+const addressReqForCod = !addressReq && codDetails === "when-chosen";
+const offersCard = paymentMethods.some((method) => method.value === "stripe");
+const offersCod = paymentMethods.some((method) => method.value === "cod");
 ---
 
 {/* The components are wrapped rather than handed a class: a page's scoped
@@ -420,11 +431,13 @@ const {
 		    to fill in — no email field (the order keeps the one it was placed
 		    with, and a typed one would be silently ignored), no address. The way
 		    on is the page's resume path, which re-stashes the order's own intent
-		    and shows its email on the pay step. */}
+		    and shows its email on the pay step. A locked review only exists for
+		    a pending CARD order, so the way on needs card on offer — not merely
+		    some method (cash on delivery alone cannot pay it). */}
 		{
 			locked !== null && !ended && (
 				<div class="checkout-details">
-					{paymentConfigured ? (
+					{offersCard ? (
 						summary.readyToPlace && (
 							<div>
 								<a class="u-btn" href={locked.resumeHref}>
@@ -532,6 +545,14 @@ const {
 									<p class="checkout-note checkout-group-note">
 										Required — Stripe accounts in India need the buyer's name and address.
 									</p>
+								) : codDetails === "always" ? (
+									<p class="checkout-note checkout-group-note" data-testid="cod-address-note">
+										Required for cash on delivery — fill in your full address and a phone number.
+									</p>
+								) : codDetails === "when-chosen" ? (
+									<p class="checkout-note checkout-group-note" data-testid="cod-address-note">
+										For cash on delivery, fill in your full address and a phone number. Optional for card payment.
+									</p>
 								) : (
 									<p class="checkout-note checkout-group-note">
 										Optional — fill it in completely, or leave it entirely blank.
@@ -540,13 +561,13 @@ const {
 								<div class="checkout-fields">
 									<div class="checkout-field checkout-span2">
 										<label class="u-label" for="address-name">
-											Full name{summary.addressRequired && <span class="checkout-req">required</span>}
+											Full name{addressReq ? <span class="checkout-req">required</span> : addressReqForCod && <span class="checkout-req">required for cash on delivery</span>}
 										</label>
 										<input
 											type="text"
 											id="address-name"
 											name="name"
-											aria-required={summary.addressRequired ? "true" : undefined}
+											aria-required={addressReq ? "true" : undefined}
 											autocomplete="name"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.name}
 											value={addressValues.name}
@@ -561,13 +582,13 @@ const {
 									</div>
 									<div class="checkout-field checkout-span2">
 										<label class="u-label" for="address-line1">
-											Address line 1{summary.addressRequired && <span class="checkout-req">required</span>}
+											Address line 1{addressReq ? <span class="checkout-req">required</span> : addressReqForCod && <span class="checkout-req">required for cash on delivery</span>}
 										</label>
 										<input
 											type="text"
 											id="address-line1"
 											name="line1"
-											aria-required={summary.addressRequired ? "true" : undefined}
+											aria-required={addressReq ? "true" : undefined}
 											autocomplete="address-line1"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.line1}
 											value={addressValues.line1}
@@ -602,13 +623,13 @@ const {
 									</div>
 									<div class="checkout-field">
 										<label class="u-label" for="address-city">
-											City{summary.addressRequired && <span class="checkout-req">required</span>}
+											City{addressReq ? <span class="checkout-req">required</span> : addressReqForCod && <span class="checkout-req">required for cash on delivery</span>}
 										</label>
 										<input
 											type="text"
 											id="address-city"
 											name="city"
-											aria-required={summary.addressRequired ? "true" : undefined}
+											aria-required={addressReq ? "true" : undefined}
 											autocomplete="address-level2"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.city}
 											value={addressValues.city}
@@ -623,13 +644,13 @@ const {
 									</div>
 									<div class="checkout-field">
 										<label class="u-label" for="address-postalCode">
-											Postal code{summary.addressRequired && <span class="checkout-req">required</span>}
+											Postal code{addressReq ? <span class="checkout-req">required</span> : addressReqForCod && <span class="checkout-req">required for cash on delivery</span>}
 										</label>
 										<input
 											type="text"
 											id="address-postalCode"
 											name="postalCode"
-											aria-required={summary.addressRequired ? "true" : undefined}
+											aria-required={addressReq ? "true" : undefined}
 											autocomplete="postal-code"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.postalCode}
 											value={addressValues.postalCode}
@@ -646,14 +667,14 @@ const {
 										<>
 											<div class="checkout-field">
 												<label class="u-label" for="address-country">
-													Country{summary.addressRequired && <span class="checkout-req">required</span>}
+													Country{addressReq ? <span class="checkout-req">required</span> : addressReqForCod && <span class="checkout-req">required for cash on delivery</span>}
 												</label>
 												<div class="checkout-country-row">
 													<select
 														id="address-country"
 														name="country"
 														data-region-target="address-region"
-														aria-required={summary.addressRequired ? "true" : undefined}
+														aria-required={addressReq ? "true" : undefined}
 														autocomplete="country"
 														aria-invalid={fieldErrors.country !== undefined}
 														aria-describedby={fieldErrors.country !== undefined ? "country-error country-note" : "country-note"}
@@ -731,12 +752,13 @@ const {
 									)}
 									<div class="checkout-field checkout-span2">
 										<label class="u-label" for="address-phone">
-											Phone
+											Phone{codDetails === "always" ? <span class="checkout-req">required</span> : codDetails === "when-chosen" && <span class="checkout-req">required for cash on delivery</span>}
 										</label>
 										<input
 											type="tel"
 											id="address-phone"
 											name="phone"
+											aria-required={codDetails === "always" ? "true" : undefined}
 											autocomplete="tel"
 											maxlength={ORDER_ADDRESS_MAX_LENGTHS.phone}
 											value={addressValues.phone}
@@ -763,11 +785,58 @@ const {
 					}
 
 					{
+						/* ADR-0044: the method choice — a radio when the store offers more
+						   than one, else the one method, carried hidden. Card comes first
+						   and is the default. */
+						paymentMethods.length > 1 ? (
+							<fieldset class="checkout-payment" data-testid="payment-methods">
+								<legend>Payment</legend>
+								{paymentMethods.map((method) => (
+									<label class="checkout-payment-option">
+										<input
+											type="radio"
+											name="paymentMethod"
+											value={method.value}
+											checked={method.value === chosenMethod}
+											data-testid={`payment-method-${method.value}`}
+										/>
+										<span>
+											<strong>{method.label}</strong>
+											<span class="checkout-note">{method.note}</span>
+										</span>
+									</label>
+								))}
+							</fieldset>
+						) : paymentMethods.length === 1 && paymentMethods[0] !== undefined ? (
+							<>
+								<input type="hidden" name="paymentMethod" value={paymentMethods[0].value} />
+								{paymentMethods[0].value === "cod" && (
+									<p class="checkout-note" data-testid="payment-method-cod-only">
+										Payment: {paymentMethods[0].label}. {paymentMethods[0].note}
+									</p>
+								)}
+							</>
+						) : null
+					}
+
+					{
 						paymentConfigured ? (
 							summary.readyToPlace ? (
 								<div>
-									<button type="submit" class="u-btn">
-										Continue to payment
+									{/* "Continue to payment" only where card is offered; with a choice
+									    the label follows the checked radio — CSS `:has()`, no script
+									    (commerce.css, `checkout-submit-*`). */}
+									<button type="submit" class="u-btn" data-testid="place-submit">
+										{offersCard && offersCod ? (
+											<>
+												<span class="checkout-submit-card">Continue to payment</span>
+												<span class="checkout-submit-cod">Place order</span>
+											</>
+										) : offersCod ? (
+											"Place order"
+										) : (
+											"Continue to payment"
+										)}
 									</button>
 								</div>
 							) : (

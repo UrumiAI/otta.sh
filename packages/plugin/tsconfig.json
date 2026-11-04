@@ -10,6 +10,7 @@
 		{ "path": "../admin-presentation" },
 		{ "path": "../domain" },
 		{ "path": "../store-emdash" },
-		{ "path": "../payments-stripe" }
+		{ "path": "../payments-stripe" },
+		{ "path": "../payments-cod" }
 	]
 }

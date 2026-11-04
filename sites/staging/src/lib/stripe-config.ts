@@ -53,3 +53,77 @@ export async function readStripePublishableKey(
 		? { state: "unconfigured" }
 		: { state: "configured", key: result.stripePublishableKey };
 }
+
+/** A payment method checkout can offer (ADR-0044). */
+export type CheckoutPaymentMethod = "stripe" | "cod";
+
+/**
+ * Which methods checkout offers, from the same one route read (ADR-0044): card
+ * only when Stripe is fully set up (#499), cash on delivery only when the
+ * merchant switched it on. Each is independent, so a store with only cash on
+ * delivery checks out with no Stripe keys. `unavailable` is a failed read —
+ * busy, never "nothing is set up".
+ */
+export type CheckoutPaymentConfig =
+	| {
+			state: "ok";
+			/** The offered methods, card first. Empty ⇒ checkout cannot place. */
+			methods: CheckoutPaymentMethod[];
+			/** The merchant's cash-on-delivery instructions, or null. */
+			codInstructions: string | null;
+	  }
+	| { state: "unavailable" };
+
+export async function readCheckoutPaymentConfig(
+	handler: PublicPluginApiRouteHandler | undefined,
+	baseUrl: URL,
+): Promise<CheckoutPaymentConfig> {
+	const result = await dispatchOttaRoute<PaymentConfigRouteResult>(
+		handler,
+		STOREFRONT_PAYMENT_CONFIG_ROUTE,
+		{},
+		baseUrl,
+	);
+	if (result === null || !result.ok) return { state: "unavailable" };
+	const card = result.stripePublishableKey !== null && result.cardPaymentReady === true;
+	// A plugin older than ADR-0044 answers no `cashOnDelivery`: card only.
+	const cod = result.cashOnDelivery?.enabled === true;
+	return {
+		state: "ok",
+		methods: [...(card ? (["stripe"] as const) : []), ...(cod ? (["cod"] as const) : [])],
+		codInstructions: cod ? (result.cashOnDelivery?.instructions ?? null) : null,
+	};
+}
+
+/** The buyer-facing name of a method, as the checkout and order pages print it. */
+export function paymentMethodName(method: string | null): string | null {
+	if (method === "stripe") return "Card";
+	if (method === "cod") return "Cash on delivery";
+	return null;
+}
+
+/** Why cash on delivery, switched on, is not offered for this checkout. */
+export type CodWithheld = "no-write-limit" | "nothing-ships";
+
+/**
+ * The methods THIS checkout offers (ADR-0044 decisions C1 and D): cash on
+ * delivery only where the site's per-IP write limit runs (`RATE_LIMIT_WRITES`,
+ * `hasWriteLimit`) and only for a cart with something to deliver
+ * (`summary.requiresShipping`). Card is untouched. `codWithheld` says why a
+ * switched-on COD was dropped, so the page can say so when nothing is left.
+ */
+export function checkoutMethodsFor(
+	methods: readonly CheckoutPaymentMethod[],
+	context: { writeLimit: boolean; ships: boolean },
+): { methods: CheckoutPaymentMethod[]; codWithheld: CodWithheld | null } {
+	if (!methods.includes("cod")) return { methods: [...methods], codWithheld: null };
+	const codWithheld: CodWithheld | null = !context.writeLimit
+		? "no-write-limit"
+		: !context.ships
+			? "nothing-ships"
+			: null;
+	return {
+		methods: codWithheld === null ? [...methods] : methods.filter((method) => method !== "cod"),
+		codWithheld,
+	};
+}

@@ -138,12 +138,24 @@ export {
 	ORDER_STATE_SET,
 	ORDER_STATES,
 	TERMINAL_ORDER_STATES,
+	UNPAID_ORDER_STATES,
 	orderStateCell,
+	orderStatusFilterLabel,
 	reconciliationSummary,
 	type OrderState,
 } from "./order-status.js";
 export {
+	autoCancelNote,
+	isOfflineMarkPaid,
+	markPaidConfirm,
+	offlinePaymentBadge,
+	transitionButtonLabel,
+	type Settlement,
+	type TransitionContext,
+} from "./offline-orders.js";
+export {
 	UNNAMED_REFUND_RECIPIENT,
+	paymentMethodLabel,
 	refundCapabilityText,
 	refundConfirmText,
 } from "./order-refund-copy.js";
@@ -230,6 +242,7 @@ export {
 	TIMELINE_EMPTY,
 	TIMELINE_UNAVAILABLE,
 	PENDING_CANCEL_EFFECTS,
+	SHIPPED_UNPAID_CANCEL_EFFECTS,
 	cancelBannerText,
 	cancelConfirmText,
 	cancelGroupLabel,

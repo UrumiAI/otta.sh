@@ -52,7 +52,9 @@ import {
 	formatTimestamp,
 	listOutcome,
 	maskBuyerEmail,
+	offlinePaymentBadge,
 	orderStateCell,
+	orderStatusFilterLabel,
 	withOrderNumberCells,
 } from "@urumi.ai/otta-admin-presentation";
 import * as React from "react";
@@ -1468,7 +1470,7 @@ export function OrdersList({
 								<option value={statusAny}>All statuses</option>
 								{(vocabulary?.statuses ?? []).map((state) => (
 									<option key={state} value={state}>
-										{state}
+										{orderStatusFilterLabel(state)}
 									</option>
 								))}
 							</select>
@@ -1718,6 +1720,17 @@ export function OrdersList({
 									<StatusPill tone={orderStateTone(order.state)} testId="order-state-pill">
 										{orderStateCell(order.state)}
 									</StatusPill>
+									{/* ADR-0044 (review finding 6): an offline order names its method
+									    beside its state, so a cash-on-delivery order is told apart
+									    from a card one at a glance. Read off `settlement`. */}
+									{offlinePaymentBadge(order) !== null && (
+										<>
+											{" "}
+											<StatusPill tone="neutral" testId="order-payment-pill">
+												{offlinePaymentBadge(order)}
+											</StatusPill>
+										</>
+									)}
 								</td>
 								<td className="otta-td" style={{ whiteSpace: "nowrap" }}>
 									{/*

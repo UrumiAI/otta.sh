@@ -21,8 +21,15 @@ const { getEmDashEntry } = vi.hoisted(() => ({ getEmDashEntry: vi.fn() }));
 vi.mock("emdash", () => ({ getEmDashEntry }));
 // The publishable key is a build-time define, absent under vitest: card payment
 // "configured", so a place reaches the plugin and its refusal.
-vi.mock("../src/lib/stripe-config.js", () => ({
+vi.mock("../src/lib/stripe-config.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../src/lib/stripe-config.js")>()),
 	readStripePublishableKey: async () => ({ state: "configured", key: "pk_test_fake" }),
+	// ADR-0044: card is the one method this store offers.
+	readCheckoutPaymentConfig: async () => ({
+		state: "ok",
+		methods: ["stripe"],
+		codInstructions: null,
+	}),
 }));
 
 import { seeOther } from "../src/lib/cart-actions.js";
@@ -137,6 +144,11 @@ function checkoutModel(errorMessage: string | null): CheckoutModel {
 		chosenOption: null,
 		notReadyCopy: "",
 		paymentConfigured: true,
+		paymentMethods: [
+			{ value: "stripe", label: "Card", note: "Pay securely by card on the next step." },
+		],
+		chosenMethod: "stripe",
+		codDetails: null,
 		notConfiguredLead: "",
 		emailValue: "",
 		emailNote: "",

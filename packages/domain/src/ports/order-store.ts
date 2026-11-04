@@ -30,6 +30,13 @@ import type {
  * discipline. `payments` recording is folded in here (§7 "or fold events into
  * OrderStore").
  */
+/** A position in {@link OrderStore.listAwaitingPaymentBefore}'s order: the
+ *  `(createdAt, orderId)` of the last order a walk judged. */
+export interface AwaitingPaymentCursor {
+	readonly createdAt: string;
+	readonly orderId: OrderId;
+}
+
 export interface OrderStore {
 	/**
 	 * Insert a `pending` order with its line snapshots + `order_totals` stub,
@@ -71,7 +78,31 @@ export interface OrderStore {
 	 * payment racing it (#543) even before the winner's `payments` row exists. A
 	 * lost flip records nothing. Omitted ⇒ nothing recorded (a bare flip).
 	 */
-	markPaid(orderId: OrderId, providerRef?: string): Promise<boolean>;
+	markPaid(orderId: OrderId, providerRef?: string, options?: MarkPaidOptions): Promise<boolean>;
+	/**
+	 * How many OPEN offline orders (ADR-0044: `awaiting_payment` or
+	 * `shipped_awaiting_payment`) a buyer and a client network already have — the
+	 * caps checkout applies before placing another. `buyerRef` matches
+	 * case-insensitively (as `buyerRefLower` does); `clientKey` is the opaque key the
+	 * order was placed under (`CreateOrderInput.offlineClientKey`). Either count is
+	 * 0 when its key is absent. Read-only.
+	 */
+	countOpenOfflineOrders(input: {
+		buyerRef: string;
+		clientKey?: string;
+	}): Promise<{ byBuyer: number; byClient: number }>;
+	/**
+	 * `awaiting_payment` orders created strictly before `createdBefore`, oldest
+	 * first — `(createdAt, orderId)` ascending, so orders sharing an instant have
+	 * one order too — at most `limit`: the COD auto-cancel leg's batch (ADR-0044).
+	 * With `after`, only the orders strictly AFTER that position, so a walk can move
+	 * past an order it skipped instead of reading it at the head every run.
+	 */
+	listAwaitingPaymentBefore(
+		createdBefore: string,
+		limit: number,
+		after?: AwaitingPaymentCursor,
+	): Promise<OrderId[]>;
 	/**
 	 * Order-level guarded expiry (§5): `UPDATE orders SET state='expired' WHERE
 	 * id=:id AND state='pending' AND hold_expires_at<=:now RETURNING id`. Re-checks
@@ -691,6 +722,9 @@ export interface RecordFulfillmentInput {
 	 *  "shipped")`) — the adapter guards `WHERE state = :fromState` and never
 	 *  hardcodes a state list of its own. */
 	fromState: OrderState;
+	/** The state shipping lands in: `shipped`, or `shipped_awaiting_payment` for an
+	 *  offline order shipped before it is paid (ADR-0044). Absent ⇒ `shipped`. */
+	toState?: "shipped" | "shipped_awaiting_payment";
 	carrier: string;
 	trackingNumber: string;
 	trackingUrl: string | null;
@@ -977,6 +1011,10 @@ export interface CreateOrderInput {
 	/** The order's buyer-address-requirement snapshot ({@link Order.buyerAddressRequired}),
 	 *  written once in the same insert. Absent ⇒ the order carries none. */
 	buyerAddressRequired?: boolean;
+	/** ADR-0044: the opaque client-network key an OFFLINE order was placed under
+	 *  (a one-way hash, never an address), for the per-network cap. Absent on
+	 *  every other order. */
+	offlineClientKey?: string;
 	/**
 	 * The `order_totals` write. Phase 4 passed only `{ subtotal, total, currency }`
 	 * (the stub); Phase 6 passes the full computed breakdown. The extra fields are
@@ -1480,4 +1518,17 @@ export interface OrderExpiryListOptions extends ExpiryListOptions {
 	 * checkouts to fill `limit`. Positive integer.
 	 */
 	readonly scanLimit?: number;
+}
+
+/**
+ * The optional shape of {@link OrderStore.markPaid} (ADR-0044). Absent ⇒ the
+ * gateway settle's `pending → paid`. An offline Mark paid passes its own guarded
+ * flip — `awaiting_payment → paid` or `shipped_awaiting_payment → delivered` — and
+ * the operator, recorded on the flip's audit event. Whatever the states, the flip
+ * enqueues the target state's email and records the commit intent.
+ */
+export interface MarkPaidOptions {
+	fromState?: OrderState;
+	toState?: "paid" | "delivered";
+	actor?: string;
 }

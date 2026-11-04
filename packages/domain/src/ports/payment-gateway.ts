@@ -338,7 +338,8 @@ export class PaymentIntentError extends Error {
 
 export interface PaymentIntentHandle {
 	gateway: PaymentMethod;
-	/** `pi_…` (Stripe). */
+	/** `pi_…` (Stripe). Empty when no intent was minted — an order that left the
+	 *  checkout window, or an offline method, which has none to withdraw. */
 	intentId: string;
 	clientAction: ClientAction;
 	/**
@@ -350,9 +351,18 @@ export interface PaymentIntentHandle {
 	customerRef?: string | null;
 }
 
+/**
+ * What the buyer does next.
+ *  - `stripe_client_secret` — pay on Stripe's page with this secret.
+ *  - `none` — nothing to pay: the order already left the checkout window.
+ *  - `offline` — the order is PLACED and there is no online payment step: the
+ *    buyer pays offline (cash on delivery, ADR-0044). The storefront goes
+ *    straight to the order's confirmation.
+ */
 export type ClientAction =
 	| { kind: "stripe_client_secret"; clientSecret: string }
-	| { kind: "none" };
+	| { kind: "none" }
+	| { kind: "offline" };
 
 export type RawConfirmation = {
 	kind: "webhook";

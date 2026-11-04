@@ -89,6 +89,7 @@ import {
 } from "../payments/card-payment-readiness.js";
 import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { storeRegionFacts } from "./store-region-facts.js";
+import { codRequestFacts, networkKey } from "../payments/cod-request.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 /** The ONE summary route. There is deliberately no `storefront/checkout/quote`
@@ -103,9 +104,6 @@ export const STOREFRONT_ORDER_RESUME_ROUTE = "storefront/order/resume";
 /** "Start a new cart" (QA2 X4): cancel the order a cart became, if it is still
  *  unpaid — from the cart id alone (the cookie is the possession proof). */
 export const STOREFRONT_ORDER_ABANDON_ROUTE = "storefront/order/abandon";
-
-/** The one payment method checkout offers. */
-const PAYMENT_METHOD = "stripe" as const;
 
 export interface CheckoutSummaryRouteInput {
 	cartId?: unknown;
@@ -132,6 +130,9 @@ export interface CheckoutPlaceRouteInput {
 	 *  was priced for (`destination` there) when the summary said
 	 *  `taxByBuyerLocation`. Code-shaped, or INVALID_INPUT. */
 	billingLocation?: unknown;
+	/** ADR-0044: `"stripe"` (card, the default when absent) or `"cod"` (cash on
+	 *  delivery). A method the store has not enabled is `PAYMENT_METHOD_UNAVAILABLE`. */
+	paymentMethod?: unknown;
 	/** The same selection the summary priced — see {@link CheckoutSummaryRouteInput}. */
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
@@ -350,6 +351,12 @@ export type CheckoutPlaceRouteResult =
 	 * until the operator saves the missing value (the server log names it).
 	 */
 	| { ok: false; reason: "STRIPE_NOT_CONFIGURED" }
+	/**
+	 * ADR-0044: the buyer chose cash on delivery and the store does not offer it
+	 * (switched off, or never on — a stale page). Nothing was created; the buyer
+	 * chooses another method.
+	 */
+	| { ok: false; reason: "PAYMENT_METHOD_UNAVAILABLE" }
 	| RenderGuardFailure;
 
 export type OrderRouteResult =
@@ -737,11 +744,15 @@ const STRIPE_NOT_CONFIGURED = Symbol("STRIPE_NOT_CONFIGURED");
  */
 async function placeOrRefuseUnconfigured<T>(
 	ctx: PluginContext,
+	paymentMethod: "stripe" | "cod",
 	create: () => Promise<T>,
 ): Promise<T | typeof STRIPE_NOT_CONFIGURED> {
 	try {
 		return await create();
 	} catch (err) {
+		// A cash-on-delivery place never needs Stripe (ADR-0044): its throw is the
+		// guard's, never "card payment isn't set up".
+		if (paymentMethod !== "stripe") throw err;
 		const gateway = await readStripeGatewayReadiness(ctx).catch(() => undefined);
 		if (gateway === undefined || gateway.ready) throw err;
 		console.error(cardPaymentsNotReadyLog(STOREFRONT_CHECKOUT_PLACE_ROUTE, gateway));
@@ -785,12 +796,29 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				return { ok: false as const, reason: "CHECKOUT_STALE" as const };
 			}
 
+			// ADR-0044: NO up-front COD toggle check here. The domain checks it, with
+			// the caps, for a FRESH placement only — so a same-key replay whose first
+			// reply was lost still answers its order after COD is switched off (review
+			// finding 11). Its refusals come back as typed reasons below.
+			// ADR-0044 §7 (round 2, M1): cash on delivery only through the site's
+			// rate-limited path (the attestation header), keyed by the network the
+			// REQUEST came from — HMAC'd under the store's own secret. Without both the
+			// placement carries no key, which the domain refuses (a fresh one only).
+			let clientKey: string | undefined;
+			if (input.paymentMethod === "cod") {
+				const facts = codRequestFacts(routeCtx.request);
+				if (facts.attested && facts.network !== null) {
+					// No secret to key it under ⇒ no key: COD unavailable, never a throwaway.
+					clientKey = (await networkKey(ctx, facts.network)) ?? undefined;
+				}
+			}
 			const client = await makeCommerceClient(ctx);
-			const result = await placeOrRefuseUnconfigured(ctx, () =>
+			const result = await placeOrRefuseUnconfigured(ctx, input.paymentMethod, () =>
 				client.createOrder(
 					{
 						cartId: input.cartId,
-						paymentMethod: PAYMENT_METHOD,
+						paymentMethod: input.paymentMethod,
+						...(clientKey !== undefined ? { clientKey } : {}),
 						buyerRef: input.buyerRef,
 						...quoteSelection(input.selection),
 						...(input.shippingAddress !== undefined

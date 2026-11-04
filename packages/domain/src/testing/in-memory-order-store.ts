@@ -17,6 +17,7 @@ import type {
 } from "../ports/order-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
+	AwaitingPaymentCursor,
 	CancelOrderInput,
 	CancelOrderStoreResult,
 	CompleteCancellationRestockInput,
@@ -53,6 +54,7 @@ import type {
 	ReconciliationFlagGuard,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
+	MarkPaidOptions,
 } from "../ports/order-store.js";
 import type {
 	CancellationRestockPending,
@@ -82,7 +84,11 @@ export interface SeedOrderSummaryRow {
 	totalCents: number;
 	reconciliationFlag?: string | null;
 }
-import { emailTemplateForState, isLegalOrderTransition } from "../orders/state-machine.js";
+import {
+	OFFLINE_UNPAID_STATES,
+	emailTemplateForState,
+	isLegalOrderTransition,
+} from "../orders/state-machine.js";
 import { orderNumberIdPrefix } from "../orders/order-number.js";
 
 /** Descending code-unit string comparison (`>` first) — the SAME plain code-unit
@@ -94,6 +100,8 @@ function codeUnitDesc(a: string, b: string): number {
 
 interface StoredOrder {
 	order: Order;
+	/** ADR-0044: the network key an offline order was placed under. */
+	offlineClientKey?: string;
 }
 
 interface StoredPayment {
@@ -214,7 +222,10 @@ export class InMemoryOrderStore implements OrderStore {
 			fulfillment: null,
 			cancellation: null,
 		};
-		this.#orders.set(orderId, { order });
+		this.#orders.set(orderId, {
+			order,
+			...(input.offlineClientKey !== undefined ? { offlineClientKey: input.offlineClientKey } : {}),
+		});
 		this.#byKey.set(input.idempotencyKey, orderId);
 		return { created: true, order: this.#clone(order) };
 	}
@@ -237,8 +248,14 @@ export class InMemoryOrderStore implements OrderStore {
 		return order === null ? null : { state: "minted", order };
 	}
 
-	async markPaid(orderId: OrderId, providerRef?: string): Promise<boolean> {
-		if (!this.#guardedFlip(orderId, "pending", "paid")) return false;
+	async markPaid(
+		orderId: OrderId,
+		providerRef?: string,
+		options: MarkPaidOptions = {},
+	): Promise<boolean> {
+		const from = options.fromState ?? "pending";
+		const to = options.toState ?? "paid";
+		if (!this.#guardedFlip(orderId, from, to, true, options.actor ?? null)) return false;
 		// The winning payment rides the won flip, as the real adapter's single write
 		// does (#543); a lost flip records nothing.
 		const stored = this.#orders.get(orderId);
@@ -733,7 +750,8 @@ export class InMemoryOrderStore implements OrderStore {
 			return { recorded: false, order: this.#clone(stored.order) };
 		}
 		const now = this.#clock.now().toISOString();
-		stored.order.state = "shipped";
+		const to = input.toState ?? "shipped";
+		stored.order.state = to;
 		stored.order.fulfillment = {
 			carrier: input.carrier,
 			trackingNumber: input.trackingNumber,
@@ -746,10 +764,10 @@ export class InMemoryOrderStore implements OrderStore {
 		stored.order.updatedAt = now;
 		// Same-"transaction" state-change audit as the real adapter — the actor is
 		// the recorder (the who this domain knows for a fulfillment flip).
-		this.#appendEvent(input.orderId, input.fromState, "shipped", input.recordedBy);
+		this.#appendEvent(input.orderId, input.fromState, to, input.recordedBy);
 		// Same-"transaction" outbox enqueue as the real adapter (§5) when the shipped
 		// state has a template — the buyer's shipped email now carries this tracking.
-		if (input.enqueueEmail) this.#enqueue(input.orderId, "shipped");
+		if (input.enqueueEmail) this.#enqueue(input.orderId, to);
 		return { recorded: true, order: this.#clone(stored.order) };
 	}
 
@@ -768,6 +786,7 @@ export class InMemoryOrderStore implements OrderStore {
 		}
 		const now = this.#clock.now().toISOString();
 		stored.order.state = "cancelled";
+		delete stored.offlineClientKey;
 		stored.order.cancellation = {
 			reason: input.reason,
 			detail: input.detail,
@@ -851,6 +870,41 @@ export class InMemoryOrderStore implements OrderStore {
 		);
 		const order = await this.getById(input.orderId);
 		return { transitioned, order };
+	}
+
+	async countOpenOfflineOrders(input: {
+		buyerRef: string;
+		clientKey?: string;
+	}): Promise<{ byBuyer: number; byClient: number }> {
+		const buyer = input.buyerRef.toLowerCase();
+		let byBuyer = 0;
+		let byClient = 0;
+		for (const stored of this.#orders.values()) {
+			if (!OFFLINE_UNPAID_STATES.has(stored.order.state)) continue;
+			if (stored.order.buyerRef.toLowerCase() === buyer) byBuyer++;
+			if (input.clientKey !== undefined && stored.offlineClientKey === input.clientKey) byClient++;
+		}
+		return { byBuyer, byClient };
+	}
+
+	async listAwaitingPaymentBefore(
+		createdBefore: string,
+		limit: number,
+		after?: AwaitingPaymentCursor,
+	): Promise<OrderId[]> {
+		assertSweepLimit(limit);
+		const from: [string, string] | null =
+			after === undefined ? null : [after.createdAt, after.orderId];
+		return [...this.#orders.values()]
+			.filter(
+				(s) =>
+					s.order.state === "awaiting_payment" &&
+					s.order.createdAt < createdBefore &&
+					(from === null || positionBefore(from, positionOf(s.order))),
+			)
+			.toSorted((a, b) => (positionBefore(positionOf(a.order), positionOf(b.order)) ? -1 : 1))
+			.slice(0, limit)
+			.map((s) => s.order.id);
 	}
 
 	async listForCustomer(customerId: CustomerId): Promise<Order[]> {
@@ -1241,6 +1295,8 @@ export class InMemoryOrderStore implements OrderStore {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined || stored.order.state !== from) return false;
 		stored.order.state = to;
+		// ADR-0044 §7: the network key lives only while the offline order is open.
+		if (!OFFLINE_UNPAID_STATES.has(to)) delete stored.offlineClientKey;
 		stored.order.updatedAt = this.#clock.now().toISOString();
 		// State-change audit rides the (won) flip, exactly like the real adapter's
 		// event INSERT inside the guarded UPDATE transaction — so a 0-row miss above
@@ -1364,4 +1420,14 @@ function idArmOf(filter: OrderListFilter): string | undefined {
 	if (filter.search === undefined) return undefined;
 	const needle = filter.search.toLowerCase();
 	return orderNumberIdPrefix(needle) ?? needle;
+}
+
+/** An order's place in `listAwaitingPaymentBefore`'s `(createdAt, orderId)` order. */
+function positionOf(order: Order): [string, string] {
+	return [order.createdAt, order.id];
+}
+
+/** Whether position `a` sorts before `b` (code-unit comparison, as the port says). */
+function positionBefore(a: [string, string], b: [string, string]): boolean {
+	return a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
 }

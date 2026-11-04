@@ -217,7 +217,10 @@ export function isDestinationFailure(token: string): boolean {
 export function isMethodFailure(token: string): boolean {
 	return (
 		token === "MISSING_SHIPPING_ADDRESS" ||
-		(token.startsWith("SHIPPING_") && !DESTINATION_FAILURES.has(token))
+		(token.startsWith("SHIPPING_") &&
+			!DESTINATION_FAILURES.has(token) &&
+			/* ADR-0044: a missing phone blames the phone, not the delivery option. */
+			token !== "SHIPPING_PHONE_REQUIRED")
 	);
 }
 

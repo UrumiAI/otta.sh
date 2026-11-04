@@ -373,6 +373,7 @@ describe("buildOrderTotal", () => {
 			state: "pending",
 			currency: "USD",
 			paymentMethod: "stripe",
+			settlement: "gateway",
 			holdExpiresAt: "2099-01-01T00:00:00.000Z",
 			createdAt: "2026-07-27T00:00:00.000Z",
 			totals: { ...BREAKDOWN, ...totals, shippingZoneId: null, shippingMethodId: null },
@@ -427,6 +428,7 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		state: "pending",
 		currency: "USD",
 		paymentMethod: "stripe",
+		settlement: "gateway",
 		holdExpiresAt: "2099-01-01T00:00:00.000Z",
 		createdAt: "2026-07-27T00:00:00.000Z",
 		totals: { ...BREAKDOWN, shippingZoneId: null, shippingMethodId: null, ...totals },
@@ -633,6 +635,8 @@ describe("lockedCheckoutPhase — what a cart that already became an order may o
 		delivered: "placed",
 		completed: "placed",
 		refunded: "placed",
+		awaiting_payment: "placed",
+		shipped_awaiting_payment: "placed",
 	};
 
 	test.each(Object.entries(EXPECTED))("%s → %s", (state, phase) => {

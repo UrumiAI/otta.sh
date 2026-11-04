@@ -1,0 +1,61 @@
+// The Playwright e2e stack's Worker config — `astro dev` ONLY, never a build.
+//
+// It is `wrangler.jsonc` (the tracked template: the same placeholder bindings,
+// so the same local miniflare state) plus ONE binding the template leaves
+// commented out: `RATE_LIMIT_WRITES`, the per-IP write limit. Cash on delivery
+// is offered and accepted only where that binding exists (ADR-0044 decision
+// C1), so the e2e stack needs it to exercise COD at all.
+//
+// Selected by astro.config.ts when OTTA_E2E_WRITE_LIMIT=1 (playwright.config.ts
+// sets it for the stack it boots); `astro build` refuses to run with that set
+// (src/lib/e2e-wrangler.ts), so this file can never reach a deploy. Production
+// is unchanged: a deployer adds the bindings to their own wrangler.local.jsonc
+// (DEPLOYMENT.md §2.5).
+//
+// The limit is deliberately far above anything the suite does from 127.0.0.1:
+// this binding is here to EXIST, not to throttle the run. Only the writes class
+// is bound; the sign-in specs keep the template's behaviour.
+//
+// test/e2e-wrangler.test.ts pins this file to the template: anything other than
+// the `ratelimits` entry below is a drift and fails.
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "my-otta-store",
+	"main": "./src/worker.ts",
+	"compatibility_date": "2026-02-24",
+	"compatibility_flags": ["nodejs_compat"],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "YOUR-D1-DATABASE-NAME",
+			"database_id": "00000000-0000-0000-0000-000000000000",
+		},
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA",
+			"bucket_name": "your-media-bucket",
+		},
+		{
+			"binding": "DOWNLOADS",
+			"bucket_name": "your-downloads-bucket",
+		},
+	],
+	"observability": {
+		"enabled": true,
+		"logs": {
+			"enabled": true,
+			"invocation_logs": false,
+		},
+	},
+	"ratelimits": [
+		{
+			"name": "RATE_LIMIT_WRITES",
+			"namespace_id": "9002",
+			"simple": { "limit": 100000, "period": 60 },
+		},
+	],
+	"triggers": {
+		"crons": ["* * * * *"],
+	},
+}

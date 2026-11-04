@@ -328,7 +328,12 @@ export async function placeOrder(
 	tag: string,
 	holdExpiresAt: Date,
 	createdAt: Date,
-	extra: { readonly appliedCouponCode?: string; readonly customerId?: string } = {},
+	extra: {
+		readonly appliedCouponCode?: string;
+		readonly customerId?: string;
+		/** ADR-0044: `cod` places an offline order (still `pending`, as created). */
+		readonly paymentMethod?: "stripe" | "cod";
+	} = {},
 ): Promise<{ id: string; sku: string }> {
 	const s = adapters(storage, createdAt);
 	const sku = `ORDER-${tag}`;
@@ -353,7 +358,7 @@ export async function placeOrder(
 		idempotencyKey: idempotencyKey(`create-${tag}`),
 		holdExpiresAt: holdExpiresAt.toISOString(),
 		buyerRef: `buyer-${tag}@example.test`,
-		paymentMethod: "stripe",
+		paymentMethod: extra.paymentMethod ?? "stripe",
 		lines: [
 			{
 				productId: toProductId(`prod-${tag}`),
@@ -377,6 +382,31 @@ export async function placeOrder(
 		...(extra.customerId === undefined ? {} : { customerId: toCustomerId(extra.customerId) }),
 	});
 	return { id, sku };
+}
+
+/** ADR-0044: a cash-on-delivery order PLACED (`awaiting_payment`, its hold adopted)
+ *  at `createdAt` — stale once the auto-cancel window has passed. */
+export async function placeAwaitingPaymentOrder(
+	storage: StorageAccess,
+	tag: string,
+	createdAt: Date,
+): Promise<{ id: string; sku: string }> {
+	const placed = await placeOrder(
+		storage,
+		tag,
+		new Date(createdAt.getTime() + 15 * MINUTE_MS),
+		createdAt,
+		{ paymentMethod: "cod" },
+	);
+	const flipped = await adapters(storage, createdAt).orderStore.transition({
+		orderId: toOrderId(placed.id),
+		fromState: "pending",
+		toState: "awaiting_payment",
+		idempotencyKey: idempotencyKey(`create-${tag}`),
+		enqueueEmail: true,
+	});
+	if (!flipped.transitioned) throw new Error(`could not place COD order ${tag}`);
+	return placed;
 }
 
 /** A pending order whose hold lapsed 30 minutes before `now`, created an hour

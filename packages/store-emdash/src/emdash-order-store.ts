@@ -122,6 +122,7 @@ import {
 	computeRefundCeiling,
 	emailTemplateForState,
 	isLegalOrderTransition,
+	OFFLINE_UNPAID_STATES,
 	orderNumberIdPrefix,
 	type CancellationRestockPending,
 	type OrderCancellation,
@@ -145,6 +146,7 @@ import {
 	type IdempotencyKey,
 	type IdGen,
 	type InventoryStore,
+	type MarkPaidOptions,
 	type Order,
 	type OrderEvent,
 	type OrderId,
@@ -162,6 +164,7 @@ import {
 	type PaymentIntentRecord,
 	type OrderSummary,
 	type OrderState,
+	type AwaitingPaymentCursor,
 	type OrderStore,
 	type OrderTransitionInput,
 	type OrderTransitionResult,
@@ -337,6 +340,10 @@ const OUTBOX_PAGE_SIZE = 100;
 /** How many pages a list / count / link scan will walk before it refuses to loop. */
 const MAX_LIST_PAGES = 1000;
 
+/** Pages `listAwaitingPaymentBefore` reads past its cursor's instant at most: more
+ *  only if that many orders share one millisecond, and then the batch is short. */
+const AWAITING_PAYMENT_MAX_PAGES = 5;
+
 /**
  * The page the list scans ask the host for. 100 is the host's own ceiling, so this is
  * "as wide as it will give".
@@ -510,18 +517,26 @@ export class EmdashOrderStore implements OrderStore {
 
 	// -- the guarded transitions ----------------------------------------------
 
-	async markPaid(orderId: OrderId, providerRef?: string): Promise<boolean> {
+	async markPaid(
+		orderId: OrderId,
+		providerRef?: string,
+		options: MarkPaidOptions = {},
+	): Promise<boolean> {
 		// pending → paid enqueues the confirmation email AND records the commit
 		// intent, in the same write as the flip: settle's `commitMany` runs after
 		// this call returns, so the intent has to be durable before it does. The
 		// winning payment rides the same compare-and-set (#543), so a settle that
 		// loses the flip reads it back with the `paid` state, never one without it.
+		// ADR-0044: an offline Mark paid passes its own guarded states
+		// (`awaiting_payment → paid`, `shipped_awaiting_payment → delivered`) and the
+		// operator, recorded on the flip's audit event.
 		const { won } = await this.#flip({
 			orderId,
-			fromState: "pending",
-			toState: "paid",
+			fromState: options.fromState ?? "pending",
+			toState: options.toState ?? "paid",
 			enqueueEmail: true,
 			intent: "commit",
+			...(options.actor !== undefined ? { actor: options.actor } : {}),
 			...(providerRef !== undefined ? { envelope: () => ({ paidProviderRef: providerRef }) } : {}),
 		});
 		return won;
@@ -598,6 +613,70 @@ export class EmdashOrderStore implements OrderStore {
 		}
 		if (revision !== null && (await this.#stampIntentAt(doc, revision, "holdsReleased"))) return;
 		await this.#stampIntent(doc.orderId as OrderId, "holdsReleased");
+	}
+
+	/**
+	 * ADR-0044: open offline orders per buyer (the indexed `buyerRefLower`, folded
+	 * as the order was) and per client network (the indexed `offlineClientKey`) —
+	 * two `count()` calls, each a predicate on declared index fields.
+	 */
+	async countOpenOfflineOrders(input: {
+		buyerRef: string;
+		clientKey?: string;
+	}): Promise<{ byBuyer: number; byClient: number }> {
+		const open = { in: [...OFFLINE_UNPAID_STATES] };
+		const byBuyer = await this.#orders.count({
+			buyerRefLower: foldBuyerRef(input.buyerRef),
+			state: open,
+		});
+		const byClient =
+			input.clientKey === undefined
+				? 0
+				: await this.#orders.count({ offlineClientKey: input.clientKey, state: open });
+		return { byBuyer, byClient };
+	}
+
+	/**
+	 * ADR-0044: the auto-cancel leg's batch, on the declared `[state, createdAt]`.
+	 * The host orders ties on `createdAt` by document id — the order id — which is the
+	 * port's `(createdAt, orderId)` order. With `after`, the bound is `gte` its
+	 * instant and the orders at that instant up to its id are dropped here; a page
+	 * left short by them is followed by the next (bounded), so `limit` is still met
+	 * when more orders exist.
+	 */
+	async listAwaitingPaymentBefore(
+		createdBefore: string,
+		limit: number,
+		after?: AwaitingPaymentCursor,
+	): Promise<OrderId[]> {
+		assertSweepLimit(limit);
+		const createdAt =
+			after === undefined ? { lt: createdBefore } : { gte: after.createdAt, lt: createdBefore };
+		const ids: OrderId[] = [];
+		let cursor: string | undefined;
+		// From a cursor, the `gte` brings back the order the cursor sits on when it is
+		// still awaiting payment (the skipped head this cursor exists for), and it is
+		// dropped below: one row more keeps that case to one query, as the leg's entry
+		// cost assumes.
+		const pageSize = after === undefined ? limit : Math.min(limit + 1, LIST_PAGE_SIZE);
+		for (let page = 0; page < AWAITING_PAYMENT_MAX_PAGES; page++) {
+			const result = await this.#orders.query({
+				where: { state: "awaiting_payment", createdAt },
+				orderBy: { createdAt: "asc" },
+				limit: pageSize,
+				...(cursor !== undefined ? { cursor } : {}),
+			});
+			for (const { id, data } of result.items) {
+				if (after !== undefined && data.createdAt === after.createdAt && id <= after.orderId) {
+					continue;
+				}
+				ids.push(data.orderId as OrderId);
+				if (ids.length === limit) return ids;
+			}
+			if (!result.hasMore || result.cursor === undefined) break;
+			cursor = result.cursor;
+		}
+		return ids;
 	}
 
 	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {
@@ -1334,7 +1413,8 @@ export class EmdashOrderStore implements OrderStore {
 		const { won } = await this.#flip({
 			orderId: input.orderId,
 			fromState: input.fromState,
-			toState: "shipped",
+			// ADR-0044: `shipped_awaiting_payment` for an offline order shipped unpaid.
+			toState: input.toState ?? "shipped",
 			enqueueEmail: input.enqueueEmail,
 			// The recorder is the actor this domain knows for a fulfillment flip.
 			actor: input.recordedBy,
@@ -1887,6 +1967,8 @@ export class EmdashOrderStore implements OrderStore {
 			...(input.buyerAddressRequired !== undefined
 				? { buyerAddressRequired: input.buyerAddressRequired }
 				: {}),
+			// ADR-0044: the indexed key the per-network cap counts by.
+			...(input.offlineClientKey !== undefined ? { offlineClientKey: input.offlineClientKey } : {}),
 			events: [],
 			emailOutbox: [],
 			payments: [],
@@ -2257,6 +2339,12 @@ export class EmdashOrderStore implements OrderStore {
 			// the SAME write that recorded one — so an outstanding bracket is findable
 			// the instant it exists, and never a moment after it is closed.
 			next.holdsPendingAt = computeHoldsPendingAt(next);
+			// ADR-0044 §7: an offline order keeps its network key only while it is open
+			// (it is what the per-network cap counts); leaving the open states — paid,
+			// delivered, cancelled — drops it in this same write.
+			if (next.offlineClientKey !== undefined && !OFFLINE_UNPAID_STATES.has(input.toState)) {
+				delete next.offlineClientKey;
+			}
 			const written = await this.#orders.compareAndSet(input.orderId, current.revision, next);
 			if (!written.applied) return CAS_RETRY;
 			// The locator, bracketed AFTER the flip (see `#recordOutboxLocator`). Only the

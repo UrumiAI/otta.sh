@@ -50,6 +50,7 @@ const PACKAGES = [
 	"admin-presentation",
 	"admin-react",
 	"domain",
+	"payments-cod",
 	"payments-stripe",
 	"plugin",
 	"store-emdash",

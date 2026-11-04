@@ -162,6 +162,10 @@ export function offeredTransitions(o: OrderDetailWire, detail: OrderDetailResult
 		// shipped notice — steered to the Fulfilment form, which records tracking
 		// and ships atomically.
 		if (o.state === "processing" && t === "shipped") return false;
+		// ADR-0044: the same for an unpaid COD order — shipping it before payment goes
+		// through Record shipment (the Fulfilment form, offered for `awaiting_payment`),
+		// whose shipped email carries the tracking and the amount due.
+		if (o.state === "awaiting_payment" && t === "shipped_awaiting_payment") return false;
 		// A bare `cancelled` would cancel with no reason on file — steered to the
 		// Cancel group, which records one. The domain already withholds it
 		// (`adminNextStates`) and refuses it (`USE_CANCEL`); this filter stays as a

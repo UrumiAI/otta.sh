@@ -150,7 +150,10 @@
  */
 import {
 	assertSweepLimit,
+	AUTO_CANCEL_ACTOR,
+	CouponReleaseDeferredError,
 	cancelDueIntents,
+	cancelUnpaidOfflineOrders,
 	COUPON_RECOUNT_SETTLE_MS,
 	DEFAULT_COUPON_GRACE_MS,
 	dispatchOrderEmails,
@@ -225,6 +228,7 @@ import {
 	type PaymentGateways,
 } from "../payments/resolve-payment-gateways.js";
 import { CONSOLE_LOGGER } from "../logging/console-logger.js";
+import { readCodAutoCancelDays } from "../payments/cash-on-delivery.js";
 import type { StripeGatewayOptions } from "../payments/stripe-wiring.js";
 import { checkoutIdempotencyKey } from "../storefront/checkout-view-model.js";
 import { deriveDeleteIdempotencyKey } from "../sync/derive-idempotency-key.js";
@@ -273,8 +277,9 @@ export {
 	RECONCILE_PAGE_SIZE,
 } from "./product-reconcile.js";
 
-/** The sixteen legs in the order a SUMMARY lists them (and the order the sweep ran
- *  them in before QA2 M2). The order a tick RUNS them in is `LEG_PRIORITY`, with
+/** The seventeen legs in the order a SUMMARY lists them (and the order the sweep ran
+ *  them in before QA2 M2; `cod-auto-cancel`, ADR-0044, joined just before the
+ *  best-effort `late-refunds`, which stays last). The order a tick RUNS them in is `LEG_PRIORITY`, with
  *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
 	"order-emails",
@@ -292,6 +297,7 @@ export const SWEEP_LEGS = [
 	"product-orphans",
 	"prune-carts",
 	"product-reconcile",
+	"cod-auto-cancel",
 	"late-refunds",
 ] as const;
 
@@ -331,6 +337,10 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
 	// a merchant sees is still "Publish changes", and this is the repair nobody
 	// has to click. A pass walks the whole CMS catalogue, so it keeps the cadence.
 	"product-reconcile",
+	// ADR-0044: a COD order's window is counted in DAYS, so a fifteen-minute cadence
+	// is exact enough, and its idle run (the window read and one listing) is paid
+	// four times an hour rather than sixty.
+	"cod-auto-cancel",
 ];
 
 /**
@@ -346,7 +356,11 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
  *     must happen, not stock a shopper can see), then `expire-holds` (stock held
  *     by abandoned carts — the costliest unit, about twenty calls on Free);
  *  3. `late-refunds` — a customer's money, best-effort behind Stripe's own retries
- *     (and leading one tick per interval on Free, see `runCommerceSweeps`);
+ *     (and leading one tick per interval on Free, see `runCommerceSweeps`), then
+ *     `cod-auto-cancel` (ADR-0044) — stock an unpaid cash-on-delivery order has held
+ *     past the merchant's window goes back on sale. Its window is days, so it waits
+ *     behind the money legs, but its stock is something a shopper can see, so it
+ *     runs ahead of the housekeeping;
  *  4. housekeeping: `prune-challenges` and the seven scans. `coupon-orphans` stays
  *     after `expire-orders`, though it no longer depends on it finishing, and runs
  *     ahead of `reporting-heal`: its unit is fixed (10 calls since #598) while the
@@ -377,6 +391,7 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"hold-intents",
 	"expire-holds",
 	"late-refunds",
+	"cod-auto-cancel",
 	"prune-challenges",
 	"sku-transfers",
 	"order-sku-index",
@@ -633,6 +648,9 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	// capped like the other scans so a catalogue-wide drift (a publish outage) heals
 	// over ticks without taking the tick from the legs a customer waits on.
 	"product-reconcile": { time: 0.3, queries: 0.3 },
+	// ADR-0044: a backlog of stale COD orders (a lowered window) is cancelled over
+	// ticks, never in one; each order is a whole unit, so the floor holds one.
+	"cod-auto-cancel": { time: 0.3, queries: 0.3 },
 };
 
 /** The legs a customer waits on: the outbox and the two expiry legs. Each has a
@@ -653,6 +671,26 @@ export const PRODUCT_ORPHAN_DELETE_CALLS = 4;
  *  read, the cart's versioned read, its create-key record's versioned read and
  *  guarded delete, and the cart's guarded delete. */
 export const PRUNE_CART_CALLS = 5;
+
+/** One stale COD order's auto-cancel (`LEG_QUERY_COSTS`), MEASURED at 21 in
+ *  cron-leg-costs.test.ts: its read, the captured-payments check, the cancel (the
+ *  guarded flip with its release intent and email, the rollup delta, the hold
+ *  release) and an order-scoped coupon release that finds nothing. A coupon use to
+ *  free is begun only inside the commit window, as an expiry's is
+ *  (`COUPON_RELEASE_CALLS`). */
+export const COD_AUTO_CANCEL_UNIT = 21;
+
+/**
+ * The calls one stale COD order's cancel still makes AFTER its coupon release has
+ * returned (the guarded flip with its release intent and email, the rollup delta,
+ * the hold release), MEASURED in cron-leg-costs.test.ts. The leg checks the release
+ * plus this much is left before it begins a release, so the cancel after it never
+ * meets the tick's ceiling. Not the whole unit: the order read and the
+ * captured-payments check have already run by then, and the real release replaces
+ * the empty one the unit counts — reserving the whole unit put a coupon order out
+ * of a Workers Free tick's reach for good.
+ */
+export const COD_AUTO_CANCEL_AFTER_RELEASE_CALLS = 17;
 
 /** One coupon's recount at worst (`EmdashCouponStore.recountUses`): the coupon read,
  *  its in-flight and applied counts, and the correcting write. */
@@ -755,6 +793,16 @@ export const UNPROMOTED_LEGS: readonly SweepLeg[] = [
 	"prune-carts",
 ];
 
+/**
+ * Legs aging may promote (to right behind `cancel-intents`) but the starvation
+ * guard never puts AHEAD of it (`starvingLeg`). `cod-auto-cancel` (ADR-0044): its
+ * window is days, so a few more ticks cost nothing, while its unit — a whole
+ * cancel — beside a worst intent cancel passes a Workers Free tick, so leading it
+ * would defer the late-payment prevention. Behind an idle cancel (one due check)
+ * it fits, and the cancels drain first.
+ */
+export const NEVER_AHEAD_OF_CANCELS: readonly SweepLeg[] = ["cod-auto-cancel"];
+
 /** The most one row's reads can cost: `ORPHAN_READS_PER_STRIKE - 1` misses, then a
  *  document found. */
 const ORPHAN_ROW_READ_QUERIES =
@@ -854,7 +902,18 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// Stripe refused to cancel (a second subrequest) and, on the last attempt, the
 		// give-up flag on the order: 7, measured with fix/late-charge-window merged.
 		"cancel-intents": { entry: 2, unit: 7 },
+		// ADR-0044. entry: the auto-cancel window's kv read and the due listing (one
+		// indexed page). unit: one stale COD order cancelled (`COD_AUTO_CANCEL_UNIT`,
+		// measured); a coupon release on top runs in the commit window, like an
+		// expiry's, or is skipped for `coupon-orphans` to free.
+		"cod-auto-cancel": { entry: 2, unit: COD_AUTO_CANCEL_UNIT },
 	};
+
+/**
+ * Most stale COD orders one tick cancels (ADR-0044 §6): a few, whatever the budget,
+ * so lowering the window cancels a backlog over ticks rather than taking one whole.
+ */
+export const COD_AUTO_CANCEL_BATCH = 10;
 
 /** What examining one cart in the hold listing costs, at most: the cart (already in
  *  the page), its reservations' liveness reads, and a heal write for a dead one. */
@@ -1458,6 +1517,14 @@ export async function runCommerceSweeps(
 			if (!due) {
 				record({ leg, ok: true, count: hooks.extraCount?.() ?? 0 });
 				clearDeferral(leg);
+				// A slow-cadence leg that found nothing waits out its cadence, as one
+				// whose body found nothing does — never re-asked every minute.
+				// This applies to ANY slow-cadence leg with an `isDue` hook, not only
+				// `cod-auto-cancel` (the first to have one).
+				if (maintenance) {
+					state.lastRun[leg] = nowIso;
+					stateChanged = true;
+				}
 				return;
 			}
 		}
@@ -2015,6 +2082,11 @@ export async function runCommerceSweeps(
 			},
 		);
 
+	/** The COD auto-cancel window (ADR-0044), read once per tick through the counted
+	 *  context — by the leg's due check, or by its body when the check was skipped. */
+	let codWindow: Promise<number> | undefined;
+	const codAutoCancelDays = (): Promise<number> => (codWindow ??= readCodAutoCancelDays(ctx));
+
 	/** `product-orphans`' tombstones this tick, across both passes (the cap's count). */
 	const orphanTombstones = { count: 0 };
 	const runners: Record<SweepLeg, () => Promise<void>> = {
@@ -2024,6 +2096,100 @@ export async function runCommerceSweeps(
 		"expire-holds": expireHoldsLeg,
 		"order-emails": orderEmailsLeg,
 		"late-refunds": () => lateRefundsLeg(),
+		// ADR-0044 §6: unpaid `awaiting_payment` COD orders older than the merchant's
+		// window, cancelled (stock back on sale, the cancelled email) with their coupon
+		// use freed. The window is read through the counted context; 0 (or a failed
+		// read) is off. Never a `shipped_awaiting_payment` order: the goods are out.
+		"cod-auto-cancel": async () =>
+			await run(
+				"cod-auto-cancel",
+				async (legBudget) => {
+					const maxAgeDays = await codAutoCancelDays();
+					if (maxAgeDays <= 0) return { count: 0 };
+					// The coupon release is begun only when all of it fits, like an expiry's
+					// (#621), so it is never cut half-way — and it comes BEFORE the cancel
+					// (ADR-0044 §6, review round 2 M2). A release the tick cannot afford
+					// therefore FAILS rather than skips: the domain leaves that order
+					// uncancelled and listed, and a later tick frees the use and cancels it.
+					// (Skipped AFTER a cancel, the use would be stranded: coupon-orphans
+					// judges a redemption once.) One deferred ends the batch.
+					//
+					// "Fits" counts the cancel that follows the release, too
+					// (`COD_AUTO_CANCEL_AFTER_RELEASE_CALLS`): the cancel runs outside the
+					// commit window, so a release begun with room for itself alone left the
+					// cancel to overrun the tick's ceiling. Only what is still to come is
+					// reserved, so a Workers Free tick can afford a coupon order; a tick that
+					// cannot walks past it (the domain's cursor) rather than blocking the
+					// orders behind it, and a later pass comes back to it.
+					let releaseSkipped = false;
+					const wholeOnly = wholeReleasesOnly(
+						stores.couponStore,
+						budget,
+						() => {
+							releaseSkipped = true;
+							legBudget.stopped = true;
+						},
+						// Only an order WITH a coupon: a coupon-less order's release finds
+						// nothing, and that is already inside its unit (`COD_AUTO_CANCEL_UNIT`).
+						(order) =>
+							order.totals?.appliedCouponCode != null ? COD_AUTO_CANCEL_AFTER_RELEASE_CALLS : 0,
+					);
+					const couponStore = {
+						async releaseByOrder(order: Parameters<typeof wholeOnly.releaseByOrder>[0]) {
+							const released = await wholeOnly.releaseByOrder(order);
+							if (releaseSkipped) {
+								// A deferral, not a fault: the domain logs it at info (R3-4).
+								throw new CouponReleaseDeferredError(
+									"coupon release deferred to a later tick (the tick's query budget)",
+								);
+							}
+							return released;
+						},
+					};
+					const gate = legBudget.gate(0, LEG_QUERY_COSTS["cod-auto-cancel"].unit);
+					const from = state.codAutoCancelCursor;
+					const result = await cancelUnpaidOfflineOrders(
+						{
+							orderStore: stores.orderStore,
+							couponStore,
+							clock: { now: () => now },
+							logger: CONSOLE_LOGGER,
+						},
+						{
+							maxAgeDays,
+							limit: batchLeft("cod-auto-cancel", COD_AUTO_CANCEL_BATCH),
+							shouldContinue: () => !releaseSkipped && gate(),
+							...(from !== undefined
+								? { after: { createdAt: from.createdAt, orderId: toOrderId(from.orderId) } }
+								: {}),
+						},
+					);
+					// The walk's place, kept in the cadence state (written once at the tick's
+					// end), so the next run starts past what this one judged.
+					const next = result.cursor ?? undefined;
+					if (next?.createdAt !== from?.createdAt || next?.orderId !== from?.orderId) {
+						if (next === undefined) delete state.codAutoCancelCursor;
+						else state.codAutoCancelCursor = { createdAt: next.createdAt, orderId: next.orderId };
+						stateChanged = true;
+					}
+					return batchOutcome(
+						{ count: result.cancelled, drained: result.drained },
+						(count) => noteUnits("cod-auto-cancel", count + result.skipped, legBudget),
+						releaseSkipped || legBudget.stopped,
+					);
+				},
+				// Is anything past the window? The window's read and ONE listed order —
+				// so an idle run (every store with COD off, or nothing stale) is two calls
+				// on the slow cadence, and is never "deferred" for want of a unit's room.
+				{
+					isDue: async () => {
+						const days = await codAutoCancelDays();
+						if (days <= 0) return false;
+						const cutoff = new Date(now.getTime() - days * DAY_MS).toISOString();
+						return (await stores.orderStore.listAwaitingPaymentBefore(cutoff, 1)).length > 0;
+					},
+				},
+			),
 		"prune-challenges": async () =>
 			await run("prune-challenges", async (legBudget) => {
 				// Bounded: the prune deletes one row per call, and a pile of expired
@@ -2328,9 +2494,16 @@ export function tickOrder(waits: Partial<Record<SweepLeg, number>>): SweepLeg[] 
 	const rank = (leg: SweepLeg): number => LEG_PRIORITY.indexOf(leg);
 	// Equal waits: the LOWER-priority leg first — the higher one runs right after it
 	// anyway in the ordinary order, and it is the lower one that keeps losing.
+	// A leg never put ahead of the cancels (`NEVER_AHEAD_OF_CANCELS`) is aged too, but
+	// BEHIND every other aged leg: it has no customer waiting on it, and its unit is
+	// most of a Free tick, so it takes the head only when nothing else has aged.
+	const lastAmongAged = (leg: SweepLeg): number => (NEVER_AHEAD_OF_CANCELS.includes(leg) ? 1 : 0);
 	const aged = LEG_PRIORITY.filter(
 		(leg) => !UNPROMOTED_LEGS.includes(leg) && (waits[leg] ?? 0) >= AGING_TICKS,
-	).toSorted((x, y) => (waits[y] ?? 0) - (waits[x] ?? 0) || rank(y) - rank(x));
+	).toSorted(
+		(x, y) =>
+			lastAmongAged(x) - lastAmongAged(y) || (waits[y] ?? 0) - (waits[x] ?? 0) || rank(y) - rank(x),
+	);
 	return [...aged, ...LEG_PRIORITY.filter((leg) => !aged.includes(leg))];
 }
 
@@ -2343,6 +2516,7 @@ export function starvingLeg(waits: Partial<Record<SweepLeg, number>>): SweepLeg 
 		(leg) =>
 			leg !== "cancel-intents" &&
 			leg !== "late-refunds" &&
+			!NEVER_AHEAD_OF_CANCELS.includes(leg) &&
 			!UNPROMOTED_LEGS.includes(leg) &&
 			(waits[leg] ?? 0) >= STARVING_TICKS,
 	).toSorted((x, y) => (waits[y] ?? 0) - (waits[x] ?? 0) || rank(y) - rank(x))[0];
@@ -2381,21 +2555,35 @@ function logTick(
 	);
 }
 
+/** What `wholeReleasesOnly` reads off the order a release is for. */
+interface ReleasedOrder {
+	readonly customerId?: string | null;
+	readonly totals?: { readonly appliedCouponCode?: string | null };
+}
+
 /**
  * `store` with `releaseByOrder` guarded as `COUPON_RELEASE_CALLS` describes: skipped
  * (answering 0, no call made, `onSkip` told) when the tick cannot afford the order's
- * release, and otherwise run inside the commit window, closed again when it returns.
- * Every other member is the store's own.
+ * release — and the `thenCalls(order)` the caller makes AFTER it, outside the window
+ * (the COD auto-cancel releases first and cancels after) — and otherwise run inside
+ * the commit window, closed again when it returns. Every other member is the store's
+ * own.
  */
-function wholeReleasesOnly<S extends object>(store: S, budget: TickBudget, onSkip: () => void): S {
+function wholeReleasesOnly<S extends object>(
+	store: S,
+	budget: TickBudget,
+	onSkip: () => void,
+	thenCalls: (order: ReleasedOrder) => number = () => 0,
+): S {
 	return new Proxy(store, {
 		get(target, prop) {
 			const value: unknown = Reflect.get(target, prop, target);
 			if (typeof value !== "function") return value;
 			if (prop === "releaseByOrder") {
-				return async (order: { readonly customerId?: string | null }, ...rest: unknown[]) => {
+				return async (order: ReleasedOrder, ...rest: unknown[]) => {
 					const needed =
-						order.customerId === null ? GUEST_COUPON_RELEASE_CALLS : COUPON_RELEASE_CALLS;
+						(order.customerId === null ? GUEST_COUPON_RELEASE_CALLS : COUPON_RELEASE_CALLS) +
+						thenCalls(order);
 					if (budget.headroom() < needed) {
 						onSkip();
 						return 0;
@@ -2521,7 +2709,9 @@ function sweepGateways(
 		const injected = options.gateways;
 		if (typeof injected === "function") return injected();
 		if (injected !== undefined) return injected;
-		resolved ??= resolvePaymentGateways(ctx, stripeOptions);
+		// ADR-0044: no COD — the legs withdraw intents and refund late payments,
+		// and a cash-on-delivery order has neither.
+		resolved ??= resolvePaymentGateways(ctx, { ...stripeOptions, cashOnDelivery: "never" });
 		return resolved;
 	};
 }
@@ -2710,6 +2900,12 @@ interface SweepState {
 	/** The last few orders whose expiry flip threw, by id (#478): the durable half
 	 *  of the expiry back-off, and what the leg's alert counts. */
 	expiryFailures: Record<string, ExpiryFailure>;
+	/** Where `cod-auto-cancel`'s walk stands (ADR-0044): past every order it judged
+	 *  — one it SKIPPED (cash on file and flagged, a failed coupon release) included,
+	 *  so a skipped order at the head never blocks the younger ones behind it on a
+	 *  tick that affords one order. Cleared when a run drains the listing, so the next
+	 *  pass starts at the oldest again. */
+	codAutoCancelCursor?: { createdAt: string; orderId: string };
 	/** The declared index layout (`INDEX_LAYOUT`) the last tick saw. */
 	indexLayout?: string;
 	/** The UTC day a tick first saw a new index layout: EmDash builds the new indexes
@@ -2766,15 +2962,26 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return state;
-		const { lastRun, deferrals, waits, expiryFailures, indexLayout, indexBuildDay } = parsed as {
+		const {
+			lastRun,
+			deferrals,
+			waits,
+			expiryFailures,
+			indexLayout,
+			indexBuildDay,
+			codAutoCancelCursor,
+		} = parsed as {
 			lastRun?: unknown;
 			deferrals?: unknown;
 			waits?: unknown;
 			expiryFailures?: unknown;
 			indexLayout?: unknown;
 			indexBuildDay?: unknown;
+			codAutoCancelCursor?: unknown;
 		};
 		if (typeof indexLayout === "string") state.indexLayout = indexLayout;
+		const codCursor = parseCodCursor(codAutoCancelCursor);
+		if (codCursor !== undefined) state.codAutoCancelCursor = codCursor;
 		if (typeof indexBuildDay === "string") state.indexBuildDay = indexBuildDay;
 		state.expiryFailures = parseExpiryFailures(expiryFailures);
 		for (const leg of SWEEP_LEGS) {
@@ -2796,6 +3003,16 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	} catch {
 		return state;
 	}
+}
+
+/** A stored `codAutoCancelCursor`, or undefined when absent or ill-formed (a lost
+ *  cursor only starts the walk at the oldest order again). */
+function parseCodCursor(raw: unknown): { createdAt: string; orderId: string } | undefined {
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const { createdAt, orderId } = raw as { createdAt?: unknown; orderId?: unknown };
+	if (typeof createdAt !== "string" || Number.isNaN(Date.parse(createdAt))) return undefined;
+	if (typeof orderId !== "string" || orderId.length === 0 || orderId.length > 128) return undefined;
+	return { createdAt, orderId };
 }
 
 /** The kv record's failing orders, well-formed entries only, at most
@@ -4225,7 +4442,13 @@ function addDays(day: string, delta: number): string {
  * `cancelled` is deliberately NOT released: `cancelOrder` releases no coupon, and a
  * sweeper that did would silently reverse that shipped policy an hour after the
  * fact, handing back a per-customer slot for a coupon a real order consumed. A
- * change to that policy belongs in an ADR, not in a sweeper.
+ * change to that policy belongs in an ADR, not in a sweeper. The one exception is
+ * that ADR's own: a cash-on-delivery order cancelled by the AUTO-CANCEL (ADR-0044
+ * §6, `cancelledBy` = `AUTO_CANCEL_ACTOR`) is owed its use back. Since review round
+ * 2 the auto-cancel frees the use BEFORE it cancels, and retries the order itself
+ * when that fails — so this arm is defence in depth (a redemption this walk has not
+ * yet passed, released twice is a no-op), NOT the retry. It cannot be: the walk
+ * judges a redemption once, usually while its order is still unpaid and live.
  *
  * WHY NOT JUST CALL `reconcileCouponRedemptions`. Its rule is reused verbatim and
  * its grace default is imported rather than re-picked, but its READ cannot be: it
@@ -4257,6 +4480,14 @@ function addDays(day: string, delta: number): string {
  * `usesCount` one HIGH with nothing left for this leg to find. That is the
  * `coupon-recount` leg (#619, `recountCouponUses`).
  */
+/** ADR-0044 §6: an order the COD auto-cancel cancelled — owed its coupon back. */
+function autoCancelled(order: {
+	state: OrderState;
+	cancellation: { cancelledBy: string | null } | null;
+}): boolean {
+	return order.state === "cancelled" && order.cancellation?.cancelledBy === AUTO_CANCEL_ACTOR;
+}
+
 async function releaseOrphanedRedemptions(
 	storage: AdapterStorageAccess,
 	stores: InProcessCommerceStores,
@@ -4314,9 +4545,13 @@ async function releaseOrphanedRedemptions(
 			return;
 		}
 		// No holder (or a lapsed claim) is an orphan; an EXPIRED order is owed its
-		// coupon back and may have lost the release to a crash (see above). Every other
-		// state keeps it.
-		if (order !== null && order.state !== "expired") return;
+		// coupon back and may have lost the release to a crash (see above), and so is a
+		// COD order the AUTO-CANCEL cancelled (ADR-0044 §6: nobody chose to keep it —
+		// defence in depth; the auto-cancel frees it first itself). Every other state keeps
+		// it — `awaiting_payment` and `shipped_awaiting_payment` included: an unpaid
+		// COD order is live and owns its use, so the walk passes it like a paid one
+		// (review finding 2) rather than waiting on a hold deadline it never had.
+		if (order !== null && order.state !== "expired" && !autoCancelled(order)) return;
 		await stores.couponStore.release(item.data.redemptionId);
 		released++;
 	});
@@ -4606,7 +4841,9 @@ function isObservation(value: unknown): value is CouponUsesObservation {
  * `releaseAdoptedMany(ids, orderId)`, the call that order's own transition would
  * have made: order-scoped (only a hold THAT order adopted), idempotent, and a
  * no-op on a hold that is already terminal. Never released:
- *  - a hold whose order is `pending`, `paid` or any later state. A paid order's
+ *  - a hold whose order is `pending`, `paid` or any later state, or an unpaid
+ *    cash-on-delivery order (`awaiting_payment`, `shipped_awaiting_payment`,
+ *    ADR-0044), which holds its stock until it is paid or cancelled. A paid order's
  *    adopted hold is owed a COMMIT, not a release;
  *  - a hold whose order still owes an intent (`holdsPendingAt` set). That order is
  *    mid-transition and `hold-intents` owns it;
@@ -4614,9 +4851,11 @@ function isObservation(value: unknown): value is CouponUsesObservation {
  *    should not happen; the leg leaves it rather than guess.
  *
  * WHY A LATE SETTLE CANNOT COMMIT WHAT THIS RETURNS. The three states are terminal:
- * the order state machine has no way out of them, and `markPaid` is a guarded
- * `pending → paid` flip. Once this leg has READ one of them, the order can never
- * be paid, and `settleOrder` commits an order's holds only after it is paid (it
+ * the order state machine has no way out of them, and `markPaid` is a guarded flip
+ * from a live state only — `pending → paid` for a settle, `awaiting_payment → paid`
+ * or `shipped_awaiting_payment → delivered` for a cash-on-delivery Mark paid
+ * (ADR-0044); never from a terminal state. Once this leg has READ one of them, the
+ * order can never be paid, and `settleOrder` commits an order's holds only after it is paid (it
  * won the flip, or found the order paid). A payment that arrives for an expired
  * or cancelled order takes the late-payment path instead: recorded, refunded or
  * flagged, and nothing committed. The one transition into `cancelled` from a paid

@@ -22,6 +22,9 @@ export interface OrderSummaryWire {
 	buyerRef: string;
 	customerId: string | null;
 	paymentMethod: string | null;
+	/** ADR-0044: `"offline"` (cash on delivery) | `"gateway"` | null — what
+	 *  readers branch on, never the method's name. */
+	settlement: "gateway" | "offline" | null;
 	createdAt: string;
 	totalCents: number;
 	reconciliationFlag: boolean;
@@ -139,10 +142,18 @@ export interface OrderDetailWire {
 	state: string;
 	currency: string;
 	paymentMethod: string | null;
+	/** ADR-0044: `"offline"` (cash on delivery) | `"gateway"` | null — what
+	 *  readers branch on, never the method's name. */
+	settlement: "gateway" | "offline" | null;
 	buyerRef: string;
 	customerId: string | null;
 	holdExpiresAt: string;
 	createdAt: string;
+	/** ADR-0044 §6 (B-N6): when the `cod-auto-cancel` sweep cancels this order if
+	 *  it is still unpaid — `createdAt` plus the live window. Only an
+	 *  `awaiting_payment` order of an offline settlement has one; null otherwise,
+	 *  when the window is 0 (off), or when it could not be read. */
+	autoCancelAt: string | null;
 	reconciliationFlag: string | null;
 	reconciliationResolution: ReconciliationResolutionWire | null;
 	fulfillment: OrderFulfillmentWire | null;
@@ -300,6 +311,9 @@ export interface RefundsSummaryWire {
 	ceilingCents: number;
 	remainingCents: number;
 	paymentMethod: string | null;
+	/** ADR-0044: `"offline"` (cash on delivery) | `"gateway"` | null — what
+	 *  readers branch on, never the method's name. */
+	settlement: "gateway" | "offline" | null;
 	refundable: boolean;
 	/** True when a current provider captured this order's money (a `succeeded`
 	 *  payment through the refund's gateway). A manual refund then keeps the
@@ -482,6 +496,9 @@ export type RevokeDownloadAccessResult =
  *  caller comparing against it is checked by the compiler and the in-process client
  *  cannot return a reason missing from it. */
 export type TransitionRefusal =
+	/** ADR-0044: a cash-on-delivery Mark paid lost to a concurrent Record shipment;
+	 *  nothing changed but the shipment — click Mark paid again (→ delivered). */
+	| "MARK_PAID_RETRY"
 	| "ORDER_NOT_FOUND"
 	| "INVALID_TRANSITION"
 	| "MANUAL_PAYMENT_NOT_ALLOWED"
@@ -529,7 +546,15 @@ export type ResolveReconciliationResult =
  *  `processing`); the caller renders GENERIC copy keyed off it, never the raw
  *  status/URL. */
 export type RecordFulfillmentResult =
-	| { ok: true; recorded: boolean; email?: InlineEmailStatus }
+	| {
+			ok: true;
+			recorded: boolean;
+			email?: InlineEmailStatus;
+			/** ADR-0044: the state the shipment moved the order to — `shipped`, or
+			 *  `shipped_awaiting_payment` for an unpaid cash-on-delivery order. Present
+			 *  when `recorded`. */
+			state?: string;
+	  }
 	| { ok: false; status: number; reason?: string };
 
 /** POST cancel returns a discriminated result (like `transitionOrder`) so a

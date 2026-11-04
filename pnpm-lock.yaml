@@ -169,6 +169,25 @@ importers:
         specifier: 'catalog:'
         version: 4.1.12(@types/node@22.20.1)(happy-dom@21.0.4)(vite@8.3.3(@types/node@22.20.1)(esbuild@0.28.1)(yaml@2.9.1))
 
+  packages/payments-cod:
+    dependencies:
+      '@urumi.ai/otta-domain':
+        specifier: workspace:*
+        version: link:../domain
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.1
+      tsdown:
+        specifier: 'catalog:'
+        version: 0.22.4(typescript@5.9.3)
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.12(@types/node@22.20.1)(happy-dom@21.0.4)(vite@8.3.3(@types/node@22.20.1)(esbuild@0.28.1)(yaml@2.9.1))
+
   packages/payments-stripe:
     dependencies:
       '@urumi.ai/otta-domain':
@@ -196,6 +215,9 @@ importers:
       '@urumi.ai/otta-domain':
         specifier: workspace:*
         version: link:../domain
+      '@urumi.ai/otta-payments-cod':
+        specifier: workspace:*
+        version: link:../payments-cod
       '@urumi.ai/otta-payments-stripe':
         specifier: workspace:*
         version: link:../payments-stripe

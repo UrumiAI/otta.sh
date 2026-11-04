@@ -99,6 +99,7 @@ function recorder(): Recorder {
 				ceilingCents: CAPTURED_CENTS,
 				remainingCents: CAPTURED_CENTS - state.refundedSoFar - state.inFlight,
 				paymentMethod: "stripe",
+				settlement: "gateway",
 				refundable: true,
 				providerCaptured: true,
 			});

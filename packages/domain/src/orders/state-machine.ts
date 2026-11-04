@@ -16,8 +16,14 @@ import type { OrderNotice, OrderState } from "./model.js";
  * failed before ADR-0022 still carry it and every reader must keep rendering them.
  */
 export const ORDER_STATE_MACHINE = {
-	// Phase 4: pending → paid|expired. Phase 5 adds pending → cancelled.
-	pending: ["paid", "expired", "cancelled"],
+	// Phase 4: pending → paid|expired. Phase 5 adds pending → cancelled. ADR-0044
+	// adds pending → awaiting_payment (an offline order, placed).
+	pending: ["paid", "expired", "cancelled", "awaiting_payment"],
+	// ADR-0044 — an offline (cash-on-delivery) order. Every move into or out of
+	// these is offline-only (`isOfflineOnlyMove`); into `paid`/`delivered` is Mark
+	// paid, a recorded payment.
+	awaiting_payment: ["paid", "shipped_awaiting_payment", "cancelled"],
+	shipped_awaiting_payment: ["delivered", "cancelled"],
 	paid: ["processing", "completed", "cancelled", "refunded"],
 	processing: ["shipped", "cancelled", "refunded"],
 	shipped: ["delivered", "refunded"],
@@ -60,6 +66,10 @@ export const ORDER_EMAIL_TEMPLATE_FOR_STATE = {
 	cancelled: "order-cancelled",
 	refunded: "order-refunded",
 	expired: "order-expired",
+	// ADR-0044: "order received — pay in cash on delivery", with the amount due.
+	awaiting_payment: "order-placed-offline",
+	// The shipped email with tracking; it adds the amount due (render.ts).
+	shipped_awaiting_payment: "order-shipped",
 } as const satisfies Partial<Record<OrderState, EmailTemplate>>;
 
 /** The template to enqueue when an order enters `to`, or `null` when that
@@ -83,4 +93,31 @@ export const ORDER_NOTICE_EMAIL_TEMPLATE = {
 /** The template a notice outbox row renders. Total over `OrderNotice`. */
 export function emailTemplateForNotice(notice: OrderNotice): EmailTemplate {
 	return ORDER_NOTICE_EMAIL_TEMPLATE[notice];
+}
+
+/**
+ * ADR-0044: the moves only an OFFLINE order may make — into or out of the two
+ * unpaid offline states. `transitionOrder` and `transitionOrderAsAdmin` refuse
+ * them (`INVALID_TRANSITION`) for any other order, so a card order can never be
+ * parked unpaid or "paid" by a hand-made request.
+ */
+export function isOfflineOnlyMove(from: OrderState, to: OrderState): boolean {
+	return OFFLINE_UNPAID_STATES.has(from) || OFFLINE_UNPAID_STATES.has(to);
+}
+
+/** The unpaid offline states (ADR-0044) — "open" for the caps, never revenue. */
+export const OFFLINE_UNPAID_STATES: ReadonlySet<OrderState> = new Set([
+	"awaiting_payment",
+	"shipped_awaiting_payment",
+]);
+
+/**
+ * ADR-0044: the state an offline order's Mark paid lands in, from where it is —
+ * `awaiting_payment → paid`, `shipped_awaiting_payment → delivered` (the courier
+ * collected the cash at the door) — or `null` where Mark paid does not apply.
+ */
+export function offlinePaidTarget(from: OrderState): "paid" | "delivered" | null {
+	if (from === "awaiting_payment" || from === "pending") return "paid";
+	if (from === "shipped_awaiting_payment") return "delivered";
+	return null;
 }

@@ -9,10 +9,14 @@ import {
 	ReservationNotFoundError,
 	type InventoryStore,
 } from "../ports/inventory-store.js";
-import type { OrderStore, RefundRecord } from "../ports/order-store.js";
+import type { CapturedPayment, OrderStore, RefundRecord } from "../ports/order-store.js";
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway } from "../ports/payment-gateway.js";
-import { emailTemplateForState, isLegalOrderTransition } from "./state-machine.js";
+import {
+	OFFLINE_UNPAID_STATES,
+	emailTemplateForState,
+	isLegalOrderTransition,
+} from "./state-machine.js";
 import type {
 	CancellationReason,
 	CancellationRefund,
@@ -29,6 +33,7 @@ import {
 	type RefundOrderFailure,
 } from "./refund-order.js";
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
+import { offlinePaymentRef } from "./payment-methods.js";
 
 export interface CancelOrderDeps {
 	/** Where this path's diagnostics go. Required, so a composition root that forgets
@@ -686,6 +691,21 @@ export async function cancelOrderWithRefund(
 	gateway: PaymentGateway | null,
 	cmd: CancelOrderWithRefundCommand,
 ): Promise<CancelOrderWithRefundOutcome> {
+	return cancelOrderWithRefundAttempt(deps, gateway, cmd, 0);
+}
+
+/**
+ * How many times the decision is re-run when the order moved between the read it
+ * was made on and the guarded flip that acts on it (see the unpaid branch).
+ */
+const CANCEL_DECISION_ATTEMPTS = 3;
+
+async function cancelOrderWithRefundAttempt(
+	deps: CancelOrderWithRefundDeps,
+	gateway: PaymentGateway | null,
+	cmd: CancelOrderWithRefundCommand,
+	attempt: number,
+): Promise<CancelOrderWithRefundOutcome> {
 	const cancelledBy = cmd.cancelledBy.trim();
 	if (cancelledBy.length === 0) return { ok: false, reason: "EMPTY_CANCELLED_BY" };
 	const trimmedDetail = (cmd.detail ?? "").trim();
@@ -714,19 +734,75 @@ export async function cancelOrderWithRefund(
 	if (!isLegalOrderTransition(order.state, "cancelled")) {
 		return { ok: false, reason: "NOT_CANCELLABLE" };
 	}
-	if (order.state === "pending") {
-		// Nothing was sold and nothing captured: the plain cancel, which releases the
-		// held stock through the store's own release intent.
-		const res = await cancelOrder(
-			{
-				orderStore: deps.orderStore,
-				logger: deps.logger,
-			},
-			cmd,
+	// ADR-0044: an unpaid offline order holds stock like a pending one and has no
+	// money to return. Its one possible ledger row is its OWN attestation — a Mark
+	// paid that recorded the cash and then lost its flip (to a Record shipment, say:
+	// review round 3, R3-3). That does not block the cancel (a refused parcel must be
+	// cancellable): the cancel goes ahead, any download the attestation granted is
+	// revoked, and the order is flagged so a person settles the recorded cash. Any
+	// OTHER captured payment is money this path cannot account for: refused, as
+	// before, so the operator records its refund first.
+	let attested: CapturedPayment | undefined;
+	if (OFFLINE_UNPAID_STATES.has(order.state)) {
+		const own =
+			order.paymentMethod !== null ? offlinePaymentRef(order.paymentMethod, order.id) : null;
+		const captured = (await deps.orderStore.getCapturedPayments(order.id)).filter(
+			(p) => p.status === "succeeded",
 		);
-		return res.ok
-			? { ...res, refund: null, restockedUnits: 0, restockSkipped: [], restockPending: false }
-			: res;
+		if (captured.some((p) => p.providerRef !== own)) {
+			return { ok: false, reason: "REFUND_NOT_AUTOMATIC" };
+		}
+		attested = captured[0];
+	}
+	if (order.state === "pending" || OFFLINE_UNPAID_STATES.has(order.state)) {
+		// Nothing was sold and nothing captured: the plain cancel, which releases the
+		// held stock through the store's own release intent. Its guarded flip is
+		// PINNED to the state this decision was made on — never the generic
+		// `cancelOrder`, which re-reads and cancels from wherever the order now is: a
+		// settle or a cash Mark paid landing in between would be cancelled with its
+		// money kept, no refund, no flag, and a "cancelled" email (review of round 3).
+		const res = await deps.orderStore.cancelOrder({
+			orderId: cmd.orderId,
+			fromState: order.state,
+			reason: cmd.reason,
+			detail,
+			cancelledBy,
+			idempotencyKey: cmd.idempotencyKey,
+			enqueueEmail: emailTemplateForState("cancelled") !== null,
+		});
+		if (!res.cancelled) {
+			// The order moved since the read. Re-run the WHOLE decision on it as it now
+			// is: a paid order takes the refund path (or REFUND_NOT_AUTOMATIC), one a
+			// concurrent cancel already closed answers as cancelled, and anything else
+			// is refused below as before.
+			if (attempt + 1 < CANCEL_DECISION_ATTEMPTS) {
+				return cancelOrderWithRefundAttempt(deps, gateway, cmd, attempt + 1);
+			}
+			return { ok: false, reason: "NOT_CANCELLABLE" };
+		}
+		const cancelledOrder = res.order ?? order;
+		// An order cancelled while UNPAID may still hold a payable intent: make it
+		// due now, as `cancelOrder` does.
+		if (order.state === "pending") {
+			await expediteIntentCancels(
+				{ orderStore: deps.orderStore, logger: deps.logger },
+				cmd.orderId,
+				res.order,
+			);
+		}
+		if (OFFLINE_UNPAID_STATES.has(order.state)) {
+			await revokeOrderEntitlements(deps.entitlementStore, cancelledOrder);
+			if (attested !== undefined) await flagAttestedCash(deps, cancelledOrder, attested);
+		}
+		return {
+			ok: true,
+			cancelled: true,
+			order: cancelledOrder,
+			refund: null,
+			restockedUnits: 0,
+			restockSkipped: [],
+			restockPending: false,
+		};
 	}
 
 	// 1. REFUND.
@@ -1084,4 +1160,25 @@ async function refundForCancellation(
 		restock,
 		refundId: res.refund.id,
 	};
+}
+
+/**
+ * ADR-0044 (R3-3): an unpaid offline order cancelled with its own cash attestation
+ * on the ledger. The row stays — the cash may really have been taken — and a person
+ * is asked to settle it. Best-effort and never over another flag.
+ */
+async function flagAttestedCash(
+	deps: CancelOrderWithRefundDeps,
+	order: Order,
+	attested: CapturedPayment,
+): Promise<void> {
+	const fresh = (await bestEffortRead(() => deps.orderStore.getById(order.id))) ?? order;
+	if (fresh.reconciliationFlag !== null) return;
+	await bestEffort(() =>
+		deps.orderStore.flagReconciliation(
+			order.id,
+			`cash recorded on a cash-on-delivery order that was then cancelled: ${String(attested.amount)} ${attested.currency} under ${attested.providerRef} — if the cash was taken, return it and record a manual refund in Money → Refunds; otherwise resolve this flag`,
+			{ expectedFlag: null },
+		),
+	);
 }

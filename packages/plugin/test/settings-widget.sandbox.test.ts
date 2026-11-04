@@ -4,22 +4,29 @@ import {
 	currency as toCurrency,
 	idempotencyKey,
 	money,
+	orderId as toOrderId,
 	productId as toProductId,
+	sku as toSku,
 	type TaxSettings,
 } from "@urumi.ai/otta-domain";
 import {
 	collectionOf,
+	EmdashInventoryStore,
+	EmdashOrderStore,
 	EmdashProductCommerceStore,
+	ORDERS_COLLECTION,
 	EmdashSettingsStore,
 	PRODUCT_COMMERCE_COLLECTION,
 	SETTINGS_COLLECTION,
 	SETTINGS_DOC_ID,
 	SETTINGS_MUTATIONS_COLLECTION,
 	systemClock,
+	uuidIdGen,
 	type SettingsMutationDoc,
 	type StorageAccess,
 } from "@urumi.ai/otta-store-emdash";
 import { afterEach, describe, expect, test } from "vitest";
+import { SETTINGS_ACTION_IDS } from "../src/admin/settings-form.js";
 import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
@@ -172,6 +179,14 @@ function toggleOf(blocks: unknown): { initial_value?: unknown } | undefined {
 		return value;
 	});
 	return found;
+}
+
+/** ADR-0044: the COD form's fields, by action id, with their prefilled values. */
+function codFieldValues(blocks: unknown): Record<string, unknown> {
+	const form = formFor(sectionBlocks(blocks as never, "settings:cod"), "save-cash-on-delivery") as
+		| { fields: { action_id: string; initial_value?: unknown }[] }
+		| undefined;
+	return Object.fromEntries((form?.fields ?? []).map((f) => [f.action_id, f.initial_value]));
 }
 
 describe("Settings admin form (workerd sandbox)", () => {
@@ -965,13 +980,15 @@ describe("Settings admin form (workerd sandbox)", () => {
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 
 		const labels = groupLabels(blocks);
-		// THREE groups, not the old four: INC-D3a deletes "Service connection"
-		// outright.
+		// INC-D3a deleted "Service connection" outright; ADR-0044 adds "Cash on
+		// delivery" after the card group.
 		expect([...labels.keys()]).toEqual([
 			"settings:store",
 			"settings:checkout",
 			"settings:payments",
+			"settings:cod",
 		]);
+		expect(labels.get("settings:cod")).toBe("Cash on delivery — off");
 		expect(labels.get("settings:store")).toBe("Store — no display name");
 		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
 		expect(labels.get("settings:payments")).toBe(
@@ -991,6 +1008,95 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(findBlocks(sectionBlocks(blocks, "settings:payments"), "form").length).toBeGreaterThan(
 			0,
 		);
+		expect(formFor(sectionBlocks(blocks, "settings:cod"), "save-cash-on-delivery")).toBeDefined();
+	});
+
+	// ADR-0044: the cash-on-delivery toggle saves only a real boolean, keeps its
+	// instructions bounded, and the heading says whether it is on.
+	test("cash on delivery: saved on with instructions, refused without a boolean or over the bound", async () => {
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+		const save = async (values: Record<string, unknown>) =>
+			boot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-cash-on-delivery",
+				values,
+			});
+
+		const refused = await save({ codEnabled: "yes", codInstructions: "" });
+		expect(JSON.stringify(refused)).toContain("Cash on delivery not saved");
+		const tooLong = await save({ codEnabled: true, codInstructions: "x".repeat(501) });
+		expect(JSON.stringify(tooLong)).toContain("at most 500 characters");
+		expect(groupLabels(blocksOf(tooLong)).get("settings:cod")).toBe("Cash on delivery — off");
+
+		const saved = await save({ codEnabled: true, codInstructions: "  Exact change, please.  " });
+		expect(JSON.stringify(saved)).toContain("Cash on delivery saved");
+		const page = blocksOf(saved);
+		expect(groupLabels(page).get("settings:cod")).toBe("Cash on delivery — on");
+		expect(JSON.stringify(sectionBlocks(page, "settings:cod"))).toContain("Exact change, please.");
+
+		const off = blocksOf(await save({ codEnabled: false, codInstructions: "" }));
+		expect(groupLabels(off).get("settings:cod")).toBe("Cash on delivery — off");
+	});
+
+	// ADR-0044 (revised): the auto-cancel window and the two caps on open COD orders
+	// share the COD form — whole numbers within bounds, refused (nothing written)
+	// otherwise, prefilled with their defaults (14, 3, 3) until saved. A submit
+	// without one of them keeps what is stored.
+	test("cash on delivery: the auto-cancel window and the two caps are validated, saved and prefilled", async () => {
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+		const save = async (values: Record<string, unknown>) =>
+			boot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-cash-on-delivery",
+				values: { codEnabled: true, codInstructions: "", ...values },
+			});
+
+		// Defaults before any save, and the static copy the group must carry.
+		const first = await save({});
+		expect(codFieldValues(blocksOf(first))).toMatchObject({
+			codAutoCancelDays: "14",
+			codMaxOpenPerBuyer: "3",
+			codMaxOpenPerClient: "20",
+		});
+		const copy = JSON.stringify(sectionBlocks(blocksOf(first), "settings:cod"));
+		expect(copy).toContain("RATE_LIMIT_WRITES");
+		expect(copy).toContain("lowering it cancels older unpaid orders on the next sweep");
+
+		for (const [values, message] of [
+			[{ codAutoCancelDays: "366" }, "from 0 to 365"],
+			[{ codAutoCancelDays: "-1" }, "from 0 to 365"],
+			[{ codMaxOpenPerBuyer: "101" }, "from 0 to 100"],
+			[{ codMaxOpenPerClient: "2.5" }, "from 0 to 100"],
+			[{ codMaxOpenPerClient: "" }, "got nothing"],
+		] as const) {
+			const refused = await save({ codEnabled: false, ...values });
+			const text = JSON.stringify(refused);
+			expect(text, JSON.stringify(values)).toContain("Cash on delivery not saved");
+			expect(text).toContain(message);
+		}
+		// Every refusal wrote nothing — not even the toggle beside it.
+		expect(groupLabels(blocksOf(await save({}))).get("settings:cod")).toBe("Cash on delivery — on");
+
+		const saved = await save({
+			codAutoCancelDays: " 0 ",
+			codMaxOpenPerBuyer: "1",
+			codMaxOpenPerClient: "100",
+		});
+		expect(JSON.stringify(saved)).toContain("Cash on delivery saved");
+		expect(codFieldValues(blocksOf(saved))).toMatchObject({
+			codAutoCancelDays: "0",
+			codMaxOpenPerBuyer: "1",
+			codMaxOpenPerClient: "100",
+		});
+		// Absent from a submit: kept.
+		expect(codFieldValues(blocksOf(await save({})))).toMatchObject({
+			codAutoCancelDays: "0",
+			codMaxOpenPerBuyer: "1",
+			codMaxOpenPerClient: "100",
+		});
+		await save({ codEnabled: false });
 	});
 
 	// The old "a label states an unset or unreadable value as a FACT" case used a
@@ -1071,6 +1177,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			"settings:store",
 			"settings:checkout",
 			"settings:payments",
+			"settings:cod",
 		]);
 	});
 
@@ -1780,5 +1887,176 @@ describe("Settings: store currency", () => {
 		expect(String(banner?.description)).toBe(
 			"The save couldn't be confirmed — reload to check the current values.",
 		);
+	});
+});
+
+// ── B flag 4: lowering the COD auto-cancel window ──────────────────────────────
+//
+// The live window applies to every open order, so lowering it cancels the older
+// unpaid ones on the next sweep. The save counts them first (the sweep's own
+// `listAwaitingPaymentBefore`, capped at 101 ⇒ "100+") and asks before saving;
+// with none affected it saves at once.
+
+const COD_CONFIRM = "confirm-cod-auto-cancel";
+const DAY = 86_400_000;
+
+/** `count` placed (`awaiting_payment`) COD orders created `daysAgo` days ago, in
+ *  the process-shared store the sandbox binds. Returns their ids, for cleanup. */
+async function seedUnpaidCod(tag: string, count: number, daysAgo: number): Promise<string[]> {
+	const { storage } = await storageBridge();
+	const at = new Date(Date.now() - daysAgo * DAY);
+	const clock = { now: () => at };
+	const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock });
+	const orders = new EmdashOrderStore({ storage, inventory, idGen: uuidIdGen, clock });
+	const ids: string[] = [];
+	for (let i = 0; i < count; i += 1) {
+		const id = `order-codwin-${tag}-${String(i)}`;
+		await orders.createFromCart({
+			orderId: toOrderId(id),
+			cartId: null,
+			currency: toCurrency("USD"),
+			idempotencyKey: idempotencyKey(`codwin-${tag}-${String(i)}`),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: `codwin-${tag}@example.test`,
+			paymentMethod: "cod",
+			lines: [
+				{
+					productId: toProductId(`prod-codwin-${tag}`),
+					sku: toSku(`SKU-CODWIN-${tag.toUpperCase()}`),
+					title: "Mug",
+					unitPrice: cents(1000),
+					currency: toCurrency("USD"),
+					quantity: 1,
+					fulfillmentKind: "physical",
+					reservationId: null,
+				},
+			],
+			totals: { subtotal: cents(1000), total: cents(1000), currency: toCurrency("USD") },
+		});
+		await orders.transition({
+			orderId: toOrderId(id),
+			fromState: "pending",
+			toState: "awaiting_payment",
+			idempotencyKey: idempotencyKey(`codwin-placed-${tag}-${String(i)}`),
+			enqueueEmail: false,
+		});
+		ids.push(id);
+	}
+	return ids;
+}
+
+/** Remove seeded orders, so no later case counts them. */
+async function dropOrders(ids: readonly string[]): Promise<void> {
+	const { storage } = await storageBridge();
+	const orders = collectionOf(storage, ORDERS_COLLECTION);
+	for (const id of ids) await orders.delete(id);
+}
+
+/** A COD form submit: on, with instructions, plus `values`. */
+function codSave(boot: SandboxHandle, values: Record<string, unknown>) {
+	return boot.invokeRoute("admin", {
+		type: "form_submit",
+		action_id: "save-cash-on-delivery",
+		values: { codEnabled: true, codInstructions: "Exact change.", ...values },
+	});
+}
+
+describe("Settings: lowering the cash-on-delivery auto-cancel window (B flag 4)", () => {
+	const seeded: string[] = [];
+	afterEach(async () => {
+		await dropOrders(seeded.splice(0));
+	});
+
+	test("the confirm action is a Settings action", () => {
+		expect(SETTINGS_ACTION_IDS.has(COD_CONFIRM)).toBe(true);
+	});
+
+	test("a lower window that would cancel open orders asks first; the confirm saves the whole form", async () => {
+		// Two unpaid orders 10 days old fall inside a 7-day window; one 2 days old does not.
+		seeded.push(...(await seedUnpaidCod("ask-old", 2, 10)));
+		seeded.push(...(await seedUnpaidCod("ask-new", 1, 2)));
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+
+		const asked = await codSave(boot, { codAutoCancelDays: "7", codMaxOpenPerBuyer: "5" });
+		const sentence =
+			"Lowering the window to 7 days cancels 2 unpaid cash-on-delivery orders on the next sweep (their stock goes back on sale and the buyers are emailed). Save anyway?";
+		expect(JSON.stringify(asked)).toContain(sentence);
+		expect(toastOf(asked)?.type).toBe("info");
+		const blocks = blocksOf(asked);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		// NOTHING was saved yet: the form still shows the stored values, COD still off.
+		expect(codFieldValues(blocks)).toMatchObject({
+			codEnabled: false,
+			codAutoCancelDays: "14",
+			codMaxOpenPerBuyer: "3",
+		});
+		const button = buttons(blocks).find((b) => b.action_id === COD_CONFIRM);
+		expect(button).toBeDefined();
+		expect(String(confirmOf(button).text)).toBe(sentence);
+
+		const confirmed = await boot.invokeRoute("admin", {
+			type: "block_action",
+			action_id: COD_CONFIRM,
+			value: button?.value,
+		});
+		expect(toastOf(confirmed)).toEqual({ message: "Cash on delivery saved", type: "success" });
+		const after = blocksOf(confirmed);
+		expect(codFieldValues(after)).toMatchObject({
+			codEnabled: true,
+			codInstructions: "Exact change.",
+			codAutoCancelDays: "7",
+			codMaxOpenPerBuyer: "5",
+		});
+		expect(buttons(after).find((b) => b.action_id === COD_CONFIRM)).toBeUndefined();
+	});
+
+	test("with no order affected, a lower window saves at once; so do 0 (off) and a higher one", async () => {
+		seeded.push(...(await seedUnpaidCod("direct", 1, 5)));
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+		// 14 → 10: the 5-day-old order is inside neither window.
+		const lowered = await codSave(boot, { codAutoCancelDays: "10" });
+		expect(toastOf(lowered)).toEqual({ message: "Cash on delivery saved", type: "success" });
+		expect(codFieldValues(blocksOf(lowered))).toMatchObject({ codAutoCancelDays: "10" });
+		// 10 → 0 turns auto-cancel OFF: it cancels nothing, so it never asks.
+		const off = await codSave(boot, { codAutoCancelDays: "0" });
+		expect(toastOf(off)?.type).toBe("success");
+		// 0 → 3 is a raise from "off", not a lowering; nor is 3 → 30.
+		const raised = await codSave(boot, { codAutoCancelDays: "30" });
+		expect(toastOf(raised)?.type).toBe("success");
+		expect(codFieldValues(blocksOf(raised))).toMatchObject({ codAutoCancelDays: "30" });
+	});
+
+	test("more than 100 affected reads as 100+", async () => {
+		seeded.push(...(await seedUnpaidCod("many", 101, 20)));
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+		const asked = await codSave(boot, { codAutoCancelDays: "1" });
+		expect(JSON.stringify(asked)).toContain(
+			"Lowering the window to 1 day cancels 100+ unpaid cash-on-delivery orders on the next sweep",
+		);
+	}, 60_000);
+
+	test("a confirm for a window that has changed since is refused, and saves nothing", async () => {
+		seeded.push(...(await seedUnpaidCod("stale", 1, 10)));
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+		const asked = await codSave(boot, { codAutoCancelDays: "7" });
+		const button = buttons(blocksOf(asked)).find((b) => b.action_id === COD_CONFIRM);
+		expect(button).toBeDefined();
+		// Someone else saves the window in between.
+		await codSave(boot, { codEnabled: false, codAutoCancelDays: "20" });
+		const stale = await boot.invokeRoute("admin", {
+			type: "block_action",
+			action_id: COD_CONFIRM,
+			value: button?.value,
+		});
+		expect(JSON.stringify(stale)).toContain("Cash on delivery not saved");
+		expect(JSON.stringify(stale)).toContain("changed since you were asked");
+		expect(codFieldValues(blocksOf(stale))).toMatchObject({
+			codEnabled: false,
+			codAutoCancelDays: "20",
+		});
 	});
 });

@@ -123,6 +123,8 @@ export interface CheckoutPlaceParsedInput {
 	 *  back rather than rejecting: a bad locale must not fail an order). */
 	locale: string;
 	selection: CheckoutSelection;
+	/** ADR-0044: the method the buyer chose; `stripe` when the call named none. */
+	paymentMethod: "stripe" | "cod";
 	/** The signed-in shopper's session, when one came along — a bearer the client
 	 *  resolves to its customer, never trusted here. Absent ⇔ a guest checkout. */
 	sessionToken?: string;
@@ -249,6 +251,7 @@ export function parseCheckoutPlaceInput(input: {
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
 	sessionToken?: unknown;
+	paymentMethod?: unknown;
 }): CheckoutPlaceParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	// Trimmed, but NOT otherwise rewritten — never lowercased (§1.5): the
@@ -265,13 +268,23 @@ export function parseCheckoutPlaceInput(input: {
 	const selection = parseCheckoutSelection(input);
 	if (selection === null) return null;
 
+	// ADR-0044: the method the buyer chose. Absent is card — every caller before
+	// cash on delivery sent none — and anything but a known method is malformed.
+	const paymentMethod = input.paymentMethod ?? "stripe";
+	if (paymentMethod !== "stripe" && paymentMethod !== "cod") return null;
+
 	const parsed: CheckoutPlaceParsedInput = {
 		cartId,
 		buyerRef,
 		idempotencyKey,
 		locale: sanitizeLocale(input.locale),
 		selection,
+		paymentMethod,
 	};
+
+	// ADR-0044 §7 (round 2, M1): there is NO body `clientKey`. A field of that
+	// name is ignored — the network comes from the request itself
+	// (`payments/cod-request.ts`), never from what a caller chose to send.
 
 	if (input.shippingAddress !== undefined) {
 		const address = parseShippingAddress(input.shippingAddress);
