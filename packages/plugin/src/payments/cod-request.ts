@@ -52,9 +52,23 @@ export function codRequestFacts(request: SandboxedRequest | undefined): CodReque
  * The stored key of a network: HMAC-SHA-256 under the store's own secret, hex.
  * The secret is created on first use (two first uses racing may each write one;
  * the last wins, and orders keyed under the other under-count until they close).
+ *
+ * `null` when the secret cannot be read or saved (logged): no key, so the domain
+ * refuses a fresh COD placement as `PAYMENT_METHOD_UNAVAILABLE`. Hashing under a
+ * fresh secret that was never stored would key every request differently, and the
+ * per-network cap would never trip.
  */
-export async function networkKey(ctx: PluginContext, network: string): Promise<string> {
-	const secret = await networkKeySecret(ctx);
+export async function networkKey(ctx: PluginContext, network: string): Promise<string | null> {
+	let secret: string;
+	try {
+		secret = await networkKeySecret(ctx);
+	} catch (err) {
+		console.error(
+			"[otta] checkout: the cash-on-delivery network key secret could not be read or saved; cash on delivery is unavailable for this placement:",
+			err instanceof Error ? err.message : String(err),
+		);
+		return null;
+	}
 	const key = await crypto.subtle.importKey(
 		"raw",
 		hexBytes(secret),

@@ -4,7 +4,7 @@
  * client network from `cf-connecting-ip` — and the network's stored key, an HMAC
  * under the store's own secret (never a bare, reversible hash of the address).
  */
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
 	clientNetwork,
 	COD_ATTEST_HEADER,
@@ -86,6 +86,28 @@ describe("networkKey", () => {
 			.map((b) => b.toString(16).padStart(2, "0"))
 			.join("");
 		expect(first).not.toBe(bare);
+	});
+
+	test("a secret that cannot be read or saved is NO key (COD unavailable), never a throwaway one", async () => {
+		// Hashing under a fresh secret that was never stored would key every request
+		// differently, so the per-network cap could never trip.
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { ctx, kv } = kvCtx();
+			(ctx.kv as { set: unknown }).set = async () => {
+				throw new Error("kv write failed");
+			};
+			expect(await networkKey(ctx, "203.0.113.7")).toBeNull();
+			expect(kv.has(COD_NETWORK_KEY_SECRET_KEY)).toBe(false);
+			const unreadable = kvCtx().ctx;
+			(unreadable.kv as { get: unknown }).get = async () => {
+				throw new Error("kv read failed");
+			};
+			expect(await networkKey(unreadable, "203.0.113.7")).toBeNull();
+			expect(errors).toHaveBeenCalledTimes(2);
+		} finally {
+			errors.mockRestore();
+		}
 	});
 
 	test("another store's secret gives another key for the same network", async () => {
