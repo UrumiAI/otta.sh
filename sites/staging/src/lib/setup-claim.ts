@@ -272,6 +272,7 @@ const REFUSAL_PAGE = `<!doctype html>
 <li>Open your Cloudflare dashboard, go to <strong>Workers &amp; Pages</strong>, choose this store's Worker and open <strong>Workers Logs</strong>. Search for <code>${SETUP_CLAIM_LOG_TAG}</code> and open the link in that line.</li>
 <li>Running it locally? The dev server's console prints the same <code>${SETUP_CLAIM_LOG_TAG}</code> line.</li>
 <li>If you set the <code>${SETUP_TOKEN_SECRET}</code> secret, open <code>${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=</code> followed by its value.</li>
+<li>The log line has aged out? Set the <code>${SETUP_TOKEN_SECRET}</code> secret (it replaces the generated token) and open the link above, or read the stored token as DEPLOYMENT.md §2.2 describes.</li>
 </ul>
 <p>The link keeps working until setup is finished, so you can open it again in another browser.</p>
 </main>
