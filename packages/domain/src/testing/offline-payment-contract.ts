@@ -60,6 +60,8 @@ async function seedOrder(
 		buyerRef?: string;
 		clientKey?: string;
 		couponCode?: string;
+		/** false ⇒ a cod order is left `pending`: a placement's crash window. */
+		place?: boolean;
 	} = {},
 ): Promise<{ order: Order; sku: string }> {
 	const kind = opts.kind ?? "physical";
@@ -111,7 +113,7 @@ async function seedOrder(
 		});
 		if (adopted.lost.length > 0) throw new Error("seed adopt lost");
 	}
-	if (method === "cod") {
+	if (method === "cod" && opts.place !== false) {
 		const placed = await orderStore.transition({
 			orderId: oid,
 			fromState: "pending",
@@ -514,6 +516,57 @@ export function offlinePaymentContract(
 			expect(await admin(h, order.id, "delivered")).toMatchObject({ ok: true, transitioned: true });
 			expect(await real.getCapturedPayments(order.id)).toHaveLength(1);
 			expect(await onHandAfterRelease(h, order, s)).toBe(ON_HAND - QTY);
+		});
+
+		test("Mark paid on a still-PENDING order losing its flip to the placement flip is retryable: nothing revoked or flagged, and the next click lands it paid", async () => {
+			const h = await makeHarness();
+			const { order, sku: s } = await seedOrder(h, "22", "cod", {
+				kind: "digital",
+				place: false,
+			});
+			expect(order.state).toBe("pending");
+			const real = h.settleDeps.orderStore;
+			// A same-key checkout replay finishes the placement (pending → awaiting_payment)
+			// between Mark paid's read and its flip.
+			const racing = new Proxy(real, {
+				get(target, prop, receiver) {
+					if (prop === "markPaid") {
+						return async (...args: Parameters<typeof real.markPaid>) => {
+							await real.transition({
+								orderId: order.id,
+								fromState: "pending",
+								toState: "awaiting_payment",
+								idempotencyKey: idempotencyKey(`place:${order.id}`),
+								enqueueEmail: true,
+							});
+							return real.markPaid(...args);
+						};
+					}
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const raced = await transitionOrderAsAdmin(
+				{ ...adminDeps(h), orderStore: racing },
+				{
+					orderId: order.id,
+					toState: "paid",
+					idempotencyKey: idempotencyKey("raced-placement-click"),
+					actor: "Ops Person",
+				},
+			);
+			expect(raced).toEqual({ ok: false, reason: "MARK_PAID_RETRY" });
+			const placed = await real.getById(order.id);
+			expect(placed?.state).toBe("awaiting_payment");
+			expect(placed?.reconciliationFlag).toBeNull();
+			// The download the attestation granted stands: nothing was revoked.
+			expect(await h.settleDeps.entitlementStore.check({ orderId: order.id, sku: sku(s) })).toBe(
+				true,
+			);
+			// The click again: paid, on the same single payment row.
+			expect(await admin(h, order.id, "paid")).toMatchObject({ ok: true, transitioned: true });
+			expect(await real.getCapturedPayments(order.id)).toHaveLength(1);
+			expect((await real.getById(order.id))?.state).toBe("paid");
 		});
 
 		test("a refused parcel whose Mark paid lost to the shipment is cancellable: the attested row is flagged, downloads revoked, stock back (R3-3)", async () => {
