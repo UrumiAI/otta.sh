@@ -267,6 +267,7 @@ export {
 	type StockRemovalResult,
 } from "./ports/inventory-store.js";
 export type {
+	AwaitingPaymentCursor,
 	CancelOrderInput,
 	CancelOrderStoreResult,
 	CompleteCancellationRestockInput,

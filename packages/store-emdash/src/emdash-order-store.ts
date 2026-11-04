@@ -164,6 +164,7 @@ import {
 	type PaymentIntentRecord,
 	type OrderSummary,
 	type OrderState,
+	type AwaitingPaymentCursor,
 	type OrderStore,
 	type OrderTransitionInput,
 	type OrderTransitionResult,
@@ -338,6 +339,10 @@ const OUTBOX_PAGE_SIZE = 100;
 
 /** How many pages a list / count / link scan will walk before it refuses to loop. */
 const MAX_LIST_PAGES = 1000;
+
+/** Pages `listAwaitingPaymentBefore` reads past its cursor's instant at most: more
+ *  only if that many orders share one millisecond, and then the batch is short. */
+const AWAITING_PAYMENT_MAX_PAGES = 5;
 
 /**
  * The page the list scans ask the host for. 100 is the host's own ceiling, so this is
@@ -631,15 +636,42 @@ export class EmdashOrderStore implements OrderStore {
 		return { byBuyer, byClient };
 	}
 
-	/** ADR-0044: the auto-cancel leg's batch, on the declared `[state, createdAt]`. */
-	async listAwaitingPaymentBefore(createdBefore: string, limit: number): Promise<OrderId[]> {
+	/**
+	 * ADR-0044: the auto-cancel leg's batch, on the declared `[state, createdAt]`.
+	 * The host orders ties on `createdAt` by document id — the order id — which is the
+	 * port's `(createdAt, orderId)` order. With `after`, the bound is `gte` its
+	 * instant and the orders at that instant up to its id are dropped here; a page
+	 * left short by them is followed by the next (bounded), so `limit` is still met
+	 * when more orders exist.
+	 */
+	async listAwaitingPaymentBefore(
+		createdBefore: string,
+		limit: number,
+		after?: AwaitingPaymentCursor,
+	): Promise<OrderId[]> {
 		assertSweepLimit(limit);
-		const result = await this.#orders.query({
-			where: { state: "awaiting_payment", createdAt: { lt: createdBefore } },
-			orderBy: { createdAt: "asc" },
-			limit,
-		});
-		return result.items.map(({ data }) => data.orderId as OrderId);
+		const createdAt =
+			after === undefined ? { lt: createdBefore } : { gte: after.createdAt, lt: createdBefore };
+		const ids: OrderId[] = [];
+		let cursor: string | undefined;
+		for (let page = 0; page < AWAITING_PAYMENT_MAX_PAGES; page++) {
+			const result = await this.#orders.query({
+				where: { state: "awaiting_payment", createdAt },
+				orderBy: { createdAt: "asc" },
+				limit,
+				...(cursor !== undefined ? { cursor } : {}),
+			});
+			for (const { id, data } of result.items) {
+				if (after !== undefined && data.createdAt === after.createdAt && id <= after.orderId) {
+					continue;
+				}
+				ids.push(data.orderId as OrderId);
+				if (ids.length === limit) return ids;
+			}
+			if (!result.hasMore || result.cursor === undefined) break;
+			cursor = result.cursor;
+		}
+		return ids;
 	}
 
 	async listExpirable(now: string, options: OrderExpiryListOptions = {}): Promise<OrderId[]> {

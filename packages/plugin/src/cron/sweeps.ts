@@ -2119,6 +2119,7 @@ export async function runCommerceSweeps(
 						},
 					};
 					const gate = legBudget.gate(0, LEG_QUERY_COSTS["cod-auto-cancel"].unit);
+					const from = state.codAutoCancelCursor;
 					const result = await cancelUnpaidOfflineOrders(
 						{
 							orderStore: stores.orderStore,
@@ -2130,8 +2131,19 @@ export async function runCommerceSweeps(
 							maxAgeDays,
 							limit: batchLeft("cod-auto-cancel", COD_AUTO_CANCEL_BATCH),
 							shouldContinue: () => !releaseSkipped && gate(),
+							...(from !== undefined
+								? { after: { createdAt: from.createdAt, orderId: toOrderId(from.orderId) } }
+								: {}),
 						},
 					);
+					// The walk's place, kept in the cadence state (written once at the tick's
+					// end), so the next run starts past what this one judged.
+					const next = result.cursor ?? undefined;
+					if (next?.createdAt !== from?.createdAt || next?.orderId !== from?.orderId) {
+						if (next === undefined) delete state.codAutoCancelCursor;
+						else state.codAutoCancelCursor = { createdAt: next.createdAt, orderId: next.orderId };
+						stateChanged = true;
+					}
 					return batchOutcome(
 						{ count: result.cancelled, drained: result.drained },
 						(count) => noteUnits("cod-auto-cancel", count + result.skipped, legBudget),
@@ -2846,6 +2858,12 @@ interface SweepState {
 	/** The last few orders whose expiry flip threw, by id (#478): the durable half
 	 *  of the expiry back-off, and what the leg's alert counts. */
 	expiryFailures: Record<string, ExpiryFailure>;
+	/** Where `cod-auto-cancel`'s walk stands (ADR-0044): past every order it judged
+	 *  — one it SKIPPED (cash on file and flagged, a failed coupon release) included,
+	 *  so a skipped order at the head never blocks the younger ones behind it on a
+	 *  tick that affords one order. Cleared when a run drains the listing, so the next
+	 *  pass starts at the oldest again. */
+	codAutoCancelCursor?: { createdAt: string; orderId: string };
 	/** The declared index layout (`INDEX_LAYOUT`) the last tick saw. */
 	indexLayout?: string;
 	/** The UTC day a tick first saw a new index layout: EmDash builds the new indexes
@@ -2902,15 +2920,26 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return state;
-		const { lastRun, deferrals, waits, expiryFailures, indexLayout, indexBuildDay } = parsed as {
+		const {
+			lastRun,
+			deferrals,
+			waits,
+			expiryFailures,
+			indexLayout,
+			indexBuildDay,
+			codAutoCancelCursor,
+		} = parsed as {
 			lastRun?: unknown;
 			deferrals?: unknown;
 			waits?: unknown;
 			expiryFailures?: unknown;
 			indexLayout?: unknown;
 			indexBuildDay?: unknown;
+			codAutoCancelCursor?: unknown;
 		};
 		if (typeof indexLayout === "string") state.indexLayout = indexLayout;
+		const codCursor = parseCodCursor(codAutoCancelCursor);
+		if (codCursor !== undefined) state.codAutoCancelCursor = codCursor;
 		if (typeof indexBuildDay === "string") state.indexBuildDay = indexBuildDay;
 		state.expiryFailures = parseExpiryFailures(expiryFailures);
 		for (const leg of SWEEP_LEGS) {
@@ -2932,6 +2961,16 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	} catch {
 		return state;
 	}
+}
+
+/** A stored `codAutoCancelCursor`, or undefined when absent or ill-formed (a lost
+ *  cursor only starts the walk at the oldest order again). */
+function parseCodCursor(raw: unknown): { createdAt: string; orderId: string } | undefined {
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const { createdAt, orderId } = raw as { createdAt?: unknown; orderId?: unknown };
+	if (typeof createdAt !== "string" || Number.isNaN(Date.parse(createdAt))) return undefined;
+	if (typeof orderId !== "string" || orderId.length === 0 || orderId.length > 128) return undefined;
+	return { createdAt, orderId };
 }
 
 /** The kv record's failing orders, well-formed entries only, at most

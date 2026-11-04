@@ -7,6 +7,7 @@ import {
 	cancelUnpaidOfflineOrders,
 	CouponReleaseDeferredError,
 } from "../orders/cancel-unpaid-offline.js";
+import type { AwaitingPaymentCursor } from "../ports/order-store.js";
 import { RecordingLogger } from "./recording-logger.js";
 import { expireOrdersBatch } from "../orders/expire-orders.js";
 import type { Order, OrderState, PaymentMethod } from "../orders/model.js";
@@ -774,6 +775,68 @@ export function offlinePaymentContract(
 			expect(await run()).toMatchObject({ cancelled: 1 });
 			expect(released).toEqual([stale.order.id]);
 			expect((await h.settleDeps.orderStore.getById(stale.order.id))?.state).toBe("cancelled");
+		});
+
+		test("auto-cancel walks PAST an order it skips: a flagged oldest order never blocks a younger due one, and a drained walk starts over", async () => {
+			const h = await makeHarness();
+			// Seeded oldest first; ids sort the same way, so a shared createdAt (a fixed
+			// clock) still has one order: (createdAt, orderId).
+			const flagged = await seedOrder(h, "21a", "cod");
+			await h.settleDeps.orderStore.recordPayment({
+				orderId: flagged.order.id,
+				gateway: "cod",
+				providerRef: offlinePaymentRef("cod", flagged.order.id),
+				amount: cents(UNIT_CENTS * QTY),
+				currency: USD,
+				status: "succeeded",
+			});
+			const b = await seedOrder(h, "21b", "cod");
+			const c = await seedOrder(h, "21c", "cod");
+			const later = new Date(h.settleDeps.clock.now().getTime() + 15 * DAY_MS);
+			let deferB = false;
+			const run = (after?: AwaitingPaymentCursor) =>
+				cancelUnpaidOfflineOrders(
+					{
+						orderStore: h.settleDeps.orderStore,
+						couponStore: {
+							async releaseByOrder(order: { id: string }) {
+								if (deferB && order.id === b.order.id) throw new CouponReleaseDeferredError();
+								return 0;
+							},
+						},
+						clock: { now: () => later },
+						logger: NOOP_LOGGER,
+					},
+					// One order a run, as a Workers Free tick affords.
+					{ maxAgeDays: 14, limit: 1, ...(after !== undefined ? { after } : {}) },
+				);
+			const first = await run();
+			expect(first).toMatchObject({ cancelled: 0, skipped: 1, drained: false });
+			expect(first.cursor).toEqual({
+				createdAt: flagged.order.createdAt,
+				orderId: flagged.order.id,
+			});
+			// A DEFERRED order is walked past too — on a budget that can never afford its
+			// release it would otherwise be the new blocked head — and met again once the
+			// walk drains and starts over.
+			deferB = true;
+			const deferred = await run(first.cursor ?? undefined);
+			expect(deferred).toMatchObject({ cancelled: 0, skipped: 1 });
+			expect(deferred.cursor).toEqual({ createdAt: b.order.createdAt, orderId: b.order.id });
+			deferB = false;
+			const second = await run(deferred.cursor ?? undefined);
+			expect(second).toMatchObject({ cancelled: 1, skipped: 0 });
+			expect((await h.settleDeps.orderStore.getById(c.order.id))?.state).toBe("cancelled");
+			// Nothing after the cursor: drained, and the walk starts over at the oldest.
+			const third = await run(second.cursor ?? undefined);
+			expect(third).toMatchObject({ cancelled: 0, skipped: 0, drained: true, cursor: null });
+			const fourth = await run();
+			expect(fourth).toMatchObject({ cancelled: 0, skipped: 1 });
+			expect(await run(fourth.cursor ?? undefined)).toMatchObject({ cancelled: 1 });
+			expect((await h.settleDeps.orderStore.getById(b.order.id))?.state).toBe("cancelled");
+			expect((await h.settleDeps.orderStore.getById(flagged.order.id))?.state).toBe(
+				"awaiting_payment",
+			);
 		});
 
 		test("auto-cancel logging: a DEFERRED coupon release is info, a real failure is error (R3-4)", async () => {

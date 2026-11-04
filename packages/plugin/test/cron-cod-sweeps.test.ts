@@ -19,6 +19,7 @@ import {
 	currency,
 	NOOP_LOGGER,
 	idempotencyKey,
+	offlinePaymentRef,
 	orderId as toOrderId,
 	productId as toProductId,
 	reservationId as toReservationId,
@@ -50,6 +51,8 @@ import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 const CURSOR_OVERLAP_MS = 5 * 60 * 1000;
 const NOW = new Date("2026-11-03T12:00:00.000Z");
 const PAID = 600;
+/** The Workers Free preset. */
+const FREE = 30;
 
 beforeEach(() => {
 	vi.spyOn(console, "log").mockImplementation(() => {});
@@ -236,6 +239,44 @@ describe("cod-auto-cancel", () => {
 		expect((await adapters(storage, NOW).orderStore.getById(toOrderId(order.id)))?.state).toBe(
 			"shipped_awaiting_payment",
 		);
+	});
+});
+
+describe("cod-auto-cancel walks past a skipped order (review: a flagged head blocked the leg)", () => {
+	test("on Workers Free, a flagged oldest order never stops a younger due order being cancelled", async () => {
+		const { storage } = await makeSqliteStorage(commerceStorageLayout());
+		// The oldest: a Mark paid recorded the cash and died before its flip. The
+		// auto-cancel flags it for a person and skips it — every pass.
+		const flagged = await placeCodOrder(storage, "head", new Date(NOW.getTime() - 30 * DAY_MS));
+		const younger = await placeCodOrder(storage, "behind", new Date(NOW.getTime() - 20 * DAY_MS));
+		const s = adapters(storage, NOW);
+		await s.orderStore.recordPayment({
+			orderId: toOrderId(flagged.id),
+			gateway: "cod",
+			providerRef: offlinePaymentRef("cod", toOrderId(flagged.id)),
+			amount: cents(1000),
+			currency: currency("USD"),
+			status: "succeeded",
+		});
+		const cursors = memoryCursors();
+		// The leg shares Free ticks with every other leg, so it is deferred on some;
+		// what matters is that it gets PAST the head, which before the cursor it never
+		// did however many ticks ran.
+		for (let tick = 0; tick < 30; tick++) {
+			const at = new Date(NOW.getTime() + tick * 60_000);
+			const summary = await runCommerceSweeps(
+				sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: FREE }),
+				SWEEP_TASK_NAME,
+				{ cursors, emailSender: recordingSender([]), now: at, queryBudget: FREE },
+			);
+			expect(leg(summary, "cod-auto-cancel").ok).toBe(true);
+			expect(summary.budget.queriesUsed).toBeLessThanOrEqual(FREE);
+			if ((await s.orderStore.getById(toOrderId(younger.id)))?.state === "cancelled") break;
+		}
+		expect((await s.orderStore.getById(toOrderId(younger.id)))?.state).toBe("cancelled");
+		const head = await s.orderStore.getById(toOrderId(flagged.id));
+		expect(head?.state).toBe("awaiting_payment");
+		expect(head?.reconciliationFlag).toMatch(/cash recorded/);
 	});
 });
 
