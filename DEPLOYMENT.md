@@ -789,8 +789,10 @@ order of appearance in a deployment's life:
      A plain ASCII address only. Rebuild and redeploy to
      change it. The **build fails** on a malformed address, and on a set address whose selected
      wrangler config (`wrangler.local.jsonc` if present, else `wrangler.jsonc`) has no
-     `send_email` binding named `EMAIL`. Unset registers **no** provider (fail-closed below).
-     The playground build imports the same config, so a malformed value fails it too.
+     `send_email` binding named `EMAIL`, at the top level and in every `env.<name>` block
+     (wrangler does not inherit `send_email` into an env). Unset registers **no** provider
+     (fail-closed below). The playground build, `astro dev` and `astro check` import the same
+     config, so a malformed value, or a set value with no binding, fails them too.
 
   **What Cloudflare Email Sending requires** (checked 2026-11-03; re-check before relying on it):
   - **Plan: Workers Paid.** Outbound sending is "Not available" on Workers Free; Paid includes

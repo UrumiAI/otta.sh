@@ -67,6 +67,22 @@ describe("assertEmailBindingDeclared", () => {
 		);
 	});
 
+	test("each env block is checked on its own (wrangler does not inherit send_email)", () => {
+		// Top level bound, env.production not: a CLOUDFLARE_ENV=production build has no binding.
+		const topOnly = `{ "send_email": [{ "name": "EMAIL" }], "env": { "production": { "name": "p" } } }`;
+		expect(() => assertEmailBindingDeclared(topOnly, "wrangler.local.jsonc", SENDER)).toThrow(
+			/wrangler\.local\.jsonc \(env\.production\).*"EMAIL"/s,
+		);
+		// A recipient restriction inside an env block is refused too.
+		const envRestricted = `{ "send_email": [{ "name": "EMAIL" }], "env": { "production": { "send_email": [{ "name": "EMAIL", "allowed_destination_addresses": ["ops@example.com"] }] } } }`;
+		expect(() => assertEmailBindingDeclared(envRestricted, "w.jsonc", SENDER)).toThrow(
+			/w\.jsonc \(env\.production\).*allowed_destination_addresses/s,
+		);
+		// Bound everywhere: passes.
+		const both = `{ "send_email": [{ "name": "EMAIL" }], "env": { "production": { "send_email": [{ "name": "EMAIL" }] } } }`;
+		expect(() => assertEmailBindingDeclared(both, "w.jsonc", SENDER)).not.toThrow();
+	});
+
 	test("an unparseable file is refused naming the file", () => {
 		expect(() => assertEmailBindingDeclared("{ nope", "wrangler.local.jsonc")).toThrow(
 			/wrangler\.local\.jsonc could not be parsed/,
