@@ -229,6 +229,9 @@ describe("the middleware gates the attach before the plugin's route runs", () =>
 				body: JSON.stringify(body),
 			}),
 			url,
+			// The route Astro matches: EmDash's plugin catch-all, which the
+			// setup-claim gate (ADR-0042) leaves open.
+			routePattern: "/_emdash/api/plugins/[pluginId]/[...path]",
 			cookies: { get: () => undefined, set: vi.fn(), delete: vi.fn() },
 			locals: {
 				user,

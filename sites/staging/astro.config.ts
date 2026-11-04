@@ -164,7 +164,17 @@ export default defineConfig({
 	output: "server",
 	// NOT `cloudflare({ imageService: "cloudflare" })` — that's the paid
 	// image resizing product; Astro's built-in service is fine for staging.
-	adapter: cloudflare(localWranglerConfig !== undefined ? { configPath: localWranglerConfig } : {}),
+	adapter: cloudflare({
+		...(localWranglerConfig !== undefined ? { configPath: localWranglerConfig } : {}),
+		// DEV ONLY (`astro dev`; a build has no local state). The claim e2e config
+		// (playwright.claim.config.ts, ADR-0042) boots its own stack on a FRESH,
+		// unseeded state directory so the setup-claim link can be tested on a
+		// store that is still unclaimed, without touching `.wrangler`.
+		...(process.env["OTTA_E2E_PERSIST_DIR"] !== undefined &&
+		process.env["OTTA_E2E_PERSIST_DIR"] !== ""
+			? { persistState: { path: process.env["OTTA_E2E_PERSIST_DIR"] } }
+			: {}),
+	}),
 	image: {
 		layout: "constrained",
 		responsiveStyles: true,

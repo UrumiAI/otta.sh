@@ -40,18 +40,21 @@ staging-only.
 
 Three rules hold. Everything else in this guide is a consequence of them.
 
-- **Deploy-then-claim.** A freshly deployed site is unclaimed: **the first visitor to
-  complete the setup wizard becomes the admin.** Claim it immediately after the first
-  request, in the same session. The wizard's passkey step requires a WebAuthn **secure
-  context** — HTTPS, or `localhost` (see §2.2). If the unclaimed window worries
-  you, front `/_emdash/*` with Cloudflare Access until setup is claimed, then remove it.
+- **Deploy-then-claim, with a setup token.** A freshly deployed site is unclaimed, and
+  only the holder of its **setup token** can run the setup wizard that creates the first
+  admin ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)). Until setup is
+  finished, every `/_emdash/*` route answers 403 to anyone else; the storefront is not
+  affected. The token is the `OTTA_SETUP_TOKEN` Worker secret if you set one, otherwise one
+  the site generates on first use and writes, as a ready-to-open link, to the Worker's
+  logs, which only your Cloudflare account can read (§2.2). The wizard's passkey step
+  requires a WebAuthn **secure context**: HTTPS, or `localhost`.
 - **Seed reality.** The site's first request runs the CMS migrations and applies the seed's
   **schema, settings, and menus only**. Sample content (the 3 demo products) is applied
   **only** when the setup wizard is completed with "include sample content" checked. An
   empty `/products` page right after first boot is **healthy, not a failed boot**.
 - **Secrets model.** There is one deployable, so there is one place secrets can live — and
-  two stores inside it (§3). Two are **Worker secrets** (`wrangler secret put`):
-  `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment **credential** is
+  two stores inside it (§3). Three are **Worker secrets** (`wrangler secret put`):
+  `EMDASH_ENCRYPTION_KEY`, `OTTA_WH_TOKEN` and the optional `OTTA_SETUP_TOKEN`. Every payment **credential** is
   provisioned by the operator in the admin console's **Store settings** page (General tab) and held in
   **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
   never rendered back into a block, read through a fail-closed reader. The Stripe secret
@@ -173,6 +176,18 @@ expired holds and queued emails drain at the Free pace (§5).
    wrangler secret put EMDASH_ENCRYPTION_KEY --config wrangler.local.jsonc   # paste; back it up
    ```
 
+   Optionally, also choose the **setup token** yourself (§2.2). Skip this and the site
+   generates one and logs its link instead:
+
+   ```bash
+   openssl rand -hex 32    # keep it: it is the key to the setup wizard until you finish it
+   wrangler secret put OTTA_SETUP_TOKEN --config wrangler.local.jsonc
+   ```
+
+   It must be at least 32 characters of `A-Z a-z 0-9 - _`, and random (`openssl rand -hex
+   32` is). A weak value is **refused, not ignored**: setup stays locked and the Worker
+   logs say why, until you replace or delete the secret.
+
    The site's "never `--config`" rule (step 5) applies to **deploy only** — deploy must
    follow the build's `.wrangler/deploy` redirect. `wrangler secret put` never reads that
    redirect: without `--config` it defaults to the tracked template and targets a Worker
@@ -206,10 +221,42 @@ expired holds and queued emails drain at the Free pace (§5).
 1. **Hit the site once** — `https://<your-worker>.<your-subdomain>.workers.dev/`. The first
    request runs the CMS migrations and applies the seed's schema/settings/menus (one-time
    latency is expected). Per §1, `/products` is empty at this point — that is healthy.
-2. **Claim immediately:** open `/_emdash/admin` and complete the setup wizard **in the same
-   session, with "include sample content" enabled** (that is what applies the 3 sample
-   products; skip it and you simply start with an empty catalog). The first visitor to
-   complete setup becomes the admin — do not deploy and walk away. workers.dev is HTTPS, so
+2. **Claim it with the setup link.** Open `/_emdash/admin`: without the token you get a
+   "This store hasn't been set up yet" page (so does everyone else; it never says whether a
+   token exists). The link to open instead is
+
+   ```text
+   https://<your-site>/_emdash/admin/setup?setup_token=<token>
+   ```
+
+   - **You set `OTTA_SETUP_TOKEN`** (§2.1 step 3): the token is its value.
+   - **You did not:** the site generated one on that first `/_emdash` request and logged
+     the whole link once. In the Cloudflare dashboard, open **Workers & Pages** → your
+     Worker → **Logs** (Workers Logs; `observability` is on in `wrangler.jsonc`) and search
+     for `[otta-setup]`, or run `wrangler tail` before you open `/_emdash/admin`. Logs are
+     kept for a few days only; the token itself stays in D1 until you use it, and the
+     account owner can read it there at any time:
+
+     ```bash
+     wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc \
+       --command "SELECT value FROM options WHERE name = 'otta:setup_token'"
+     ```
+
+     (the value is JSON: drop the quotes). Setting `OTTA_SETUP_TOKEN` later replaces it.
+
+   > **If your account exports Worker logs** (a Logpush job or a tail Worker), the generated
+   > link goes wherever those logs go. Set `OTTA_SETUP_TOKEN` before the first visit
+   > (§2.1 step 3): with the secret, nothing is logged. The link is always written for
+   > `https://`, and a link opened over plain `http://` is moved to `https://` before the
+   > token is checked.
+
+   The link sets a one-hour, `HttpOnly`, `SameSite=Strict` cookie scoped to `/_emdash/`,
+   takes the token out of the address bar and opens the wizard. Complete it **with "include
+   sample content" enabled** (that is what applies the 3 sample products; skip it and you
+   simply start with an empty catalog). The link keeps working until setup is finished, so
+   you can open it again from another browser or after the cookie expires. Once the first
+   admin exists the gate switches itself off and the token is never asked for again; from
+   then on the admin signs in with the passkey made in the wizard. workers.dev is HTTPS, so
    the passkey step's secure-context requirement (§1) is already met.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
@@ -258,7 +305,8 @@ cannot be retried in place:
 1. `wrangler d1 delete YOUR-D1-DATABASE-NAME` and `wrangler d1 create YOUR-D1-DATABASE-NAME`.
 2. Update `database_id` in your `wrangler.local.jsonc` with the new id.
 3. **Rebuild** (the wrangler config is read at build time — §2.1 step 4), redeploy, then
-   claim the admin again (§2.1 step 5 → §2.2).
+   claim the admin again (§2.1 step 5 → §2.2). The new database has no generated token, so
+   without `OTTA_SETUP_TOKEN` a new link is logged.
 
 ### 2.4 D1 sessions (`"primary-first"`) and `global_fetch_strictly_public`
 
@@ -434,7 +482,7 @@ with the code and cover every route listed above.
 
 ## 3. Secrets & tokens checklist
 
-Two of these are **Worker secrets** on the site (`wrangler secret put`); the rest are
+Three of these are **Worker secrets** on the site (`wrangler secret put`); the rest are
 **plugin credentials** the operator types into the admin console's **Store settings** page (General tab), which
 persists them to write-only plugin `kv` under `settings:*`. On Workers, **every `wrangler
 secret put` below** needs `--config wrangler.local.jsonc`: without it, wrangler defaults to
@@ -444,6 +492,7 @@ order of appearance in a deployment's life:
 | Secret | Where it lives | Required? | When to set |
 |---|---|---|---|
 | `EMDASH_ENCRYPTION_KEY` | Worker secret | yes | before the site's first boot |
+| `OTTA_SETUP_TOKEN` | Worker secret | optional (without it the site generates the setup token and logs its link, §2.2) | before the first visit to `/_emdash/admin`; unused once setup is finished |
 | `OTTA_WH_TOKEN` | Worker secret **+** admin Settings (same value, both halves) | optional outer gate on the settle routes | with the Stripe webhook secret |
 | Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments — **together with the secret key** (see below) | before enabling Stripe |
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
@@ -485,7 +534,11 @@ order of appearance in a deployment's life:
 > `sites/staging/.dev.vars` also replaces the env that the e2e stack injects (its throwaway
 > `EMDASH_ENCRYPTION_KEY` arrives through `CLOUDFLARE_INCLUDE_PROCESS_ENV`, which wrangler
 > ignores when `.dev.vars` exists), so move it aside, or put the e2e key in it, for
-> `pnpm test:e2e`. A dev `.env`
+> `pnpm test:e2e`. The same goes for the e2e setup token (`OTTA_SETUP_TOKEN`, ADR-0042): with a
+> `.dev.vars`, a fresh e2e stack only knows the token the suite presents if the file sets
+> `OTTA_SETUP_TOKEN` (the harness then presents that value); a `.dev.vars` without it makes the
+> dev Worker generate its own, and every `/_emdash` call of the run is refused until you claim the
+> store by hand. A dev `.env`
 > that holds only `EMDASH_ENCRYPTION_KEY` still builds: no server module names that key today,
 > and the build fails if one ever does.
 >
@@ -520,7 +573,9 @@ order of appearance in a deployment's life:
     put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.dev.vars` or `sites/staging/.env`
     (both gitignored; generate a separate dev key). `.dev.vars` is the safer choice because
     Astro never reads it into a build (above). When it exists, the dev Worker reads it instead
-    of `.env`. Exporting the key in the shell does **not** work: the dev Worker runs in
+    of `.env`, so keep every local secret in the one file: a key left in `.env` beside a
+    `.dev.vars` (for example one holding only `OTTA_SETUP_TOKEN`) is silently ignored, and
+    saving payment keys then fails. Exporting the key in the shell does **not** work: the dev Worker runs in
     workerd, which does not inherit the shell environment. The Playwright stack and CI's
     e2e job use a throwaway test key (`playwright.config.ts`).
   - **Missing:** saving any of those three keys fails, and a key already saved encrypted

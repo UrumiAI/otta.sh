@@ -55,16 +55,30 @@ no Postgres in the loop.
 ```bash
 pnpm install
 
-# 1. A dev-only encryption key in sites/staging/.env (gitignored). Without it no
+# 1. A dev-only encryption key in sites/staging/.dev.vars (gitignored). Without it no
 #    payment key can be saved in Settings (ADR-0037). Re-running keeps the key you have.
-pnpm --filter @urumi.ai/otta-site-staging exec emdash secrets generate --write .env
+#    Keep every local secret in this ONE file: once a .dev.vars exists, the dev Worker
+#    no longer reads sites/staging/.env, so a key left there is silently ignored.
+pnpm --filter @urumi.ai/otta-site-staging exec emdash secrets generate --write .dev.vars
 
 # 2. Storefront + admin.
 pnpm --filter @urumi.ai/otta-site-staging dev
 ```
 
-Then open the dev-only setup bypass, which claims the site and applies the full seed
-including three sample products:
+A fresh store is **locked until it is claimed** with its one-time setup token
+([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)), locally too: without it,
+every `/_emdash` URL (the bypass below included) answers 403. Claim it first, either way:
+
+- open the link the dev server prints on the first `/_emdash` request, a console line
+  starting `[otta-setup]` (`http://localhost:4321/_emdash/admin/setup?setup_token=…`); or
+- add the token to the same `sites/staging/.dev.vars` as the key from step 1, before
+  starting the server
+  (`echo "OTTA_SETUP_TOKEN=$(openssl rand -hex 32)" >> sites/staging/.dev.vars`), then open
+  `http://localhost:4321/_emdash/admin/setup?setup_token=<that value>`.
+
+The link sets a cookie in your browser and opens the setup wizard. You don't have to finish
+the wizard: in the same browser, open the dev-only setup bypass, which claims the site and
+applies the full seed including three sample products:
 
 ```
 http://localhost:4321/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin

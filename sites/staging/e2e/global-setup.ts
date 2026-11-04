@@ -36,6 +36,7 @@ import {
 	seedOneProduct,
 } from "../scripts/seed-demo-commerce.js";
 import { RetryableError, retryBounded } from "../scripts/retry.js";
+import { setupClaimHeaders } from "../scripts/setup-claim-cookie.js";
 import {
 	assertLoopbackSite,
 	DEFAULT_PAID_ORDERS,
@@ -53,6 +54,7 @@ import {
 	E2E_REQUIRES_SITE,
 	E2E_SEEDS,
 	E2E_STARTS_STACK,
+	grantSetupClaim,
 	siteIsUp,
 } from "./harness.js";
 import { healOrWarn } from "./local-d1.js";
@@ -107,6 +109,7 @@ async function warmConsole(deadline: number): Promise<void> {
 	const browser = await chromium.launch();
 	try {
 		const page = await browser.newPage();
+		await grantSetupClaim(page.context());
 		await page.goto(`${E2E_BASE_URL}${DEV_BYPASS_SIGNIN_PATH}`, {
 			timeout: Math.max(1_000, deadline - Date.now()),
 		});
@@ -165,7 +168,12 @@ async function applyCmsSeed(): Promise<void> {
 		async () => {
 			let res: Response;
 			try {
-				res = await fetch(`${E2E_BASE_URL}/_emdash/api/setup/dev-bypass`, { redirect: "manual" });
+				// The claim cookie (ADR-0042): on a fresh stack this call is what claims
+				// it, and an unclaimed store refuses it without the setup token.
+				res = await fetch(`${E2E_BASE_URL}/_emdash/api/setup/dev-bypass`, {
+					redirect: "manual",
+					headers: setupClaimHeaders(),
+				});
 			} catch (err) {
 				throw new RetryableError(`seed: the CMS seed (setup dev-bypass) failed: ${String(err)}`);
 			}
