@@ -105,13 +105,15 @@ chosen so that a crash leaves something the next click finishes:
 3. **After the flip**: commit the holds, as settlement does. The document store's commit intent
    heals a crash here.
 
-If the flip loses, there are two cases:
+If the flip loses, there are three cases:
 
 - A concurrent Mark paid won: the result is the idempotent no-op.
-- A concurrent Record shipment won (the order is now `shipped_awaiting_payment`): nothing is
-  revoked or flagged. The result is `MARK_PAID_RETRY`, and the console asks the merchant to click
-  Mark paid again, which now lands the order `delivered`. The payment row already recorded is the
-  same idempotent row.
+- A concurrent move left the order unpaid and still payable: a Record shipment (now
+  `shipped_awaiting_payment`), or the placement's own flip from a same-key checkout replay
+  (`pending` to `awaiting_payment`). Nothing is revoked or flagged. The result is
+  `MARK_PAID_RETRY`, and the console asks the merchant to click Mark paid again, which lands the
+  order from where it now is (`delivered`, or `paid`). The payment row already recorded is the same
+  idempotent row.
 - A concurrent Cancel won: the cash was attested, so the payment row stays. The order is flagged
   for reconciliation ("cash recorded on an order cancelled at the same moment") and any grants
   are revoked.
@@ -137,9 +139,10 @@ the tick's query budget. For each order it:
 
 - **first** frees the coupon use (`releaseByOrder`, idempotent and order-scoped). Unlike a
   merchant cancel, nobody chose to keep the coupon. If the release fails, or the tick cannot
-  afford it, the order is not cancelled this tick: it stays listed and is retried on the next
-  one. The coupon-orphans leg judges a redemption only once, so the release can never be left to
-  it;
+  afford it, the order is not cancelled this run: it stays listed and is retried on a later
+  pass. The coupon-orphans leg judges a redemption only once, so the release can never be left to
+  it. "Afford" counts the cancel after the release too, since the cancel runs outside the commit
+  window;
 - then cancels through `cancelOrder`, with reason `other` and detail "Not paid within N days".
   This releases the stock and enqueues the cancelled email.
 
@@ -149,7 +152,13 @@ use of a capped coupon. The order's own discount is unaffected. We accept this r
 that is never freed.
 
 An order whose ledger already shows a captured payment (a half-finished Mark paid) is skipped and
-flagged, never cancelled. `shipped_awaiting_payment` orders are never auto-cancelled, because
+flagged, never cancelled.
+
+The walk keeps a `(createdAt, orderId)` cursor in the sweep's cadence state and moves past every
+order it looks at, skipped ones included. Without it, a skipped order stays at the head of the
+listing, and on a tick that affords one order (Workers Free) no younger order is ever reached.
+When a run drains the listing the cursor is cleared, so the next pass starts at the oldest again
+and the skipped orders are looked at once per pass. `shipped_awaiting_payment` orders are never auto-cancelled, because
 the goods are out. The live setting applies to all open orders, so lowering it cancels older
 orders on the next tick. The Settings copy says so.
 
