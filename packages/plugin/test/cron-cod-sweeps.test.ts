@@ -284,6 +284,7 @@ describe("cod-auto-cancel's coupon release is begun only with room for the cance
 	test("a stale coupon COD order never takes a tick past its ceiling, whatever the budget", async () => {
 		const logged = vi.spyOn(console, "log").mockImplementation(() => {});
 		let ran = 0;
+		let freeCancelled = false;
 		for (let budget = 30; budget <= 70; budget++) {
 			const { storage } = await makeSqliteStorage(commerceStorageLayout());
 			await seedCoupon(storage, "coupon-room", "CODROOM");
@@ -318,12 +319,16 @@ describe("cod-auto-cancel's coupon release is begun only with room for the cance
 				);
 				if (state === "cancelled") {
 					ran++;
+					if (budget === FREE) freeCancelled = true;
 					break;
 				}
 			}
 		}
 		// Some budgets afford it: the test is not vacuous.
 		expect(ran).toBeGreaterThan(0);
+		// And Workers Free is one of them: reserving more than the cancel still costs
+		// once the release returns put a coupon order out of a Free tick's reach.
+		expect(freeCancelled).toBe(true);
 	});
 });
 

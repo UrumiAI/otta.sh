@@ -142,7 +142,8 @@ the tick's query budget. For each order it:
   afford it, the order is not cancelled this run: it stays listed and is retried on a later
   pass. The coupon-orphans leg judges a redemption only once, so the release can never be left to
   it. "Afford" counts the cancel after the release too, since the cancel runs outside the commit
-  window;
+  window: what the cancel still costs once the release returns (measured at 17 calls), not the
+  whole order's unit, so a coupon order fits a Workers Free tick;
 - then cancels through `cancelOrder`, with reason `other` and detail "Not paid within N days".
   This releases the stock and enqueues the cancelled email.
 

@@ -654,11 +654,16 @@ export class EmdashOrderStore implements OrderStore {
 			after === undefined ? { lt: createdBefore } : { gte: after.createdAt, lt: createdBefore };
 		const ids: OrderId[] = [];
 		let cursor: string | undefined;
+		// From a cursor, the `gte` brings back the order the cursor sits on when it is
+		// still awaiting payment (the skipped head this cursor exists for), and it is
+		// dropped below: one row more keeps that case to one query, as the leg's entry
+		// cost assumes.
+		const pageSize = after === undefined ? limit : Math.min(limit + 1, LIST_PAGE_SIZE);
 		for (let page = 0; page < AWAITING_PAYMENT_MAX_PAGES; page++) {
 			const result = await this.#orders.query({
 				where: { state: "awaiting_payment", createdAt },
 				orderBy: { createdAt: "asc" },
-				limit,
+				limit: pageSize,
 				...(cursor !== undefined ? { cursor } : {}),
 			});
 			for (const { id, data } of result.items) {

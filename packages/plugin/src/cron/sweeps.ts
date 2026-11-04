@@ -681,12 +681,16 @@ export const PRUNE_CART_CALLS = 5;
 export const COD_AUTO_CANCEL_UNIT = 21;
 
 /**
- * The most one stale COD order WITH a coupon use to free costs: the release
- * (`COUPON_RELEASE_CALLS`) and then the whole coupon-less unit — an upper bound on
- * the cancel after it, which is what the leg checks is left before it begins the
- * release (pinned against the measured coupon unit in cron-leg-costs.test.ts).
+ * The calls one stale COD order's cancel still makes AFTER its coupon release has
+ * returned (the guarded flip with its release intent and email, the rollup delta,
+ * the hold release), MEASURED in cron-leg-costs.test.ts. The leg checks the release
+ * plus this much is left before it begins a release, so the cancel after it never
+ * meets the tick's ceiling. Not the whole unit: the order read and the
+ * captured-payments check have already run by then, and the real release replaces
+ * the empty one the unit counts — reserving the whole unit put a coupon order out
+ * of a Workers Free tick's reach for good.
  */
-export const COD_AUTO_CANCEL_COUPON_CALLS = COUPON_RELEASE_CALLS + COD_AUTO_CANCEL_UNIT;
+export const COD_AUTO_CANCEL_AFTER_RELEASE_CALLS = 17;
 
 /** One coupon's recount at worst (`EmdashCouponStore.recountUses`): the coupon read,
  *  its in-flight and applied counts, and the correcting write. */
@@ -2111,11 +2115,12 @@ export async function runCommerceSweeps(
 					// judges a redemption once.) One deferred ends the batch.
 					//
 					// "Fits" counts the cancel that follows the release, too
-					// (`COD_AUTO_CANCEL_COUPON_CALLS`): the cancel runs outside the commit
-					// window, so a release begun with room for itself alone left the cancel
-					// to overrun the tick's ceiling. On a budget that can never afford a
-					// coupon order (Workers Free) the order is walked past (the domain's
-					// cursor) rather than blocking the orders behind it.
+					// (`COD_AUTO_CANCEL_AFTER_RELEASE_CALLS`): the cancel runs outside the
+					// commit window, so a release begun with room for itself alone left the
+					// cancel to overrun the tick's ceiling. Only what is still to come is
+					// reserved, so a Workers Free tick can afford a coupon order; a tick that
+					// cannot walks past it (the domain's cursor) rather than blocking the
+					// orders behind it, and a later pass comes back to it.
 					let releaseSkipped = false;
 					const wholeOnly = wholeReleasesOnly(
 						stores.couponStore,
@@ -2126,7 +2131,8 @@ export async function runCommerceSweeps(
 						},
 						// Only an order WITH a coupon: a coupon-less order's release finds
 						// nothing, and that is already inside its unit (`COD_AUTO_CANCEL_UNIT`).
-						(order) => (order.totals?.appliedCouponCode != null ? COD_AUTO_CANCEL_UNIT : 0),
+						(order) =>
+							order.totals?.appliedCouponCode != null ? COD_AUTO_CANCEL_AFTER_RELEASE_CALLS : 0,
 					);
 					const couponStore = {
 						async releaseByOrder(order: Parameters<typeof wholeOnly.releaseByOrder>[0]) {
