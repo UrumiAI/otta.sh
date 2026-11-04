@@ -94,6 +94,16 @@
 			"bucket_name": "your-downloads-bucket",
 		},
 	],
+	// OPTIONAL, OPT-IN, default email provider (ADR-0043; DEPLOYMENT.md §3, Email).
+	// Uncomment BEFORE setting OTTA_EMAIL_FROM (DEPLOYMENT.md §3 order), and only
+	// once the sender domain is active on Cloudflare Email Sending, the account is
+	// on Workers Paid, and a test send has succeeded. Add it to YOUR
+	// wrangler.local.jsonc too (the build reads that file when it exists, and
+	// REFUSES to build with OTTA_EMAIL_FROM set and no binding named EMAIL).
+	// Left commented here because an unrestricted binding has not been verified to
+	// deploy on a Workers Free account with no Email Sending set up, and a
+	// half-configured provider fails every send and parks order emails as failed.
+	// "send_email": [{ "name": "EMAIL" }],
 	// Console logs stay on: they are where an unclaimed store's setup link is
 	// written when no OTTA_SETUP_TOKEN is set (ADR-0042). Per-request invocation logs are off: they record the
 	// request URL with its query, and the order return URL carries Stripe's

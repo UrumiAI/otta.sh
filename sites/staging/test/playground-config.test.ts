@@ -90,7 +90,7 @@ describe("playground build files", () => {
 		expect(playground).toContain('imageService: "passthrough"');
 		expect(playground).toMatch(/__OTTA_PLAYGROUND__:\s*JSON\.stringify\(true\)/);
 		expect(storefront).toMatch(/__OTTA_PLAYGROUND__:\s*JSON\.stringify\(false\)/);
-		expect(storefront).toMatch(/emdash\(\s*buildEmdashOptions\(egress\)\s*\)/);
+		expect(storefront).toMatch(/emdash\(\s*buildEmdashOptions\(egress, emailFrom\)\s*\)/);
 	});
 });
 
