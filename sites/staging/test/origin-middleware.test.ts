@@ -23,6 +23,15 @@ vi.mock("astro:middleware", () => ({
 	defineMiddleware: <T>(handler: T): T => handler,
 }));
 
+// The setup-claim gate (ADR-0042) runs before the origin check and refuses an
+// unclaimed store's `/_emdash/*`; these contexts carry no database, so it would
+// answer every `/_` case. This suite is about the ORIGIN rule, so the gate is
+// held as it is on a claimed store: inert. It has its own suites
+// (setup-claim*.test.ts).
+vi.mock("../src/lib/setup-claim.js", () => ({
+	setupClaimGate: () => ({ check: () => Promise.resolve(null) }),
+}));
+
 import { PRIVATE_NO_STORE } from "../src/lib/no-store.js";
 import {
 	CROSS_ORIGIN_REFUSAL_BODY,

@@ -16,6 +16,20 @@
 // Secrets are NEVER committed here. Post-merge:
 //   npx emdash secrets generate && wrangler secret put EMDASH_ENCRYPTION_KEY
 //
+// OPTIONAL, the setup token (ADR-0042; DEPLOYMENT.md §2.2):
+//   openssl rand -hex 32        # keep the value: it opens the setup wizard
+//   wrangler secret put OTTA_SETUP_TOKEN
+// Until EmDash setup is finished, every /_emdash/* route refuses a request
+// without it (src/lib/setup-claim.ts); the deployer opens
+// /_emdash/admin/setup?setup_token=<token> to claim the store. At least 32
+// random URL-safe characters; a weak value fails CLOSED (setup stays locked).
+// Unset, the site generates a token on the first /_emdash request, keeps it in
+// D1 (`options`, name `otta:setup_token`) and logs the claim link once — which
+// is why console logs must stay on in `observability` below: only this
+// Cloudflare account can read them — unless the account exports Worker logs:
+// a Logpush job or a tail Worker forwards the claim link to its sink, so set
+// OTTA_SETUP_TOKEN there (nothing is logged then). Unused once setup is finished.
+//
 // OPTIONAL, for the Stripe webhook edge (`src/pages/webhooks/stripe.ts`):
 //   wrangler secret put OTTA_WH_TOKEN
 // A shared secret this Worker attaches as `X-Otta-Wh-Token` when it forwards a
@@ -80,7 +94,8 @@
 			"bucket_name": "your-downloads-bucket",
 		},
 	],
-	// Console logs stay on. Per-request invocation logs are off: they record the
+	// Console logs stay on: they are where an unclaimed store's setup link is
+	// written when no OTTA_SETUP_TOKEN is set (ADR-0042). Per-request invocation logs are off: they record the
 	// request URL with its query, and the order return URL carries Stripe's
 	// payment_intent_client_secret (#551), which would be stored for 3-7 days.
 	"observability": {

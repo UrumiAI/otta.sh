@@ -3,6 +3,7 @@
  * the way the Block Kit console drives it (dev-bypass session, form submits
  * with the form's own `block_id`, promoted buttons' values). Not a spec.
  */
+import { setupClaimHeaders } from "../scripts/setup-claim-cookie.js";
 import { E2E_BASE_URL, expect } from "./harness.js";
 
 const ADMIN = `${E2E_BASE_URL}/_emdash/api/plugins/otta/admin`;
@@ -10,7 +11,10 @@ const ADMIN = `${E2E_BASE_URL}/_emdash/api/plugins/otta/admin`;
 export type Block = Record<string, unknown>;
 
 export async function adminHeaders(): Promise<Record<string, string>> {
-	const res = await fetch(`${E2E_BASE_URL}/_emdash/api/auth/dev-bypass`, { redirect: "manual" });
+	const res = await fetch(`${E2E_BASE_URL}/_emdash/api/auth/dev-bypass`, {
+		redirect: "manual",
+		headers: setupClaimHeaders(),
+	});
 	const cookie = res.headers
 		.getSetCookie()
 		.map((c) => c.split(";", 1)[0])
