@@ -680,6 +680,14 @@ export const PRUNE_CART_CALLS = 5;
  *  (`COUPON_RELEASE_CALLS`). */
 export const COD_AUTO_CANCEL_UNIT = 21;
 
+/**
+ * The most one stale COD order WITH a coupon use to free costs: the release
+ * (`COUPON_RELEASE_CALLS`) and then the whole coupon-less unit — an upper bound on
+ * the cancel after it, which is what the leg checks is left before it begins the
+ * release (pinned against the measured coupon unit in cron-leg-costs.test.ts).
+ */
+export const COD_AUTO_CANCEL_COUPON_CALLS = COUPON_RELEASE_CALLS + COD_AUTO_CANCEL_UNIT;
+
 /** One coupon's recount at worst (`EmdashCouponStore.recountUses`): the coupon read,
  *  its in-flight and applied counts, and the correcting write. */
 export const COUPON_RECOUNT_CALLS = 4;
@@ -2101,11 +2109,25 @@ export async function runCommerceSweeps(
 					// uncancelled and listed, and a later tick frees the use and cancels it.
 					// (Skipped AFTER a cancel, the use would be stranded: coupon-orphans
 					// judges a redemption once.) One deferred ends the batch.
+					//
+					// "Fits" counts the cancel that follows the release, too
+					// (`COD_AUTO_CANCEL_COUPON_CALLS`): the cancel runs outside the commit
+					// window, so a release begun with room for itself alone left the cancel
+					// to overrun the tick's ceiling. On a budget that can never afford a
+					// coupon order (Workers Free) the order is walked past (the domain's
+					// cursor) rather than blocking the orders behind it.
 					let releaseSkipped = false;
-					const wholeOnly = wholeReleasesOnly(stores.couponStore, budget, () => {
-						releaseSkipped = true;
-						legBudget.stopped = true;
-					});
+					const wholeOnly = wholeReleasesOnly(
+						stores.couponStore,
+						budget,
+						() => {
+							releaseSkipped = true;
+							legBudget.stopped = true;
+						},
+						// Only an order WITH a coupon: a coupon-less order's release finds
+						// nothing, and that is already inside its unit (`COD_AUTO_CANCEL_UNIT`).
+						(order) => (order.totals?.appliedCouponCode != null ? COD_AUTO_CANCEL_UNIT : 0),
+					);
 					const couponStore = {
 						async releaseByOrder(order: Parameters<typeof wholeOnly.releaseByOrder>[0]) {
 							const released = await wholeOnly.releaseByOrder(order);
@@ -2527,21 +2549,35 @@ function logTick(
 	);
 }
 
+/** What `wholeReleasesOnly` reads off the order a release is for. */
+interface ReleasedOrder {
+	readonly customerId?: string | null;
+	readonly totals?: { readonly appliedCouponCode?: string | null };
+}
+
 /**
  * `store` with `releaseByOrder` guarded as `COUPON_RELEASE_CALLS` describes: skipped
  * (answering 0, no call made, `onSkip` told) when the tick cannot afford the order's
- * release, and otherwise run inside the commit window, closed again when it returns.
- * Every other member is the store's own.
+ * release — and the `thenCalls(order)` the caller makes AFTER it, outside the window
+ * (the COD auto-cancel releases first and cancels after) — and otherwise run inside
+ * the commit window, closed again when it returns. Every other member is the store's
+ * own.
  */
-function wholeReleasesOnly<S extends object>(store: S, budget: TickBudget, onSkip: () => void): S {
+function wholeReleasesOnly<S extends object>(
+	store: S,
+	budget: TickBudget,
+	onSkip: () => void,
+	thenCalls: (order: ReleasedOrder) => number = () => 0,
+): S {
 	return new Proxy(store, {
 		get(target, prop) {
 			const value: unknown = Reflect.get(target, prop, target);
 			if (typeof value !== "function") return value;
 			if (prop === "releaseByOrder") {
-				return async (order: { readonly customerId?: string | null }, ...rest: unknown[]) => {
+				return async (order: ReleasedOrder, ...rest: unknown[]) => {
 					const needed =
-						order.customerId === null ? GUEST_COUPON_RELEASE_CALLS : COUPON_RELEASE_CALLS;
+						(order.customerId === null ? GUEST_COUPON_RELEASE_CALLS : COUPON_RELEASE_CALLS) +
+						thenCalls(order);
 					if (budget.headroom() < needed) {
 						onSkip();
 						return 0;

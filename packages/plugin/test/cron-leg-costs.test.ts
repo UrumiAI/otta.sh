@@ -64,6 +64,7 @@ import { createInProcessCommerceStores } from "../src/commerce/in-process-commer
 import {
 	CONTENT_MISS_QUERIES,
 	CONTENT_READ_QUERIES,
+	COD_AUTO_CANCEL_COUPON_CALLS,
 	COD_AUTO_CANCEL_UNIT,
 	COUPON_RECOUNT_CALLS,
 	COUPON_RELEASE_CALLS,
@@ -784,6 +785,9 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			// Pinned on the shape it was measured on, so a change that moves it shows up
 			// here and in `LEG_QUERY_COSTS` together.
 			if (!coupon) expect(unit).toBe(COD_AUTO_CANCEL_UNIT);
+			// What the leg checks is left before it begins a coupon release covers the
+			// release AND the cancel after it, so the cancel never meets the ceiling.
+			else expect(unit).toBeLessThanOrEqual(COD_AUTO_CANCEL_COUPON_CALLS);
 		},
 	);
 

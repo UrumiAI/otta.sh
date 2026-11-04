@@ -280,6 +280,53 @@ describe("cod-auto-cancel walks past a skipped order (review: a flagged head blo
 	});
 });
 
+describe("cod-auto-cancel's coupon release is begun only with room for the cancel after it", () => {
+	test("a stale coupon COD order never takes a tick past its ceiling, whatever the budget", async () => {
+		const logged = vi.spyOn(console, "log").mockImplementation(() => {});
+		let ran = 0;
+		for (let budget = 30; budget <= 70; budget++) {
+			const { storage } = await makeSqliteStorage(commerceStorageLayout());
+			await seedCoupon(storage, "coupon-room", "CODROOM");
+			const order = await placeCodOrder(storage, "room", new Date(NOW.getTime() - 20 * DAY_MS), {
+				coupon: { id: "coupon-room", code: "CODROOM" },
+			});
+			const cursors = memoryCursors();
+			for (let tick = 0; tick < 8; tick++) {
+				logged.mockClear();
+				const summary = await runCommerceSweeps(
+					sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: budget }),
+					SWEEP_TASK_NAME,
+					{
+						cursors,
+						emailSender: recordingSender([]),
+						now: new Date(NOW.getTime() + tick * 60_000),
+						queryBudget: budget,
+					},
+				);
+				const where = `budget ${String(budget)}, tick ${String(tick)}`;
+				const outcome = leg(summary, "cod-auto-cancel");
+				expect(outcome.ok, `${where}: ${String(outcome.error)}`).toBe(true);
+				expect(summary.budget.queriesUsed, where).toBeLessThanOrEqual(budget);
+				// The ceiling never cut the cancel after a release it let begin.
+				const lines = logged.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
+				expect(lines, where).not.toMatch(/stopped at the ceiling: [^\n]*cod-auto-cancel/);
+				// Either it fitted and was cancelled with its use freed, or nothing was begun.
+				const state = (await adapters(storage, NOW).orderStore.getById(toOrderId(order.id)))?.state;
+				const uses = (await coupons(storage, NOW).findById("coupon-room"))?.usesCount;
+				expect([state, uses], where).toEqual(
+					state === "cancelled" ? ["cancelled", 0] : ["awaiting_payment", 1],
+				);
+				if (state === "cancelled") {
+					ran++;
+					break;
+				}
+			}
+		}
+		// Some budgets afford it: the test is not vacuous.
+		expect(ran).toBeGreaterThan(0);
+	});
+});
+
 describe("coupon-orphans and an auto-cancelled COD order", () => {
 	test("a use the auto-cancel did not free (skipped, or lost to a crash) is freed by coupon-orphans; a merchant's cancel keeps its use", async () => {
 		const { storage } = await makeSqliteStorage(commerceStorageLayout());
