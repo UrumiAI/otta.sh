@@ -40,18 +40,21 @@ staging-only.
 
 Three rules hold. Everything else in this guide is a consequence of them.
 
-- **Deploy-then-claim.** A freshly deployed site is unclaimed: **the first visitor to
-  complete the setup wizard becomes the admin.** Claim it immediately after the first
-  request, in the same session. The wizard's passkey step requires a WebAuthn **secure
-  context** — HTTPS, or `localhost` (see §2.2). If the unclaimed window worries
-  you, front `/_emdash/*` with Cloudflare Access until setup is claimed, then remove it.
+- **Deploy-then-claim, with a setup token.** A freshly deployed site is unclaimed, and
+  only the holder of its **setup token** can run the setup wizard that creates the first
+  admin ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)). Until setup is
+  finished, every `/_emdash/*` route answers 403 to anyone else; the storefront is not
+  affected. The token is the `OTTA_SETUP_TOKEN` Worker secret if you set one, otherwise one
+  the site generates on first use and writes, as a ready-to-open link, to the Worker's
+  logs, which only your Cloudflare account can read (§2.2). The wizard's passkey step
+  requires a WebAuthn **secure context**: HTTPS, or `localhost`.
 - **Seed reality.** The site's first request runs the CMS migrations and applies the seed's
   **schema, settings, and menus only**. Sample content (the 3 demo products) is applied
   **only** when the setup wizard is completed with "include sample content" checked. An
   empty `/products` page right after first boot is **healthy, not a failed boot**.
 - **Secrets model.** There is one deployable, so there is one place secrets can live — and
-  two stores inside it (§3). Two are **Worker secrets** (`wrangler secret put`):
-  `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment **credential** is
+  two stores inside it (§3). Three are **Worker secrets** (`wrangler secret put`):
+  `EMDASH_ENCRYPTION_KEY`, `OTTA_WH_TOKEN` and the optional `OTTA_SETUP_TOKEN`. Every payment **credential** is
   provisioned by the operator in the admin console's **Store settings** page (General tab) and held in
   **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
   never rendered back into a block, read through a fail-closed reader. The Stripe secret
@@ -173,6 +176,18 @@ expired holds and queued emails drain at the Free pace (§5).
    wrangler secret put EMDASH_ENCRYPTION_KEY --config wrangler.local.jsonc   # paste; back it up
    ```
 
+   Optionally, also choose the **setup token** yourself (§2.2). Skip this and the site
+   generates one and logs its link instead:
+
+   ```bash
+   openssl rand -hex 32    # keep it: it is the key to the setup wizard until you finish it
+   wrangler secret put OTTA_SETUP_TOKEN --config wrangler.local.jsonc
+   ```
+
+   It must be at least 32 characters of `A-Z a-z 0-9 - _`, and random (`openssl rand -hex
+   32` is). A weak value is **refused, not ignored**: setup stays locked and the Worker
+   logs say why, until you replace or delete the secret.
+
    The site's "never `--config`" rule (step 5) applies to **deploy only** — deploy must
    follow the build's `.wrangler/deploy` redirect. `wrangler secret put` never reads that
    redirect: without `--config` it defaults to the tracked template and targets a Worker
@@ -206,10 +221,42 @@ expired holds and queued emails drain at the Free pace (§5).
 1. **Hit the site once** — `https://<your-worker>.<your-subdomain>.workers.dev/`. The first
    request runs the CMS migrations and applies the seed's schema/settings/menus (one-time
    latency is expected). Per §1, `/products` is empty at this point — that is healthy.
-2. **Claim immediately:** open `/_emdash/admin` and complete the setup wizard **in the same
-   session, with "include sample content" enabled** (that is what applies the 3 sample
-   products; skip it and you simply start with an empty catalog). The first visitor to
-   complete setup becomes the admin — do not deploy and walk away. workers.dev is HTTPS, so
+2. **Claim it with the setup link.** Open `/_emdash/admin`: without the token you get a
+   "This store hasn't been set up yet" page (so does everyone else; it never says whether a
+   token exists). The link to open instead is
+
+   ```text
+   https://<your-site>/_emdash/admin/setup?setup_token=<token>
+   ```
+
+   - **You set `OTTA_SETUP_TOKEN`** (§2.1 step 3): the token is its value.
+   - **You did not:** the site generated one on that first `/_emdash` request and logged
+     the whole link once. In the Cloudflare dashboard, open **Workers & Pages** → your
+     Worker → **Logs** (Workers Logs; `observability` is on in `wrangler.jsonc`) and search
+     for `[otta-setup]`, or run `wrangler tail` before you open `/_emdash/admin`. Logs are
+     kept for a few days only; the token itself stays in D1 until you use it, and the
+     account owner can read it there at any time:
+
+     ```bash
+     wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc \
+       --command "SELECT value FROM options WHERE name = 'otta:setup_token'"
+     ```
+
+     (the value is JSON: drop the quotes). Setting `OTTA_SETUP_TOKEN` later replaces it.
+
+   > **If your account exports Worker logs** (a Logpush job or a tail Worker), the generated
+   > link goes wherever those logs go. Set `OTTA_SETUP_TOKEN` before the first visit
+   > (§2.1 step 3): with the secret, nothing is logged. The link is always written for
+   > `https://`, and a link opened over plain `http://` is moved to `https://` before the
+   > token is checked.
+
+   The link sets a one-hour, `HttpOnly`, `SameSite=Strict` cookie scoped to `/_emdash/`,
+   takes the token out of the address bar and opens the wizard. Complete it **with "include
+   sample content" enabled** (that is what applies the 3 sample products; skip it and you
+   simply start with an empty catalog). The link keeps working until setup is finished, so
+   you can open it again from another browser or after the cookie expires. Once the first
+   admin exists the gate switches itself off and the token is never asked for again; from
+   then on the admin signs in with the passkey made in the wizard. workers.dev is HTTPS, so
    the passkey step's secure-context requirement (§1) is already met.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
@@ -258,7 +305,8 @@ cannot be retried in place:
 1. `wrangler d1 delete YOUR-D1-DATABASE-NAME` and `wrangler d1 create YOUR-D1-DATABASE-NAME`.
 2. Update `database_id` in your `wrangler.local.jsonc` with the new id.
 3. **Rebuild** (the wrangler config is read at build time — §2.1 step 4), redeploy, then
-   claim the admin again (§2.1 step 5 → §2.2).
+   claim the admin again (§2.1 step 5 → §2.2). The new database has no generated token, so
+   without `OTTA_SETUP_TOKEN` a new link is logged.
 
 ### 2.4 D1 sessions (`"primary-first"`) and `global_fetch_strictly_public`
 
@@ -434,7 +482,7 @@ with the code and cover every route listed above.
 
 ## 3. Secrets & tokens checklist
 
-Two of these are **Worker secrets** on the site (`wrangler secret put`); the rest are
+Three of these are **Worker secrets** on the site (`wrangler secret put`); the rest are
 **plugin credentials** the operator types into the admin console's **Store settings** page (General tab), which
 persists them to write-only plugin `kv` under `settings:*`. On Workers, **every `wrangler
 secret put` below** needs `--config wrangler.local.jsonc`: without it, wrangler defaults to
@@ -444,10 +492,11 @@ order of appearance in a deployment's life:
 | Secret | Where it lives | Required? | When to set |
 |---|---|---|---|
 | `EMDASH_ENCRYPTION_KEY` | Worker secret | yes | before the site's first boot |
+| `OTTA_SETUP_TOKEN` | Worker secret | optional (without it the site generates the setup token and logs its link, §2.2) | before the first visit to `/_emdash/admin`; unused once setup is finished |
 | `OTTA_WH_TOKEN` | Worker secret **+** admin Settings (same value, both halves) | optional outer gate on the settle routes | with the Stripe webhook secret |
 | Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments — **together with the secret key** (see below) | before enabling Stripe |
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
-| Email provider (from-address, SPF, DKIM, its own key) | an **EmDash email provider plugin**, selected in EmDash Settings > Email — not otta | optional | when wiring real email |
+| Email sender (`OTTA_EMAIL_FROM`; SPF, DKIM at Cloudflare) | a **build variable**, not a secret, plus the `send_email` binding `EMAIL` in your wrangler config (the build refuses a sender without it), an active Cloudflare Email Sending domain and Workers Paid; set it LAST (§3 Email); or another EmDash email provider plugin | optional | when wiring real email |
 
 > **Never put a secret in the build environment.** Set every secret only as a Worker secret
 > (`wrangler secret put`) or in admin Settings. Do not export it in the shell or CI job that
@@ -485,7 +534,11 @@ order of appearance in a deployment's life:
 > `sites/staging/.dev.vars` also replaces the env that the e2e stack injects (its throwaway
 > `EMDASH_ENCRYPTION_KEY` arrives through `CLOUDFLARE_INCLUDE_PROCESS_ENV`, which wrangler
 > ignores when `.dev.vars` exists), so move it aside, or put the e2e key in it, for
-> `pnpm test:e2e`. A dev `.env`
+> `pnpm test:e2e`. The same goes for the e2e setup token (`OTTA_SETUP_TOKEN`, ADR-0042): with a
+> `.dev.vars`, a fresh e2e stack only knows the token the suite presents if the file sets
+> `OTTA_SETUP_TOKEN` (the harness then presents that value); a `.dev.vars` without it makes the
+> dev Worker generate its own, and every `/_emdash` call of the run is refused until you claim the
+> store by hand. A dev `.env`
 > that holds only `EMDASH_ENCRYPTION_KEY` still builds: no server module names that key today,
 > and the build fails if one ever does.
 >
@@ -520,7 +573,9 @@ order of appearance in a deployment's life:
     put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.dev.vars` or `sites/staging/.env`
     (both gitignored; generate a separate dev key). `.dev.vars` is the safer choice because
     Astro never reads it into a build (above). When it exists, the dev Worker reads it instead
-    of `.env`. Exporting the key in the shell does **not** work: the dev Worker runs in
+    of `.env`, so keep every local secret in the one file: a key left in `.env` beside a
+    `.dev.vars` (for example one holding only `OTTA_SETUP_TOKEN`) is silently ignored, and
+    saving payment keys then fails. Exporting the key in the shell does **not** work: the dev Worker runs in
     workerd, which does not inherit the shell environment. The Playwright stack and CI's
     e2e job use a throwaway test key (`playwright.config.ts`).
   - **Missing:** saving any of those three keys fails, and a key already saved encrypted
@@ -761,12 +816,74 @@ order of appearance in a deployment's life:
 > currency hint.
 
 - **Email** — otta sends every email through the EmDash host's `ctx.email`
-  ([ADR-0031](./adr/0031-email-through-emdash-host.md)). otta ships no email provider and
-  holds no email credential: **install and select an EmDash email provider** — for example
-  `cloudflareEmail({ from })` with a `send_email` binding, or your own small provider plugin
-  (`docs/email-providers.md`). The from-address, SPF, DKIM and any API key belong to that
-  provider. In `astro dev` EmDash's console provider is active and captured mail is readable
-  at `/_emdash/api/dev/emails`.
+  ([ADR-0031](./adr/0031-email-through-emdash-host.md)). otta core ships no email provider and
+  holds no email credential. The reference **site** registers EmDash's first-party Cloudflare
+  provider for you ([ADR-0043](./adr/0043-site-default-cloudflare-email-provider.md)):
+
+  **Do these IN ORDER, and set `OTTA_EMAIL_FROM` last.** EmDash auto-selects the only provider
+  and remembers the choice. If the provider is selected but cannot send (no binding, domain not
+  active, Workers Free), every send throws and each one is a **counted** attempt: an order-email
+  row is parked `failed` after five tries (about 25 minutes) and is not re-queued, and sign-in
+  links never arrive. That is worse than no provider (where mail simply waits, ADR-0031). So:
+
+  1. **Be on Workers Paid.** **Workers Free merchants must leave `OTTA_EMAIL_FROM` unset.**
+  2. **Onboard a sending domain** on Cloudflare (dashboard: Compute > Email Service > Email
+     Sending > Onboard Domain, or `npx wrangler email sending enable mail.example.com`). The
+     domain's DNS must be on Cloudflare; Cloudflare adds the MX, SPF, DKIM and DMARC records
+     (usually live in 5-15 minutes, up to 24 hours). Wait until the domain shows **active**.
+  3. **Add the binding** `"send_email": [{ "name": "EMAIL" }]` to your `wrangler.local.jsonc`
+     (or uncomment it in `wrangler.jsonc` if you build without a local file). Keep it unrestricted: the build refuses `destination_address` / `allowed_destination_addresses` (they block sends to buyers) and an `allowed_sender_addresses` that omits your sender. The tracked `wrangler.jsonc`
+     carries it COMMENTED OUT (opt-in: it is not verified to deploy on a Free account with no
+     Email Sending). An **existing** `wrangler.local.jsonc` does not get it by itself; add it.
+  4. **Prove a send works first** (a test send from the dashboard, or `wrangler email sending`
+     / a Worker using the binding to an address you control) BEFORE the next step.
+  5. **Set `OTTA_EMAIL_FROM`** at **build** time. For deploy builds set it in the shell or CI
+     environment. A value in `sites/staging/.env` also reaches `astro dev` (and registers the
+     provider there), so keep it out of `.env` for local dev. Example:
+     `OTTA_EMAIL_FROM=store@mail.example.com`, optionally `OTTA_EMAIL_FROM_NAME="Acme Goods"`.
+     A plain ASCII address only. Rebuild and redeploy to
+     change it. The **build fails** on a malformed address, and on a set address whose selected
+     wrangler config (`wrangler.local.jsonc` if present, else `wrangler.jsonc`) has no
+     `send_email` binding named `EMAIL`, at the top level and in every `env.<name>` block
+     (wrangler does not inherit `send_email` into an env). Unset registers **no** provider
+     (fail-closed below). The playground build, `astro dev` and `astro check` import the same
+     config, so a malformed value, or a set value with no binding, fails them too.
+
+  **What Cloudflare Email Sending requires** (checked 2026-11-03; re-check before relying on it):
+  - **Plan: Workers Paid.** Outbound sending is "Not available" on Workers Free; Paid includes
+    3,000 emails per account per month, then $0.35 per 1,000
+    ([pricing](https://developers.cloudflare.com/email-service/platform/pricing/)). Sends to
+    verified destination addresses in your own account are free on every plan, which is useful
+    for testing only.
+  - **Your own domain, on Cloudflare DNS.** You can only send from an onboarded domain
+    ([get started](https://developers.cloudflare.com/email-service/get-started/send-emails/)).
+    There is no sending from a `*.workers.dev` hostname, as that is not a domain you can onboard.
+    The Worker itself may stay on `workers.dev`; only the **sender domain** must be yours, but
+    the sign-in link also needs a real storefront URL (below).
+  - **Arbitrary recipients: yes, once a sending domain is onboarded.** Before that, only your
+    account's verified destination addresses
+    ([limits](https://developers.cloudflare.com/email-service/platform/limits/)). New accounts
+    start with "a conservative daily quota" that grows with sending reputation; Cloudflare
+    publishes no numeric daily limit. Per message: 50 recipients, 25 MiB.
+  - **Transactional only.** No marketing or bulk mail.
+  - **Privacy: the provider logs recipient and subject.** On every send EmDash's Cloudflare
+    provider calls `ctx.log.info` with the `to` address and the `subject`, and Workers Logs are
+    persisted (this repo turns invocation logs off for the same reason, wrangler.jsonc). Buyer
+    email addresses therefore sit in your Worker logs for the log retention period. Decide that
+    is acceptable, or set a short retention / turn console logs off, before enabling it.
+  - **Local dev.** The binding's behaviour under the local simulator is not documented. On a
+    FRESH local D1 neither the console provider nor this one is auto-selected when this one is
+    registered, so dev mail is not captured until you pick one in EmDash Settings > Email; an
+    existing D1 keeps its saved selection.
+
+  **A Free-plan merchant cannot use this default** (Workers Free has no outbound sending), and
+  a merchant with no domain on Cloudflare cannot either: leave `OTTA_EMAIL_FROM` unset. They
+  keep the fail-closed state, or install another provider:
+  [`docs/email-providers.md`](./docs/email-providers.md) and
+  [`examples/email-provider/`](./examples/email-provider/) show how to bring any vendor.
+  The from-address, SPF, DKIM and any API key belong to the provider. In `astro dev` with NO
+  email provider registered EmDash's console provider is used and captured mail is readable at
+  `/_emdash/api/dev/emails` (see the local-dev caveat above when this default is registered).
   With **no provider** nothing is sent and nothing is lost: the order emails wait in the
   outbox **without spending attempts** (the cron sweep's `order-emails` leg reports `skipped`),
   the console says "no email provider" on every write that would have emailed, and Settings →

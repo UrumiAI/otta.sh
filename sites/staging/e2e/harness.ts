@@ -43,7 +43,15 @@
  * needs from here belongs there too.
  */
 import { fileURLToPath } from "node:url";
-import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
+import {
+	expect,
+	test as base,
+	type BrowserContext,
+	type Page,
+	type TestInfo,
+} from "@playwright/test";
+import { e2eSetupToken } from "../scripts/setup-claim-cookie.js";
+import { SETUP_CLAIM_COOKIE, SETUP_CLAIM_COOKIE_PATH } from "../src/lib/setup-claim-contract.js";
 import { probeSite } from "./site-probe.js";
 
 /**
@@ -165,6 +173,29 @@ export const E2E_SEEDS = process.env["OTTA_E2E_SEED"] === "1";
  * rows these specs need.
  */
 export const DEV_BYPASS_SIGNIN_PATH = "/_emdash/api/auth/dev-bypass";
+
+/** The setup token the suite presents (ADR-0042): the dev server's own, as
+ *  {@link e2eSetupToken} resolves it (`.dev.vars`, then the env, then the
+ *  public throwaway token). */
+export const E2E_SETUP_TOKEN = e2eSetupToken();
+
+/** Put the setup-claim cookie in a browser context, as the claim link would.
+ *  Harmless on a claimed store, which never reads it. */
+export async function grantSetupClaim(context: BrowserContext): Promise<void> {
+	const { hostname } = new URL(E2E_BASE_URL);
+	await context.addCookies([
+		{
+			name: SETUP_CLAIM_COOKIE,
+			value: E2E_SETUP_TOKEN,
+			domain: hostname.replace(/^\[|\]$/g, ""),
+			path: SETUP_CLAIM_COOKIE_PATH,
+			httpOnly: true,
+			sameSite: "Strict",
+			secure: false,
+		},
+	]);
+}
+
 /** §0.2 verbatim — signs in AND applies the full seed. */
 export const DEV_BYPASS_SETUP_PATH = "/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin";
 export const DEV_BYPASS_PATH =
@@ -323,6 +354,7 @@ export async function skipWithoutSite(testInfo: TestInfo): Promise<void> {
 export const test = base.extend<{ adminPage: Page }>({
 	adminPage: async ({ page }, use, testInfo) => {
 		await skipWithoutSite(testInfo);
+		await grantSetupClaim(page.context());
 		const res = await page.goto(DEV_BYPASS_PATH);
 		expect(res?.status() ?? 599, `dev bypass ${DEV_BYPASS_PATH} did not sign in`).toBeLessThan(400);
 		await use(page);

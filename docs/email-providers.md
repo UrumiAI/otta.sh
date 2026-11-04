@@ -1,6 +1,6 @@
 # Bring your own email provider
 
-otta ships no email provider. It hands every email to EmDash, and EmDash hands it to the
+otta core ships no email provider (the reference site has an optional default, below). It hands every email to EmDash, and EmDash hands it to the
 **email-transport plugin** you select. Adding a provider means writing that plugin, about
 50 lines. A working template is in [`examples/email-provider/`](../examples/email-provider/).
 
@@ -14,6 +14,27 @@ or `packages/` (both are workspace globs). Rename `name` in `package.json`, and 
 in `src/plugin.ts`, and change the request body to your API's shape. Run `pnpm install`, then
 add `{ "path": "<your-folder>" }` to the root `tsconfig.json` references so `pnpm typecheck`
 covers it.
+
+## Default on the reference site (ADR-0043)
+
+`sites/staging` can register EmDash's first-party Cloudflare Email Sending provider: set
+`OTTA_EMAIL_FROM` at build time. Full steps, ordering and requirements are in
+[`DEPLOYMENT.md`](../DEPLOYMENT.md) §3, Email. It needs Workers Paid and a sender domain on
+Cloudflare. Workers Free merchants must leave it unset.
+
+**If Settings says "provider not confirmed" or mail does not arrive, check in order:**
+1. The `send_email` binding named `EMAIL` is in the wrangler config you DEPLOYED
+   (`wrangler.local.jsonc`; the build refuses a set sender without it).
+2. The sender domain shows **active** under Compute > Email Service > Email Sending, and
+   `OTTA_EMAIL_FROM` is an address on it.
+3. The account is on **Workers Paid**.
+4. A direct test send through the binding works. A selected provider that cannot send spends
+   one of an order email's five attempts per try and parks it `failed`, so fix this BEFORE
+   placing orders; unset `OTTA_EMAIL_FROM` and rebuild if you cannot.
+
+**Bringing your own provider while `OTTA_EMAIL_FROM` is set:** two providers are then active.
+Unset `OTTA_EMAIL_FROM` and rebuild, or select yours in EmDash Settings > Email. A persisted
+selection sticks, so re-select after changing which providers are registered.
 
 ## The hook (emdash 1.0)
 

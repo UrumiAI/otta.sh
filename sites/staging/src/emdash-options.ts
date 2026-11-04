@@ -34,10 +34,15 @@
  *  - The React console (`otta-console`) registered as a SECOND descriptor in
  *    the SAME array (ADR-0014). Two entries, one kind of registration: still
  *    `plugins: []`, still no sandbox runner.
+ *  - OPTIONALLY, EmDash's own first-party `cloudflareEmail` provider, appended
+ *    after the two Otta descriptors, only when a sender is given (ADR-0043).
+ *    Otta core stays vendor-free (ADR-0031); this is the SITE's default.
  */
 import { d1, r2 } from "@emdash-cms/cloudflare";
+import { cloudflareEmail } from "@emdash-cms/cloudflare/plugins/cloudflare-email";
 import type { InProcessEgressUrls } from "@urumi.ai/otta-plugin";
 import type { DatabaseDescriptor, PluginDescriptor, StorageDescriptor } from "emdash";
+import type { EmailSender } from "./lib/email-from.js";
 import { ottaConsoleDescriptor } from "./otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "./otta-plugin-descriptor.js";
 
@@ -71,8 +76,17 @@ export interface StagingEmdashOptions {
  *   derived from one input and stay green for the very omission described above
  *   (review round 3, A3). With nothing configured the resolved allowlist is
  *   Stripe's API host alone.
+ *
+ * @param emailFrom the sender for the default Cloudflare email provider
+ *   (`parseEmailFrom` of `OTTA_EMAIL_FROM`). A PARAMETER, never read from the
+ *   environment here: the playground calls this builder too and must not
+ *   inherit an email provider (ADR-0043). Undefined registers nothing, which is
+ *   the fail-closed "no provider" state of ADR-0031.
  */
-export function buildEmdashOptions(egress: InProcessEgressUrls = {}): StagingEmdashOptions {
+export function buildEmdashOptions(
+	egress: InProcessEgressUrls = {},
+	emailFrom?: EmailSender,
+): StagingEmdashOptions {
 	return {
 		// "primary-first", never "auto" — see the module doc above.
 		database: d1({ binding: "DB", session: "primary-first" }),
@@ -85,7 +99,13 @@ export function buildEmdashOptions(egress: InProcessEgressUrls = {}): StagingEmd
 		// two coexist; and the sidebar's `adminMode` is derived PER PLUGIN ID,
 		// which is why they must not be one descriptor (ADR-0014 Decision 7).
 		// ORDER IS LOAD-BEARING for the site-config test, which reads
-		// `plugins[0]` as the Block Kit descriptor.
-		plugins: [ottaPluginDescriptor({ egress }), ottaConsoleDescriptor()],
+		// `plugins[0]` as the Block Kit descriptor, so the email provider is
+		// APPENDED. EmDash auto-selects it as the only active provider; it reads
+		// the `send_email` binding `EMAIL` (wrangler.jsonc) at send time.
+		plugins: [
+			ottaPluginDescriptor({ egress }),
+			ottaConsoleDescriptor(),
+			...(emailFrom === undefined ? [] : [cloudflareEmail({ from: emailFrom, binding: "EMAIL" })]),
+		],
 	};
 }
