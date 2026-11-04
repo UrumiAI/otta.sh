@@ -1475,6 +1475,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			enabled: policy.enabled,
 			maxOpenPerBuyer: policy.maxOpenPerBuyer,
 			maxOpenPerClient: policy.maxOpenPerClient,
+			maxUnitsPerOrder: policy.maxUnitsPerOrder,
 			...(clientKey !== undefined ? { clientKey: clientKey.trim() } : {}),
 		};
 	}

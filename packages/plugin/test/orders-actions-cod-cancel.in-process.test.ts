@@ -34,6 +34,7 @@ beforeEach(async () => {
 				enabled: true,
 				maxOpenPerBuyer: 0,
 				maxOpenPerClient: 0,
+				maxUnitsPerOrder: 0,
 			}),
 		});
 	} else await harness.reset();

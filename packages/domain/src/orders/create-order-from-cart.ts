@@ -136,13 +136,17 @@ export interface CreateOrderCommand {
 	 *  - `clientKey` — the opaque key of the client's network, which the caller
 	 *    supplies only once its per-IP write limit has run; required;
 	 *  - `maxOpenPerBuyer` / `maxOpenPerClient` — caps on OPEN offline orders (0 or
-	 *    absent ⇒ no cap).
+	 *    absent ⇒ no cap);
+	 *  - `maxUnitsPerOrder` — a cap on the physical units ONE offline order may hold
+	 *    (0 or absent ⇒ no cap): an unpaid order holds its stock for the whole
+	 *    auto-cancel window, and a line may hold up to `CART_LINE_MAX_QTY`.
 	 */
 	offline?: {
 		enabled: boolean;
 		clientKey?: string;
 		maxOpenPerBuyer?: number;
 		maxOpenPerClient?: number;
+		maxUnitsPerOrder?: number;
 	};
 }
 
@@ -943,7 +947,8 @@ async function rememberIntent(
  * ADR-0044: the offline method's refusals for a FRESH placement, in order — not
  * offered (the toggle, or no client key: the caller could not attest its per-IP
  * write limit), a cart with nothing to deliver, a delivery address without a phone
- * number, and the caps on open offline orders. `null` ⇒ place it.
+ * number, the cap on one order's units, and the caps on open offline orders.
+ * `null` ⇒ place it.
  */
 async function offlineRefusal(
 	deps: CreateOrderDeps,
@@ -957,6 +962,12 @@ async function offlineRefusal(
 	if (!lines.some((line) => line.fulfillmentKind === "physical")) return "OFFLINE_NEEDS_PHYSICAL";
 	if (shippingAddress === null) return "MISSING_SHIPPING_ADDRESS";
 	if ((shippingAddress.phone ?? "").trim().length === 0) return "SHIPPING_PHONE_REQUIRED";
+	const maxUnits = offline.maxUnitsPerOrder ?? 0;
+	if (maxUnits > 0) {
+		let units = 0;
+		for (const line of lines) if (line.fulfillmentKind === "physical") units += line.quantity;
+		if (units > maxUnits) return "OFFLINE_ORDER_LIMIT";
+	}
 	const perBuyer = offline.maxOpenPerBuyer ?? 0;
 	const perClient = offline.maxOpenPerClient ?? 0;
 	if (perBuyer > 0 || perClient > 0) {

@@ -16,6 +16,11 @@
  *    COD orders per buyer email (default 3) and per client network (default 20 —
  *    carrier and office NAT put many honest buyers behind one address, ADR-0044
  *    §7). 0..100; 0 means no cap.
+ *  - `settings:codMaxUnitsPerOrder` — the most physical units ONE COD order may
+ *    hold (default 10): an unpaid order holds its stock for the whole auto-cancel
+ *    window, and one cart line may hold thousands, so without it one anonymous
+ *    order could take a SKU's whole stock off sale for two weeks. 0..1000; 0 means
+ *    no cap.
  *
  * WHERE THE TOGGLE IS ENFORCED. The domain checks it, inside
  * `createOrderFromCart`, for a FRESH placement only — so a same-key replay of an
@@ -40,6 +45,7 @@ export const COD_INSTRUCTIONS_MAX = 500;
 export const COD_AUTO_CANCEL_DAYS_KEY = "settings:codAutoCancelDays";
 export const COD_MAX_OPEN_PER_BUYER_KEY = "settings:codMaxOpenPerBuyer";
 export const COD_MAX_OPEN_PER_CLIENT_KEY = "settings:codMaxOpenPerClient";
+export const COD_MAX_UNITS_PER_ORDER_KEY = "settings:codMaxUnitsPerOrder";
 
 /** One whole-number COD setting: its key, its bounds and its default. */
 export interface CodNumberSetting {
@@ -77,11 +83,20 @@ export const COD_MAX_OPEN_PER_CLIENT: CodNumberSetting = {
 	// ADR-0044 §7 (round 2): NAT puts many buyers behind one address.
 	fallback: 20,
 };
-/** The three, in the order the Settings form shows them. */
+export const COD_MAX_UNITS_PER_ORDER: CodNumberSetting = {
+	key: COD_MAX_UNITS_PER_ORDER_KEY,
+	field: "codMaxUnitsPerOrder",
+	label: "Most items in one order",
+	min: 0,
+	max: 1000,
+	fallback: 10,
+};
+/** The four, in the order the Settings form shows them. */
 export const COD_NUMBER_SETTINGS: readonly CodNumberSetting[] = [
 	COD_AUTO_CANCEL_DAYS,
 	COD_MAX_OPEN_PER_BUYER,
 	COD_MAX_OPEN_PER_CLIENT,
+	COD_MAX_UNITS_PER_ORDER,
 ];
 
 export type CodNumberValidation = { ok: true; value: number } | { ok: false; message: string };
@@ -131,6 +146,8 @@ export interface OfflinePolicy {
 	maxOpenPerBuyer: number;
 	/** 0 ⇒ no cap. */
 	maxOpenPerClient: number;
+	/** The most physical units one COD order may hold. 0 ⇒ no cap. */
+	maxUnitsPerOrder: number;
 }
 
 /** COD off: what any failed read means. */
@@ -138,6 +155,7 @@ export const OFFLINE_POLICY_OFF: OfflinePolicy = {
 	enabled: false,
 	maxOpenPerBuyer: COD_MAX_OPEN_PER_BUYER.fallback,
 	maxOpenPerClient: COD_MAX_OPEN_PER_CLIENT.fallback,
+	maxUnitsPerOrder: COD_MAX_UNITS_PER_ORDER.fallback,
 };
 
 /** Log a failed COD read, once per failure, naming what it falls back to. */
@@ -149,18 +167,19 @@ export function logCodReadFailure(where: string, err: unknown): void {
 }
 
 /**
- * The toggle and both caps, for a COD placement — FAIL-SOFT: a kv failure is COD
- * off (logged), never a thrown checkout. Three kv reads, made only when the buyer
- * chose cash on delivery.
+ * The toggle and the three caps, for a COD placement — FAIL-SOFT: a kv failure is
+ * COD off (logged), never a thrown checkout. Four kv reads, made only when the
+ * buyer chose cash on delivery.
  */
 export async function readCodCheckoutPolicy(ctx: PluginContext): Promise<OfflinePolicy> {
 	try {
-		const [enabled, maxOpenPerBuyer, maxOpenPerClient] = await Promise.all([
+		const [enabled, maxOpenPerBuyer, maxOpenPerClient, maxUnitsPerOrder] = await Promise.all([
 			readCodEnabled(ctx),
 			readCodNumber(ctx, COD_MAX_OPEN_PER_BUYER),
 			readCodNumber(ctx, COD_MAX_OPEN_PER_CLIENT),
+			readCodNumber(ctx, COD_MAX_UNITS_PER_ORDER),
 		]);
-		return { enabled, maxOpenPerBuyer, maxOpenPerClient };
+		return { enabled, maxOpenPerBuyer, maxOpenPerClient, maxUnitsPerOrder };
 	} catch (err) {
 		logCodReadFailure("checkout", err);
 		return OFFLINE_POLICY_OFF;

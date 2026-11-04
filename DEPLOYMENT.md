@@ -882,10 +882,10 @@ with none of the Stripe values above.
 2. Switch on **Offer cash on delivery at checkout**. Optionally, add instructions for buyers, up to
    500 characters, for example "Please have the exact amount ready." The checkout shows them
    under the method.
-3. Review the auto-cancel window and the two caps (below), then click **Save cash on delivery**.
+3. Review the auto-cancel window and the three caps (below), then click **Save cash on delivery**.
    It is stored as plain plugin kv: `settings:codEnabled` (only a saved `true` turns it on),
-   `settings:codInstructions`, `settings:codAutoCancelDays`, `settings:codMaxOpenPerBuyer` and
-   `settings:codMaxOpenPerClient`.
+   `settings:codInstructions`, `settings:codAutoCancelDays`, `settings:codMaxOpenPerBuyer`,
+   `settings:codMaxOpenPerClient` and `settings:codMaxUnitsPerOrder`.
 
 **The order's life.** A cash-on-delivery order has two states of its own. Neither is `pending`,
 neither counts as revenue, and neither expires at the checkout hold:
@@ -925,7 +925,9 @@ neither counts as revenue, and neither expires at the checkout hold:
   (`settings:codMaxOpenPerClient`): carrier and office NAT put many honest buyers behind one
   address. A store behind an extra proxy in front of Cloudflare sees every buyer at the proxy's
   address, so all its buyers share one network and the per-network cap trips at 20: raise it or
-  set it to 0 there.
+  set it to 0 there. One order may hold at most **10** physical items
+  (`settings:codMaxUnitsPerOrder`, 0 to 1000), so one unpaid order cannot take a product's whole
+  stock off sale for the auto-cancel window.
   "Open" means `awaiting_payment` or `shipped_awaiting_payment`; `0` means no cap. Over a cap,
   checkout refuses the order and asks the buyer to pay another way. Two orders placed at the same
   instant can both pass; the per-IP write limit bounds that.

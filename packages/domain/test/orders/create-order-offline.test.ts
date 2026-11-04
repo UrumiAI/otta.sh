@@ -146,6 +146,30 @@ describe("createOrderFromCart — an offline (cash-on-delivery) checkout", () =>
 		expect(await place(cartId)).toEqual({ ok: false, reason: "OFFLINE_NEEDS_PHYSICAL" });
 	});
 
+	test("the unit cap: an order holding more physical units than the cap is refused, minting nothing; 0 means no cap", async () => {
+		// One anonymous order must not hold a SKU's whole stock for the auto-cancel
+		// window: the cap is on UNITS (a line may hold thousands), not just orders.
+		const big = await h.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 11, kind: "physical" },
+			{ sku: "DIG-1", productId: "d1", qty: 5, kind: "digital" },
+		]);
+		expect(await place(big, { offline: { ...ON, maxUnitsPerOrder: 10 } })).toEqual({
+			ok: false,
+			reason: "OFFLINE_ORDER_LIMIT",
+		});
+		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${big}`))).toBeNull();
+		// At the cap (digital lines hold no stock and are not counted): placed.
+		const atCap = await h.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 10, kind: "physical" },
+			{ sku: "DIG-1", productId: "d1", qty: 5, kind: "digital" },
+		]);
+		expect((await place(atCap, { offline: { ...ON, maxUnitsPerOrder: 10 } })).ok).toBe(true);
+		const uncapped = await h.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 25, kind: "physical" },
+		]);
+		expect((await place(uncapped, { offline: { ...ON, maxUnitsPerOrder: 0 } })).ok).toBe(true);
+	});
+
 	test("the caps: a buyer, or a network, with the maximum open cod orders is refused", async () => {
 		for (let i = 0; i < 2; i++) {
 			expect(

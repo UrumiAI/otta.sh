@@ -182,6 +182,11 @@ orders on the next tick. The Settings copy says so.
      - per client network (`settings:codMaxOpenPerClient`), default **20**, because carrier and
        office NAT put many honest buyers behind one address, common in COD's main markets.
      0 means no cap.
+   - A third cap is on one order's size: the physical units a single COD order may hold
+     (`settings:codMaxUnitsPerOrder`), default **10**, 0 to 1000, 0 means no cap. The open-order
+     caps count orders, and one cart line may hold up to `CART_LINE_MAX_QTY` (10,000) units, so
+     without it one anonymous order could hold a SKU's whole stock for the auto-cancel window.
+     It is checked first, from the cart's lines, and refused `OFFLINE_ORDER_LIMIT` like the others.
    - The domain checks both before minting anything, through
      `OrderStore.countOpenOfflineOrders`. The buyer count uses the indexed `buyerRefLower`.
    - The order stores `offlineClientKey`, a new indexed field: an HMAC-SHA-256 of the network
