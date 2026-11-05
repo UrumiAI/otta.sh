@@ -35,7 +35,9 @@
  *    that wrangler reads from this machine. `test/build-path-leak.test.ts` scans
  *    all of `dist/`;
  *  - the rewrite only shortens strings inside a line, so line numbers in a stack
- *    trace still match the chunk. Some dependencies' chunks do come with source
+ *    trace still match the chunk. Columns on a rewritten line shift, though, so a
+ *    scrubbed chunk's source map has slightly wrong columns on those lines (the
+ *    lines still match). Some dependencies' chunks do come with source
  *    maps (found by `scripts/pack-build.mjs`); their `sources` are rewritten too.
  *
  * ANCHORED, not a bare substring replace. In a real build the root only ever
@@ -91,6 +93,10 @@
  *    matter. A client hit deletes the client output too. Astro's inlined env
  *    object is checked by key as well ({@link findInlinedSecretsInDir}), which
  *    also covers a value too short to search for.
+ *    A variable whose NAME is not secret-shaped but whose value only LOOKS random
+ *    ({@link isRandomLookingEnvValue}) is searched for too, but a hit only WARNS
+ *    (a release id or a build hash is not a secret). A secret-shaped name, or a
+ *    value with URL credentials ({@link hasUrlCredentials}), fails the build.
  */
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -193,11 +199,12 @@ const LISTED_SECRET_ENV_KEYS: ReadonlySet<string> = new Set(BUILD_SECRET_ENV_KEY
 
 /**
  * A secret-shaped name: an `_`-delimited word such as `SECRET`, `TOKEN`,
- * `PASSWORD` or `SALT`, or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`
+ * `PASSWORD`, `SALT`, `PAT` (a whole word: not `PATH`) or `WEBHOOK` (a Slack
+ * webhook URL is a secret although the name ends in `_URL`), or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`
  * (the underscore optional: `SENDGRID_APIKEY`).
  */
 const SECRET_SHAPED_ENV_KEY =
-	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_?KEY)(?:_|$)/i;
+	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|WEBHOOKS?|PAT|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_?KEY)(?:_|$)/i;
 
 /** A name that ENDS in a bare `KEY`, `PASS` or `DSN` (`LICENSE_KEY`, `SMTP_PASS`, `SENTRY_DSN`). */
 const SECRET_SUFFIX_ENV_KEY = /(?:^|_)(?:KEY|PASS|DSN)$/i;
@@ -228,14 +235,73 @@ export function buildSecretEnvValues(env: Record<string, string | undefined>): M
 
 /**
  * A name that says what the value is, none of it a secret: a commit, a hash, a
- * version, a URL or a path. CI sets many of these as long hex strings.
+ * version, a release, a build, a URL or a path. CI sets many of these as long
+ * hex strings.
  */
 const PLAIN_VALUE_ENV_KEY =
-	/(?:^|_)(?:SHA\d*|COMMIT|HASH|REV|REVISION|VERSION|ID|UUID|URL|URI|PATH|DIR|HOME|HOST|BRANCH|REF)(?:_|$)/i;
+	/(?:^|_)(?:SHA\d*|COMMIT|HASH|REV|REVISION|VERSION|RELEASE|BUILD|ID|UUID|URL|URI|PATH|DIR|HOME|HOST|BRANCH|REF)(?:_|$)/i;
+
+/**
+ * The variables GitHub Actions' runner sets that hold no secret (its documented
+ * default environment variables). `GITHUB_TOKEN` and the like are not here, and
+ * neither is a bare `GITHUB_`/`RUNNER_` prefix: `GITHUB_PAT` is a user's own.
+ */
+const GITHUB_RUNNER_ENV_KEYS: ReadonlySet<string> = new Set([
+	"GITHUB_ACTION",
+	"GITHUB_ACTION_PATH",
+	"GITHUB_ACTION_REPOSITORY",
+	"GITHUB_ACTIONS",
+	"GITHUB_ACTOR",
+	"GITHUB_ACTOR_ID",
+	"GITHUB_API_URL",
+	"GITHUB_BASE_REF",
+	"GITHUB_ENV",
+	"GITHUB_EVENT_NAME",
+	"GITHUB_EVENT_PATH",
+	"GITHUB_GRAPHQL_URL",
+	"GITHUB_HEAD_REF",
+	"GITHUB_JOB",
+	"GITHUB_OUTPUT",
+	"GITHUB_PATH",
+	"GITHUB_REF",
+	"GITHUB_REF_NAME",
+	"GITHUB_REF_PROTECTED",
+	"GITHUB_REF_TYPE",
+	"GITHUB_REPOSITORY",
+	"GITHUB_REPOSITORY_ID",
+	"GITHUB_REPOSITORY_OWNER",
+	"GITHUB_REPOSITORY_OWNER_ID",
+	"GITHUB_RETENTION_DAYS",
+	"GITHUB_RUN_ATTEMPT",
+	"GITHUB_RUN_ID",
+	"GITHUB_RUN_NUMBER",
+	"GITHUB_SERVER_URL",
+	"GITHUB_SHA",
+	"GITHUB_STATE",
+	"GITHUB_STEP_SUMMARY",
+	"GITHUB_TRIGGERING_ACTOR",
+	"GITHUB_WORKFLOW",
+	"GITHUB_WORKFLOW_REF",
+	"GITHUB_WORKFLOW_SHA",
+	"GITHUB_WORKSPACE",
+	"RUNNER_ARCH",
+	"RUNNER_DEBUG",
+	"RUNNER_ENVIRONMENT",
+	"RUNNER_NAME",
+	"RUNNER_OS",
+	"RUNNER_TEMP",
+	"RUNNER_TOOL_CACHE",
+	"RUNNER_TRACKING_ID",
+]);
 
 /** Values this long, with this much entropy, look generated (a key, a token, a random secret). */
 export const MIN_RANDOM_VALUE_LENGTH = 24;
 export const MIN_RANDOM_VALUE_ENTROPY = 3.5;
+/**
+ * A random hex string has at most 4 bits per character, and a 24 to 40
+ * character one often lands under 3.5, so an all-hex value uses this lower bar.
+ */
+export const MIN_RANDOM_HEX_ENTROPY = 3.0;
 
 /** Shannon entropy of `value`, in bits per character. */
 function entropyOf(value: string): number {
@@ -250,17 +316,28 @@ function entropyOf(value: string): number {
 }
 
 /**
+ * Whether `value` carries credentials in a URL: `scheme://user:pass@host`, or
+ * `scheme://<long token>@host` (a token as the user). Such a value is a secret
+ * whatever the variable is called. A short user alone (`ssh://git@host`) is not.
+ */
+export function hasUrlCredentials(value: string): boolean {
+	return /[a-z][a-z0-9+.-]*:\/\/(?:[^\s/@:]+:[^\s/@]+|[^\s/@:]{20,})@/i.test(value);
+}
+
+/**
  * Whether the variable `key` holds a value that looks generated, whatever the
  * name: 24+ characters from the token alphabet, both letters and digits, high
- * entropy. Paths, URLs (public by design), words, anything Astro or the
- * allow-list already treats as known, and names that say "commit", "version" and
- * the like are not.
+ * entropy (a lower bar for all-hex). Paths, URLs (public by design), words,
+ * anything Astro or the allow-list already treats as known, keys that are
+ * public by design (`PUBLIC_*`, `*_SITE_KEY`, `*_PUBLISHABLE_KEY`,
+ * `*_PUBLIC_KEY`), GitHub's runner variables and names that say "commit",
+ * "version", "release" and the like are not.
  */
 export function isRandomLookingEnvValue(key: string, value: string): boolean {
 	if (key.startsWith("PUBLIC_") || key.startsWith("npm_") || key.startsWith("WORKERS_CI")) {
 		return false;
 	}
-	if (key.startsWith("GITHUB_") || key.startsWith("RUNNER_")) return false;
+	if (PUBLIC_KEY_SUFFIX.test(key) || GITHUB_RUNNER_ENV_KEYS.has(key)) return false;
 	if (ALLOWED_ENV_KEYS.has(key) || WHOLE_ENV_KEYS.has(key) || PLAIN_VALUE_ENV_KEY.test(key)) {
 		return false;
 	}
@@ -268,25 +345,39 @@ export function isRandomLookingEnvValue(key: string, value: string): boolean {
 	if (/^(?:[a-z][a-z0-9+.-]*:\/\/|\/|\.{1,2}\/|~|[A-Za-z]:\\)/.test(value)) return false;
 	if (!/^[A-Za-z0-9+/_=.~-]+$/.test(value)) return false;
 	if (!/[A-Za-z]/.test(value) || !/\d/.test(value)) return false;
-	return entropyOf(value) >= MIN_RANDOM_VALUE_ENTROPY;
+	const floor = /^[0-9a-fA-F]+$/.test(value) ? MIN_RANDOM_HEX_ENTROPY : MIN_RANDOM_VALUE_ENTROPY;
+	return entropyOf(value) >= floor;
 }
 
 /**
- * What the bundle is searched for: the secrets in `env`
- * ({@link buildSecretEnvValues}) plus any other variable with a random-looking
- * value ({@link isRandomLookingEnvValue}). Only the secrets are dropped from the
- * environment; the rest are searched for and never changed.
+ * What the bundle is searched for, in two sets. `secrets` FAIL the build when
+ * found: the variables with a secret-shaped name ({@link buildSecretEnvValues})
+ * and any variable whose value carries URL credentials
+ * ({@link hasUrlCredentials}). `random` only WARN: any other variable with a
+ * random-looking value ({@link isRandomLookingEnvValue}), whose name does not say
+ * it is a secret. Only the name-matched secrets are dropped from the
+ * environment; nothing else is changed.
  */
+export function searchedEnvValueSets(env: Record<string, string | undefined>): {
+	secrets: Map<string, string>;
+	random: Map<string, string>;
+} {
+	const secrets = buildSecretEnvValues(env);
+	const random = new Map<string, string>();
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined || secrets.has(key)) continue;
+		if (hasUrlCredentials(value)) secrets.set(key, value);
+		else if (isRandomLookingEnvValue(key, value)) random.set(key, value);
+	}
+	return { secrets, random };
+}
+
+/** Both sets of {@link searchedEnvValueSets} as one map, name to value. */
 export function buildSearchedEnvValues(
 	env: Record<string, string | undefined>,
 ): Map<string, string> {
-	const values = buildSecretEnvValues(env);
-	for (const [key, value] of Object.entries(env)) {
-		if (value !== undefined && !values.has(key) && isRandomLookingEnvValue(key, value)) {
-			values.set(key, value);
-		}
-	}
-	return values;
+	const { secrets, random } = searchedEnvValueSets(env);
+	return new Map([...random, ...secrets]);
 }
 
 /** Removes every secret ({@link isBuildSecretEnvKey}) from `env` in place; returns their names. */
@@ -490,6 +581,12 @@ const viteLoadEnv: LoadEnv = (
 /** The name a leaked `PATH` VALUE is reported under: the second layer behind the key check. */
 export const WHOLE_ENV_MARKER = "PATH (build environment variables were inlined into the bundle)";
 
+const RANDOM_HELP =
+	"Nothing was deleted and the build continues. If the variable is a secret, remove it from the " +
+	"build environment and set it as a Worker secret (`wrangler secret put`). If it is not " +
+	"(a release id, a build hash), rename it `PUBLIC_…`: that marks it public and silences this " +
+	"warning.";
+
 const LEAK_HELP =
 	"Astro writes a variable from the build's env or a .env file into the bundle when its name " +
 	"appears in a module that mentions `import.meta.env` other than as `import.meta.env.KEY`, or " +
@@ -498,7 +595,8 @@ const LEAK_HELP =
 	"and build again; for `astro dev`, keep local secrets in the project's .dev.vars, which Astro " +
 	"never reads. If it is a shell variable no code reads as configuration (HOME, PATH, npm_…), " +
 	"some module in the bundle spells the bare `import.meta.env` and the build environment was " +
-	"inlined wholesale: find that module (the file is named above). See " +
+	"inlined wholesale: find that module (the file is named above). A variable of any name whose " +
+	"value holds URL credentials (`scheme://user:pass@host`) counts as a secret too. See " +
 	"https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md#3-secrets--tokens-checklist.";
 
 function escapeRegExp(text: string): string {
@@ -552,6 +650,8 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 	// The secrets dropped from the shell, kept (in memory only) to search the
 	// bundle for. `undefined` outside a build, where nothing is checked.
 	let droppedSecrets: Map<string, string> | undefined;
+	// Variables whose value only looks random: a hit warns, never fails.
+	let randomValues = new Map<string, string>();
 	return {
 		name: BUILD_PATH_SCRUB_INTEGRATION,
 		hooks: {
@@ -559,7 +659,9 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 				if (rootOption === undefined) root = workspaceRoot(fileURLToPath(config.root));
 				if (command !== "build") return;
 				dropShellPathEnv(process.env);
-				droppedSecrets = buildSearchedEnvValues(process.env);
+				const searched = searchedEnvValueSets(process.env);
+				droppedSecrets = searched.secrets;
+				randomValues = searched.random;
 				const dropped = dropBuildSecretEnv(process.env);
 				if (dropped.length > 0) {
 					logger.warn(
@@ -593,9 +695,12 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 				rmSync(path.join(server, ".dev.vars"), { force: true });
 				if (droppedSecrets !== undefined) {
 					const secrets = new Map(droppedSecrets);
+					const random = new Map(randomValues);
 					if (envDir !== undefined) {
-						for (const [key, value] of buildSearchedEnvValues(viteLoadEnv(mode, envDir, ""))) {
-							secrets.set(key, value);
+						const fromFiles = searchedEnvValueSets(viteLoadEnv(mode, envDir, ""));
+						for (const [key, value] of fromFiles.secrets) secrets.set(key, value);
+						for (const [key, value] of fromFiles.random) {
+							if (!secrets.has(key)) random.set(key, value);
 						}
 					}
 					// Not a secret, but no module reads PATH: its VALUE in the bundle means
@@ -629,6 +734,23 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 							? []
 							: findLeakedSecretValuesInDir(client, secrets).map((leak) => `client/${leak}`);
 					const leaks = [...serverLeaks, ...clientLeaks];
+					// A random-looking value under a name that is not secret-shaped only warns:
+					// a release id or a build hash is not a secret. Names only, never a value.
+					const randomHits = [
+						...findLeakedSecretValuesInDir(server, random),
+						...(client === undefined
+							? []
+							: findLeakedSecretValuesInDir(client, random).map((leak) => `client/${leak}`)),
+					].filter((hit) => !leaks.includes(hit));
+					if (randomHits.length > 0) {
+						logger.warn(
+							`a random-looking value was found in the build output (values not shown):\n  ` +
+								`${randomHits
+									.toSorted()
+									.map((hit) => `${hit} (random-looking value)`)
+									.join("\n  ")}\n${RANDOM_HELP}`,
+						);
+					}
 					if (leaks.length > 0) {
 						// Without the server output there is nothing for `wrangler deploy` to
 						// ship. A client hit is public HTML or JS, so that output goes as well.
