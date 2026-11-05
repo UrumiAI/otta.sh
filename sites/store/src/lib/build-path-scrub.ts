@@ -30,12 +30,13 @@
  *  - build only: `astro dev` never fires `astro:build:done`, so dev keeps real
  *    paths for error overlays, the dev toolbar and editor links;
  *  - after prerendering, which reads files by these paths on this machine;
- *  - only `.mjs`/`.js` under `build.server` (the worker). The client bundle
+ *  - only `.mjs`/`.js` (and their `.map`s) under `build.server` (the worker). The client bundle
  *    carries none of these paths, and `wrangler.json` is local deploy metadata
  *    that wrangler reads from this machine. `test/build-path-leak.test.ts` scans
  *    all of `dist/`;
- *  - the site emits no source maps. The rewrite only shortens strings inside a
- *    line, so line numbers in a stack trace still match the chunk.
+ *  - the rewrite only shortens strings inside a line, so line numbers in a stack
+ *    trace still match the chunk. Some dependencies' chunks do come with source
+ *    maps (found by `scripts/pack-build.mjs`); their `sources` are rewritten too.
  *
  * ANCHORED, not a bare substring replace. In a real build the root only ever
  * starts a string literal (`"<root>/…"`, 309 times) or a file URL
@@ -192,10 +193,11 @@ const LISTED_SECRET_ENV_KEYS: ReadonlySet<string> = new Set(BUILD_SECRET_ENV_KEY
 
 /**
  * A secret-shaped name: an `_`-delimited word such as `SECRET`, `TOKEN`,
- * `PASSWORD` or `SALT`, or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`.
+ * `PASSWORD` or `SALT`, or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`
+ * (the underscore optional: `SENDGRID_APIKEY`).
  */
 const SECRET_SHAPED_ENV_KEY =
-	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_KEY)(?:_|$)/i;
+	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_?KEY)(?:_|$)/i;
 
 /** A name that ENDS in a bare `KEY`, `PASS` or `DSN` (`LICENSE_KEY`, `SMTP_PASS`, `SENTRY_DSN`). */
 const SECRET_SUFFIX_ENV_KEY = /(?:^|_)(?:KEY|PASS|DSN)$/i;
@@ -222,6 +224,69 @@ export function buildSecretEnvValues(env: Record<string, string | undefined>): M
 		if (value !== undefined && isBuildSecretEnvKey(key)) secrets.set(key, value);
 	}
 	return secrets;
+}
+
+/**
+ * A name that says what the value is, none of it a secret: a commit, a hash, a
+ * version, a URL or a path. CI sets many of these as long hex strings.
+ */
+const PLAIN_VALUE_ENV_KEY =
+	/(?:^|_)(?:SHA\d*|COMMIT|HASH|REV|REVISION|VERSION|ID|UUID|URL|URI|PATH|DIR|HOME|HOST|BRANCH|REF)(?:_|$)/i;
+
+/** Values this long, with this much entropy, look generated (a key, a token, a random secret). */
+export const MIN_RANDOM_VALUE_LENGTH = 24;
+export const MIN_RANDOM_VALUE_ENTROPY = 3.5;
+
+/** Shannon entropy of `value`, in bits per character. */
+function entropyOf(value: string): number {
+	const counts = new Map<string, number>();
+	for (const char of value) counts.set(char, (counts.get(char) ?? 0) + 1);
+	let bits = 0;
+	for (const count of counts.values()) {
+		const p = count / value.length;
+		bits -= p * Math.log2(p);
+	}
+	return bits;
+}
+
+/**
+ * Whether the variable `key` holds a value that looks generated, whatever the
+ * name: 24+ characters from the token alphabet, both letters and digits, high
+ * entropy. Paths, URLs (public by design), words, anything Astro or the
+ * allow-list already treats as known, and names that say "commit", "version" and
+ * the like are not.
+ */
+export function isRandomLookingEnvValue(key: string, value: string): boolean {
+	if (key.startsWith("PUBLIC_") || key.startsWith("npm_") || key.startsWith("WORKERS_CI")) {
+		return false;
+	}
+	if (key.startsWith("GITHUB_") || key.startsWith("RUNNER_")) return false;
+	if (ALLOWED_ENV_KEYS.has(key) || WHOLE_ENV_KEYS.has(key) || PLAIN_VALUE_ENV_KEY.test(key)) {
+		return false;
+	}
+	if (value.length < MIN_RANDOM_VALUE_LENGTH) return false;
+	if (/^(?:[a-z][a-z0-9+.-]*:\/\/|\/|\.{1,2}\/|~|[A-Za-z]:\\)/.test(value)) return false;
+	if (!/^[A-Za-z0-9+/_=.~-]+$/.test(value)) return false;
+	if (!/[A-Za-z]/.test(value) || !/\d/.test(value)) return false;
+	return entropyOf(value) >= MIN_RANDOM_VALUE_ENTROPY;
+}
+
+/**
+ * What the bundle is searched for: the secrets in `env`
+ * ({@link buildSecretEnvValues}) plus any other variable with a random-looking
+ * value ({@link isRandomLookingEnvValue}). Only the secrets are dropped from the
+ * environment; the rest are searched for and never changed.
+ */
+export function buildSearchedEnvValues(
+	env: Record<string, string | undefined>,
+): Map<string, string> {
+	const values = buildSecretEnvValues(env);
+	for (const [key, value] of Object.entries(env)) {
+		if (value !== undefined && !values.has(key) && isRandomLookingEnvValue(key, value)) {
+			values.set(key, value);
+		}
+	}
+	return values;
 }
 
 /** Removes every secret ({@link isBuildSecretEnvKey}) from `env` in place; returns their names. */
@@ -261,7 +326,7 @@ export function inlinedEnvKeys(code: string): string[] {
 export function findInlinedSecretsInDir(dir: string): string[] {
 	const found: string[] = [];
 	for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
-		if (!entry.isFile() || !/\.m?js$/.test(entry.name)) continue;
+		if (!entry.isFile() || !/\.m?js(\.map)?$/.test(entry.name)) continue;
 		const file = path.join(entry.parentPath, entry.name);
 		for (const key of inlinedEnvKeys(readFileSync(file, "utf8"))) {
 			if (isBuildSecretEnvKey(key)) found.push(`${path.relative(dir, file)}: ${key}`);
@@ -341,7 +406,7 @@ export function inlinedEnvKeysByClass(dir: string): Record<InlinedEnvKeyClass, s
 		unknown: [],
 	};
 	for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
-		if (!entry.isFile() || !/\.m?js$/.test(entry.name)) continue;
+		if (!entry.isFile() || !/\.m?js(\.map)?$/.test(entry.name)) continue;
 		const file = path.join(entry.parentPath, entry.name);
 		for (const key of inlinedEnvKeys(readFileSync(file, "utf8"))) {
 			found[classifyInlinedEnvKey(key)].push(`${path.relative(dir, file)}: ${key}`);
@@ -458,11 +523,15 @@ export function scrubBuildPaths(code: string, root: string): string {
 	);
 }
 
-/** Rewrites every `.mjs`/`.js` file under `dir` in place; returns how many changed. */
+/**
+ * Rewrites every `.mjs`/`.js` file under `dir`, and every `.map` next to one, in place;
+ * returns how many changed. A map names its sources as `"<root>/…"` strings, the same
+ * anchored form the code uses.
+ */
 export async function scrubBuildPathsInDir(dir: string, root: string): Promise<number> {
 	let changed = 0;
 	for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
-		if (!entry.isFile() || !/\.m?js$/.test(entry.name)) continue;
+		if (!entry.isFile() || !/\.m?js(\.map)?$/.test(entry.name)) continue;
 		const file = path.join(entry.parentPath, entry.name);
 		const code = await readFile(file, "utf8");
 		const scrubbed = scrubBuildPaths(code, root);
@@ -490,7 +559,7 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 				if (rootOption === undefined) root = workspaceRoot(fileURLToPath(config.root));
 				if (command !== "build") return;
 				dropShellPathEnv(process.env);
-				droppedSecrets = buildSecretEnvValues(process.env);
+				droppedSecrets = buildSearchedEnvValues(process.env);
 				const dropped = dropBuildSecretEnv(process.env);
 				if (dropped.length > 0) {
 					logger.warn(
@@ -525,7 +594,7 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 				if (droppedSecrets !== undefined) {
 					const secrets = new Map(droppedSecrets);
 					if (envDir !== undefined) {
-						for (const [key, value] of buildSecretEnvValues(viteLoadEnv(mode, envDir, ""))) {
+						for (const [key, value] of buildSearchedEnvValues(viteLoadEnv(mode, envDir, ""))) {
 							secrets.set(key, value);
 						}
 					}

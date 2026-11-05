@@ -36,6 +36,7 @@ import {
 	BUILD_PATH_SCRUB_INTEGRATION,
 	BUILD_SECRET_ENV_KEYS,
 	buildPathScrub,
+	buildSearchedEnvValues,
 	dropBuildSecretEnv,
 	dropShellPathEnv,
 	findInlinedEnvKeysInDir,
@@ -45,6 +46,7 @@ import {
 	MIN_SEARCHED_SECRET_LENGTH,
 	inlinedEnvKeys,
 	isBuildSecretEnvKey,
+	isRandomLookingEnvValue,
 	SHELL_PATH_ENV_KEYS,
 	scrubBuildPaths,
 	scrubBuildPathsInDir,
@@ -438,6 +440,50 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 			expect(existsSync(path.join(server, "chunk.mjs"))).toBe(true);
 		}));
 
+	test("a secret with an unusual name (SENDGRID_APIKEY) fails the build by its value", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			writeFileSync(path.join(server, "chunk.mjs"), `const k = "${MARKER}";`);
+			process.env.SENDGRID_APIKEY = MARKER;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("chunk.mjs: SENDGRID_APIKEY");
+			expect(failure).not.toContain(MARKER);
+			expect(existsSync(server)).toBe(false);
+		}));
+
+	test("a long random-looking value fails the build whatever its variable is called", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			const value = "q8Zr3xK1mV7bT9wLpN2cD5fHs4JaE6yU";
+			writeFileSync(path.join(server, "chunk.mjs"), `const k = "${value}";`);
+			process.env.VENDOR_BLOB = value;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("chunk.mjs: VENDOR_BLOB");
+			expect(failure).not.toContain(value);
+		}));
+
+	test("long public-looking values (path, URL, commit, CI) in the bundle do not fail it", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			const sha = "0123456789abcdef0123456789abcdef01234567";
+			const url = "https://shop.example.com/some/long/public/path";
+			const dirPath = "/home/runner/work/otta/otta/node_modules/.bin";
+			writeFileSync(
+				path.join(server, "chunk.mjs"),
+				`const v = ${JSON.stringify([sha, url, dirPath])};`,
+			);
+			process.env.GIT_COMMIT_SHA = sha;
+			process.env.STORE_ORIGIN = url;
+			process.env.TOOLS_LOCATION = dirPath;
+			process.env.WORKERS_CI_COMMIT_SHA = sha;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toBeUndefined();
+			expect(existsSync(path.join(server, "chunk.mjs"))).toBe(true);
+		}));
+
 	test("a value in the CLIENT output (a prerendered page) fails the build and deletes both outputs", () =>
 		withTempDir(async (dir) => {
 			const server = path.join(dir, "dist", "server");
@@ -606,6 +652,23 @@ describe("scrubBuildPathsInDir", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test("rewrites the sources of a chunk's source map too", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "otta-scrub-"));
+		const root = "/home/builder/otta";
+		try {
+			writeFileSync(
+				path.join(dir, "admin_x.mjs.map"),
+				`{"version":3,"sources":["${root}/node_modules/emdash/dist/a.js"],"mappings":""}`,
+			);
+			expect(await scrubBuildPathsInDir(dir, root)).toBe(1);
+			expect(readFileSync(path.join(dir, "admin_x.mjs.map"), "utf8")).toBe(
+				`{"version":3,"sources":["/node_modules/emdash/dist/a.js"],"mappings":""}`,
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 /** Every file under `dir`, recursively. */
@@ -693,6 +756,9 @@ describe("isBuildSecretEnvKey", () => {
 		"PG_CONNECTION_STRING",
 		"POSTGRES_URL",
 		"PREVIEW_SECRET",
+		"SENDGRID_APIKEY",
+		"ACME_ACCESSKEY",
+		"PRIVATEKEY",
 	])("names %s a secret by its shape", (key) => {
 		expect(isBuildSecretEnvKey(key)).toBe(true);
 	});
@@ -716,6 +782,39 @@ describe("isBuildSecretEnvKey", () => {
 		"PASSTHROUGH",
 	])("leaves %s alone", (key) => {
 		expect(isBuildSecretEnvKey(key)).toBe(false);
+	});
+});
+
+describe("isRandomLookingEnvValue", () => {
+	const random = "q8Zr3xK1mV7bT9wLpN2cD5fHs4JaE6yU";
+
+	test("a long high-entropy value under any other name is searched for", () => {
+		expect(isRandomLookingEnvValue("VENDOR_BLOB", random)).toBe(true);
+		expect(isRandomLookingEnvValue("VENDOR_BLOB", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")).toBe(true);
+		const searched = buildSearchedEnvValues({
+			VENDOR_BLOB: random,
+			ACME_API_TOKEN: "x",
+			CI: "true",
+		});
+		expect([...searched.keys()].toSorted()).toEqual(["ACME_API_TOKEN", "VENDOR_BLOB"]);
+	});
+
+	test.each([
+		["SHORT", "abc123def456"],
+		["WORD", "production-environment-name-for-the-store"],
+		["WORDS", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"],
+		["LOCATION", "/usr/local/lib/node_modules/pnpm/bin/9"],
+		["ORIGIN", "https://shop.example.com/a1b2c3d4e5f6g7h8"],
+		["HOME_DIR", random],
+		["GIT_SHA", random],
+		["PUBLIC_BLOB", random],
+		["CI", random],
+		["WORKERS_CI_BRANCH", random],
+		["GITHUB_RUN", random],
+		["npm_config_cache", random],
+		["SPACED", "has spaces in it 1234567890 abcdef"],
+	])("leaves %s alone", (key, value) => {
+		expect(isRandomLookingEnvValue(key, value)).toBe(false);
 	});
 });
 
