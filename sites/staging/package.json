@@ -38,6 +38,7 @@
 		"kysely": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
+		"workerd": "catalog:",
 		"wrangler": "catalog:"
 	},
 	"engines": {

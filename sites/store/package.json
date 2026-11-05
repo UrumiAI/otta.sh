@@ -77,7 +77,7 @@
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
-		"workerd": "1.20260708.1",
+		"workerd": "catalog:",
 		"wrangler": "catalog:"
 	},
 	"peerDependencies": {
