@@ -101,11 +101,14 @@ Options considered:
    `npm install` with `ERESOLVE`. The template contract's message is never shown. So such a
    release is announced in its release notes, and the merchant follows UPGRADING.md and bumps
    the pins by hand. The template contract covers changes to the template's other files only.
-   *Not taken, possible follow-up:* floor peer ranges (`>=1.3.1`) plus a runtime check in
-   `otta()` that the resolved EmDash and Astro are versions this release supports. Dependabot
-   could then propose the bump and `otta()` would explain a mismatch, at the cost of letting
-   npm install untested combinations and moving the one-copy guarantee from npm to a build
-   check.
+   **The pins are also checked at build time.** npm's peer check is skipped by
+   `--legacy-peer-deps`, `--force` (which `ERESOLVE` itself suggests) and pnpm, so
+   `astro:config:setup` reads the EmDash, EmDash Cloudflare and Astro versions the project root
+   resolves and fails the build, naming expected and found, when they are not this release's
+   `peerDependencies` (2026-11-05, after review). The pins stay exact.
+   *Not taken, possible follow-up:* floor peer ranges (`>=1.3.1`), so Dependabot could propose
+   the bump and the build check would explain a mismatch, at the cost of letting npm install
+   untested combinations and moving the one-copy guarantee from npm to that check.
 6. **The template's wrangler config declares what the build actually deploys.** That includes
    `SESSION` (EmDash keeps signed-in users in the Astro session) and `IMAGES` (the
    `@astrojs/cloudflare` 14 default image service binds it). The adapter would add both to its
@@ -197,14 +200,27 @@ the button, and the template README tells the merchant how to release the lock.
 The Deploy to Cloudflare button goes into README.md only after all of these:
 
 1. `@urumi.ai/*` 0.2.0 is published to npm, and the template's `package-lock.json` is generated
-   and committed right after, before the template repository is made public.
+   and committed right after, before the template repository is made public. Once it is
+   public, the repository variable `OTTA_TEMPLATE_PUBLIC=true` turns on the `Pack build` job
+   (`scripts/pack-build.mjs`: the packed packages, installed with npm into a copy of the
+   template, and built), which is skipped until then.
 2. The links merchants follow resolve publicly: otta.sh is public, or `OTTA_UPGRADE_NOTES_URL`
    and the documentation URLs in the package's messages and README point somewhere public.
-3. A real Cloudflare account has run the button, and these are checked:
+   *2026-11-05:* otta.sh is public; `UPGRADING.md` resolves once this branch is on `main`.
+3. `@urumi.ai/otta-plugin@0.1.0` is deprecated on npm (`npm deprecate`, pointing at 0.2.0) in
+   the same session as the 0.2.0 publish. Its `dist` keeps a bare `import.meta.env`, so a site
+   that builds it inlines its build environment, secrets from `.env` included, into the Worker.
+   0.2.0 spells `import.meta.env.DEV` literally (`stripe-wiring.ts`), and the build guard fails a
+   bundle that carries a secret's value.
+4. A real Cloudflare account has run the button, and these are checked:
    - the button creates the D1, R2 and KV resources and rewrites the template's zero-ID
      placeholders (`wrangler.jsonc` keeps them until then);
    - the `IMAGES` and rate-limit bindings deploy and work on Workers Free;
-   - a new store's first boot (every migration plus the seed) fits Workers Free's CPU limit.
+   - a new store's first boot (every migration plus the seed) fits Workers Free's CPU limit,
+     and when one does not, the README's migration-lock release steps recover the store;
+   - what Dependabot does with a release that moves a peer pin (point 5 above): it holds the
+     update back, or opens a pull request whose build stops at `npm install`. Either way the
+     release notes are what the merchant sees, so they must say so.
 
 ## Consequences
 
