@@ -129,7 +129,15 @@ export function assertTemplateContract(given: unknown, version: string = package
 }
 
 /** The peers whose exact version this release is built and tested against. */
-const CHECKED_PEERS = ["emdash", "@emdash-cms/cloudflare", "astro"] as const;
+const CHECKED_PEERS = [
+	"emdash",
+	"@emdash-cms/cloudflare",
+	"astro",
+	"@astrojs/cloudflare",
+	"@astrojs/react",
+	"react",
+	"react-dom",
+] as const;
 
 /** `[major, minor, patch, hasPrerelease]` of a plain version, or undefined. */
 function parseVersion(version: string): [number, number, number, boolean] | undefined {
@@ -141,7 +149,10 @@ function parseVersion(version: string): [number, number, number, boolean] | unde
 /**
  * Whether `version` satisfies a peer pin written as `x.y.z` (exact), `~x.y.z`
  * or `^x.y.z`. Any other form (`workspace:*`, a range this release does not
- * write) is not checked and counts as satisfied.
+ * write) is not checked and counts as satisfied. A prerelease satisfies only an
+ * exact pin equal to it: npm's semver matches one against a range only when the
+ * range's own comparator is a prerelease of the same `x.y.z`, which none of the
+ * forms above is. `^0.0.z` means exactly `0.0.z`.
  */
 export function satisfiesPeerPin(version: string, pin: string): boolean {
 	const range = /^([~^]?)(\d+\.\d+\.\d+)$/.exec(pin.trim());
@@ -153,20 +164,47 @@ export function satisfiesPeerPin(version: string, pin: string): boolean {
 	if (found === undefined || floor === undefined) return false;
 	const [major, minor, patch, prerelease] = found;
 	const [fMajor, fMinor, fPatch] = floor;
-	// At or above the floor; a prerelease of the floor itself is below it.
-	const cmp = major - fMajor || minor - fMinor || patch - fPatch;
-	if (cmp < 0 || (cmp === 0 && prerelease)) return false;
+	if (prerelease) return false;
+	// Below the floor.
+	if ((major - fMajor || minor - fMinor || patch - fPatch) < 0) return false;
 	if (operator === "~") return major === fMajor && minor === fMinor;
-	return fMajor > 0 ? major === fMajor : major === 0 && minor === fMinor;
+	if (fMajor > 0) return major === fMajor;
+	if (fMinor > 0) return major === 0 && minor === fMinor;
+	return major === 0 && minor === 0 && patch === fPatch;
 }
 
-/** The version of `name` that `root` resolves: the nearest `node_modules/<name>` going up. */
+/** Thrown when a package's manifest exists but is not valid JSON. */
+class UnreadableManifestError extends Error {}
+
+/** The nearest `node_modules` directory at or above `root`, or undefined. */
+function nearestNodeModules(root: string): string | undefined {
+	let dir = root;
+	for (;;) {
+		const modules = path.join(dir, "node_modules");
+		if (existsSync(modules)) return modules;
+		const parent = path.dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+/**
+ * The version of `name` that `root` resolves: the nearest `node_modules/<name>`
+ * going up. Throws {@link UnreadableManifestError} for a manifest that does not parse.
+ */
 function installedVersion(root: string, name: string): string | undefined {
 	let dir = root;
 	for (;;) {
 		const manifest = path.join(dir, "node_modules", ...name.split("/"), "package.json");
 		if (existsSync(manifest)) {
-			const { version } = JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown };
+			let version: unknown;
+			try {
+				({ version } = JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown });
+			} catch {
+				throw new UnreadableManifestError(
+					`${name}: ${manifest} is not readable JSON (a damaged install)`,
+				);
+			}
 			return typeof version === "string" ? version : undefined;
 		}
 		const parent = path.dirname(dir);
@@ -195,21 +233,39 @@ export function assertPeerVersions(
 	pins: Record<string, string> = peerPins(),
 	version: string = packageVersion(),
 ): void {
+	if (nearestNodeModules(root) === undefined) {
+		throw new Error(
+			`${OTTA_INTEGRATION_NAME} ${version} could not find a node_modules directory at or above ${root}, ` +
+				`so it cannot check the peer versions it needs. The store needs a node_modules install ` +
+				`(npm install, as the template uses); Yarn Plug'n'Play has no node_modules and is not supported.`,
+		);
+	}
 	const problems: string[] = [];
 	for (const name of CHECKED_PEERS) {
 		const pin = pins[name];
 		if (pin === undefined) continue;
-		const found = installedVersion(root, name);
+		let found: string | undefined;
+		try {
+			found = installedVersion(root, name);
+		} catch (error) {
+			if (!(error instanceof UnreadableManifestError)) throw error;
+			problems.push(error.message);
+			continue;
+		}
 		if (found === undefined) problems.push(`${name}: expected ${pin}, found it not installed`);
 		else if (!satisfiesPeerPin(found, pin))
 			problems.push(`${name}: expected ${pin}, found ${found}`);
 	}
 	if (problems.length === 0) return;
 	throw new Error(
-		`${OTTA_INTEGRATION_NAME} ${version} needs these exact peer versions, and ${root} has others:\n` +
+		`${OTTA_INTEGRATION_NAME} ${version} needs these peer versions (an exact pin, or a ~ or ^ range ` +
+			`that excludes prereleases), and ${root} has others:\n` +
 			`  ${problems.join("\n  ")}\n` +
 			`Reinstall without --legacy-peer-deps or --force, so npm's peer check can resolve them ` +
-			`(or install the listed versions yourself), then build again.`,
+			`(with pnpm or Yarn, install the listed versions as the project's own dependencies; delete ` +
+			`node_modules and the lockfile entry if a manifest is damaged), then build again. A pnpm ` +
+			`layout that does not link these packages into the project's node_modules, and Yarn ` +
+			`Plug'n'Play, are not supported.`,
 	);
 }
 
@@ -749,7 +805,10 @@ export default function otta(options: OttaOptions): AstroIntegration {
 						if (readFileSync(target).equals(readFileSync(source))) continue;
 						throw new Error(
 							`${OTTA_INTEGRATION_NAME}: the build output already has /${file}, which the store ` +
-								`ships itself; it was left as it is. Rename or remove the other file.`,
+								`ships itself; it was left as it is. Rename or remove the other file. ` +
+								`The same error follows a build output that is not emptied between builds ` +
+								`(\`vite.build.emptyOutDir: false\`) across an otta-store upgrade, when the ` +
+								`store's file changed: empty \`dist/\` and build again.`,
 							{ cause: error },
 						);
 					}

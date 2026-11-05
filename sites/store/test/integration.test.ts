@@ -171,6 +171,22 @@ describe("the peer versions this release supports, checked at run time", () => {
 		expect(satisfiesPeerPin("1.0.0", "workspace:*")).toBe(true);
 	});
 
+	test("a prerelease never satisfies a ~ or ^ range, and only an equal exact pin", () => {
+		expect(satisfiesPeerPin("7.3.7-beta.1", "~7.3.6")).toBe(false);
+		expect(satisfiesPeerPin("7.4.0-beta.1", "^7.3.6")).toBe(false);
+		expect(satisfiesPeerPin("7.3.6-beta.1", "^7.3.6")).toBe(false);
+		expect(satisfiesPeerPin("7.3.7-beta.1", "7.3.7-beta.1")).toBe(true);
+		expect(satisfiesPeerPin("7.3.7-beta.1", "7.3.7")).toBe(false);
+	});
+
+	test("^0.y.z stays in 0.y; ^0.0.z is exactly 0.0.z", () => {
+		expect(satisfiesPeerPin("0.2.5", "^0.2.3")).toBe(true);
+		expect(satisfiesPeerPin("0.3.0", "^0.2.3")).toBe(false);
+		expect(satisfiesPeerPin("0.0.3", "^0.0.3")).toBe(true);
+		expect(satisfiesPeerPin("0.0.4", "^0.0.3")).toBe(false);
+		expect(satisfiesPeerPin("0.0.2", "^0.0.3")).toBe(false);
+	});
+
 	test("matching versions at the project root pass", () => {
 		const root = project({ emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.8" });
 		expect(() => assertPeerVersions(root, pins, "0.2.0")).not.toThrow();
@@ -190,6 +206,58 @@ describe("the peer versions this release supports, checked at run time", () => {
 		expect(error).toContain("@emdash-cms/cloudflare: expected 1.3.1, found it not installed");
 		expect(error).not.toContain("astro:");
 		expect(error).toMatch(/without --legacy-peer-deps or --force/);
+	});
+
+	test("the React and Cloudflare adapter peers are checked too, against this release's own pins", () => {
+		const { peerDependencies } = JSON.parse(
+			readFileSync(path.join(PKG, "package.json"), "utf8"),
+		) as { peerDependencies: Record<string, string> };
+		const staging = path.join(PKG, "..", "staging");
+		for (const name of ["@astrojs/cloudflare", "@astrojs/react", "react", "react-dom"]) {
+			const pin = peerDependencies[name] ?? "";
+			expect(pin).toMatch(/^~/);
+			const installed = JSON.parse(
+				readFileSync(path.join(staging, "node_modules", name, "package.json"), "utf8"),
+			) as { version: string };
+			expect(satisfiesPeerPin(installed.version, pin), name).toBe(true);
+		}
+		const root = project({
+			emdash: "1.3.1",
+			"@emdash-cms/cloudflare": "1.3.1",
+			astro: "7.3.6",
+			"@astrojs/cloudflare": "14.1.2",
+			"@astrojs/react": "6.0.1",
+			react: "19.2.7",
+			"react-dom": "19.3.0",
+		});
+		expect(() => assertPeerVersions(root, peerDependencies, "0.2.0")).toThrow(
+			/react-dom: expected ~19\.2\.7, found 19\.3\.0/,
+		);
+	});
+
+	test("a manifest that does not parse is named with its path, not a raw SyntaxError", () => {
+		const root = project({ emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.6" });
+		const manifest = path.join(root, "node_modules", "astro", "package.json");
+		writeFileSync(manifest, "{ not json");
+		const error = (() => {
+			try {
+				assertPeerVersions(root, pins, "0.2.0");
+			} catch (e) {
+				return e as Error;
+			}
+			return new Error("did not throw");
+		})();
+		expect(error).not.toBeInstanceOf(SyntaxError);
+		expect(error.message).toContain(`astro: ${manifest} is not readable JSON`);
+		expect(error.message).toMatch(/pnpm or Yarn/);
+		expect(error.message).toMatch(/Plug'n'Play/);
+	});
+
+	test("no node_modules anywhere up says the store needs an npm install", () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-peers-"));
+		expect(() => assertPeerVersions(dir ?? "", pins, "0.2.0")).toThrow(
+			/needs a node_modules install \(npm install, as the template uses\)/,
+		);
 	});
 
 	test("resolves from the project root upward, not from the package's own location", () => {
@@ -460,6 +528,8 @@ describe("the package's public files never replace the site's", () => {
 		// A real collision is still caught on that second run: same path, other content.
 		writeFileSync(path.join(dir, "scripts", "region-picker.js"), "the site's own");
 		await expect(buildDone()).rejects.toThrow(/already has \/\S+, which the store ships/);
+		// ...and the message names the other cause: a dist/ not emptied across an upgrade.
+		await expect(buildDone()).rejects.toThrow(/emptyOutDir: false.*upgrade.*empty `dist\/`/s);
 	});
 
 	test("a copy error other than EEXIST is reported as itself, not as a collision", async () => {
