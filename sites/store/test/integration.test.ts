@@ -21,13 +21,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import otta, {
 	assertLiveConfig,
+	assertPeerVersions,
 	assertSeedFound,
+	satisfiesPeerPin,
 	assertTemplateContract,
 	OTTA_INTEGRATION_NAME,
 	OTTA_SEED,
 	OTTA_TEMPLATE_CONTRACT,
 	packageRoot,
 	assertNoPublicCollisions,
+	type OttaOptions,
 	PUBLIC_DIR,
 	publicCollisions,
 	publicFilesDevPlugin,
@@ -126,6 +129,90 @@ describe("the template contract", () => {
 	test("otta() checks it before anything else, while the config loads", () => {
 		expect(() => otta({ template: 2, env: {} })).toThrow(/needs template contract 1/);
 		expect(otta({ template: 1, env: {} }).name).toBe(OTTA_INTEGRATION_NAME);
+	});
+
+	test("otta() with no argument reaches the contract error, not a TypeError", () => {
+		expect(() => (otta as (options?: OttaOptions) => unknown)()).toThrow(
+			/needs template contract 1, but astro\.config\.mjs passes otta\(\{ template: undefined \}\)/,
+		);
+	});
+});
+
+describe("the peer versions this release supports, checked at run time", () => {
+	let dir: string | undefined;
+	afterEach(() => {
+		if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+		dir = undefined;
+	});
+
+	function project(versions: Record<string, string>): string {
+		const root = mkdtempSync(path.join(tmpdir(), "otta-peers-"));
+		dir = root;
+		for (const [name, version] of Object.entries(versions)) {
+			const pkgDir = path.join(root, "node_modules", ...name.split("/"));
+			mkdirSync(pkgDir, { recursive: true });
+			writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({ name, version }));
+		}
+		return root;
+	}
+
+	const pins = { emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "~7.3.6" };
+
+	test("exact pins compare exactly; ~ pins take patch releases of the same minor", () => {
+		expect(satisfiesPeerPin("1.3.1", "1.3.1")).toBe(true);
+		expect(satisfiesPeerPin("1.3.2", "1.3.1")).toBe(false);
+		expect(satisfiesPeerPin("7.3.6", "~7.3.6")).toBe(true);
+		expect(satisfiesPeerPin("7.3.9", "~7.3.6")).toBe(true);
+		expect(satisfiesPeerPin("7.3.5", "~7.3.6")).toBe(false);
+		expect(satisfiesPeerPin("7.4.0", "~7.3.6")).toBe(false);
+		expect(satisfiesPeerPin("7.3.6-rc.1", "~7.3.6")).toBe(false);
+		expect(satisfiesPeerPin("7.9.0", "^7.3.6")).toBe(true);
+		expect(satisfiesPeerPin("8.0.0", "^7.3.6")).toBe(false);
+		expect(satisfiesPeerPin("1.0.0", "workspace:*")).toBe(true);
+	});
+
+	test("matching versions at the project root pass", () => {
+		const root = project({ emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.8" });
+		expect(() => assertPeerVersions(root, pins, "0.2.0")).not.toThrow();
+	});
+
+	test("a mismatch or a missing package fails, naming expected and found and the reinstall", () => {
+		const root = project({ emdash: "1.4.0", astro: "7.3.6" });
+		const error = (() => {
+			try {
+				assertPeerVersions(root, pins, "0.2.0");
+			} catch (e) {
+				return (e as Error).message;
+			}
+			return "";
+		})();
+		expect(error).toContain("emdash: expected 1.3.1, found 1.4.0");
+		expect(error).toContain("@emdash-cms/cloudflare: expected 1.3.1, found it not installed");
+		expect(error).not.toContain("astro:");
+		expect(error).toMatch(/without --legacy-peer-deps or --force/);
+	});
+
+	test("resolves from the project root upward, not from the package's own location", () => {
+		const root = project({ emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.6" });
+		const nested = path.join(root, "apps", "shop");
+		mkdirSync(nested, { recursive: true });
+		expect(() => assertPeerVersions(nested, pins)).not.toThrow();
+		// The same call from this package, whose own node_modules has 1.3.1, still fails on a stale pin.
+		expect(() => assertPeerVersions(PKG, { emdash: "9.9.9" })).toThrow(/emdash: expected 9\.9\.9/);
+	});
+
+	test("the config:setup hook runs the check against config.root, with this release's pins", () => {
+		const root = project({ emdash: "1.3.0", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.6" });
+		const setup = otta({ template: 1, env: {} }).hooks["astro:config:setup"] as (
+			o: unknown,
+		) => void;
+		expect(() => setup({ config: { root: pathToFileURL(`${root}/`) } })).toThrow(
+			/emdash: expected 1\.3\.1, found 1\.3\.0/,
+		);
+	});
+
+	test("the repository's staging site, which consumes the store by workspace, passes", () => {
+		expect(() => assertPeerVersions(path.join(PKG, "..", "staging"))).not.toThrow();
 	});
 });
 
@@ -360,6 +447,19 @@ describe("the package's public files never replace the site's", () => {
 		expect(readFileSync(path.join(dir, "scripts", "region-picker.js"), "utf8")).toBe(
 			"the site's own",
 		);
+	});
+
+	test("a second build into the same directory passes on its own leftovers (emptyOutDir: false)", async () => {
+		dir = mkdtempSync(path.join(tmpdir(), "otta-client-"));
+		const integration = otta({ template: 1, env: {} });
+		const done = integration.hooks["astro:config:done"] as (o: unknown) => void;
+		const buildDone = integration.hooks["astro:build:done"] as () => Promise<void>;
+		done({ config: { build: { client: pathToFileURL(`${dir}/`) } } });
+		await buildDone();
+		await expect(buildDone()).resolves.toBeUndefined();
+		// A real collision is still caught on that second run: same path, other content.
+		writeFileSync(path.join(dir, "scripts", "region-picker.js"), "the site's own");
+		await expect(buildDone()).rejects.toThrow(/already has \/\S+, which the store ships/);
 	});
 
 	test("a copy error other than EEXIST is reported as itself, not as a collision", async () => {

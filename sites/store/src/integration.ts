@@ -128,6 +128,91 @@ export function assertTemplateContract(given: unknown, version: string = package
 	);
 }
 
+/** The peers whose exact version this release is built and tested against. */
+const CHECKED_PEERS = ["emdash", "@emdash-cms/cloudflare", "astro"] as const;
+
+/** `[major, minor, patch, hasPrerelease]` of a plain version, or undefined. */
+function parseVersion(version: string): [number, number, number, boolean] | undefined {
+	const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version.trim());
+	if (match === null) return undefined;
+	return [Number(match[1]), Number(match[2]), Number(match[3]), match[4] !== undefined];
+}
+
+/**
+ * Whether `version` satisfies a peer pin written as `x.y.z` (exact), `~x.y.z`
+ * or `^x.y.z`. Any other form (`workspace:*`, a range this release does not
+ * write) is not checked and counts as satisfied.
+ */
+export function satisfiesPeerPin(version: string, pin: string): boolean {
+	const range = /^([~^]?)(\d+\.\d+\.\d+)$/.exec(pin.trim());
+	if (range === null) return true;
+	const operator = range[1] ?? "";
+	if (operator === "") return version.trim() === range[2];
+	const found = parseVersion(version);
+	const floor = parseVersion(range[2] ?? "");
+	if (found === undefined || floor === undefined) return false;
+	const [major, minor, patch, prerelease] = found;
+	const [fMajor, fMinor, fPatch] = floor;
+	// At or above the floor; a prerelease of the floor itself is below it.
+	const cmp = major - fMajor || minor - fMinor || patch - fPatch;
+	if (cmp < 0 || (cmp === 0 && prerelease)) return false;
+	if (operator === "~") return major === fMajor && minor === fMinor;
+	return fMajor > 0 ? major === fMajor : major === 0 && minor === fMinor;
+}
+
+/** The version of `name` that `root` resolves: the nearest `node_modules/<name>` going up. */
+function installedVersion(root: string, name: string): string | undefined {
+	let dir = root;
+	for (;;) {
+		const manifest = path.join(dir, "node_modules", ...name.split("/"), "package.json");
+		if (existsSync(manifest)) {
+			const { version } = JSON.parse(readFileSync(manifest, "utf8")) as { version?: unknown };
+			return typeof version === "string" ? version : undefined;
+		}
+		const parent = path.dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+/** The pins this release ships with: its own `peerDependencies`, read at run time. */
+function peerPins(): Record<string, string> {
+	const { peerDependencies } = JSON.parse(
+		readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8"),
+	) as { peerDependencies?: Record<string, string> };
+	return peerDependencies ?? {};
+}
+
+/**
+ * Throws unless the EmDash, EmDash Cloudflare and Astro the project at `root`
+ * resolves are the versions this release's `peerDependencies` pin. npm's peer
+ * check is the only other thing that enforces them, and `--legacy-peer-deps`,
+ * `--force` or pnpm skip it. Resolved from the PROJECT root, not from this
+ * package: a nested copy here would not be the one the site builds with.
+ */
+export function assertPeerVersions(
+	root: string,
+	pins: Record<string, string> = peerPins(),
+	version: string = packageVersion(),
+): void {
+	const problems: string[] = [];
+	for (const name of CHECKED_PEERS) {
+		const pin = pins[name];
+		if (pin === undefined) continue;
+		const found = installedVersion(root, name);
+		if (found === undefined) problems.push(`${name}: expected ${pin}, found it not installed`);
+		else if (!satisfiesPeerPin(found, pin))
+			problems.push(`${name}: expected ${pin}, found ${found}`);
+	}
+	if (problems.length === 0) return;
+	throw new Error(
+		`${OTTA_INTEGRATION_NAME} ${version} needs these exact peer versions, and ${root} has others:\n` +
+			`  ${problems.join("\n  ")}\n` +
+			`Reinstall without --legacy-peer-deps or --force, so npm's peer check can resolve them ` +
+			`(or install the listed versions yourself), then build again.`,
+	);
+}
+
 /**
  * The latin `unicode-range`: the range on the face Google Fonts' css2 response
  * comments as "latin", copied verbatim. It is what the Google provider emitted
@@ -457,7 +542,7 @@ export function publicFilesDevPlugin() {
 }
 
 export default function otta(options: OttaOptions): AstroIntegration {
-	assertTemplateContract(options.template);
+	assertTemplateContract(options?.template);
 	const env = options.env ?? process.env;
 	const envDir =
 		options.envDir === undefined
@@ -534,6 +619,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 		hooks: {
 			"astro:config:setup": ({ config, updateConfig, injectRoute, addMiddleware }) => {
 				const root = fileURLToPath(config.root);
+				assertPeerVersions(root);
 				const read = (file: string) => readFileSync(path.join(root, file), "utf8");
 
 				/**
@@ -651,16 +737,16 @@ export default function otta(options: OttaOptions): AstroIntegration {
 				for (const file of filesUnder(PUBLIC_DIR)) {
 					const target = path.join(client, ...file.split("/"));
 					await mkdir(path.dirname(target), { recursive: true });
+					const source = path.join(PUBLIC_DIR, ...file.split("/"));
 					try {
-						await copyFile(
-							path.join(PUBLIC_DIR, ...file.split("/")),
-							target,
-							constants.COPYFILE_EXCL,
-						);
+						await copyFile(source, target, constants.COPYFILE_EXCL);
 					} catch (error) {
 						// Only "already there" is a collision; anything else (permissions, a full
 						// disk) is reported as itself.
 						if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") throw error;
+						// Our own copy from an earlier build into a directory that was not emptied
+						// (`vite.build.emptyOutDir: false`) is not another file's collision.
+						if (readFileSync(target).equals(readFileSync(source))) continue;
 						throw new Error(
 							`${OTTA_INTEGRATION_NAME}: the build output already has /${file}, which the store ` +
 								`ships itself; it was left as it is. Rename or remove the other file.`,
