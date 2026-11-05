@@ -16,6 +16,15 @@ name: Pack build
 #
 # A PR that moves a peer pin (sites/store's peerDependencies) fails this check
 # until the template repository's pins are bumped to match.
+#
+# Template code runs in this job: `npm install` runs its dependencies' lifecycle
+# scripts and `astro build` runs its astro.config.mjs. Any code in a job can write
+# the Actions cache, and a cache saved in main's scope is restored by every
+# ci.yml job (CodeQL actions/cache-poisoning). So this job never runs in main's
+# scope: no push-to-main or schedule trigger, no dispatch on main, and the
+# template is always its own `main` (no free-form ref input). Pull-request
+# runs only save caches into that PR's scope. A change in the template
+# repository alone is tested by that repository's CI, not here.
 on:
   pull_request:
     paths:
@@ -27,36 +36,15 @@ on:
       - ".nvmrc"
       - "scripts/pack-build.mjs"
       - ".github/workflows/pack-build.yml"
-  push:
-    branches: [main]
-    paths:
-      - "sites/store/**"
-      - "packages/**"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "package.json"
-      - ".nvmrc"
-      - "scripts/pack-build.mjs"
-      - ".github/workflows/pack-build.yml"
-  # Weekly, so a change in the template repository is exercised even when this
-  # repository is quiet.
-  schedule:
-    - cron: "17 5 * * 1"
+  # On a branch other than main only (the job condition below refuses main).
   workflow_dispatch:
-    inputs:
-      template_ref:
-        description: "Branch, tag or SHA of UrumiAI/otta-store-template to build"
-        default: main
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  # The event is part of the group, so the weekly run and a push to main never
-  # cancel each other; only a newer push to the same PR cancels an older run.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   pack-build:
@@ -64,26 +52,28 @@ jobs:
     # and the default token cannot read it before then. Set the repository variable
     # OTTA_TEMPLATE_PUBLIC=true once UrumiAI/otta-store-template is public; until
     # then the job is skipped rather than red.
-    if: vars.OTTA_TEMPLATE_PUBLIC == 'true'
+    if: vars.OTTA_TEMPLATE_PUBLIC == 'true' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # The template is its own repository. If it is private, pass a read token
-      # (a repository secret) as `token:`; the default token cannot read it.
+      # The template is its own repository, always at its `main`. Its code runs in
+      # this job, so pass no secret here: the job only runs once the template is
+      # public (OTTA_TEMPLATE_PUBLIC), and the default token can read it then.
       - uses: actions/checkout@v4
         with:
           repository: UrumiAI/otta-store-template
-          ref: ${{ inputs.template_ref || 'main' }}
+          ref: main
           path: otta-store-template
           persist-credentials: false
       - uses: pnpm/action-setup@v4
-      # No `cache: pnpm`: this job checks out another repository at a caller-chosen
-      # ref and runs its install scripts, on main too (push, schedule). A cache it
-      # saved there would be restored by every other job (CodeQL
-      # actions/cache-poisoning), so it installs without one.
+      # No `cache: pnpm`, so this job never saves a pnpm cache, even into a PR's
+      # scope. That is not what keeps main's cache safe (template code could still
+      # write one directly); running only outside main's scope is (see the top).
+      # setup-node v5+ enables caching by itself when package.json names a
+      # packageManager: set `package-manager-cache: false` when upgrading.
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
