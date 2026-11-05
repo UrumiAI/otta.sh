@@ -13,7 +13,7 @@
  * `buyerRef` is checked for LENGTH only, never for format: the service
  * documents it as an "email/session claim token", and the *site* owns the
  * plausible-email guard (it is the layer that knows the value came from a
- * checkout form rather than a session). See `sites/staging/src/lib/email.ts`.
+ * checkout form rather than a session). See `sites/store/src/lib/email.ts`.
  * What this layer must never do is REWRITE it — the service stores `buyer_ref`
  * verbatim and ADR-0004's guest-order claiming matches on it.
  */

@@ -98,7 +98,7 @@ function hexBytes(hex: string): Uint8Array<ArrayBuffer> {
 	return out;
 }
 
-// -- the client's network: the site limiter's own rule (sites/staging/src/lib/rate-limit.ts)
+// -- the client's network: the site limiter's own rule (sites/store/src/lib/rate-limit.ts)
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const HEXTET = /^[0-9a-f]{1,4}$/;

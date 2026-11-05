@@ -5,6 +5,12 @@ a D1 content database and an R2 media bucket, with the Otta plugin registered **
 in-process** — no plugin sandbox, no Worker Loaders, Workers **free** plan. See [ADR-0006](../../adr/0006-trusted-in-process-deployment.md) for why that is
 allowed and what stays forbidden.
 
+**The store's code is not in this directory.** It is `@urumi.ai/otta-store`
+([`sites/store`](../store/README.md)), whose `otta()` integration this site's
+`astro.config.ts` calls (ADR-0045). The `src/…` paths below are under `sites/store/`. What
+lives here: the config (`astro.config.ts`, `wrangler.jsonc`, the e2e and playground variants),
+the e2e suite, the playground media and the e2e-only `src/lib/e2e-*.ts` switches.
+
 Pages are thin theme shims per [ADR-0003](../../adr/0003-storefront-plugin-routes.md): the
 CMS query runs in the page, the plugin's public routes return JSON view models in-process
 (`locals.emdash.handlePublicPluginApiRoute`), the page renders HTML. The `/cart/*` POST

@@ -21,7 +21,7 @@
  * final, so the rewrite runs there, over the server output only.
  *
  * The rewrite removes the workspace-root prefix, so
- * `<root>/sites/staging/src/X.astro` becomes `/sites/staging/src/X.astro` and
+ * `<root>/sites/store/src/X.astro` becomes `/sites/store/src/X.astro` and
  * `file://<root>/sites/staging/` becomes `file:///sites/staging/` (still a valid
  * URL). Every occurrence changes the same way, so an id and the map key it is
  * looked up under stay equal.
@@ -30,12 +30,15 @@
  *  - build only: `astro dev` never fires `astro:build:done`, so dev keeps real
  *    paths for error overlays, the dev toolbar and editor links;
  *  - after prerendering, which reads files by these paths on this machine;
- *  - only `.mjs`/`.js` under `build.server` (the worker). The client bundle
+ *  - only `.mjs`/`.js` (and their `.map`s) under `build.server` (the worker). The client bundle
  *    carries none of these paths, and `wrangler.json` is local deploy metadata
  *    that wrangler reads from this machine. `test/build-path-leak.test.ts` scans
  *    all of `dist/`;
- *  - the site emits no source maps. The rewrite only shortens strings inside a
- *    line, so line numbers in a stack trace still match the chunk.
+ *  - the rewrite only shortens strings inside a line, so line numbers in a stack
+ *    trace still match the chunk. Columns on a rewritten line shift, though, so a
+ *    scrubbed chunk's source map has slightly wrong columns on those lines (the
+ *    lines still match). Some dependencies' chunks do come with source
+ *    maps (found by `scripts/pack-build.mjs`); their `sources` are rewritten too.
  *
  * ANCHORED, not a bare substring replace. In a real build the root only ever
  * starts a string literal (`"<root>/…"`, 309 times) or a file URL
@@ -90,6 +93,10 @@
  *    matter. A client hit deletes the client output too. Astro's inlined env
  *    object is checked by key as well ({@link findInlinedSecretsInDir}), which
  *    also covers a value too short to search for.
+ *    A variable whose NAME is not secret-shaped but whose value only LOOKS random
+ *    ({@link isRandomLookingEnvValue}) is searched for too, but a hit only WARNS
+ *    (a release id or a build hash is not a secret). A secret-shaped name, or a
+ *    value with URL credentials ({@link hasUrlCredentials}), fails the build.
  */
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -100,12 +107,35 @@ import type { AstroIntegration } from "astro";
 
 export const BUILD_PATH_SCRUB_INTEGRATION = "otta:build-path-scrub";
 
-/** The repo root: the nearest directory above this file holding `pnpm-workspace.yaml`. */
-export function workspaceRoot(): string {
-	let dir = path.dirname(fileURLToPath(import.meta.url));
-	while (!existsSync(path.join(dir, "pnpm-workspace.yaml"))) {
+/** Whether `dir` holds an npm or yarn workspace root: a package.json with `workspaces`. */
+function isNpmWorkspaceRoot(dir: string): boolean {
+	const manifest = path.join(dir, "package.json");
+	if (!existsSync(manifest)) return false;
+	try {
+		return (
+			(JSON.parse(readFileSync(manifest, "utf8")) as { workspaces?: unknown }).workspaces !==
+			undefined
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The root whose prefix is removed: the nearest directory at or above `start`
+ * holding `pnpm-workspace.yaml`, or a package.json with `workspaces` (npm, yarn)
+ * (in this repository, the repo root, so both
+ * `sites/store` and `sites/staging` paths go), else `start` itself. A site built
+ * from the published package (ADR-0045) has no workspace file; its project root
+ * holds everything the bundle names, `node_modules` included.
+ */
+export function workspaceRoot(
+	start: string = path.dirname(fileURLToPath(import.meta.url)),
+): string {
+	let dir = start;
+	while (!existsSync(path.join(dir, "pnpm-workspace.yaml")) && !isNpmWorkspaceRoot(dir)) {
 		const parent = path.dirname(dir);
-		if (parent === dir) throw new Error(`build-path-scrub: no pnpm-workspace.yaml above ${dir}`);
+		if (parent === dir) return start;
 		dir = parent;
 	}
 	return dir;
@@ -169,13 +199,19 @@ const LISTED_SECRET_ENV_KEYS: ReadonlySet<string> = new Set(BUILD_SECRET_ENV_KEY
 
 /**
  * A secret-shaped name: an `_`-delimited word such as `SECRET`, `TOKEN`,
- * `PASSWORD` or `SALT`, or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`.
+ * `PASSWORD` or `SALT`, or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`
+ * (the underscore optional: `SENDGRID_APIKEY`).
  */
 const SECRET_SHAPED_ENV_KEY =
-	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_KEY)(?:_|$)/i;
+	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_?KEY)(?:_|$)/i;
 
-/** A name that ENDS in a bare `KEY`, `PASS` or `DSN` (`LICENSE_KEY`, `SMTP_PASS`, `SENTRY_DSN`). */
-const SECRET_SUFFIX_ENV_KEY = /(?:^|_)(?:KEY|PASS|DSN)$/i;
+/**
+ * A name that ENDS in a bare `KEY`, `PASS`, `DSN` or `PAT` (`LICENSE_KEY`, `SMTP_PASS`,
+ * `SENTRY_DSN`, `GITHUB_PAT`), or in `WEBHOOK_URL` (a Slack or Discord webhook URL
+ * carries its secret in the path). Suffixes only: `WEBHOOK_PATH`, `ENABLE_WEBHOOKS`
+ * and `DATE_PAT_STYLE` are plain settings.
+ */
+const SECRET_SUFFIX_ENV_KEY = /(?:^|_)(?:KEY|PASS|DSN|PAT|WEBHOOKS?_URL)$/i;
 
 /** Keys that are public by design: Turnstile's site key, Stripe's publishable key. */
 const PUBLIC_KEY_SUFFIX = /(?:^|_)(?:SITE|PUBLISHABLE|PUBLIC)_KEY$/i;
@@ -199,6 +235,156 @@ export function buildSecretEnvValues(env: Record<string, string | undefined>): M
 		if (value !== undefined && isBuildSecretEnvKey(key)) secrets.set(key, value);
 	}
 	return secrets;
+}
+
+/**
+ * A name that says what the value is, none of it a secret: a commit, a hash, a
+ * version, a release, a build, a URL or a path. CI sets many of these as long
+ * hex strings.
+ */
+const PLAIN_VALUE_ENV_KEY =
+	/(?:^|_)(?:SHA\d*|COMMIT|HASH|REV|REVISION|VERSION|RELEASE|BUILD|ID|UUID|URL|URI|PATH|DIR|HOME|HOST|BRANCH|REF)(?:_|$)/i;
+
+/**
+ * The variables GitHub Actions' runner sets that hold no secret (its documented
+ * default environment variables). `GITHUB_TOKEN` and the like are not here, and
+ * neither is a bare `GITHUB_`/`RUNNER_` prefix: `GITHUB_PAT` is a user's own.
+ */
+const GITHUB_RUNNER_ENV_KEYS: ReadonlySet<string> = new Set([
+	"GITHUB_ACTION",
+	"GITHUB_ACTION_PATH",
+	"GITHUB_ACTION_REPOSITORY",
+	"GITHUB_ACTIONS",
+	"GITHUB_ACTOR",
+	"GITHUB_ACTOR_ID",
+	"GITHUB_API_URL",
+	"GITHUB_BASE_REF",
+	"GITHUB_ENV",
+	"GITHUB_EVENT_NAME",
+	"GITHUB_EVENT_PATH",
+	"GITHUB_GRAPHQL_URL",
+	"GITHUB_HEAD_REF",
+	"GITHUB_JOB",
+	"GITHUB_OUTPUT",
+	"GITHUB_PATH",
+	"GITHUB_REF",
+	"GITHUB_REF_NAME",
+	"GITHUB_REF_PROTECTED",
+	"GITHUB_REF_TYPE",
+	"GITHUB_REPOSITORY",
+	"GITHUB_REPOSITORY_ID",
+	"GITHUB_REPOSITORY_OWNER",
+	"GITHUB_REPOSITORY_OWNER_ID",
+	"GITHUB_RETENTION_DAYS",
+	"GITHUB_RUN_ATTEMPT",
+	"GITHUB_RUN_ID",
+	"GITHUB_RUN_NUMBER",
+	"GITHUB_SERVER_URL",
+	"GITHUB_SHA",
+	"GITHUB_STATE",
+	"GITHUB_STEP_SUMMARY",
+	"GITHUB_TRIGGERING_ACTOR",
+	"GITHUB_WORKFLOW",
+	"GITHUB_WORKFLOW_REF",
+	"GITHUB_WORKFLOW_SHA",
+	"GITHUB_WORKSPACE",
+	"RUNNER_ARCH",
+	"RUNNER_DEBUG",
+	"RUNNER_ENVIRONMENT",
+	"RUNNER_NAME",
+	"RUNNER_OS",
+	"RUNNER_TEMP",
+	"RUNNER_TOOL_CACHE",
+	"RUNNER_TRACKING_ID",
+]);
+
+/** Values this long, with this much entropy, look generated (a key, a token, a random secret). */
+export const MIN_RANDOM_VALUE_LENGTH = 24;
+export const MIN_RANDOM_VALUE_ENTROPY = 3.5;
+/**
+ * A random hex string has at most 4 bits per character, and a 24 to 40
+ * character one often lands under 3.5, so an all-hex value uses this lower bar.
+ */
+export const MIN_RANDOM_HEX_ENTROPY = 3.0;
+
+/** Shannon entropy of `value`, in bits per character. */
+function entropyOf(value: string): number {
+	const counts = new Map<string, number>();
+	for (const char of value) counts.set(char, (counts.get(char) ?? 0) + 1);
+	let bits = 0;
+	for (const count of counts.values()) {
+		const p = count / value.length;
+		bits -= p * Math.log2(p);
+	}
+	return bits;
+}
+
+/**
+ * Whether `value` carries credentials in a URL: `scheme://user:pass@host`, or
+ * `scheme://<long token>@host` (a token as the user). Such a value is a secret
+ * whatever the variable is called. A short user alone (`ssh://git@host`) is not.
+ */
+export function hasUrlCredentials(value: string): boolean {
+	return /[a-z][a-z0-9+.-]*:\/\/(?:[^\s/@:]+:[^\s/@]+|[^\s/@:]{20,})@/i.test(value);
+}
+
+/**
+ * Whether the variable `key` holds a value that looks generated, whatever the
+ * name: 24+ characters from the token alphabet, both letters and digits, high
+ * entropy (a lower bar for all-hex). Paths, URLs (public by design), words,
+ * anything Astro or the allow-list already treats as known, keys that are
+ * public by design (`PUBLIC_*`, `*_SITE_KEY`, `*_PUBLISHABLE_KEY`,
+ * `*_PUBLIC_KEY`), GitHub's runner variables and names that say "commit",
+ * "version", "release" and the like are not.
+ */
+export function isRandomLookingEnvValue(key: string, value: string): boolean {
+	if (key.startsWith("PUBLIC_") || key.startsWith("npm_") || key.startsWith("WORKERS_CI")) {
+		return false;
+	}
+	if (PUBLIC_KEY_SUFFIX.test(key) || GITHUB_RUNNER_ENV_KEYS.has(key)) return false;
+	if (ALLOWED_ENV_KEYS.has(key) || WHOLE_ENV_KEYS.has(key) || PLAIN_VALUE_ENV_KEY.test(key)) {
+		return false;
+	}
+	if (value.length < MIN_RANDOM_VALUE_LENGTH) return false;
+	if (/^(?:[a-z][a-z0-9+.-]*:\/\/|\/|\.{1,2}\/|~|[A-Za-z]:\\)/.test(value)) return false;
+	if (!/^[A-Za-z0-9+/_=.~-]+$/.test(value)) return false;
+	if (!/[A-Za-z]/.test(value) || !/\d/.test(value)) return false;
+	const floor = /^[0-9a-fA-F]+$/.test(value) ? MIN_RANDOM_HEX_ENTROPY : MIN_RANDOM_VALUE_ENTROPY;
+	return entropyOf(value) >= floor;
+}
+
+/**
+ * What the bundle is searched for, in two sets. `secrets` FAIL the build when
+ * found: the variables with a secret-shaped name ({@link buildSecretEnvValues})
+ * and any variable whose value carries URL credentials
+ * ({@link hasUrlCredentials}). `random` only WARN: any other variable with a
+ * random-looking value ({@link isRandomLookingEnvValue}), whose name does not say
+ * it is a secret. Only the name-matched secrets are dropped from the
+ * environment; nothing else is changed.
+ */
+export function searchedEnvValueSets(env: Record<string, string | undefined>): {
+	secrets: Map<string, string>;
+	random: Map<string, string>;
+} {
+	const secrets = buildSecretEnvValues(env);
+	const random = new Map<string, string>();
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined || secrets.has(key)) continue;
+		// Public by design (`PUBLIC_SENTRY_DSN` carries its key as the URL user, and
+		// Astro inlines `PUBLIC_*` into the client on purpose): never a failing secret.
+		if (key.startsWith("PUBLIC_") || PUBLIC_KEY_SUFFIX.test(key)) continue;
+		if (hasUrlCredentials(value)) secrets.set(key, value);
+		else if (isRandomLookingEnvValue(key, value)) random.set(key, value);
+	}
+	return { secrets, random };
+}
+
+/** Both sets of {@link searchedEnvValueSets} as one map, name to value. */
+export function buildSearchedEnvValues(
+	env: Record<string, string | undefined>,
+): Map<string, string> {
+	const { secrets, random } = searchedEnvValueSets(env);
+	return new Map([...random, ...secrets]);
 }
 
 /** Removes every secret ({@link isBuildSecretEnvKey}) from `env` in place; returns their names. */
@@ -238,13 +424,103 @@ export function inlinedEnvKeys(code: string): string[] {
 export function findInlinedSecretsInDir(dir: string): string[] {
 	const found: string[] = [];
 	for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
-		if (!entry.isFile() || !/\.m?js$/.test(entry.name)) continue;
+		if (!entry.isFile() || !/\.m?js(\.map)?$/.test(entry.name)) continue;
 		const file = path.join(entry.parentPath, entry.name);
 		for (const key of inlinedEnvKeys(readFileSync(file, "utf8"))) {
 			if (isBuildSecretEnvKey(key)) found.push(`${path.relative(dir, file)}: ${key}`);
 		}
 	}
 	return found;
+}
+
+/**
+ * Keys Astro's inlined env object may carry without comment: Astro's own build
+ * keys, `PUBLIC_*` (Astro's promise that a value is public), and EmDash 1.3.1's
+ * documented non-secret build-time configuration, which Astro inlines from a
+ * module that reads them whenever they are set at build time (found by grepping
+ * emdash's dist for `import.meta.env` reads and for the names its env-object
+ * modules look up: `public-url-*`, `trusted-proxy-*`, the OAuth provider and
+ * migration and preview modules). EmDash's secrets (`*_SECRET`, `*_KEY`, `*_SALT`)
+ * are not here: they are secret-shaped.
+ */
+const ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
+	"SSR",
+	"DEV",
+	"PROD",
+	"MODE",
+	"BASE_URL",
+	"SITE",
+	"ASSETS_PREFIX",
+	// `CI=true` is set by GitHub Actions and Workers Builds alike. Astro inlines it
+	// into the app chunk whenever a bare-env module there contains the letters "CI"
+	// (its referenced-key scan is a substring match). A boolean flag, never a secret.
+	"CI",
+	"SITE_URL",
+	"EMDASH_SITE_URL",
+	"EMDASH_ALLOWED_ORIGINS",
+	"EMDASH_TRUSTED_PROXY_HEADERS",
+	"EMDASH_MIGRATIONS_MODE",
+	"EMDASH_PREVIEW_PATH_PATTERN",
+	"EMDASH_OAUTH_GITHUB_CLIENT_ID",
+	"EMDASH_OAUTH_GOOGLE_CLIENT_ID",
+	"EMDASH_OAUTH_MICROSOFT_CLIENT_ID",
+	"EMDASH_OAUTH_MICROSOFT_TENANT_ID",
+]);
+
+/**
+ * Variables no module reads as configuration, set in every shell or CI job. One
+ * of them inlined means a module handed Astro a bare `import.meta.env` and it
+ * inlined the build environment wholesale (HOME, PATH and TERM in the case
+ * ADR-0045 records).
+ */
+const WHOLE_ENV_KEYS: ReadonlySet<string> = new Set([
+	"PATH",
+	"HOME",
+	"USER",
+	"TERM",
+	"SHELL",
+	"PWD",
+	"HOSTNAME",
+]);
+
+/** How the build treats one inlined env key. */
+export type InlinedEnvKeyClass = "allowed" | "secret" | "whole-env" | "unknown";
+
+export function classifyInlinedEnvKey(key: string): InlinedEnvKeyClass {
+	if (isBuildSecretEnvKey(key)) return "secret";
+	if (WHOLE_ENV_KEYS.has(key) || key.startsWith("npm_") || key.startsWith("WORKERS_CI")) {
+		return "whole-env";
+	}
+	if (ALLOWED_ENV_KEYS.has(key) || key.startsWith("PUBLIC_")) return "allowed";
+	return "unknown";
+}
+
+/** Every `<file>: <KEY>` of each inlined env key under `dir`, by class. Names only. */
+export function inlinedEnvKeysByClass(dir: string): Record<InlinedEnvKeyClass, string[]> {
+	const found: Record<InlinedEnvKeyClass, string[]> = {
+		allowed: [],
+		secret: [],
+		"whole-env": [],
+		unknown: [],
+	};
+	for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+		if (!entry.isFile() || !/\.m?js(\.map)?$/.test(entry.name)) continue;
+		const file = path.join(entry.parentPath, entry.name);
+		for (const key of inlinedEnvKeys(readFileSync(file, "utf8"))) {
+			found[classifyInlinedEnvKey(key)].push(`${path.relative(dir, file)}: ${key}`);
+		}
+	}
+	return found;
+}
+
+/**
+ * The inlined keys that FAIL the build: secrets, and the whole-environment
+ * markers. An unknown key only warns ({@link inlinedEnvKeysByClass}): a site's
+ * own build-time configuration may be legitimately inlined.
+ */
+export function findInlinedEnvKeysInDir(dir: string): string[] {
+	const found = inlinedEnvKeysByClass(dir);
+	return [...found.secret, ...found["whole-env"]];
 }
 
 /**
@@ -309,12 +585,26 @@ const viteLoadEnv: LoadEnv = (
 	}
 ).loadEnv;
 
+/** The name a leaked `PATH` VALUE is reported under: the second layer behind the key check. */
+export const WHOLE_ENV_MARKER = "PATH (build environment variables were inlined into the bundle)";
+
+const RANDOM_HELP =
+	"Nothing was deleted and the build continues. If the variable is a secret, remove it from the " +
+	"build environment and set it as a Worker secret (`wrangler secret put`). If it is not " +
+	"(a release id, a build hash), rename it `PUBLIC_…`: that marks it public and silences this " +
+	"warning.";
+
 const LEAK_HELP =
 	"Astro writes a variable from the build's env or a .env file into the bundle when its name " +
-	"appears next to `import.meta.env` (or is read as `import.meta.env.KEY`). Remove it from the " +
-	"build environment and from sites/staging/.env, set it as a Worker secret (`wrangler secret " +
-	"put`), and build again. For `astro dev`, keep local secrets in sites/staging/.dev.vars, which " +
-	"Astro never reads (DEPLOYMENT.md §3).";
+	"appears in a module that mentions `import.meta.env` other than as `import.meta.env.KEY`, or " +
+	"that reads it as `import.meta.env.KEY`. If the name is a secret, remove it from the build " +
+	"environment and from the project's .env, set it as a Worker secret (`wrangler secret put`), " +
+	"and build again; for `astro dev`, keep local secrets in the project's .dev.vars, which Astro " +
+	"never reads. If it is a shell variable no code reads as configuration (HOME, PATH, npm_…), " +
+	"some module in the bundle spells the bare `import.meta.env` and the build environment was " +
+	"inlined wholesale: find that module (the file is named above). A variable of any name whose " +
+	"value holds URL credentials (`scheme://user:pass@host`) counts as a secret too. See " +
+	"https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md#3-secrets--tokens-checklist.";
 
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -338,11 +628,15 @@ export function scrubBuildPaths(code: string, root: string): string {
 	);
 }
 
-/** Rewrites every `.mjs`/`.js` file under `dir` in place; returns how many changed. */
+/**
+ * Rewrites every `.mjs`/`.js` file under `dir`, and every `.map` next to one, in place;
+ * returns how many changed. A map names its sources as `"<root>/…"` strings, the same
+ * anchored form the code uses.
+ */
 export async function scrubBuildPathsInDir(dir: string, root: string): Promise<number> {
 	let changed = 0;
 	for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
-		if (!entry.isFile() || !/\.m?js$/.test(entry.name)) continue;
+		if (!entry.isFile() || !/\.m?js(\.map)?$/.test(entry.name)) continue;
 		const file = path.join(entry.parentPath, entry.name);
 		const code = await readFile(file, "utf8");
 		const scrubbed = scrubBuildPaths(code, root);
@@ -353,7 +647,9 @@ export async function scrubBuildPathsInDir(dir: string, root: string): Promise<n
 	return changed;
 }
 
-export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration {
+/** @param rootOption the prefix to remove; default {@link workspaceRoot} of the project root. */
+export function buildPathScrub(rootOption?: string): AstroIntegration {
+	let root = rootOption ?? "";
 	let serverDir: URL | undefined;
 	let clientDir: URL | undefined;
 	let envDir: string | false | undefined;
@@ -361,19 +657,24 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 	// The secrets dropped from the shell, kept (in memory only) to search the
 	// bundle for. `undefined` outside a build, where nothing is checked.
 	let droppedSecrets: Map<string, string> | undefined;
+	// Variables whose value only looks random: a hit warns, never fails.
+	let randomValues = new Map<string, string>();
 	return {
 		name: BUILD_PATH_SCRUB_INTEGRATION,
 		hooks: {
 			"astro:config:setup": ({ command, config, logger, updateConfig }) => {
+				if (rootOption === undefined) root = workspaceRoot(fileURLToPath(config.root));
 				if (command !== "build") return;
 				dropShellPathEnv(process.env);
-				droppedSecrets = buildSecretEnvValues(process.env);
+				const searched = searchedEnvValueSets(process.env);
+				droppedSecrets = searched.secrets;
+				randomValues = searched.random;
 				const dropped = dropBuildSecretEnv(process.env);
 				if (dropped.length > 0) {
 					logger.warn(
 						`ignored ${dropped.length} secret(s) set in the build environment, so none can be ` +
 							`inlined into the worker: ${dropped.toSorted().join(", ")}. Set secrets as Worker ` +
-							`secrets (\`wrangler secret put\`), never in the build shell (DEPLOYMENT.md §3).`,
+							`secrets (\`wrangler secret put\`), never in the build shell (Otta's DEPLOYMENT.md §3: https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md).`,
 					);
 				}
 				// Astro's own `.env` lookup: `vite.envDir`, else the project root.
@@ -401,18 +702,37 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 				rmSync(path.join(server, ".dev.vars"), { force: true });
 				if (droppedSecrets !== undefined) {
 					const secrets = new Map(droppedSecrets);
+					const random = new Map(randomValues);
 					if (envDir !== undefined) {
-						for (const [key, value] of buildSecretEnvValues(viteLoadEnv(mode, envDir, ""))) {
-							secrets.set(key, value);
+						const fromFiles = searchedEnvValueSets(viteLoadEnv(mode, envDir, ""));
+						for (const [key, value] of fromFiles.secrets) secrets.set(key, value);
+						for (const [key, value] of fromFiles.random) {
+							if (!secrets.has(key)) random.set(key, value);
 						}
+					}
+					// Not a secret, but no module reads PATH: its VALUE in the bundle means
+					// build variables were inlined, however minified (the key check above is
+					// the first layer; this one does not depend on the object's shape).
+					if (process.env.PATH !== undefined) {
+						secrets.set(WHOLE_ENV_MARKER, process.env.PATH);
 					}
 					// A prerendered page renders on the server but is written to the CLIENT
 					// output, which is uploaded as public static assets: search it too.
 					const client =
 						clientDir !== undefined && existsSync(clientDir) ? fileURLToPath(clientDir) : undefined;
+					// A key that is neither a secret, a shell marker nor known config may be the
+					// site's own build-time setting: say so, do not fail.
+					const unknown = inlinedEnvKeysByClass(server).unknown;
+					if (unknown.length > 0) {
+						logger.warn(
+							`build variables were inlined into the worker by name (values not shown): ` +
+								`${unknown.toSorted().join(", ")}. Fine if they are your own non-secret build ` +
+								`settings; if one is a secret, make it a Worker secret instead.`,
+						);
+					}
 					const serverLeaks = [
 						...new Set([
-							...findInlinedSecretsInDir(server),
+							...findInlinedEnvKeysInDir(server),
 							...findLeakedSecretValuesInDir(server, secrets),
 						]),
 					];
@@ -421,6 +741,23 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 							? []
 							: findLeakedSecretValuesInDir(client, secrets).map((leak) => `client/${leak}`);
 					const leaks = [...serverLeaks, ...clientLeaks];
+					// A random-looking value under a name that is not secret-shaped only warns:
+					// a release id or a build hash is not a secret. Names only, never a value.
+					const randomHits = [
+						...findLeakedSecretValuesInDir(server, random),
+						...(client === undefined
+							? []
+							: findLeakedSecretValuesInDir(client, random).map((leak) => `client/${leak}`)),
+					].filter((hit) => !leaks.includes(hit));
+					if (randomHits.length > 0) {
+						logger.warn(
+							`a random-looking value was found in the build output (values not shown):\n  ` +
+								`${randomHits
+									.toSorted()
+									.map((hit) => `${hit} (random-looking value)`)
+									.join("\n  ")}\n${RANDOM_HELP}`,
+						);
+					}
 					if (leaks.length > 0) {
 						// Without the server output there is nothing for `wrangler deploy` to
 						// ship. A client hit is public HTML or JS, so that output goes as well.
@@ -433,6 +770,9 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 						);
 					}
 				}
+				// Set in astro:config:setup, which always runs first; an empty root
+				// would match every quoted absolute path, so never scrub without one.
+				if (root === "") throw new Error("build-path-scrub: no root was resolved");
 				const changed = await scrubBuildPathsInDir(server, root);
 				logger.info(`removed the workspace root from ${changed} server file(s)`);
 			},

@@ -48,6 +48,9 @@ catalogs:
     vitest:
       specifier: ^4.1.12
       version: 4.1.12
+    workerd:
+      specifier: 1.20260708.1
+      version: 1.20260708.1
     wrangler:
       specifier: ^4.99.0
       version: 4.110.0
@@ -284,10 +287,10 @@ importers:
   sites/staging:
     dependencies:
       '@astrojs/cloudflare':
-        specifier: ^14.1.2
+        specifier: ~14.1.2
         version: 14.1.2(@types/node@26.1.1)(astro@7.3.6(@types/node@26.1.1)(yaml@2.9.1))(esbuild@0.28.1)(workerd@1.20260708.1)(wrangler@4.110.0(@cloudflare/workers-types@5.20260710.1)(@types/node@26.1.1))(yaml@2.9.1)
       '@astrojs/react':
-        specifier: ^6.0.1
+        specifier: ~6.0.1
         version: 6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yaml@2.9.1)
       '@emdash-cms/cloudflare':
         specifier: 1.3.1
@@ -298,17 +301,20 @@ importers:
       '@urumi.ai/otta-plugin':
         specifier: workspace:*
         version: link:../../packages/plugin
+      '@urumi.ai/otta-store':
+        specifier: workspace:*
+        version: link:../store
       astro:
-        specifier: ^7.0.7
+        specifier: ~7.3.6
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.1)
       emdash:
         specifier: 1.3.1
         version: 1.3.1(@astrojs/react@6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yaml@2.9.1))(@atcute/cbor@2.3.7(@atcute/cid@2.4.2))(@atcute/cid@2.4.2)(@atcute/identity@2.0.1(@atcute/lexicons@2.0.2)(typescript@5.9.3))(@date-fns/tz@1.5.0)(@floating-ui/dom@1.7.6)(@tiptap/extensions@3.31.4(@tiptap/core@3.31.4(@tiptap/pm@3.31.4))(@tiptap/pm@3.31.4))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(astro@7.3.6(@types/node@26.1.1)(yaml@2.9.1))(date-fns@4.4.0)(echarts@6.1.0)(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.6)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)
       react:
-        specifier: ^19.2.4
+        specifier: ~19.2.7
         version: 19.2.7
       react-dom:
-        specifier: ^19.2.4
+        specifier: ~19.2.7
         version: 19.2.7(react@19.2.7)
     devDependencies:
       '@astrojs/check':
@@ -347,6 +353,82 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 4.1.12(@types/node@26.1.1)(happy-dom@21.0.4)(vite@8.3.3(@types/node@26.1.1)(esbuild@0.28.1)(yaml@2.9.1))
+      workerd:
+        specifier: 'catalog:'
+        version: 1.20260708.1
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.110.0(@cloudflare/workers-types@5.20260710.1)(@types/node@26.1.1)
+
+  sites/store:
+    dependencies:
+      kysely:
+        specifier: 'catalog:'
+        version: 0.29.3
+    devDependencies:
+      '@astrojs/check':
+        specifier: ^0.9.9
+        version: 0.9.9(prettier@3.9.5)(typescript@5.9.3)
+      '@astrojs/cloudflare':
+        specifier: ~14.1.2
+        version: 14.1.2(@types/node@26.1.1)(astro@7.3.6(@types/node@26.1.1)(yaml@2.9.1))(esbuild@0.28.1)(workerd@1.20260708.1)(wrangler@4.110.0(@cloudflare/workers-types@5.20260710.1)(@types/node@26.1.1))(yaml@2.9.1)
+      '@astrojs/react':
+        specifier: ~6.0.1
+        version: 6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yaml@2.9.1)
+      '@cloudflare/workers-types':
+        specifier: ^5.20260708.1
+        version: 5.20260710.1
+      '@emdash-cms/cloudflare':
+        specifier: 1.3.1
+        version: 1.3.1(ed74bb45605146cb52c3385961bd4285)
+      '@types/better-sqlite3':
+        specifier: 'catalog:'
+        version: 7.6.13
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.3(@types/react@19.2.17)
+      '@urumi.ai/otta-admin-react':
+        specifier: workspace:*
+        version: link:../../packages/admin-react
+      '@urumi.ai/otta-domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@urumi.ai/otta-plugin':
+        specifier: workspace:*
+        version: link:../../packages/plugin
+      astro:
+        specifier: ~7.3.6
+        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.1)
+      better-sqlite3:
+        specifier: 'catalog:'
+        version: 12.11.1
+      emdash:
+        specifier: 1.3.1
+        version: 1.3.1(@astrojs/react@6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yaml@2.9.1))(@atcute/cbor@2.3.7(@atcute/cid@2.4.2))(@atcute/cid@2.4.2)(@atcute/identity@2.0.1(@atcute/lexicons@2.0.2)(typescript@5.9.3))(@date-fns/tz@1.5.0)(@floating-ui/dom@1.7.6)(@tiptap/extensions@3.31.4(@tiptap/core@3.31.4(@tiptap/pm@3.31.4))(@tiptap/pm@3.31.4))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(astro@7.3.6(@types/node@26.1.1)(yaml@2.9.1))(date-fns@4.4.0)(echarts@6.1.0)(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.6)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)
+      happy-dom:
+        specifier: ^21.0.4
+        version: 21.0.4
+      react:
+        specifier: ~19.2.7
+        version: 19.2.7
+      react-dom:
+        specifier: ~19.2.7
+        version: 19.2.7(react@19.2.7)
+      tsdown:
+        specifier: 'catalog:'
+        version: 0.22.4(typescript@5.9.3)
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.12(@types/node@26.1.1)(happy-dom@21.0.4)(vite@8.3.3(@types/node@26.1.1)(esbuild@0.28.1)(yaml@2.9.1))
+      workerd:
+        specifier: 'catalog:'
+        version: 1.20260708.1
       wrangler:
         specifier: 'catalog:'
         version: 4.110.0(@cloudflare/workers-types@5.20260710.1)(@types/node@26.1.1)

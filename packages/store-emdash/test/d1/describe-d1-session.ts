@@ -1,7 +1,7 @@
 /**
  * The **D1 session** harness: storage built over a Sessions-API handle, the way
  * EmDash hands one to the plugin on a request under `session: "primary-first"`
- * (`sites/staging/src/emdash-options.ts`).
+ * (`sites/store/src/emdash-options.ts`).
  *
  * It does not re-implement the wiring. The host's own `createRequestScopedDb` —
  * the function EmDash's request middleware calls once per request — builds the
@@ -64,7 +64,7 @@ export interface D1SessionStorage {
 
 /**
  * The config the staging site declares. Keep in sync with
- * `sites/staging/src/emdash-options.ts`: a change there (`coalesce`, `"auto"`)
+ * `sites/store/src/emdash-options.ts`: a change there (`coalesce`, `"auto"`)
  * would otherwise leave this tier testing a different setup than the site runs.
  */
 const CONFIG = { binding: "DB", session: "primary-first" } as const;

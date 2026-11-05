@@ -93,7 +93,7 @@ a 3px straw rule along the inner bottom edge.
 ## 3. Type
 
 Three faces, three roles, no overlap. Self-host through Astro's font API (`astro:fonts`,
-local provider, latin subset, files vendored under `sites/staging/src/fonts/`) — **no CDN
+local provider, latin subset, files vendored under `sites/store/src/fonts/`) — **no CDN
 link at runtime**, and no silent fallback.
 
 | Role | Face | Settings | Used for |

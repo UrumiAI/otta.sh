@@ -3,7 +3,7 @@
  * the way the Block Kit console drives it (dev-bypass session, form submits
  * with the form's own `block_id`, promoted buttons' values). Not a spec.
  */
-import { setupClaimHeaders } from "../scripts/setup-claim-cookie.js";
+import { setupClaimHeaders } from "../../store/scripts/setup-claim-cookie.js";
 import { E2E_BASE_URL, expect } from "./harness.js";
 
 const ADMIN = `${E2E_BASE_URL}/_emdash/api/plugins/otta/admin`;

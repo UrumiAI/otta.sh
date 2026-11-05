@@ -43,7 +43,7 @@
 	},
 	"scripts": {
 		"build": "tsdown",
-		"prepublishOnly": "tsdown"
+		"prepack": "tsdown"
 	},
 	"devDependencies": {
 		"@types/node": "catalog:",

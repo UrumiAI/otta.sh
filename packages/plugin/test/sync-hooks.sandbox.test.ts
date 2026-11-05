@@ -104,7 +104,7 @@ const SEEDED_WM = "2026-07-01T00:00:00.000Z";
  * level. em-dash's `ContentItem` (`packages/core/src/database/repositories/
  * types.ts`) has no `title` member at all: `mapRow()` puts every column that is
  * not in `SYSTEM_COLUMNS` into `data`, and `title` is an ordinary user-defined
- * collection field (see `sites/staging/seed/seed.json`, which declares it on
+ * collection field (see `sites/store/seed/seed.json`, which declares it on
  * `products`). `contentItemToRecord = { ...item }` passes that item through
  * verbatim, so a hook payload carries `data.title`, never `content.title`.
  */

@@ -19,7 +19,7 @@ import {
 	SETUP_CLAIM_PATH,
 	SETUP_TOKEN_PARAM,
 	setupClaimUrl,
-} from "../../src/lib/setup-claim-contract.js";
+} from "../../../store/src/lib/setup-claim-contract.js";
 import { E2E_SETUP_TOKEN } from "../harness.js";
 import { CLAIM_PROBE_HOST, CLAIM_SITE } from "./claim-stack.js";
 

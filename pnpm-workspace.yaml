@@ -95,6 +95,11 @@ catalog:
   # wrangler ^4.68 -> ^4.99 because `@emdash-cms/cloudflare` declares
   # `peerDependencies.wrangler >= 4.99.0`.
   wrangler: ^4.99.0
+  # Must equal the `workerd` that this catalog's wrangler depends on (see
+  # `sites/store/test/workerd-pin.test.ts`). Pinned in `sites/store` and
+  # `sites/staging` so both resolve the same `@astrojs/cloudflare` /
+  # `@emdash-cms/cloudflare` variant. Bump together with wrangler.
+  workerd: 1.20260708.1
   "@types/node": ^22.15.0
   fast-check: ^3.23.2
   "@playwright/test": ^1.62.1

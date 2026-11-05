@@ -11,6 +11,9 @@ import {
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
 } from "@urumi.ai/otta-domain";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";
 import { devStripeOfflineEnabled, stripeGatewayFromCtx } from "../src/payments/stripe-wiring.js";
@@ -195,5 +198,26 @@ describe("stripeGatewayFromCtx — the dev-only offline arm (issue #378)", () =>
 			lines: [],
 		});
 		expect(calls).toHaveLength(1);
+	});
+});
+
+describe("the dev gate never hands a consumer's bundler a bare import.meta.env (ADR-0045)", () => {
+	test("every line of src, COMMENTS INCLUDED, names import.meta.env only as a `.KEY` member read", () => {
+		// Astro's env plugin scans the module text, and the published dist keeps
+		// comments: one bare (or `?.`) mention makes it inline every build variable
+		// whose name appears in the module.
+		const offenders: string[] = [];
+		const src = fileURLToPath(new URL("../src", import.meta.url));
+		for (const file of readdirSync(src, { recursive: true }).map(String)) {
+			if (!file.endsWith(".ts")) continue;
+			readFileSync(path.join(src, file), "utf8")
+				.split("\n")
+				.forEach((line, index) => {
+					if (/import\.meta\.env(?!\.[A-Z_]+\b)/.test(line)) {
+						offenders.push(`${file}:${String(index + 1)}: ${line.trim()}`);
+					}
+				});
+		}
+		expect(offenders).toEqual([]);
 	});
 });

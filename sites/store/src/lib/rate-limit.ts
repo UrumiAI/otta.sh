@@ -442,7 +442,7 @@ export async function enforceRateLimit(
 		if (!loggedMissing.has(cls)) {
 			loggedMissing.add(cls);
 			console.warn(
-				`[site-staging] rate limiting is OFF for ${cls} routes: no ${RATE_LIMIT_BINDINGS[cls]} binding (DEPLOYMENT.md §2.5). Requests pass unlimited.`,
+				`[site-staging] rate limiting is OFF for ${cls} routes: no ${RATE_LIMIT_BINDINGS[cls]} binding (Otta's DEPLOYMENT.md §2.5: https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md). Requests pass unlimited.`,
 			);
 		}
 		return null;

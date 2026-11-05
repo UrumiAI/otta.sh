@@ -29,23 +29,35 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { AstroUserConfig } from "astro";
 import { afterEach, describe, expect, test } from "vitest";
+import { runOttaSetup } from "./helpers/otta-setup.js";
 import {
 	BUILD_PATH_SCRUB_INTEGRATION,
 	BUILD_SECRET_ENV_KEYS,
 	buildPathScrub,
+	buildSearchedEnvValues,
 	dropBuildSecretEnv,
 	dropShellPathEnv,
+	findInlinedEnvKeysInDir,
+	inlinedEnvKeysByClass,
 	findInlinedSecretsInDir,
 	findLeakedSecretValuesInDir,
+	hasUrlCredentials,
 	MIN_SEARCHED_SECRET_LENGTH,
 	inlinedEnvKeys,
 	isBuildSecretEnvKey,
+	searchedEnvValueSets,
+	isRandomLookingEnvValue,
 	SHELL_PATH_ENV_KEYS,
 	scrubBuildPaths,
 	scrubBuildPathsInDir,
 	workspaceRoot,
-} from "../src/lib/build-path-scrub.js";
+	WHOLE_ENV_MARKER,
+} from "../../store/src/lib/build-path-scrub.js";
+
+const PUBLISHABLE =
+	"pk_live_51HqXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVwXyZ9876543210AbCdEfGh";
 
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dist = path.join(siteRoot, "dist");
@@ -249,14 +261,38 @@ describe("astro config wiring", () => {
 	test("workspaceRoot is the repo root (it holds pnpm-workspace.yaml)", () => {
 		expect(existsSync(path.join(workspaceRoot(), "pnpm-workspace.yaml"))).toBe(true);
 		expect(path.resolve(siteRoot, "../..")).toBe(workspaceRoot());
+		// From this site's root too, which is where otta() starts it (ADR-0045).
+		expect(workspaceRoot(siteRoot)).toBe(path.resolve(siteRoot, "../.."));
+	});
+
+	test("an npm or yarn workspace root (package.json with `workspaces`) counts as the root", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "otta-root-"));
+		try {
+			const site = path.join(dir, "apps", "store");
+			mkdirSync(site, { recursive: true });
+			writeFileSync(path.join(dir, "package.json"), JSON.stringify({ workspaces: ["apps/*"] }));
+			writeFileSync(path.join(site, "package.json"), JSON.stringify({ name: "store" }));
+			expect(workspaceRoot(site)).toBe(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("with no pnpm-workspace.yaml above it, the root is the project itself (a template site)", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "otta-root-"));
+		try {
+			expect(workspaceRoot(dir)).toBe(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test.each([
 		["astro.config.ts", "../astro.config.js"],
 		["astro.config.playground.ts", "../astro.config.playground.js"],
-	])("%s registers the scrub integration", async (_name, specifier) => {
-		const config = (await import(specifier)).default as { integrations?: unknown[] };
-		const names = (config.integrations ?? []).flat().map((i) => (i as { name?: string })?.name);
+	])("%s registers the scrub integration (through otta())", async (_name, specifier) => {
+		const config = (await import(specifier)).default as AstroUserConfig;
+		const names = (await runOttaSetup(config)).integrationNames;
 		expect(names).toContain(BUILD_PATH_SCRUB_INTEGRATION);
 	});
 
@@ -409,6 +445,145 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 			expect(existsSync(path.join(server, "chunk.mjs"))).toBe(true);
 		}));
 
+	test("a secret with an unusual name (SENDGRID_APIKEY) fails the build by its value", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			writeFileSync(path.join(server, "chunk.mjs"), `const k = "${MARKER}";`);
+			process.env.SENDGRID_APIKEY = MARKER;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("chunk.mjs: SENDGRID_APIKEY");
+			expect(failure).not.toContain(MARKER);
+			expect(existsSync(server)).toBe(false);
+		}));
+
+	test("a random-looking value under a name that is not secret-shaped warns, never fails, and shows no value", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			const value = "q8Zr3xK1mV7bT9wLpN2cD5fHs4JaE6yU";
+			writeFileSync(path.join(server, "chunk.mjs"), `const k = "${value}";`);
+			process.env.VENDOR_BLOB = value;
+			const { failure, warnings } = await runHooks("build", { serverDir: server });
+			expect(failure).toBeUndefined();
+			expect(existsSync(path.join(server, "chunk.mjs"))).toBe(true);
+			const warning = warnings.find((w) => w.includes("random-looking"));
+			expect(warning).toContain("chunk.mjs: VENDOR_BLOB (random-looking value)");
+			expect(warning).toContain("Worker secret");
+			expect(warning).toContain("PUBLIC_");
+			expect(warnings.join("\n")).not.toContain(value);
+		}));
+
+	test("a random-looking value in the CLIENT output warns too, and keeps both outputs", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "dist", "server");
+			const client = path.join(dir, "dist", "client");
+			mkdirSync(server, { recursive: true });
+			mkdirSync(client, { recursive: true });
+			writeFileSync(path.join(server, "entry.mjs"), "export {};");
+			process.env.VENDOR_BLOB = "q8Zr3xK1mV7bT9wLpN2cD5fHs4JaE6yU";
+			writeFileSync(path.join(client, "index.html"), `<p>${process.env.VENDOR_BLOB}</p>`);
+			const { failure, warnings } = await runHooks("build", {
+				serverDir: server,
+				clientDir: client,
+			});
+			expect(failure).toBeUndefined();
+			expect(existsSync(client)).toBe(true);
+			expect(warnings.join("\n")).toContain(
+				`client/index.html: VENDOR_BLOB (random-looking value)`,
+			);
+		}));
+
+	test("a secret-NAMED value still fails, even when its value is random-looking", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			const value = "q8Zr3xK1mV7bT9wLpN2cD5fHs4JaE6yU";
+			writeFileSync(path.join(server, "chunk.mjs"), `const k = "${value}";`);
+			process.env.SLACK_WEBHOOK_URL = value;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("chunk.mjs: SLACK_WEBHOOK_URL");
+			expect(failure).not.toContain("(random-looking value)");
+			expect(failure).not.toContain(value);
+			expect(existsSync(server)).toBe(false);
+		}));
+
+	test("a Slack webhook URL fails by its name although it ends in _URL", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			const url = "https://hooks.slack.com/services/T0000000/B0000000/XXXXXXXXXXXXXXXXXXXXXXXX";
+			writeFileSync(path.join(server, "chunk.mjs"), `const u = "${url}";`);
+			process.env.SLACK_WEBHOOK_URL = url;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("chunk.mjs: SLACK_WEBHOOK_URL");
+			expect(failure).not.toContain(url);
+		}));
+
+	test.each([
+		["user:pass", "postgres://app:s3cretpassw0rd@db.example.com:5432/shop"],
+		["a long token", "https://ghp_aB3dE5gH7jK9mN1pQ3sT5vX7zA9cD1fG3hJ5@github.com/org/repo.git"],
+	])("a value with URL credentials (%s) fails under any name", (_label, value) =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			writeFileSync(path.join(server, "chunk.mjs"), `const u = ${JSON.stringify(value)};`);
+			process.env.ORIGIN_REMOTE = value;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("chunk.mjs: ORIGIN_REMOTE");
+			expect(failure).not.toContain(value);
+			expect(existsSync(server)).toBe(false);
+		}),
+	);
+
+	test("GITHUB_PAT is searched and fails the build (no blanket GITHUB_ exemption)", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			const value = "ghp_aB3dE5gH7jK9mN1pQ3sT5vX7zA9cD1fG3hJ5";
+			writeFileSync(path.join(server, "chunk.mjs"), `const t = "${value}";`);
+			process.env.GITHUB_PAT = value;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("chunk.mjs: GITHUB_PAT");
+			expect(failure).not.toContain(value);
+		}));
+
+	test("a SENTRY_RELEASE, a Turnstile site key and a publishable key in the bundle pass silently", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			const values = {
+				SENTRY_RELEASE: "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c",
+				TURNSTILE_SITE_KEY: "0x4AAAAAAABkMYinukE8nzYS",
+				STRIPE_PUBLISHABLE_KEY: PUBLISHABLE,
+			};
+			writeFileSync(path.join(server, "chunk.mjs"), `const v = ${JSON.stringify(values)};`);
+			Object.assign(process.env, values);
+			const { failure, warnings } = await runHooks("build", { serverDir: server });
+			expect(failure).toBeUndefined();
+			expect(warnings.filter((w) => w.includes("random-looking"))).toEqual([]);
+		}));
+
+	test("long public-looking values (path, URL, commit, CI) in the bundle do not fail it", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			const sha = "0123456789abcdef0123456789abcdef01234567";
+			const url = "https://shop.example.com/some/long/public/path";
+			const dirPath = "/home/runner/work/otta/otta/node_modules/.bin";
+			writeFileSync(
+				path.join(server, "chunk.mjs"),
+				`const v = ${JSON.stringify([sha, url, dirPath])};`,
+			);
+			process.env.GIT_COMMIT_SHA = sha;
+			process.env.STORE_ORIGIN = url;
+			process.env.TOOLS_LOCATION = dirPath;
+			process.env.WORKERS_CI_COMMIT_SHA = sha;
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toBeUndefined();
+			expect(existsSync(path.join(server, "chunk.mjs"))).toBe(true);
+		}));
+
 	test("a value in the CLIENT output (a prerendered page) fails the build and deletes both outputs", () =>
 		withTempDir(async (dir) => {
 			const server = path.join(dir, "dist", "server");
@@ -437,9 +612,98 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 			expect(existsSync(path.join(server, "entry.mjs"))).toBe(true);
 		}));
 
-	test("passes a server bundle with no secret in it", () =>
+	test("the builder's PATH in the bundle fails it: a bare import.meta.env inlined the WHOLE env", () =>
 		withTempDir(async (dir) => {
-			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(`\tCI: "1"`));
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			process.env.PATH = "/opt/build/node_modules/.bin:/usr/local/bin:/usr/bin:/bin";
+			writeFileSync(
+				path.join(server, "plugin_X.mjs"),
+				withInlinedEnv(`\tPATH: ${JSON.stringify(process.env.PATH)}`),
+			);
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain(`plugin_X.mjs: ${WHOLE_ENV_MARKER}`);
+			expect(failure).not.toContain("/usr/local/bin");
+			expect(existsSync(server)).toBe(false);
+		}));
+
+	test("an inlined HOME alone fails it: ANY build variable outside the allowlist, secret or not", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			writeFileSync(path.join(server, "plugin_X.mjs"), withInlinedEnv(`\tHOME: "/home/x"`));
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("plugin_X.mjs: HOME");
+			expect(failure).not.toContain("/home/x");
+			expect(existsSync(server)).toBe(false);
+		}));
+
+	test("a SHORT PATH (under the value search's 16 characters) still fails, by its key", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(server);
+			process.env.PATH = "/bin";
+			writeFileSync(path.join(server, "plugin_X.mjs"), withInlinedEnv(`\tPATH: "/bin"`));
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toContain("plugin_X.mjs: PATH");
+			expect(existsSync(server)).toBe(false);
+		}));
+
+	test.each([
+		["SITE_URL", "https://shop.example.com"],
+		["EMDASH_SITE_URL", "https://shop.example.com"],
+		["EMDASH_TRUSTED_PROXY_HEADERS", "x-real-ip"],
+		// GitHub Actions and Workers Builds both set CI=true; Astro inlines it into the app chunk.
+		["CI", "true"],
+	])(
+		"EmDash's build-time config or the CI flag %s may be inlined (no failure, no warning)",
+		(key, value) =>
+			withTempDir(async (dir) => {
+				writeFileSync(
+					path.join(dir, "ok.mjs"),
+					withInlinedEnv(`\t${key}: ${JSON.stringify(value)}`),
+				);
+				const { failure, warnings } = await runHooks("build", { serverDir: dir });
+				expect(failure).toBeUndefined();
+				expect(warnings.join("\n")).not.toContain(key);
+			}),
+	);
+
+	test("an unknown non-secret key WARNS, naming it, and the build goes on", () =>
+		withTempDir(async (dir) => {
+			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(`\tSHOP_REGION: "eu"`));
+			const { failure, warnings } = await runHooks("build", { serverDir: dir });
+			expect(failure).toBeUndefined();
+			expect(warnings.join("\n")).toContain("ok.mjs: SHOP_REGION");
+			expect(warnings.join("\n")).not.toContain('"eu"');
+			expect(existsSync(path.join(dir, "ok.mjs"))).toBe(true);
+		}));
+
+	test.each(["USER", "SHELL", "npm_config_user_agent", "WORKERS_CI_BRANCH"])(
+		"a shell or CI variable (%s) fails it: the build environment was inlined",
+		(key) =>
+			withTempDir(async (dir) => {
+				const server = path.join(dir, "server");
+				mkdirSync(server);
+				writeFileSync(path.join(server, "x.mjs"), withInlinedEnv(`\t${key}: "v"`));
+				const { failure } = await runHooks("build", { serverDir: server });
+				expect(failure).toContain(`x.mjs: ${key}`);
+			}),
+	);
+
+	test("Astro's own keys and PUBLIC_* may be inlined", () =>
+		withTempDir(async (dir) => {
+			writeFileSync(
+				path.join(dir, "ok.mjs"),
+				withInlinedEnv(`\tPUBLIC_SITE_NAME: "Acme",\n\tMODE: "production"`),
+			);
+			const { failure } = await runHooks("build", { serverDir: dir });
+			expect(failure).toBeUndefined();
+		}));
+
+	test("passes a server bundle with no secret in it (an EMPTY inlined object, as a real build has)", () =>
+		withTempDir(async (dir) => {
+			writeFileSync(path.join(dir, "ok.mjs"), withInlinedEnv(""));
 			process.env.GITHUB_CLIENT_SECRET = MARKER;
 			const { failure } = await runHooks("build", { serverDir: dir });
 			expect(failure).toBeUndefined();
@@ -484,6 +748,23 @@ describe("scrubBuildPathsInDir", () => {
 				`createComponent(f, "/X.astro");`,
 			);
 			expect(readFileSync(path.join(dir, "wrangler.json"), "utf8")).toContain(root);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("rewrites the sources of a chunk's source map too", async () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "otta-scrub-"));
+		const root = "/home/builder/otta";
+		try {
+			writeFileSync(
+				path.join(dir, "admin_x.mjs.map"),
+				`{"version":3,"sources":["${root}/node_modules/emdash/dist/a.js"],"mappings":""}`,
+			);
+			expect(await scrubBuildPathsInDir(dir, root)).toBe(1);
+			expect(readFileSync(path.join(dir, "admin_x.mjs.map"), "utf8")).toBe(
+				`{"version":3,"sources":["/node_modules/emdash/dist/a.js"],"mappings":""}`,
+			);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -575,6 +856,14 @@ describe("isBuildSecretEnvKey", () => {
 		"PG_CONNECTION_STRING",
 		"POSTGRES_URL",
 		"PREVIEW_SECRET",
+		"SENDGRID_APIKEY",
+		"ACME_ACCESSKEY",
+		"PRIVATEKEY",
+		"SLACK_WEBHOOK_URL",
+		"DISCORD_WEBHOOKS_URL",
+		"GITHUB_PAT",
+		"GH_PAT",
+		"npm_config_pat",
 	])("names %s a secret by its shape", (key) => {
 		expect(isBuildSecretEnvKey(key)).toBe(true);
 	});
@@ -596,8 +885,108 @@ describe("isBuildSecretEnvKey", () => {
 		"STRIPE_PUBLIC_KEY",
 		"PUBLIC_API_KEY",
 		"PASSTHROUGH",
+		"PATCH_LEVEL",
+		"PATHS",
+		"GITHUB_PATH",
+		"SPATIAL_ID",
+		"ENABLE_WEBHOOKS",
+		"WEBHOOK_PATH",
+		"DATE_PAT_STYLE",
+		"URL_PAT_PREFIX",
+		"PAT_NAME",
 	])("leaves %s alone", (key) => {
 		expect(isBuildSecretEnvKey(key)).toBe(false);
+	});
+});
+
+describe("searchedEnvValueSets", () => {
+	test("a PUBLIC_ value with a key as its URL user (a Sentry DSN) is never a failing secret", () => {
+		const dsn = "https://0123456789abcdef0123456789abcdef@o450000.ingest.sentry.io/1234567";
+		const { secrets, random } = searchedEnvValueSets({
+			PUBLIC_SENTRY_DSN: dsn,
+			OTHER_CONN: "https://user:p4ssw0rd-long-enough@db.example.com/x",
+		});
+		expect(secrets.has("PUBLIC_SENTRY_DSN")).toBe(false);
+		expect(random.has("PUBLIC_SENTRY_DSN")).toBe(false);
+		expect(secrets.has("OTHER_CONN")).toBe(true);
+	});
+});
+
+describe("isRandomLookingEnvValue", () => {
+	const random = "q8Zr3xK1mV7bT9wLpN2cD5fHs4JaE6yU";
+
+	test("a long high-entropy value under any other name is searched for", () => {
+		expect(isRandomLookingEnvValue("VENDOR_BLOB", random)).toBe(true);
+		expect(isRandomLookingEnvValue("VENDOR_BLOB", "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")).toBe(true);
+		const searched = buildSearchedEnvValues({
+			VENDOR_BLOB: random,
+			ACME_API_TOKEN: "x",
+			CI: "true",
+		});
+		expect([...searched.keys()].toSorted()).toEqual(["ACME_API_TOKEN", "VENDOR_BLOB"]);
+	});
+
+	test.each([
+		["SHORT", "abc123def456"],
+		["WORD", "production-environment-name-for-the-store"],
+		["WORDS", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"],
+		["LOCATION", "/usr/local/lib/node_modules/pnpm/bin/9"],
+		["ORIGIN", "https://shop.example.com/a1b2c3d4e5f6g7h8"],
+		["HOME_DIR", random],
+		["GIT_SHA", random],
+		["PUBLIC_BLOB", random],
+		["CI", random],
+		["WORKERS_CI_BRANCH", random],
+		["GITHUB_STEP_SUMMARY", random],
+		["GITHUB_WORKSPACE", random],
+		["RUNNER_TRACKING_ID", random],
+		["SENTRY_RELEASE", "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"],
+		["APP_BUILD", random],
+		["TURNSTILE_SITE_KEY", "0x4AAAAAAABkMYinukE8nzYS"],
+		["STRIPE_PUBLISHABLE_KEY", PUBLISHABLE],
+		["STRIPE_PUBLIC_KEY", PUBLISHABLE],
+		["EMDASH_TURNSTILE_SITE_KEY", random],
+		["npm_config_cache", random],
+		["SPACED", "has spaces in it 1234567890 abcdef"],
+	])("leaves %s alone", (key, value) => {
+		expect(isRandomLookingEnvValue(key, value)).toBe(false);
+	});
+});
+
+describe("isRandomLookingEnvValue: the GitHub runner list, hex entropy, URL credentials", () => {
+	const random = "q8Zr3xK1mV7bT9wLpN2cD5fHs4JaE6yU";
+
+	test("a GITHUB_ or RUNNER_ variable that is not on the runner's list is searched", () => {
+		const token = "ghp_aB3dE5gH7jK9mN1pQ3sT5vX7zA9cD1fG3hJ5";
+		expect(isRandomLookingEnvValue("GITHUB_PAT", token)).toBe(true);
+		expect(isRandomLookingEnvValue("GITHUB_DEPLOY_BLOB", random)).toBe(true);
+		expect(isRandomLookingEnvValue("RUNNER_CUSTOM_BLOB", random)).toBe(true);
+		const searched = buildSearchedEnvValues({ GITHUB_PAT: token, GITHUB_SHA: random });
+		expect([...searched.keys()]).toEqual(["GITHUB_PAT"]);
+	});
+
+	test("an all-hex value uses a lower entropy bar (3.0), anything else keeps 3.5", () => {
+		// 32 hex characters over 12 symbols: about 3.41 bits per character.
+		const hex = "7e3a9f1c7e3a9f1c7e3a0b5d7e3a9f1c";
+		expect(isRandomLookingEnvValue("VENDOR_BLOB", hex)).toBe(true);
+		// The same shape with a non-hex letter keeps the 3.5 bar and is not flagged.
+		expect(isRandomLookingEnvValue("VENDOR_BLOB", "7e3a9f1c7e3a9f1c7e3a0b5d7e3a9f1g")).toBe(false);
+	});
+
+	test("hasUrlCredentials: user:pass or a long token as the user, not a short user", () => {
+		expect(hasUrlCredentials("postgres://app:pw@db.example.com/x")).toBe(true);
+		expect(
+			hasUrlCredentials("https://ghp_aB3dE5gH7jK9mN1pQ3sT5vX7zA9cD1fG3hJ5@github.com/o/r"),
+		).toBe(true);
+		expect(hasUrlCredentials("ssh://git@github.com/org/repo.git")).toBe(false);
+		expect(hasUrlCredentials("https://shop.example.com/a@b")).toBe(false);
+		expect(hasUrlCredentials("mailto:someone@example.com")).toBe(false);
+	});
+
+	test("a URL with credentials is a secret under any name, in the secret set and not the random set", () => {
+		expect(
+			buildSearchedEnvValues({ ORIGIN_REMOTE: "postgres://a:b@h/x" }).has("ORIGIN_REMOTE"),
+		).toBe(true);
 	});
 });
 
@@ -675,5 +1064,11 @@ describe.runIf(existsSync(dist) || process.env.CI !== undefined)("the built site
 	test("inlines no secret into a server chunk (#584)", () => {
 		expect(existsSync(dist), "no sites/staging/dist — run `pnpm -r build` first").toBe(true);
 		expect(findInlinedSecretsInDir(path.join(dist, "server")), rebuildHint).toEqual([]);
+	});
+
+	test("inlines no secret, no shell variable and no unknown key (ADR-0045)", () => {
+		expect(existsSync(dist), "no sites/staging/dist — run `pnpm -r build` first").toBe(true);
+		expect(findInlinedEnvKeysInDir(path.join(dist, "server")), rebuildHint).toEqual([]);
+		expect(inlinedEnvKeysByClass(path.join(dist, "server")).unknown, rebuildHint).toEqual([]);
 	});
 });

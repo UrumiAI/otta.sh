@@ -8,9 +8,14 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AstroUserConfig } from "astro";
 import { describe, expect, test } from "vitest";
-import { buildEmdashOptions } from "../src/emdash-options.js";
-import { buildPlaygroundEmdashOptions, PLAYGROUND_DB_BINDING } from "../src/playground-options.js";
+import { runOttaSetup } from "./helpers/otta-setup.js";
+import { buildEmdashOptions } from "../../store/src/emdash-options.js";
+import {
+	buildPlaygroundEmdashOptions,
+	PLAYGROUND_DB_BINDING,
+} from "../../store/src/playground-options.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -20,6 +25,12 @@ function parseJsonc(raw: string): Record<string, unknown> {
 		.replace(/^\s*\/\/.*$/gm, "")
 		.replace(/([^:"])\/\/.*$/gm, "$1");
 	return JSON.parse(noComments.replace(/,(\s*[}\]])/g, "$1")) as Record<string, unknown>;
+}
+
+/** The Vite defines otta() bakes for the site config at `specifier`. */
+async function defineOf(specifier: string): Promise<Record<string, string>> {
+	const config = (await import(specifier)).default as AstroUserConfig;
+	return (await runOttaSetup(config)).config.vite.define as Record<string, string>;
 }
 
 describe("buildPlaygroundEmdashOptions", () => {
@@ -50,11 +61,16 @@ describe("playground build files", () => {
 	const config = parseJsonc(readFileSync(path.join(root, "wrangler.playground.jsonc"), "utf8"));
 
 	test("the worker exports the Durable Object class and the storefront handler", () => {
-		const worker = readFileSync(path.join(root, "src/playground-worker.ts"), "utf8");
+		// The store's playground worker (ADR-0045), re-exported by this site's entry.
+		const worker = readFileSync(path.join(root, "../store/src/playground-worker.ts"), "utf8");
 		expect(worker).toContain(
 			'export { EmDashPreviewDB } from "@emdash-cms/cloudflare/db/playground"',
 		);
 		expect(worker).toContain('export { default } from "./worker.js"');
+		const entry = readFileSync(path.join(root, "src/playground-worker.ts"), "utf8");
+		expect(entry).toContain(
+			'export { default, EmDashPreviewDB } from "@urumi.ai/otta-store/playground-worker"',
+		);
 		expect(config["main"]).toBe("./src/playground-worker.ts");
 	});
 
@@ -82,16 +98,24 @@ describe("playground build files", () => {
 		expect(observability.logs?.invocation_logs).toBe(false);
 	});
 
-	test("the playground config turns the flag on; the storefront config leaves it off", () => {
+	test("the playground config turns the flag on; the storefront config leaves it off", async () => {
 		const playground = readFileSync(path.join(root, "astro.config.playground.ts"), "utf8");
 		const storefront = readFileSync(path.join(root, "astro.config.ts"), "utf8");
-		expect(playground).toMatch(/emdash\(\s*buildPlaygroundEmdashOptions\(egress\)\s*\)/);
+		// otta() owns the registration and the define (ADR-0045).
+		const integration = readFileSync(path.join(root, "../store/src/integration.ts"), "utf8");
+		expect(playground).toMatch(/playground: true/);
+		expect(storefront).not.toMatch(/playground:/);
 		expect(playground).toContain("wrangler.playground.jsonc");
 		expect(playground).toContain('imageService: "passthrough"');
-		expect(playground).toMatch(/__OTTA_PLAYGROUND__:\s*JSON\.stringify\(true\)/);
-		expect(storefront).toMatch(/__OTTA_PLAYGROUND__:\s*JSON\.stringify\(false\)/);
-		expect(storefront).toMatch(/emdash\(\s*buildEmdashOptions\(egress, emailFrom\)\s*\)/);
-	});
+		expect(integration).toMatch(
+			/playground\s*\?\s*emdash\(buildPlaygroundEmdashOptions\(egress\)\)\s*:\s*emdash\(buildEmdashOptions\(egress, emailFrom\)\)/,
+		);
+		expect(integration).toMatch(/__OTTA_PLAYGROUND__:\s*JSON\.stringify\(playground\)/);
+		expect(integration).toMatch(/const playground = options\.playground === true;/);
+		// And the hook really bakes each value.
+		expect((await defineOf("../astro.config.playground.js"))["__OTTA_PLAYGROUND__"]).toBe("true");
+		expect((await defineOf("../astro.config.js"))["__OTTA_PLAYGROUND__"]).toBe("false");
+	}, 60_000);
 });
 
 describe("playground media library files", () => {

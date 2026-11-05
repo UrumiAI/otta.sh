@@ -34,9 +34,9 @@ import {
 	fetchCmsProducts,
 	seededProductSlugs,
 	seedOneProduct,
-} from "../scripts/seed-demo-commerce.js";
+} from "../../store/scripts/seed-demo-commerce.js";
 import { RetryableError, retryBounded } from "../scripts/retry.js";
-import { setupClaimHeaders } from "../scripts/setup-claim-cookie.js";
+import { setupClaimHeaders } from "../../store/scripts/setup-claim-cookie.js";
 import {
 	assertLoopbackSite,
 	DEFAULT_PAID_ORDERS,
@@ -203,7 +203,7 @@ async function priceCatalog(): Promise<void> {
 	const authHeaders = await cmsAuthHeaders(E2E_BASE_URL);
 	// `fileURLToPath`, not `.pathname`: the latter stays percent-encoded, so a
 	// checkout path with a space or a non-ASCII character would not be found.
-	const seedPath = fileURLToPath(new URL("../seed/seed.json", import.meta.url));
+	const seedPath = fileURLToPath(new URL("../../store/seed/seed.json", import.meta.url));
 	const rows = demoRows(
 		seededProductSlugs(seedPath),
 		await fetchCmsProducts(E2E_BASE_URL, authHeaders),

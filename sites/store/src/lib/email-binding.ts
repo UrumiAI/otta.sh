@@ -73,7 +73,7 @@ function assertScopeBinding(entries: unknown, fileName: string, sender?: EmailSe
 			`OTTA_EMAIL_FROM is set but ${fileName} declares no send_email binding named ` +
 				`"${EMAIL_BINDING}". Add "send_email": [{ "name": "${EMAIL_BINDING}" }] to ${fileName} ` +
 				"(after the sender domain is active on Cloudflare Email Sending and the plan is " +
-				"Workers Paid; DEPLOYMENT.md §3, Email), or unset OTTA_EMAIL_FROM. A selected " +
+				"Workers Paid; Otta's DEPLOYMENT.md §3, Email: https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md), or unset OTTA_EMAIL_FROM. A selected " +
 				"provider with no binding fails every send and parks order emails as failed.",
 		);
 	}

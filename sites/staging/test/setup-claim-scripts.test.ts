@@ -1,22 +1,19 @@
 /**
  * The e2e suite and the scripts hold the same setup token as the dev server
- * (ADR-0042; `scripts/setup-claim-cookie.ts`).
+ * (ADR-0042; the store's `scripts/setup-claim-cookie.ts` and `e2e/setup-token.ts`).
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { cmsAuthHeaders } from "../scripts/seed-demo-commerce.js";
-import {
-	e2eSetupToken,
-	setupClaimCookie,
-	setupClaimHeaders,
-} from "../scripts/setup-claim-cookie.js";
+import { cmsAuthHeaders } from "../../store/scripts/seed-demo-commerce.js";
+import { setupClaimCookie, setupClaimHeaders } from "../../store/scripts/setup-claim-cookie.js";
+import { e2eSetupToken } from "../e2e/setup-token.js";
 import {
 	PUBLIC_E2E_SETUP_TOKEN,
 	SETUP_CLAIM_COOKIE,
 	SETUP_TOKEN_SECRET,
-} from "../src/lib/setup-claim-contract.js";
+} from "../../store/src/lib/setup-claim-contract.js";
 
 let dir: string;
 let devVars: string;

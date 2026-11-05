@@ -55,7 +55,7 @@ import type { ApplyVariantSyncInput } from "../product-commerce/commerce-client.
  * `TITLE_FIELD` states its own: a repeater is an ordinary user-defined
  * collection field, so `mapRow()` copies it into the hook record's `data` bag
  * and it is NEVER a top-level field on em-dash's `ContentItem`. The staging
- * seed declares it on `products` (`sites/staging/seed/seed.json`), and a
+ * seed declares it on `products` (`sites/store/seed/seed.json`), and a
  * collection that names it something else simply declares no variants — which
  * is the state of the entire live catalogue and is why this lands inert.
  */

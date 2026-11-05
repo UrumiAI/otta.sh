@@ -78,7 +78,7 @@ const T2 = "2026-07-26T11:00:00.000Z";
 /** The product title, which lives at `content.data.title` — NOT at the top
  *  level. em-dash's `ContentItem` has no `title` member; `mapRow()` puts every
  *  non-`SYSTEM_COLUMNS` column into `data`, and `title` is an ordinary
- *  user-defined collection field (`sites/staging/seed/seed.json` declares it on
+ *  user-defined collection field (`sites/store/seed/seed.json` declares it on
  *  `products`). It is the value an order line snapshots at purchase time, its
  *  absence is why a product is unpurchasable (`PRODUCT_NOT_PRICED`), and since
  *  PR 1b it is the ONLY field the CMS sync projects. */

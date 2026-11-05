@@ -1,9 +1,7 @@
-// Astro live-content wiring for EmDash (required: getEmDashCollection /
-// getEmDashEntry ride astro:content's live loader) — verbatim from
-// em-dash's templates/starter-cloudflare/src/live.config.ts.
+// Astro reads live collections from the site's own src/live.config.ts, and
+// hands the real defineLiveCollection only to this file; the EmDash wiring is
+// the store's (sites/store/src/live.config.ts explains).
 import { defineLiveCollection } from "astro:content";
-import { emdashLoader } from "emdash/runtime";
+import { ottaLiveCollections } from "@urumi.ai/otta-store/live-config";
 
-export const collections = {
-	_emdash: defineLiveCollection({ loader: emdashLoader() }),
-};
+export const collections = ottaLiveCollections(defineLiveCollection);

@@ -27,9 +27,9 @@ import {
 	E2E_STARTS_STACK,
 	E2E_VIEWPORT,
 } from "./sites/staging/e2e/harness.js";
-import { SETUP_TOKEN_SECRET } from "./sites/staging/src/lib/setup-claim-contract.js";
-import { DEV_VARS_PATH } from "./sites/staging/scripts/setup-claim-cookie.js";
-import { parseDotEnv } from "./sites/staging/src/lib/dot-env.js";
+import { SETUP_TOKEN_SECRET } from "./sites/store/src/lib/setup-claim-contract.js";
+import { parseDotEnv } from "./sites/store/src/lib/dot-env.js";
+import { DEV_VARS_PATH } from "./sites/staging/e2e/setup-token.js";
 import {
 	markServerStartedCommand,
 	serverStartedMarkerPath,

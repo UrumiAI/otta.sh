@@ -22,14 +22,14 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
+import { LATIN_UNICODE_RANGE, ottaFonts } from "../src/integration.js";
 import { STORE_THEMES } from "../src/themes/manifest.js";
 import { fvarAxes, woff2Tables } from "./helpers/woff2.js";
 
 // (INC-D3a: this file used to pin `COMMERCE_SERVICE_URL` before importing
-// astro.config, because the config resolved it at module load. The config
-// reads no commerce address any more — like site-config.test.ts, this suite
-// now imports it with no env pinned at all.)
+// astro.config, because the config resolved it at module load. The fonts now
+// come from the otta() integration, which exports them, ADR-0045.)
 
 interface ConfiguredFont {
 	name: string;
@@ -47,12 +47,8 @@ interface ConfiguredFont {
 	};
 }
 
-// #498: a leftover STRIPE_PUBLIC_KEY line in this checkout's .env makes the
-// config throw; an empty stub stops that fallback (site-config.test.ts).
-vi.stubEnv("STRIPE_PUBLIC_KEY", "");
-const config = await import("../astro.config.js");
-const { LATIN_UNICODE_RANGE } = config;
-const fonts = (config.default.fonts ?? []) as unknown as ConfiguredFont[];
+// The fonts are the otta() integration's (ADR-0045): it hands Astro this list.
+const fonts = ottaFonts() as ConfiguredFont[];
 const byVariable = new Map(fonts.map((font) => [font.cssVariable, font]));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -65,7 +61,19 @@ const FACES = [
 	["--f-tempered-data", "Martian Mono", "300 700", ["wdth", "wght"]],
 ] as const;
 
-describe("astro.config fonts", () => {
+describe("otta() hands Astro this list", () => {
+	// The behavioural check (the setup hook's \`fonts\` equals ottaFonts()) runs
+	// through the reference site's config: sites/staging/test/site-config.test.ts.
+	test("updateConfig receives the font constant itself", () => {
+		const source = readFileSync(path.resolve(here, "..", "src", "integration.ts"), "utf8");
+		expect(source).toMatch(/updateConfig\(\{[\s\S]*?\n\t\t\t\t\tfonts: OTTA_FONTS,/);
+		expect(source).toMatch(
+			/export function ottaFonts\(\): readonly unknown\[\] \{\s*return OTTA_FONTS;/,
+		);
+	});
+});
+
+describe("the otta() integration's fonts", () => {
 	test("declares exactly each theme's roles, namespaced `--f-<theme>-<role>`", () => {
 		// Namespaced per theme so a second theme's faces can never collide with
 		// these; theme.css maps them onto the shared `--u-display/-body/-data`.
@@ -108,8 +116,12 @@ describe("astro.config fonts", () => {
 			// The latin subset's range, so the browser never fetches the file for
 			// text it cannot set.
 			expect(variants[0]?.unicodeRange).toEqual(LATIN_UNICODE_RANGE);
-			// The latin subset only, as a variable file under src/fonts/.
-			expect(src).toMatch(/^\.\/src\/fonts\/[a-z-]+\/[a-z-]+-variable-latin\.woff2$/);
+			// The latin subset only, as a variable file under THIS package's
+			// src/fonts/, by absolute path: the site that builds has no copy.
+			expect(path.isAbsolute(src ?? "")).toBe(true);
+			expect(path.relative(path.resolve(here, ".."), src ?? "")).toMatch(
+				/^src\/fonts\/[a-z-]+\/[a-z-]+-variable-latin\.woff2$/,
+			);
 		});
 
 		test("the file is a woff2 that carries a non-empty prep program, so it is never autohinted", () => {

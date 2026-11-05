@@ -1,0 +1,2 @@
+# Astro type generation for `astro check` (root .gitignore covers dist/, .env*, node_modules/)
+.astro/

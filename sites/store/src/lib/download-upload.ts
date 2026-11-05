@@ -375,7 +375,7 @@ export async function handleDownloadUpload(
 		return refuse(
 			503,
 			"DOWNLOADS_NOT_CONFIGURED",
-			`Downloads are not set up on this store: it has no private ${DOWNLOADS_BINDING} bucket. Your developer can add one (DEPLOYMENT.md §2.1).`,
+			`Downloads are not set up on this store: it has no private ${DOWNLOADS_BINDING} bucket. Your developer can add one (Otta's DEPLOYMENT.md §2.1: https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md).`,
 		);
 	}
 
