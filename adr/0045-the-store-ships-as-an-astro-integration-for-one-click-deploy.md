@@ -103,8 +103,9 @@ Options considered:
    the pins by hand. The template contract covers changes to the template's other files only.
    **The pins are also checked at build time.** npm's peer check is skipped by
    `--legacy-peer-deps`, `--force` (which `ERESOLVE` itself suggests) and pnpm, so
-   `astro:config:setup` reads the EmDash, EmDash Cloudflare and Astro versions the project root
-   resolves and fails the build, naming expected and found, when they are not this release's
+   `astro:config:setup` reads the versions the project root resolves of every pinned peer
+   (EmDash, EmDash Cloudflare, Astro, the Astro Cloudflare and React integrations, React) and
+   fails the build, naming expected and found, when they are not this release's
    `peerDependencies` (2026-11-05, after review). The pins stay exact.
    *Not taken, possible follow-up:* floor peer ranges (`>=1.3.1`), so Dependabot could propose
    the bump and the build check would explain a mismatch, at the cost of letting npm install
@@ -211,7 +212,9 @@ The Deploy to Cloudflare button goes into README.md only after all of these:
    the same session as the 0.2.0 publish. Its `dist` keeps a bare `import.meta.env`, so a site
    that builds it inlines its build environment, secrets from `.env` included, into the Worker.
    0.2.0 spells `import.meta.env.DEV` literally (`stripe-wiring.ts`), and the build guard fails a
-   bundle that carries a secret's value.
+   bundle that carries a secret's value. No 0.1.1 patch: 0.2.0 is the next release and goes out
+   in the same session, so the deprecation can point straight at it, and a 0.1.1 would be one
+   more version to deprecate when 0.2.0's peers move.
 4. A real Cloudflare account has run the button, and these are checked:
    - the button creates the D1, R2 and KV resources and rewrites the template's zero-ID
      placeholders (`wrangler.jsonc` keeps them until then);
