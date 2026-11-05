@@ -19,6 +19,7 @@
  * `OTTA_E2E_START_STACK=1` has Playwright boot the local stack itself
  * (`sites/staging/README.md`, "Local development").
  */
+import { existsSync, readFileSync } from "node:fs";
 import { defineConfig, type PlaywrightTestConfig } from "@playwright/test";
 import {
 	E2E_BASE_URL,
@@ -27,6 +28,8 @@ import {
 	E2E_VIEWPORT,
 } from "./sites/staging/e2e/harness.js";
 import { SETUP_TOKEN_SECRET } from "./sites/store/src/lib/setup-claim-contract.js";
+import { parseDotEnv } from "./sites/store/src/lib/dot-env.js";
+import { DEV_VARS_PATH } from "./sites/staging/e2e/setup-token.js";
 import {
 	markServerStartedCommand,
 	serverStartedMarkerPath,
@@ -36,6 +39,23 @@ import {
 // development exception. Every process of this run (global setup, workers, the
 // scripts they call) and the dev server below read the SAME token from here.
 process.env[SETUP_TOKEN_SECRET] = E2E_SETUP_TOKEN;
+
+// A `sites/staging/.dev.vars` (README step 1 creates one for the encryption key)
+// replaces the env injected into the dev Worker. Without OTTA_SETUP_TOKEN in it, a
+// stack this run boots mints its own token, and every `/_emdash` call (global
+// setup's dev-bypass included) answers 403. Say so up front. A warning, not a
+// refusal: a store already claimed by hand never needs the token.
+if (E2E_STARTS_STACK && existsSync(DEV_VARS_PATH)) {
+	const devVars = parseDotEnv(readFileSync(DEV_VARS_PATH, "utf8"));
+	if ((devVars[SETUP_TOKEN_SECRET] ?? "") === "") {
+		console.warn(
+			`playwright.config.ts: ${DEV_VARS_PATH} exists but does not set ${SETUP_TOKEN_SECRET}. ` +
+				`Wrangler gives the dev Worker that file INSTEAD of the injected env, so an unclaimed ` +
+				`store will refuse this run with 403s. Add ${SETUP_TOKEN_SECRET}=<32+ random characters> ` +
+				`to it, or claim the store by hand first (README, "A fresh store is locked").`,
+		);
+	}
+}
 
 /** Playwright does not export `TestConfigWebServer`, so it is reached through
  *  the config type. The annotation dates from when `stack` held two entries and

@@ -680,6 +680,18 @@ export const PRUNE_CART_CALLS = 5;
  *  (`COUPON_RELEASE_CALLS`). */
 export const COD_AUTO_CANCEL_UNIT = 21;
 
+/**
+ * The calls one stale COD order's cancel still makes AFTER its coupon release has
+ * returned (the guarded flip with its release intent and email, the rollup delta,
+ * the hold release), MEASURED in cron-leg-costs.test.ts. The leg checks the release
+ * plus this much is left before it begins a release, so the cancel after it never
+ * meets the tick's ceiling. Not the whole unit: the order read and the
+ * captured-payments check have already run by then, and the real release replaces
+ * the empty one the unit counts — reserving the whole unit put a coupon order out
+ * of a Workers Free tick's reach for good.
+ */
+export const COD_AUTO_CANCEL_AFTER_RELEASE_CALLS = 17;
+
 /** One coupon's recount at worst (`EmdashCouponStore.recountUses`): the coupon read,
  *  its in-flight and applied counts, and the correcting write. */
 export const COUPON_RECOUNT_CALLS = 4;
@@ -2101,11 +2113,27 @@ export async function runCommerceSweeps(
 					// uncancelled and listed, and a later tick frees the use and cancels it.
 					// (Skipped AFTER a cancel, the use would be stranded: coupon-orphans
 					// judges a redemption once.) One deferred ends the batch.
+					//
+					// "Fits" counts the cancel that follows the release, too
+					// (`COD_AUTO_CANCEL_AFTER_RELEASE_CALLS`): the cancel runs outside the
+					// commit window, so a release begun with room for itself alone left the
+					// cancel to overrun the tick's ceiling. Only what is still to come is
+					// reserved, so a Workers Free tick can afford a coupon order; a tick that
+					// cannot walks past it (the domain's cursor) rather than blocking the
+					// orders behind it, and a later pass comes back to it.
 					let releaseSkipped = false;
-					const wholeOnly = wholeReleasesOnly(stores.couponStore, budget, () => {
-						releaseSkipped = true;
-						legBudget.stopped = true;
-					});
+					const wholeOnly = wholeReleasesOnly(
+						stores.couponStore,
+						budget,
+						() => {
+							releaseSkipped = true;
+							legBudget.stopped = true;
+						},
+						// Only an order WITH a coupon: a coupon-less order's release finds
+						// nothing, and that is already inside its unit (`COD_AUTO_CANCEL_UNIT`).
+						(order) =>
+							order.totals?.appliedCouponCode != null ? COD_AUTO_CANCEL_AFTER_RELEASE_CALLS : 0,
+					);
 					const couponStore = {
 						async releaseByOrder(order: Parameters<typeof wholeOnly.releaseByOrder>[0]) {
 							const released = await wholeOnly.releaseByOrder(order);
@@ -2119,6 +2147,7 @@ export async function runCommerceSweeps(
 						},
 					};
 					const gate = legBudget.gate(0, LEG_QUERY_COSTS["cod-auto-cancel"].unit);
+					const from = state.codAutoCancelCursor;
 					const result = await cancelUnpaidOfflineOrders(
 						{
 							orderStore: stores.orderStore,
@@ -2130,8 +2159,19 @@ export async function runCommerceSweeps(
 							maxAgeDays,
 							limit: batchLeft("cod-auto-cancel", COD_AUTO_CANCEL_BATCH),
 							shouldContinue: () => !releaseSkipped && gate(),
+							...(from !== undefined
+								? { after: { createdAt: from.createdAt, orderId: toOrderId(from.orderId) } }
+								: {}),
 						},
 					);
+					// The walk's place, kept in the cadence state (written once at the tick's
+					// end), so the next run starts past what this one judged.
+					const next = result.cursor ?? undefined;
+					if (next?.createdAt !== from?.createdAt || next?.orderId !== from?.orderId) {
+						if (next === undefined) delete state.codAutoCancelCursor;
+						else state.codAutoCancelCursor = { createdAt: next.createdAt, orderId: next.orderId };
+						stateChanged = true;
+					}
 					return batchOutcome(
 						{ count: result.cancelled, drained: result.drained },
 						(count) => noteUnits("cod-auto-cancel", count + result.skipped, legBudget),
@@ -2515,21 +2555,35 @@ function logTick(
 	);
 }
 
+/** What `wholeReleasesOnly` reads off the order a release is for. */
+interface ReleasedOrder {
+	readonly customerId?: string | null;
+	readonly totals?: { readonly appliedCouponCode?: string | null };
+}
+
 /**
  * `store` with `releaseByOrder` guarded as `COUPON_RELEASE_CALLS` describes: skipped
  * (answering 0, no call made, `onSkip` told) when the tick cannot afford the order's
- * release, and otherwise run inside the commit window, closed again when it returns.
- * Every other member is the store's own.
+ * release — and the `thenCalls(order)` the caller makes AFTER it, outside the window
+ * (the COD auto-cancel releases first and cancels after) — and otherwise run inside
+ * the commit window, closed again when it returns. Every other member is the store's
+ * own.
  */
-function wholeReleasesOnly<S extends object>(store: S, budget: TickBudget, onSkip: () => void): S {
+function wholeReleasesOnly<S extends object>(
+	store: S,
+	budget: TickBudget,
+	onSkip: () => void,
+	thenCalls: (order: ReleasedOrder) => number = () => 0,
+): S {
 	return new Proxy(store, {
 		get(target, prop) {
 			const value: unknown = Reflect.get(target, prop, target);
 			if (typeof value !== "function") return value;
 			if (prop === "releaseByOrder") {
-				return async (order: { readonly customerId?: string | null }, ...rest: unknown[]) => {
+				return async (order: ReleasedOrder, ...rest: unknown[]) => {
 					const needed =
-						order.customerId === null ? GUEST_COUPON_RELEASE_CALLS : COUPON_RELEASE_CALLS;
+						(order.customerId === null ? GUEST_COUPON_RELEASE_CALLS : COUPON_RELEASE_CALLS) +
+						thenCalls(order);
 					if (budget.headroom() < needed) {
 						onSkip();
 						return 0;
@@ -2846,6 +2900,12 @@ interface SweepState {
 	/** The last few orders whose expiry flip threw, by id (#478): the durable half
 	 *  of the expiry back-off, and what the leg's alert counts. */
 	expiryFailures: Record<string, ExpiryFailure>;
+	/** Where `cod-auto-cancel`'s walk stands (ADR-0044): past every order it judged
+	 *  — one it SKIPPED (cash on file and flagged, a failed coupon release) included,
+	 *  so a skipped order at the head never blocks the younger ones behind it on a
+	 *  tick that affords one order. Cleared when a run drains the listing, so the next
+	 *  pass starts at the oldest again. */
+	codAutoCancelCursor?: { createdAt: string; orderId: string };
 	/** The declared index layout (`INDEX_LAYOUT`) the last tick saw. */
 	indexLayout?: string;
 	/** The UTC day a tick first saw a new index layout: EmDash builds the new indexes
@@ -2902,15 +2962,26 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return state;
-		const { lastRun, deferrals, waits, expiryFailures, indexLayout, indexBuildDay } = parsed as {
+		const {
+			lastRun,
+			deferrals,
+			waits,
+			expiryFailures,
+			indexLayout,
+			indexBuildDay,
+			codAutoCancelCursor,
+		} = parsed as {
 			lastRun?: unknown;
 			deferrals?: unknown;
 			waits?: unknown;
 			expiryFailures?: unknown;
 			indexLayout?: unknown;
 			indexBuildDay?: unknown;
+			codAutoCancelCursor?: unknown;
 		};
 		if (typeof indexLayout === "string") state.indexLayout = indexLayout;
+		const codCursor = parseCodCursor(codAutoCancelCursor);
+		if (codCursor !== undefined) state.codAutoCancelCursor = codCursor;
 		if (typeof indexBuildDay === "string") state.indexBuildDay = indexBuildDay;
 		state.expiryFailures = parseExpiryFailures(expiryFailures);
 		for (const leg of SWEEP_LEGS) {
@@ -2932,6 +3003,16 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	} catch {
 		return state;
 	}
+}
+
+/** A stored `codAutoCancelCursor`, or undefined when absent or ill-formed (a lost
+ *  cursor only starts the walk at the oldest order again). */
+function parseCodCursor(raw: unknown): { createdAt: string; orderId: string } | undefined {
+	if (typeof raw !== "object" || raw === null) return undefined;
+	const { createdAt, orderId } = raw as { createdAt?: unknown; orderId?: unknown };
+	if (typeof createdAt !== "string" || Number.isNaN(Date.parse(createdAt))) return undefined;
+	if (typeof orderId !== "string" || orderId.length === 0 || orderId.length > 128) return undefined;
+	return { createdAt, orderId };
 }
 
 /** The kv record's failing orders, well-formed entries only, at most

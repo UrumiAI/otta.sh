@@ -30,6 +30,13 @@ import type {
  * discipline. `payments` recording is folded in here (§7 "or fold events into
  * OrderStore").
  */
+/** A position in {@link OrderStore.listAwaitingPaymentBefore}'s order: the
+ *  `(createdAt, orderId)` of the last order a walk judged. */
+export interface AwaitingPaymentCursor {
+	readonly createdAt: string;
+	readonly orderId: OrderId;
+}
+
 export interface OrderStore {
 	/**
 	 * Insert a `pending` order with its line snapshots + `order_totals` stub,
@@ -86,9 +93,16 @@ export interface OrderStore {
 	}): Promise<{ byBuyer: number; byClient: number }>;
 	/**
 	 * `awaiting_payment` orders created strictly before `createdBefore`, oldest
-	 * first, at most `limit` — the COD auto-cancel leg's batch (ADR-0044).
+	 * first — `(createdAt, orderId)` ascending, so orders sharing an instant have
+	 * one order too — at most `limit`: the COD auto-cancel leg's batch (ADR-0044).
+	 * With `after`, only the orders strictly AFTER that position, so a walk can move
+	 * past an order it skipped instead of reading it at the head every run.
 	 */
-	listAwaitingPaymentBefore(createdBefore: string, limit: number): Promise<OrderId[]>;
+	listAwaitingPaymentBefore(
+		createdBefore: string,
+		limit: number,
+		after?: AwaitingPaymentCursor,
+	): Promise<OrderId[]>;
 	/**
 	 * Order-level guarded expiry (§5): `UPDATE orders SET state='expired' WHERE
 	 * id=:id AND state='pending' AND hold_expires_at<=:now RETURNING id`. Re-checks

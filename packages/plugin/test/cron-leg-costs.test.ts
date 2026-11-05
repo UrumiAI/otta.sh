@@ -64,6 +64,7 @@ import { createInProcessCommerceStores } from "../src/commerce/in-process-commer
 import {
 	CONTENT_MISS_QUERIES,
 	CONTENT_READ_QUERIES,
+	COD_AUTO_CANCEL_AFTER_RELEASE_CALLS,
 	COD_AUTO_CANCEL_UNIT,
 	COUPON_RECOUNT_CALLS,
 	COUPON_RELEASE_CALLS,
@@ -762,11 +763,29 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			}
 			// Created "now" by the store's clock: list as if twenty days have passed.
 			const later = new Date(createdAt.getTime() + 20 * DAY_MS);
+			// Where the counter stands when the coupon release returns: the rest is the
+			// cancel AFTER it, which is what the leg must have room for to begin it.
+			let atReleaseEnd = -1;
+			const couponStore = new Proxy(s.couponStore, {
+				get(target, prop) {
+					const value: unknown = Reflect.get(target, prop, target);
+					if (typeof value !== "function") return value;
+					if (prop !== "releaseByOrder") return (value as () => unknown).bind(target);
+					return async (...args: unknown[]) => {
+						const out: unknown = await (value as (...a: unknown[]) => Promise<unknown>).apply(
+							target,
+							args,
+						);
+						atReleaseEnd = counter.calls;
+						return out;
+					};
+				},
+			});
 			const used = await cost(() =>
 				cancelUnpaidOfflineOrders(
 					{
 						orderStore: s.orderStore,
-						couponStore: s.couponStore,
+						couponStore,
 						clock: { now: () => later },
 						logger: NOOP_LOGGER,
 					},
@@ -784,6 +803,13 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			// Pinned on the shape it was measured on, so a change that moves it shows up
 			// here and in `LEG_QUERY_COSTS` together.
 			if (!coupon) expect(unit).toBe(COD_AUTO_CANCEL_UNIT);
+			// What the leg checks is left before it begins a coupon release covers the
+			// release AND the cancel after it, so the cancel never meets the ceiling.
+			else {
+				expect(unit).toBeLessThanOrEqual(COD_AUTO_CANCEL_UNIT + release);
+				// The leg's pre-release check reserves the measured cancel after it.
+				expect(used - atReleaseEnd).toBe(COD_AUTO_CANCEL_AFTER_RELEASE_CALLS);
+			}
 		},
 	);
 

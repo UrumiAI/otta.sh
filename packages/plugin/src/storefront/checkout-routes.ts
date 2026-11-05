@@ -808,7 +808,8 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 			if (input.paymentMethod === "cod") {
 				const facts = codRequestFacts(routeCtx.request);
 				if (facts.attested && facts.network !== null) {
-					clientKey = await networkKey(ctx, facts.network);
+					// No secret to key it under ⇒ no key: COD unavailable, never a throwaway.
+					clientKey = (await networkKey(ctx, facts.network)) ?? undefined;
 				}
 			}
 			const client = await makeCommerceClient(ctx);

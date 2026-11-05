@@ -25,7 +25,11 @@ import {
 } from "@urumi.ai/otta-domain";
 import { CashOnDeliveryGateway } from "@urumi.ai/otta-payments-cod";
 import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { OfflinePolicy } from "../src/payments/cash-on-delivery.js";
+import {
+	COD_MAX_UNITS_PER_ORDER_KEY,
+	readCodCheckoutPolicy,
+	type OfflinePolicy,
+} from "../src/payments/cash-on-delivery.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -44,7 +48,7 @@ let gateway: CountingCodGateway;
 let harness: InProcessCommerceHarness;
 
 beforeEach(async () => {
-	policy = { enabled: true, maxOpenPerBuyer: 3, maxOpenPerClient: 3 };
+	policy = { enabled: true, maxOpenPerBuyer: 3, maxOpenPerClient: 3, maxUnitsPerOrder: 0 };
 	if (harness === undefined) {
 		gateway = new CountingCodGateway();
 		harness = await makeInProcessCommerce({
@@ -63,7 +67,7 @@ afterAll(async () => {
 });
 
 let seq = 0;
-async function physicalCart(): Promise<string> {
+async function physicalCart(qty = 1): Promise<string> {
 	seq += 1;
 	const productId = `prod-cod-${String(seq)}`;
 	const sku = `SKU-COD-${String(seq)}`;
@@ -84,7 +88,7 @@ async function physicalCart(): Promise<string> {
 		"2026-01-01T00:00:00.000Z",
 	);
 	const { cartId } = await harness.client.createCart("USD");
-	const added = await harness.client.addCartLine(cartId, sku, productId, 1, `add-${productId}`);
+	const added = await harness.client.addCartLine(cartId, sku, productId, qty, `add-${productId}`);
 	if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
 	return cartId;
 }
@@ -147,7 +151,7 @@ describe("createOrder with cash on delivery", () => {
 		const cartId = await physicalCart();
 		const first = await placeCod(cartId);
 		if (!first.ok) throw new Error(first.reason);
-		policy = { enabled: false, maxOpenPerBuyer: 3, maxOpenPerClient: 3 };
+		policy = { enabled: false, maxOpenPerBuyer: 3, maxOpenPerClient: 3, maxUnitsPerOrder: 0 };
 		expect(await placeCod(await physicalCart())).toEqual({
 			ok: false,
 			reason: "PAYMENT_METHOD_UNAVAILABLE",
@@ -157,20 +161,37 @@ describe("createOrder with cash on delivery", () => {
 	});
 
 	test("the caps are the policy's: a buyer at their cap is OFFLINE_ORDER_LIMIT, and 0 means no cap", async () => {
-		policy = { enabled: true, maxOpenPerBuyer: 1, maxOpenPerClient: 0 };
+		policy = { enabled: true, maxOpenPerBuyer: 1, maxOpenPerClient: 0, maxUnitsPerOrder: 0 };
 		expect((await placeCod(await physicalCart())).ok).toBe(true);
 		expect(await placeCod(await physicalCart(), { clientKey: "198.51.100.1" })).toEqual({
 			ok: false,
 			reason: "OFFLINE_ORDER_LIMIT",
 		});
-		policy = { enabled: true, maxOpenPerBuyer: 0, maxOpenPerClient: 1 };
+		policy = { enabled: true, maxOpenPerBuyer: 0, maxOpenPerClient: 1, maxUnitsPerOrder: 0 };
 		// No buyer cap now; the same client network is at its cap of one.
 		expect(await placeCod(await physicalCart(), { buyerRef: "other@example.test" })).toEqual({
 			ok: false,
 			reason: "OFFLINE_ORDER_LIMIT",
 		});
-		policy = { enabled: true, maxOpenPerBuyer: 0, maxOpenPerClient: 0 };
+		policy = { enabled: true, maxOpenPerBuyer: 0, maxOpenPerClient: 0, maxUnitsPerOrder: 0 };
 		expect((await placeCod(await physicalCart())).ok).toBe(true);
+	});
+
+	test("the policy's unit cap reaches the domain: an order over it is OFFLINE_ORDER_LIMIT", async () => {
+		policy = { enabled: true, maxOpenPerBuyer: 0, maxOpenPerClient: 0, maxUnitsPerOrder: 2 };
+		expect(await placeCod(await physicalCart(3))).toEqual({
+			ok: false,
+			reason: "OFFLINE_ORDER_LIMIT",
+		});
+		expect((await placeCod(await physicalCart(2))).ok).toBe(true);
+	});
+
+	test("the unit cap a store never saved is 10; a saved 0 is no cap", async () => {
+		await harness.ctx.kv.delete(COD_MAX_UNITS_PER_ORDER_KEY);
+		expect((await readCodCheckoutPolicy(harness.ctx)).maxUnitsPerOrder).toBe(10);
+		await harness.ctx.kv.set(COD_MAX_UNITS_PER_ORDER_KEY, 0);
+		expect((await readCodCheckoutPolicy(harness.ctx)).maxUnitsPerOrder).toBe(0);
+		await harness.ctx.kv.delete(COD_MAX_UNITS_PER_ORDER_KEY);
 	});
 
 	test("a policy that cannot be read is COD off: refused, logged, never thrown", async () => {
@@ -192,7 +213,7 @@ describe("createOrder with cash on delivery", () => {
 		const own = await makeInProcessCommerce({
 			resolveOfflinePolicy: async () => {
 				asked += 1;
-				return { enabled: true, maxOpenPerBuyer: 3, maxOpenPerClient: 3 };
+				return { enabled: true, maxOpenPerBuyer: 3, maxOpenPerClient: 3, maxUnitsPerOrder: 0 };
 			},
 		});
 		try {

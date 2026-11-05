@@ -33,7 +33,35 @@ export function assertEmailBindingDeclared(
 	sender?: EmailSender,
 ): void {
 	const config = parseWrangler(wranglerText, fileName, "its send_email binding");
-	const entries = config["send_email"];
+	for (const { scope, entries } of sendEmailScopes(config)) {
+		assertScopeBinding(entries, scope === "" ? fileName : `${fileName} (${scope})`, sender);
+	}
+}
+
+/**
+ * Every place the config declares `send_email`: the top level, and each
+ * `env.<name>` block. Wrangler does not inherit `send_email` into an env, so a
+ * Worker built for an env (`CLOUDFLARE_ENV`, `--env`) has exactly its own list,
+ * and each scope is checked on its own, like `r2BucketScopes`.
+ */
+function sendEmailScopes(config: Record<string, unknown>): { scope: string; entries: unknown }[] {
+	const scopes: { scope: string; entries: unknown }[] = [
+		{ scope: "", entries: config["send_email"] },
+	];
+	const env = config["env"];
+	if (typeof env === "object" && env !== null) {
+		for (const [name, block] of Object.entries(env as Record<string, unknown>)) {
+			const entries =
+				typeof block === "object" && block !== null
+					? (block as Record<string, unknown>)["send_email"]
+					: undefined;
+			scopes.push({ scope: `env.${name}`, entries });
+		}
+	}
+	return scopes;
+}
+
+function assertScopeBinding(entries: unknown, fileName: string, sender?: EmailSender): void {
 	const binding = Array.isArray(entries)
 		? (entries.find(
 				(e) =>

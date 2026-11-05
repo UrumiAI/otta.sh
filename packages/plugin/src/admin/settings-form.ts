@@ -1649,7 +1649,7 @@ function buildSettingsBlocks(args: {
 interface CashOnDeliveryState {
 	enabled: boolean;
 	instructions: string;
-	/** The auto-cancel window and the two caps, by form field (`COD_NUMBER_SETTINGS`). */
+	/** The auto-cancel window and the three caps, by form field (`COD_NUMBER_SETTINGS`). */
 	numbers: Record<string, number>;
 }
 
@@ -1687,7 +1687,7 @@ function cashOnDeliveryGroup(state: CashOnDeliveryState | null): Block[] {
 			},
 			{
 				type: "context",
-				text: "The caps limit how many unpaid cash-on-delivery orders one buyer email, or one network, may have open at once (0 means no cap).",
+				text: "The caps limit how many unpaid cash-on-delivery orders one buyer email, or one network, may have open at once, and how many items one order may hold (0 means no cap).",
 			},
 			...(state === null
 				? [

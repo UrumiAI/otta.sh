@@ -69,6 +69,7 @@ import {
 	BANNER_BUDGET,
 	ORDER_STATES,
 	REFUND_TOO_HIGH_TITLE,
+	UNPAID_ORDER_STATES,
 	fit,
 	formatAmount as formatTotal,
 	refundIncrementText,
@@ -745,14 +746,19 @@ const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 		});
 	}
 	// "Return the items to stock" — the operator's explicit choice, sent with every
-	// cancel of a paid order. A PENDING order's cancel releases its held stock
-	// whatever the box says, so the page sends none. On any other order an ABSENT
+	// cancel of a paid order. An UNPAID order's cancel (pending, or either of cash
+	// on delivery's unpaid states — the console's own `UNPAID_ORDER_STATES`)
+	// releases its held stock whatever the box says, so the page sends none. On any other order an ABSENT
 	// (or unreadable) value is not defaulted either way (issue #364): it comes from
 	// a tab rendered before the box existed, whose operator was never asked, and
 	// both guesses are wrong for someone (restocking damaged goods, or keeping
 	// returned ones off sale). Refuse it and ask for a reload.
 	const restockField = readString(payload["restock"]);
-	if (observedState !== "pending" && restockField !== "true" && restockField !== "false") {
+	if (
+		!UNPAID_ORDER_STATES.has(observedState) &&
+		restockField !== "true" &&
+		restockField !== "false"
+	) {
 		return applied(STALE_CANCEL_PAGE);
 	}
 	const restock = restockField !== "false";

@@ -188,6 +188,7 @@ const COD_KEYS = [
 	"settings:codAutoCancelDays",
 	"settings:codMaxOpenPerBuyer",
 	"settings:codMaxOpenPerClient",
+	"settings:codMaxUnitsPerOrder",
 ];
 
 describe("ADR-0044 review finding 10: a kv that fails only for the COD keys never breaks a card store", () => {

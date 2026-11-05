@@ -881,7 +881,8 @@ export type CheckoutFailureReason =
 	| "OFFLINE_NEEDS_PHYSICAL"
 	/** A COD delivery address with no phone number. */
 	| "SHIPPING_PHONE_REQUIRED"
-	/** The buyer or the client network already has the most open COD orders. */
+	/** The buyer or the client network already has the most open COD orders, or the
+	 *  cart holds more physical units than one COD order may (`codMaxUnitsPerOrder`). */
 	| "OFFLINE_ORDER_LIMIT";
 
 /**

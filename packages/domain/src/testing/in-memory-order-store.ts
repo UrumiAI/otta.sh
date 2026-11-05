@@ -17,6 +17,7 @@ import type {
 } from "../ports/order-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
+	AwaitingPaymentCursor,
 	CancelOrderInput,
 	CancelOrderStoreResult,
 	CompleteCancellationRestockInput,
@@ -886,11 +887,22 @@ export class InMemoryOrderStore implements OrderStore {
 		return { byBuyer, byClient };
 	}
 
-	async listAwaitingPaymentBefore(createdBefore: string, limit: number): Promise<OrderId[]> {
+	async listAwaitingPaymentBefore(
+		createdBefore: string,
+		limit: number,
+		after?: AwaitingPaymentCursor,
+	): Promise<OrderId[]> {
 		assertSweepLimit(limit);
+		const from: [string, string] | null =
+			after === undefined ? null : [after.createdAt, after.orderId];
 		return [...this.#orders.values()]
-			.filter((s) => s.order.state === "awaiting_payment" && s.order.createdAt < createdBefore)
-			.toSorted((a, b) => (a.order.createdAt < b.order.createdAt ? -1 : 1))
+			.filter(
+				(s) =>
+					s.order.state === "awaiting_payment" &&
+					s.order.createdAt < createdBefore &&
+					(from === null || positionBefore(from, positionOf(s.order))),
+			)
+			.toSorted((a, b) => (positionBefore(positionOf(a.order), positionOf(b.order)) ? -1 : 1))
 			.slice(0, limit)
 			.map((s) => s.order.id);
 	}
@@ -1408,4 +1420,14 @@ function idArmOf(filter: OrderListFilter): string | undefined {
 	if (filter.search === undefined) return undefined;
 	const needle = filter.search.toLowerCase();
 	return orderNumberIdPrefix(needle) ?? needle;
+}
+
+/** An order's place in `listAwaitingPaymentBefore`'s `(createdAt, orderId)` order. */
+function positionOf(order: Order): [string, string] {
+	return [order.createdAt, order.id];
+}
+
+/** Whether position `a` sorts before `b` (code-unit comparison, as the port says). */
+function positionBefore(a: [string, string], b: [string, string]): boolean {
+	return a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]);
 }

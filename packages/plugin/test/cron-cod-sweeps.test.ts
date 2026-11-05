@@ -19,6 +19,7 @@ import {
 	currency,
 	NOOP_LOGGER,
 	idempotencyKey,
+	offlinePaymentRef,
 	orderId as toOrderId,
 	productId as toProductId,
 	reservationId as toReservationId,
@@ -50,6 +51,8 @@ import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 const CURSOR_OVERLAP_MS = 5 * 60 * 1000;
 const NOW = new Date("2026-11-03T12:00:00.000Z");
 const PAID = 600;
+/** The Workers Free preset. */
+const FREE = 30;
 
 beforeEach(() => {
 	vi.spyOn(console, "log").mockImplementation(() => {});
@@ -236,6 +239,96 @@ describe("cod-auto-cancel", () => {
 		expect((await adapters(storage, NOW).orderStore.getById(toOrderId(order.id)))?.state).toBe(
 			"shipped_awaiting_payment",
 		);
+	});
+});
+
+describe("cod-auto-cancel walks past a skipped order (review: a flagged head blocked the leg)", () => {
+	test("on Workers Free, a flagged oldest order never stops a younger due order being cancelled", async () => {
+		const { storage } = await makeSqliteStorage(commerceStorageLayout());
+		// The oldest: a Mark paid recorded the cash and died before its flip. The
+		// auto-cancel flags it for a person and skips it — every pass.
+		const flagged = await placeCodOrder(storage, "head", new Date(NOW.getTime() - 30 * DAY_MS));
+		const younger = await placeCodOrder(storage, "behind", new Date(NOW.getTime() - 20 * DAY_MS));
+		const s = adapters(storage, NOW);
+		await s.orderStore.recordPayment({
+			orderId: toOrderId(flagged.id),
+			gateway: "cod",
+			providerRef: offlinePaymentRef("cod", toOrderId(flagged.id)),
+			amount: cents(1000),
+			currency: currency("USD"),
+			status: "succeeded",
+		});
+		const cursors = memoryCursors();
+		// The leg shares Free ticks with every other leg, so it is deferred on some;
+		// what matters is that it gets PAST the head, which before the cursor it never
+		// did however many ticks ran.
+		for (let tick = 0; tick < 30; tick++) {
+			const at = new Date(NOW.getTime() + tick * 60_000);
+			const summary = await runCommerceSweeps(
+				sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: FREE }),
+				SWEEP_TASK_NAME,
+				{ cursors, emailSender: recordingSender([]), now: at, queryBudget: FREE },
+			);
+			expect(leg(summary, "cod-auto-cancel").ok).toBe(true);
+			expect(summary.budget.queriesUsed).toBeLessThanOrEqual(FREE);
+			if ((await s.orderStore.getById(toOrderId(younger.id)))?.state === "cancelled") break;
+		}
+		expect((await s.orderStore.getById(toOrderId(younger.id)))?.state).toBe("cancelled");
+		const head = await s.orderStore.getById(toOrderId(flagged.id));
+		expect(head?.state).toBe("awaiting_payment");
+		expect(head?.reconciliationFlag).toMatch(/cash recorded/);
+	});
+});
+
+describe("cod-auto-cancel's coupon release is begun only with room for the cancel after it", () => {
+	test("a stale coupon COD order never takes a tick past its ceiling, whatever the budget", async () => {
+		const logged = vi.spyOn(console, "log").mockImplementation(() => {});
+		let ran = 0;
+		let freeCancelled = false;
+		for (let budget = 30; budget <= 70; budget++) {
+			const { storage } = await makeSqliteStorage(commerceStorageLayout());
+			await seedCoupon(storage, "coupon-room", "CODROOM");
+			const order = await placeCodOrder(storage, "room", new Date(NOW.getTime() - 20 * DAY_MS), {
+				coupon: { id: "coupon-room", code: "CODROOM" },
+			});
+			const cursors = memoryCursors();
+			for (let tick = 0; tick < 8; tick++) {
+				logged.mockClear();
+				const summary = await runCommerceSweeps(
+					sweepContext(storage, undefined, { [BACKGROUND_WORK_KEY]: budget }),
+					SWEEP_TASK_NAME,
+					{
+						cursors,
+						emailSender: recordingSender([]),
+						now: new Date(NOW.getTime() + tick * 60_000),
+						queryBudget: budget,
+					},
+				);
+				const where = `budget ${String(budget)}, tick ${String(tick)}`;
+				const outcome = leg(summary, "cod-auto-cancel");
+				expect(outcome.ok, `${where}: ${String(outcome.error)}`).toBe(true);
+				expect(summary.budget.queriesUsed, where).toBeLessThanOrEqual(budget);
+				// The ceiling never cut the cancel after a release it let begin.
+				const lines = logged.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
+				expect(lines, where).not.toMatch(/stopped at the ceiling: [^\n]*cod-auto-cancel/);
+				// Either it fitted and was cancelled with its use freed, or nothing was begun.
+				const state = (await adapters(storage, NOW).orderStore.getById(toOrderId(order.id)))?.state;
+				const uses = (await coupons(storage, NOW).findById("coupon-room"))?.usesCount;
+				expect([state, uses], where).toEqual(
+					state === "cancelled" ? ["cancelled", 0] : ["awaiting_payment", 1],
+				);
+				if (state === "cancelled") {
+					ran++;
+					if (budget === FREE) freeCancelled = true;
+					break;
+				}
+			}
+		}
+		// Some budgets afford it: the test is not vacuous.
+		expect(ran).toBeGreaterThan(0);
+		// And Workers Free is one of them: reserving more than the cancel still costs
+		// once the release returns put a coupon order out of a Free tick's reach.
+		expect(freeCancelled).toBe(true);
 	});
 });
 

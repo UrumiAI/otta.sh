@@ -7,6 +7,7 @@ import {
 	cancelUnpaidOfflineOrders,
 	CouponReleaseDeferredError,
 } from "../orders/cancel-unpaid-offline.js";
+import type { AwaitingPaymentCursor } from "../ports/order-store.js";
 import { RecordingLogger } from "./recording-logger.js";
 import { expireOrdersBatch } from "../orders/expire-orders.js";
 import type { Order, OrderState, PaymentMethod } from "../orders/model.js";
@@ -60,6 +61,8 @@ async function seedOrder(
 		buyerRef?: string;
 		clientKey?: string;
 		couponCode?: string;
+		/** false ⇒ a cod order is left `pending`: a placement's crash window. */
+		place?: boolean;
 	} = {},
 ): Promise<{ order: Order; sku: string }> {
 	const kind = opts.kind ?? "physical";
@@ -111,7 +114,7 @@ async function seedOrder(
 		});
 		if (adopted.lost.length > 0) throw new Error("seed adopt lost");
 	}
-	if (method === "cod") {
+	if (method === "cod" && opts.place !== false) {
 		const placed = await orderStore.transition({
 			orderId: oid,
 			fromState: "pending",
@@ -516,6 +519,57 @@ export function offlinePaymentContract(
 			expect(await onHandAfterRelease(h, order, s)).toBe(ON_HAND - QTY);
 		});
 
+		test("Mark paid on a still-PENDING order losing its flip to the placement flip is retryable: nothing revoked or flagged, and the next click lands it paid", async () => {
+			const h = await makeHarness();
+			const { order, sku: s } = await seedOrder(h, "22", "cod", {
+				kind: "digital",
+				place: false,
+			});
+			expect(order.state).toBe("pending");
+			const real = h.settleDeps.orderStore;
+			// A same-key checkout replay finishes the placement (pending → awaiting_payment)
+			// between Mark paid's read and its flip.
+			const racing = new Proxy(real, {
+				get(target, prop, receiver) {
+					if (prop === "markPaid") {
+						return async (...args: Parameters<typeof real.markPaid>) => {
+							await real.transition({
+								orderId: order.id,
+								fromState: "pending",
+								toState: "awaiting_payment",
+								idempotencyKey: idempotencyKey(`place:${order.id}`),
+								enqueueEmail: true,
+							});
+							return real.markPaid(...args);
+						};
+					}
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			const raced = await transitionOrderAsAdmin(
+				{ ...adminDeps(h), orderStore: racing },
+				{
+					orderId: order.id,
+					toState: "paid",
+					idempotencyKey: idempotencyKey("raced-placement-click"),
+					actor: "Ops Person",
+				},
+			);
+			expect(raced).toEqual({ ok: false, reason: "MARK_PAID_RETRY" });
+			const placed = await real.getById(order.id);
+			expect(placed?.state).toBe("awaiting_payment");
+			expect(placed?.reconciliationFlag).toBeNull();
+			// The download the attestation granted stands: nothing was revoked.
+			expect(await h.settleDeps.entitlementStore.check({ orderId: order.id, sku: sku(s) })).toBe(
+				true,
+			);
+			// The click again: paid, on the same single payment row.
+			expect(await admin(h, order.id, "paid")).toMatchObject({ ok: true, transitioned: true });
+			expect(await real.getCapturedPayments(order.id)).toHaveLength(1);
+			expect((await real.getById(order.id))?.state).toBe("paid");
+		});
+
 		test("a refused parcel whose Mark paid lost to the shipment is cancellable: the attested row is flagged, downloads revoked, stock back (R3-3)", async () => {
 			const h = await makeHarness();
 			const { order, sku: s } = await seedOrder(h, "17", "cod", { kind: "digital" });
@@ -721,6 +775,68 @@ export function offlinePaymentContract(
 			expect(await run()).toMatchObject({ cancelled: 1 });
 			expect(released).toEqual([stale.order.id]);
 			expect((await h.settleDeps.orderStore.getById(stale.order.id))?.state).toBe("cancelled");
+		});
+
+		test("auto-cancel walks PAST an order it skips: a flagged oldest order never blocks a younger due one, and a drained walk starts over", async () => {
+			const h = await makeHarness();
+			// Seeded oldest first; ids sort the same way, so a shared createdAt (a fixed
+			// clock) still has one order: (createdAt, orderId).
+			const flagged = await seedOrder(h, "21a", "cod");
+			await h.settleDeps.orderStore.recordPayment({
+				orderId: flagged.order.id,
+				gateway: "cod",
+				providerRef: offlinePaymentRef("cod", flagged.order.id),
+				amount: cents(UNIT_CENTS * QTY),
+				currency: USD,
+				status: "succeeded",
+			});
+			const b = await seedOrder(h, "21b", "cod");
+			const c = await seedOrder(h, "21c", "cod");
+			const later = new Date(h.settleDeps.clock.now().getTime() + 15 * DAY_MS);
+			let deferB = false;
+			const run = (after?: AwaitingPaymentCursor) =>
+				cancelUnpaidOfflineOrders(
+					{
+						orderStore: h.settleDeps.orderStore,
+						couponStore: {
+							async releaseByOrder(order: { id: string }) {
+								if (deferB && order.id === b.order.id) throw new CouponReleaseDeferredError();
+								return 0;
+							},
+						},
+						clock: { now: () => later },
+						logger: NOOP_LOGGER,
+					},
+					// One order a run, as a Workers Free tick affords.
+					{ maxAgeDays: 14, limit: 1, ...(after !== undefined ? { after } : {}) },
+				);
+			const first = await run();
+			expect(first).toMatchObject({ cancelled: 0, skipped: 1, drained: false });
+			expect(first.cursor).toEqual({
+				createdAt: flagged.order.createdAt,
+				orderId: flagged.order.id,
+			});
+			// A DEFERRED order is walked past too — on a budget that can never afford its
+			// release it would otherwise be the new blocked head — and met again once the
+			// walk drains and starts over.
+			deferB = true;
+			const deferred = await run(first.cursor ?? undefined);
+			expect(deferred).toMatchObject({ cancelled: 0, skipped: 1 });
+			expect(deferred.cursor).toEqual({ createdAt: b.order.createdAt, orderId: b.order.id });
+			deferB = false;
+			const second = await run(deferred.cursor ?? undefined);
+			expect(second).toMatchObject({ cancelled: 1, skipped: 0 });
+			expect((await h.settleDeps.orderStore.getById(c.order.id))?.state).toBe("cancelled");
+			// Nothing after the cursor: drained, and the walk starts over at the oldest.
+			const third = await run(second.cursor ?? undefined);
+			expect(third).toMatchObject({ cancelled: 0, skipped: 0, drained: true, cursor: null });
+			const fourth = await run();
+			expect(fourth).toMatchObject({ cancelled: 0, skipped: 1 });
+			expect(await run(fourth.cursor ?? undefined)).toMatchObject({ cancelled: 1 });
+			expect((await h.settleDeps.orderStore.getById(b.order.id))?.state).toBe("cancelled");
+			expect((await h.settleDeps.orderStore.getById(flagged.order.id))?.state).toBe(
+				"awaiting_payment",
+			);
 		});
 
 		test("auto-cancel logging: a DEFERRED coupon release is info, a real failure is error (R3-4)", async () => {

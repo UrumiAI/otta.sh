@@ -282,10 +282,11 @@ export type TransitionOrderAsAdminResult =
 	| { ok: false; reason: "REFUND_THROUGH_MONEY" }
 	/** Mark refunded while a refund on the order is still reserved or unverified. */
 	| { ok: false; reason: "REFUND_IN_FLIGHT" }
-	/** ADR-0044: an offline Mark paid lost its flip to a concurrent Record shipment —
-	 *  the order is now `shipped_awaiting_payment`. Nothing was revoked or flagged
+	/** ADR-0044: an offline Mark paid lost its flip to a concurrent move that left the
+	 *  order unpaid — a Record shipment (now `shipped_awaiting_payment`) or the
+	 *  placement's own flip (now `awaiting_payment`). Nothing was revoked or flagged
 	 *  (the payment row is the same idempotent one); clicking Mark paid again lands
-	 *  it `delivered`. */
+	 *  it. */
 	| { ok: false; reason: "MARK_PAID_RETRY" };
 
 /** Every reason `transitionOrderAsAdmin` can refuse with — the closed set a caller
@@ -385,7 +386,8 @@ export async function transitionOrderAsAdmin(
  *     the stock (the commit intent heals a crash here).
  *
  * A lost flip: a concurrent Mark paid won ⇒ the idempotent no-op (side-effects
- * re-driven); anything else (a cancel won the race) ⇒ the attested cash is on the
+ * re-driven); a move that left it unpaid and Mark-paid-able (a Record shipment, the
+ * placement flip) ⇒ `MARK_PAID_RETRY`; anything else (a cancel won the race) ⇒ the attested cash is on the
  * ledger of an order that is not paid, so the order is flagged for reconciliation
  * and its downloads revoked; `INVALID_TRANSITION`.
  */
@@ -428,10 +430,12 @@ async function markOfflineOrderPaid(
 		await applyOfflinePayment(fresh, settle, now);
 		return { ok: true, transitioned: false, order: fresh };
 	}
-	// Lost to a concurrent Record shipment: the order is still unpaid and still this
-	// method's, now shipped. Nothing to undo — the next click pays it toward
-	// `delivered` with the same idempotent payment row.
-	if (order.state === "awaiting_payment" && fresh.state === "shipped_awaiting_payment") {
+	// Lost to a move that leaves the order UNPAID and still this method's — a
+	// concurrent Record shipment (now `shipped_awaiting_payment`), or the placement's
+	// own flip from a same-key checkout replay (`pending → awaiting_payment`). Nothing
+	// to undo: the next click pays it from where it now is, with the same idempotent
+	// payment row.
+	if (fresh.paymentMethod === method && offlinePaidTarget(fresh.state) !== null) {
 		return { ok: false, reason: "MARK_PAID_RETRY" };
 	}
 	// Lost to a move that is not this payment (a cancel): money attested and held,
