@@ -80,10 +80,13 @@ jobs:
           path: otta-store-template
           persist-credentials: false
       - uses: pnpm/action-setup@v4
+      # No `cache: pnpm`: this job checks out another repository at a caller-chosen
+      # ref and runs its install scripts, on main too (push, schedule). A cache it
+      # saved there would be restored by every other job (CodeQL
+      # actions/cache-poisoning), so it installs without one.
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       # `pnpm pack` runs each package's prepack (tsdown), so no separate build.
       - run: pnpm test:pack-build
