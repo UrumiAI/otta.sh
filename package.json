@@ -11,6 +11,7 @@
 		"test:e2e": "playwright test",
 		"test:e2e:claim": "playwright test --config playwright.claim.config.ts",
 		"test:pack-types": "node scripts/pack-consume-types.mjs",
+		"test:pack-build": "node scripts/pack-build.mjs",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
 		"build": "pnpm -r build"

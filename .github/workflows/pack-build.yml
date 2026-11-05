@@ -1,0 +1,61 @@
+name: Pack build
+
+# Builds the template from the PACKED packages (scripts/pack-build.mjs, ADR-0045):
+# pnpm pack of every publishable package, npm install in a copy of the template
+# repository, astro build, then assertions on dist/. Nothing else tests the form
+# merchants install (dist/integration.mjs from node_modules).
+#
+# Not a required check: it is its own workflow (not a step of `unit`), so it only
+# gates merges if "Pack build / pack-build" is added to the branch protection
+# rules. `unit` (which runs `test:pack-types`) is the existing required check; to
+# make this one required, add it there once it has been green for a while.
+on:
+  pull_request:
+    paths:
+      - "sites/store/**"
+      - "packages/**"
+      - "scripts/pack-build.mjs"
+      - ".github/workflows/pack-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sites/store/**"
+      - "packages/**"
+      - "scripts/pack-build.mjs"
+      - ".github/workflows/pack-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pack-build:
+    # The template repository is not public until the ADR-0045 launch gates are met,
+    # and the default token cannot read it before then. Set the repository variable
+    # OTTA_TEMPLATE_PUBLIC=true once UrumiAI/otta-store-template is public; until
+    # then the job is skipped rather than red.
+    if: vars.OTTA_TEMPLATE_PUBLIC == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # The template is its own repository. If it is private, pass a read token
+      # (a repository secret) as `token:`; the default token cannot read it.
+      - uses: actions/checkout@v4
+        with:
+          repository: UrumiAI/otta-store-template
+          path: otta-store-template
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `pnpm pack` runs each package's prepack (tsdown), so no separate build.
+      - run: pnpm test:pack-build
+        env:
+          OTTA_TEMPLATE_DIR: ${{ github.workspace }}/otta-store-template
