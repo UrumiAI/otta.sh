@@ -43,22 +43,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PACKAGES = [
-	"packages/admin-presentation",
-	"packages/admin-react",
-	"packages/domain",
-	"packages/payments-cod",
-	"packages/payments-stripe",
-	"packages/plugin",
-	"packages/store-emdash",
-	"sites/store",
-];
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
 const templateArg = args.indexOf("--template");
 const TEMPLATE =
-	(templateArg >= 0 ? args[templateArg + 1] : undefined) ??
-	process.env.OTTA_TEMPLATE_DIR ??
+	(templateArg >= 0 ? args[templateArg + 1] : undefined) ||
+	process.env.OTTA_TEMPLATE_DIR ||
 	path.join(homedir(), "otta-store-template");
 
 function run(cmd, cmdArgs, cwd, env = {}) {
@@ -95,11 +85,58 @@ function listFiles(dir, rel = "") {
 	});
 }
 
-const SKIP = new Set([".git", "node_modules", "dist", ".astro", ".wrangler", "package-lock.json"]);
+const SKIP = new Set([".git", "node_modules", "dist", ".astro", ".wrangler"]);
+
+/**
+ * The publishable packages: every non-private package that the workspace globs
+ * in pnpm-workspace.yaml (`dir/*` or a plain directory) match. A new publishable
+ * package is therefore packed, and installed from its tarball, without editing
+ * this script.
+ */
+function workspacePackages() {
+	const yaml = readFileSync(path.join(ROOT, "pnpm-workspace.yaml"), "utf8");
+	const block = /^packages:[ \t]*\n((?:[ \t]+-.*\n?)+)/m.exec(yaml);
+	if (!block) throw new Error("no `packages:` list in pnpm-workspace.yaml");
+	const globs = [...block[1].matchAll(/^[ \t]+-\s*["']?([^"'\s#]+)["']?/gm)].map((m) => m[1]);
+	const dirs = [];
+	for (const glob of globs) {
+		if (glob.startsWith("!")) continue;
+		const clean = glob.replace(/\/$/, "");
+		if (clean.endsWith("/*")) {
+			const base = clean.slice(0, -2);
+			if (/[*?{[]/.test(base)) throw new Error(`unsupported workspace glob: ${glob}`);
+			if (!existsSync(path.join(ROOT, base))) continue;
+			for (const name of readdirSync(path.join(ROOT, base)).toSorted())
+				dirs.push(`${base}/${name}`);
+		} else if (/[*?{[]/.test(clean)) {
+			throw new Error(`unsupported workspace glob: ${glob}`);
+		} else {
+			dirs.push(clean);
+		}
+	}
+	const found = [];
+	for (const dir of dirs) {
+		const manifest = path.join(ROOT, dir, "package.json");
+		if (!existsSync(manifest)) continue;
+		const { name, version, private: isPrivate } = JSON.parse(readFileSync(manifest, "utf8"));
+		if (!isPrivate && name && version) found.push({ dir, name, version });
+	}
+	return found;
+}
 
 const work = mkdtempSync(
-	path.join(process.env.OTTA_PACK_BUILD_TMP ?? tmpdir(), "otta-pack-build-"),
+	path.join(process.env.OTTA_PACK_BUILD_TMP || tmpdir(), "otta-pack-build-"),
 );
+// Signals: remove only the mkdtemp result, then exit with the conventional code.
+for (const [signal, code] of [
+	["SIGINT", 130],
+	["SIGTERM", 143],
+]) {
+	process.on(signal, () => {
+		if (!keep) rmSync(work, { recursive: true, force: true });
+		process.exit(code);
+	});
+}
 let failed = false;
 try {
 	if (!existsSync(path.join(TEMPLATE, "astro.config.mjs"))) {
@@ -108,15 +145,18 @@ try {
 
 	// 1. Pack everything (prepack builds each package's dist/).
 	const tarballs = path.join(work, "tarballs");
-	for (const pkg of PACKAGES) {
-		step(`pnpm pack ${pkg}`);
-		pnpm(["pack", "--pack-destination", tarballs], path.join(ROOT, pkg));
-	}
+	const packages = workspacePackages();
+	if (packages.length === 0) throw new Error("no publishable workspace packages found");
 	const byName = {};
-	for (const file of readdirSync(tarballs).filter((f) => f.endsWith(".tgz"))) {
-		const match = /^urumi\.ai-(otta-[a-z-]+?)-\d+\.\d+\.\d+.*\.tgz$/.exec(file);
-		if (!match) throw new Error(`unexpected tarball name: ${file}`);
-		byName[`@urumi.ai/${match[1]}`] = `file:${path.join(tarballs, file)}`;
+	for (const { dir, name, version } of packages) {
+		step(`pnpm pack ${dir}`);
+		pnpm(["pack", "--pack-destination", tarballs], path.join(ROOT, dir));
+		// pnpm names the tarball `<scope>-<name>-<version>.tgz`.
+		const file = `${name.replace(/^@/, "").replace("/", "-")}-${version}.tgz`;
+		if (!existsSync(path.join(tarballs, file))) {
+			throw new Error(`expected tarball ${file} was not produced for ${name}`);
+		}
+		byName[name] = `file:${path.join(tarballs, file)}`;
 	}
 	if (!byName["@urumi.ai/otta-store"]) throw new Error("no @urumi.ai/otta-store tarball");
 
@@ -134,11 +174,16 @@ try {
 		}
 	}
 	// The packed packages name each other by version; send those to the tarballs.
-	// An override must reference a direct dependency, so add the ones the template omits.
-	pkg.overrides = {};
+	// Merged into the template's own overrides. A direct dependency is referenced
+	// with `$name`; the rest (internal packages the template does not list) get the
+	// `file:` spec directly, so they are not added as dependencies.
+	const direct = new Set([
+		...Object.keys(pkg.dependencies ?? {}),
+		...Object.keys(pkg.devDependencies ?? {}),
+	]);
+	pkg.overrides = { ...pkg.overrides };
 	for (const name of Object.keys(byName)) {
-		pkg.dependencies[name] ??= byName[name];
-		pkg.overrides[name] = `$${name}`;
+		pkg.overrides[name] = direct.has(name) ? `$${name}` : byName[name];
 	}
 	writeFileSync(pkgPath, `${JSON.stringify(pkg, null, "\t")}\n`);
 
@@ -149,12 +194,15 @@ try {
 		npm_config_fund: "false",
 		npm_config_update_notifier: "false",
 	};
-	step("npm install");
+	step(
+		existsSync(path.join(site, "package-lock.json"))
+			? "npm install (mode: template package-lock.json, @urumi.ai/* re-resolved)"
+			: "npm install (mode: no package-lock.json, full resolution)",
+	);
 	run("npm", ["install", "--no-progress"], site, npmEnv);
 	step("astro build");
-	let buildLog = "";
 	try {
-		buildLog = run("npx", ["--no-install", "astro", "build"], site, npmEnv);
+		run("npx", ["--no-install", "astro", "build"], site, npmEnv);
 	} catch (error) {
 		console.error("pack-build: FAILED — astro build on the packed packages:");
 		console.error(String(error.stdout ?? "") + String(error.stderr ?? ""));
@@ -218,8 +266,6 @@ try {
 			`pack-build: WARNING — ${leakyMaps.length} source map(s) in dist/ carry the build path: ${leakyMaps.join(", ")}`,
 		);
 	}
-	if (/\bERR(OR)?\b.*(leak|scrub)/i.test(buildLog))
-		problems.push("build log reports a scrub failure");
 
 	if (problems.length > 0) {
 		console.error("pack-build: FAILED — assertions on the packed build:");

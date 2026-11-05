@@ -9,11 +9,22 @@ name: Pack build
 # gates merges if "Pack build / pack-build" is added to the branch protection
 # rules. `unit` (which runs `test:pack-types`) is the existing required check; to
 # make this one required, add it there once it has been green for a while.
+#
+# If it is made required: a required check that is skipped by the `paths:` filter
+# below never reports, and that blocks the PR. Move the path filter into a
+# job-level condition (e.g. a changed-files step) before doing so.
+#
+# A PR that moves a peer pin (sites/store's peerDependencies) fails this check
+# until the template repository's pins are bumped to match.
 on:
   pull_request:
     paths:
       - "sites/store/**"
       - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".nvmrc"
       - "scripts/pack-build.mjs"
       - ".github/workflows/pack-build.yml"
   push:
@@ -21,9 +32,22 @@ on:
     paths:
       - "sites/store/**"
       - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".nvmrc"
       - "scripts/pack-build.mjs"
       - ".github/workflows/pack-build.yml"
+  # Weekly, so a change in the template repository is exercised even when this
+  # repository is quiet.
+  schedule:
+    - cron: "17 5 * * 1"
   workflow_dispatch:
+    inputs:
+      template_ref:
+        description: "Branch, tag or SHA of UrumiAI/otta-store-template to build"
+        default: main
+        type: string
 
 permissions:
   contents: read
@@ -43,12 +67,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       # The template is its own repository. If it is private, pass a read token
       # (a repository secret) as `token:`; the default token cannot read it.
       - uses: actions/checkout@v4
         with:
           repository: UrumiAI/otta-store-template
+          ref: ${{ inputs.template_ref || 'main' }}
           path: otta-store-template
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
