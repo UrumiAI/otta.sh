@@ -199,15 +199,19 @@ const LISTED_SECRET_ENV_KEYS: ReadonlySet<string> = new Set(BUILD_SECRET_ENV_KEY
 
 /**
  * A secret-shaped name: an `_`-delimited word such as `SECRET`, `TOKEN`,
- * `PASSWORD`, `SALT`, `PAT` (a whole word: not `PATH`) or `WEBHOOK` (a Slack
- * webhook URL is a secret although the name ends in `_URL`), or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`
+ * `PASSWORD` or `SALT`, or a key such as `API_KEY`/`ACCESS_KEY`/`PRIVATE_KEY`
  * (the underscore optional: `SENDGRID_APIKEY`).
  */
 const SECRET_SHAPED_ENV_KEY =
-	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|WEBHOOKS?|PAT|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_?KEY)(?:_|$)/i;
+	/(?:^|_)(?:SECRETS?|TOKEN|PASSWORD|PASSWD|SALT|CREDENTIALS?|(?:API|ACCESS|PRIVATE|ENCRYPTION|SIGNING|AUTH)_?KEY)(?:_|$)/i;
 
-/** A name that ENDS in a bare `KEY`, `PASS` or `DSN` (`LICENSE_KEY`, `SMTP_PASS`, `SENTRY_DSN`). */
-const SECRET_SUFFIX_ENV_KEY = /(?:^|_)(?:KEY|PASS|DSN)$/i;
+/**
+ * A name that ENDS in a bare `KEY`, `PASS`, `DSN` or `PAT` (`LICENSE_KEY`, `SMTP_PASS`,
+ * `SENTRY_DSN`, `GITHUB_PAT`), or in `WEBHOOK_URL` (a Slack or Discord webhook URL
+ * carries its secret in the path). Suffixes only: `WEBHOOK_PATH`, `ENABLE_WEBHOOKS`
+ * and `DATE_PAT_STYLE` are plain settings.
+ */
+const SECRET_SUFFIX_ENV_KEY = /(?:^|_)(?:KEY|PASS|DSN|PAT|WEBHOOKS?_URL)$/i;
 
 /** Keys that are public by design: Turnstile's site key, Stripe's publishable key. */
 const PUBLIC_KEY_SUFFIX = /(?:^|_)(?:SITE|PUBLISHABLE|PUBLIC)_KEY$/i;
@@ -366,6 +370,9 @@ export function searchedEnvValueSets(env: Record<string, string | undefined>): {
 	const random = new Map<string, string>();
 	for (const [key, value] of Object.entries(env)) {
 		if (value === undefined || secrets.has(key)) continue;
+		// Public by design (`PUBLIC_SENTRY_DSN` carries its key as the URL user, and
+		// Astro inlines `PUBLIC_*` into the client on purpose): never a failing secret.
+		if (key.startsWith("PUBLIC_") || PUBLIC_KEY_SUFFIX.test(key)) continue;
 		if (hasUrlCredentials(value)) secrets.set(key, value);
 		else if (isRandomLookingEnvValue(key, value)) random.set(key, value);
 	}

@@ -47,6 +47,7 @@ import {
 	MIN_SEARCHED_SECRET_LENGTH,
 	inlinedEnvKeys,
 	isBuildSecretEnvKey,
+	searchedEnvValueSets,
 	isRandomLookingEnvValue,
 	SHELL_PATH_ENV_KEYS,
 	scrubBuildPaths,
@@ -859,8 +860,9 @@ describe("isBuildSecretEnvKey", () => {
 		"ACME_ACCESSKEY",
 		"PRIVATEKEY",
 		"SLACK_WEBHOOK_URL",
-		"DISCORD_WEBHOOKS",
+		"DISCORD_WEBHOOKS_URL",
 		"GITHUB_PAT",
+		"GH_PAT",
 		"npm_config_pat",
 	])("names %s a secret by its shape", (key) => {
 		expect(isBuildSecretEnvKey(key)).toBe(true);
@@ -887,8 +889,26 @@ describe("isBuildSecretEnvKey", () => {
 		"PATHS",
 		"GITHUB_PATH",
 		"SPATIAL_ID",
+		"ENABLE_WEBHOOKS",
+		"WEBHOOK_PATH",
+		"DATE_PAT_STYLE",
+		"URL_PAT_PREFIX",
+		"PAT_NAME",
 	])("leaves %s alone", (key) => {
 		expect(isBuildSecretEnvKey(key)).toBe(false);
+	});
+});
+
+describe("searchedEnvValueSets", () => {
+	test("a PUBLIC_ value with a key as its URL user (a Sentry DSN) is never a failing secret", () => {
+		const dsn = "https://0123456789abcdef0123456789abcdef@o450000.ingest.sentry.io/1234567";
+		const { secrets, random } = searchedEnvValueSets({
+			PUBLIC_SENTRY_DSN: dsn,
+			OTHER_CONN: "https://user:p4ssw0rd-long-enough@db.example.com/x",
+		});
+		expect(secrets.has("PUBLIC_SENTRY_DSN")).toBe(false);
+		expect(random.has("PUBLIC_SENTRY_DSN")).toBe(false);
+		expect(secrets.has("OTHER_CONN")).toBe(true);
 	});
 });
 
