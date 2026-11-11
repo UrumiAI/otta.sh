@@ -45,6 +45,7 @@ import {
 	UNPROMOTED_LEGS,
 	type CommerceSweepSummary,
 } from "../src/cron/sweeps.js";
+import { SweepQueryCeilingError } from "../src/cron/tick-budget.js";
 import { CART_COOKIE_MAX_AGE_SECONDS } from "../src/storefront/cart-routes.js";
 import {
 	adapters,
@@ -369,10 +370,14 @@ describe("prune-carts (#39)", () => {
 		// A cadence later, still today: one kv read, nothing deleted, waiting again.
 		const later = new Date(NOW.getTime() + (waited! + 16) * MINUTE_MS);
 		await othersRunAt(cursors, later);
+		const logged = vi.mocked(console.log);
+		logged.mockClear();
 		expect(pruneLeg(await tick(cursors, { now: later, queryBudget: 30 }))).toMatchObject({
 			count: 0,
 			waitsCadence: true,
 		});
+		// A spent day's cadence run is silent: no tick line every fifteen minutes (#663).
+		expect(logged.mock.calls.filter((args) => String(args[0]).includes("cron sweep"))).toEqual([]);
 		expect((await Promise.all(ids.map((id) => carts().get(id)))).filter(Boolean)).toHaveLength(2);
 		// The next UTC day the rest go.
 		let tomorrow = 0;
@@ -428,6 +433,112 @@ describe("prune-carts (#39)", () => {
 		);
 		expect(pruneLeg(await tick(cursors, { queryBudget: 600 })).count).toBe(4);
 		for (const id of ids) expect(await carts().get(id)).toBeNull();
+	});
+
+	test("at the Paid preset a cadence deletes at most the per-run cap, however many runs its share stops (#663)", async () => {
+		// More than the leg's share at 600 lets one run reach (about 23 carts), and
+		// more than one cadence's cap.
+		const old = Array.from({ length: 120 }, (_, i) => `cart-old-${String(i).padStart(3, "0")}`);
+		for (const id of old) await carts().put(id, newCartDoc(id, USD, OLD.toISOString()));
+		const cursors = await onlyPruneCartsDue();
+		let pruned = 0;
+		let waited: number | undefined;
+		for (let i = 0; i < 14; i++) {
+			const at = new Date(NOW.getTime() + i * MINUTE_MS);
+			const leg = pruneLeg(await tick(cursors, { now: at, queryBudget: 600 }));
+			pruned += leg.count;
+			if (leg.waitsCadence === true) waited ??= i;
+		}
+		// Within one cadence: the cap's worth, then stamped and not due.
+		expect(pruned).toBe(ABANDONED_CARTS_PER_RUN);
+		expect(waited).toBeDefined();
+		// The next cadence starts afresh.
+		const next = new Date(NOW.getTime() + (waited! + 16) * MINUTE_MS);
+		await othersRunAt(cursors, next);
+		const after = pruneLeg(await tick(cursors, { now: next, queryBudget: 600 }));
+		expect(after.count).toBeGreaterThan(0);
+		expect(after.count).toBeLessThanOrEqual(ABANDONED_CARTS_PER_RUN);
+	});
+
+	test("above the Free preset the deletes since the last stamp are counted in the cursor, and a spent cadence waits (#663)", async () => {
+		const ids: string[] = [];
+		for (let i = 0; i < 5; i++) ids.push(await emptyCart(OLD));
+		const cursors = await onlyPruneCartsDue();
+		// Three short of the cadence's cap, left by runs their share stopped.
+		await cursors.write(
+			"prune-carts",
+			JSON.stringify({ deletedSinceStamp: ABANDONED_CARTS_PER_RUN - 3 }),
+		);
+		expect(pruneLeg(await tick(cursors, { queryBudget: 600 }))).toMatchObject({
+			count: 3,
+			incomplete: true,
+			waitsCadence: true,
+		});
+		// Stamped, so the count starts again.
+		expect(JSON.parse((await cursors.read("prune-carts"))!)).toMatchObject({
+			deletedSinceStamp: 0,
+		});
+		const left = (await Promise.all(ids.map((id) => carts().get(id)))).filter(Boolean);
+		expect(left).toHaveLength(2);
+
+		// A run that finds the cadence already spent waits without a page read, and
+		// starts the count again.
+		await cursors.write(
+			"prune-carts",
+			JSON.stringify({ deletedSinceStamp: ABANDONED_CARTS_PER_RUN }),
+		);
+		const later = new Date(NOW.getTime() + 16 * MINUTE_MS);
+		await othersRunAt(cursors, later);
+		const counter: CallCounter = { calls: 0 };
+		expect(pruneLeg(await tick(cursors, { now: later, queryBudget: 600, counter }))).toMatchObject({
+			count: 0,
+			waitsCadence: true,
+		});
+		expect(JSON.parse((await cursors.read("prune-carts"))!)).toMatchObject({
+			deletedSinceStamp: 0,
+		});
+		// The next cadence prunes the rest.
+		const next = new Date(NOW.getTime() + 32 * MINUTE_MS);
+		await othersRunAt(cursors, next);
+		expect(pruneLeg(await tick(cursors, { now: next, queryBudget: 600 })).count).toBe(2);
+	});
+
+	test("a run the tick's ceiling stops part-way keeps its deletes in the day's and the cadence's counts", async () => {
+		const ids: string[] = [];
+		for (let i = 0; i < 4; i++) ids.push(await emptyCart(OLD));
+		// The ceiling refuses the third cart's versioned read, after two are pruned.
+		let reads = 0;
+		const ceilingOnThirdCart: StorageAccess = {};
+		for (const [name, collection] of Object.entries(storage)) {
+			ceilingOnThirdCart[name] = new Proxy(collection, {
+				get(target, prop, receiver) {
+					const value: unknown = Reflect.get(target, prop, receiver);
+					if (typeof value !== "function") return value;
+					return (...args: unknown[]) => {
+						if (name === CARTS_COLLECTION && prop === "getVersioned" && ++reads === 3) {
+							throw new SweepQueryCeilingError(600, "prune-carts");
+						}
+						return (value as (...a: unknown[]) => unknown).apply(target, args);
+					};
+				},
+			});
+		}
+		const cursors = await onlyPruneCartsDue();
+		const today = NOW.toISOString().slice(0, 10);
+		await cursors.write("prune-carts", JSON.stringify({ day: today, deletedToday: 7 }));
+		const summary = await runCommerceSweeps(sweepContext(ceilingOnThirdCart), SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: NOW,
+			queryBudget: 600,
+		});
+		expect(pruneLeg(summary)).toMatchObject({ ok: true, incomplete: true });
+		expect((await Promise.all(ids.map((id) => carts().get(id)))).filter(Boolean)).toHaveLength(2);
+		expect(JSON.parse((await cursors.read("prune-carts"))!)).toMatchObject({
+			day: today,
+			deletedToday: 9,
+			deletedSinceStamp: 2,
+		});
 	});
 
 	test("a real add-line landing between the prune's read and its delete keeps the cart and its line", async () => {

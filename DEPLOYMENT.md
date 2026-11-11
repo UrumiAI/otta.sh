@@ -1247,8 +1247,9 @@ off to no order, and has not been written for 30 days (the cart cookie's lifetim
 its `cart_create_keys` record. It pages the active carts at most once a day (its kv cursor,
 `cron:sweep:cursor:prune-carts`, records when the last pass finished) and deletes at most 50 carts a
 run. A run that reaches 50 is stamped and carries on at its next fifteen-minute cadence, not the
-next tick (it gets no second run in the tick either), so a backlog drains at most 50 carts a quarter
-hour. On the Workers Free preset it also deletes at most **300 carts a UTC day** (counted in the same
+next tick (it gets no second run in the tick either). Above the Free preset the 50 counts every run
+since the leg was last stamped, runs its share cut short included, so a backlog drains at most 50
+carts a quarter hour. On the Workers Free preset it also deletes at most **300 carts a UTC day** (counted in the same
 cursor); once that is reached each cadence run is one kv read until the UTC day turns.
 A replay of a cart-create, rotation or re-currency key that hands out a fresh cookie also moves the
 cart's `updatedAt`, so no cart cookie outlives its cart's window. A cart is never deleted while an
@@ -1275,11 +1276,11 @@ drain at 300 carts a day: about 31,000 rows written, under a third of D1 Free's 
 once spent fails every write (add-to-cart and checkout included) until the UTC reset. A store with
 N abandoned carts on its first day drains them in about N / 300 days on Free. On Workers Paid (a
 budget above 50) there is no daily cap (D1 bills rows written per million and has no daily
-ceiling). There a run deletes at most 50 carts and the leg's share stops it sooner (about 23 carts
-at the Paid preset, 600), so an idle store drains about 70 carts a cadence — about 7,000 a day,
-roughly 700,000 rows written; under sustained load a share-stopped run is not stamped and goes
-again the next minute, so the drain can reach about 70 carts a minute (around 10 million rows a
-day) until the backlog clears. These figures are derived from the index model, not measured on
+ceiling). There the leg deletes at most 50 carts a cadence, counted in its cursor across every run
+since it was last stamped. The leg's share stops a run sooner (about 23 carts at the Paid preset,
+600); that run goes again on the tick's second pass or the next minute, with only what is left of
+the 50. So a backlog drains at most about 4,800 carts a day, roughly 500,000 rows written, idle or
+under load, until it clears. These figures are derived from the index model, not measured on
 D1. Overlapping ticks can pass the day's cap by at most one run (50 carts).
 
 The cap keys off the **Background work per minute** setting, not the plan: 50 or less (every
