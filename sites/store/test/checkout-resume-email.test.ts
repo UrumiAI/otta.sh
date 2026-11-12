@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { OrderRouteResult } from "@urumi.ai/otta-plugin";
 import { describe, expect, test } from "vitest";
-import { resumeEmailGate, resumeFormAction } from "../src/lib/checkout-resume.js";
+import { resumeEmailGate, resumeFormAction, resumeHref } from "../src/lib/checkout-resume.js";
 import { splitAstro } from "./astro-source.js";
 import { SRC } from "./theme-views.js";
 
@@ -60,7 +60,7 @@ describe("the page", () => {
 	test("posts to an action that carries the order, so a 429 can send the shopper back to it (#669)", () => {
 		const { frontmatter } = splitAstro(source);
 		expect(frontmatter).toContain("const formAction = resumeFormAction(orderId)");
-		expect(resumeFormAction("ord/1 2")).toBe("/checkout/resume?order=ord%2F1+2");
+		expect(resumeFormAction("ord/1 2")).toBe(resumeHref("ord/1 2"));
 		expect(
 			new URL(resumeFormAction("ord/1 2"), "https://shop.example").searchParams.get("order"),
 		).toBe("ord/1 2");
