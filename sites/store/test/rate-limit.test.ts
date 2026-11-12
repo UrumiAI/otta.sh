@@ -319,24 +319,145 @@ function limitedPluginRouteConstants(): string[] {
 		.map(([name]) => name);
 }
 
+/** `text` with every RegExp metacharacter escaped. */
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+}
+
 /**
- * Lib helpers that dispatch a limited plugin route on a page's behalf, so a
- * page calling one is a reference too. An EXPLICIT list, guarded below: the
- * scan cannot follow calls in general, so a new lib file that references a
- * limited constant must be added to LIB_DISPATCHERS (and its helper here) or
- * the guard test fails. Limitation: only direct references by name are seen.
+ * A reference to a limited plugin route: its constant by name, its route string
+ * as a quoted literal (`"storefront/cart/create"` or `'storefront/cart/create'`),
+ * or one of `helpers` by name (#669). Backticks are left out: comments name
+ * routes in backticks all the time.
  */
-const LIMITED_ROUTE_HELPERS = ["ensureCartId"];
-/** The lib files that reference a limited constant (the dispatch table, the
- *  helper above, and the limiter's own table). */
-const LIB_DISPATCHERS = ["cart-actions.ts", "otta-api.ts", "rate-limit.ts"];
+function limitedRouteReference(helpers: readonly string[] = []): RegExp {
+	const names = [...limitedPluginRouteConstants(), ...helpers];
+	const literals = [...PLUGIN_ROUTES.keys()].flatMap((route) => [
+		`"${escapeRegExp(route)}"`,
+		`'${escapeRegExp(route)}'`,
+	]);
+	return new RegExp(String.raw`\b(${names.join("|")})\b|${literals.join("|")}`);
+}
+
+interface Declaration {
+	name: string;
+	exported: boolean;
+	text: string;
+}
+
+/** A source file's top-level declarations, each running to the next top-level
+ *  line that starts something else (a declaration, an import, a comment).
+ *  Top level means column 0, the house style that `pnpm format` keeps. */
+function topLevelDeclarations(source: string): Declaration[] {
+	const start =
+		/^(export\s+)?(?:declare\s+)?(?:async\s+)?(?:function\*?|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)|^(?:import\b|export\s*[{*]|\/[*/])/gm;
+	const marks = [...source.matchAll(start)];
+	return marks.flatMap((mark, i) => {
+		const name = mark[2];
+		if (name === undefined) return [];
+		const end = marks[i + 1]?.index ?? source.length;
+		return [{ name, exported: mark[1] !== undefined, text: source.slice(mark.index, end) }];
+	});
+}
+
+/** The top-level `.ts`/`.js` files of a lib dir, with their source. */
+function libFiles(lib: string): { file: string; source: string }[] {
+	return readdirSync(lib, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && ENDPOINT_FILE.test(entry.name))
+		.map((entry) => ({
+			file: entry.name,
+			source: readFileSync(path.join(lib, entry.name), "utf8"),
+		}))
+		.toSorted((a, b) => a.file.localeCompare(b.file));
+}
+
+/**
+ * The lib code that names a limited plugin route, pinned per file down to each
+ * top-level declaration (#669). Pinning files alone let a new `quickAdd()` in an
+ * already-listed file through. The scan cannot follow calls in general, so a new
+ * declaration that names a limited route fails the guard until it is added here.
+ * Every EXPORTED one (by keyword or through an `export { … }` list) is then a
+ * reference in its own right: a page that calls it is scanned as if it named
+ * the route ({@link limitedRouteHelpers}).
+ * Limitation: only direct references are seen; a lib helper in another file
+ * that calls one of these is not.
+ */
+const LIB_DISPATCHERS: Readonly<Record<string, readonly string[]>> = {
+	"cart-actions.ts": ["ensureCartId"],
+	"otta-api.ts": ["KEYED_REPLAY_ROUTES", "REPLAYING_ROUTES"],
+	"rate-limit.ts": ["PLUGIN_ROUTES"],
+};
+
+/** Violations of the lib pin, as readable lines. */
+function libDispatchViolations(lib = path.join(SRC, "lib")): string[] {
+	const reference = limitedRouteReference();
+	const problems: string[] = [];
+	const files = libFiles(lib);
+	for (const { file, source } of files) {
+		const pinned = LIB_DISPATCHERS[file];
+		if (!reference.test(source)) continue;
+		if (pinned === undefined) {
+			problems.push(`${file}: names a limited plugin route; not in LIB_DISPATCHERS`);
+			continue;
+		}
+		const found = topLevelDeclarations(source)
+			.filter(({ text }) => reference.test(text))
+			.map(({ name }) => name);
+		for (const name of found) {
+			if (!pinned.includes(name))
+				problems.push(`${file}: ${name} names a limited route; not pinned`);
+		}
+		for (const name of pinned) {
+			if (!found.includes(name))
+				problems.push(`${file}: ${name} is pinned but names no limited route`);
+		}
+	}
+	for (const file of Object.keys(LIB_DISPATCHERS)) {
+		const listed = files.find((entry) => entry.file === file);
+		if (listed === undefined || !reference.test(listed.source)) {
+			problems.push(`${file}: in LIB_DISPATCHERS but names no limited plugin route`);
+		}
+	}
+	return problems;
+}
+
+/** `source`'s `export { a, b as c }` lists: each local name, with the names it
+ *  is exported under (`a` → [a], `b` → [c]). */
+function exportListNames(source: string): Map<string, string[]> {
+	const names = new Map<string, string[]>();
+	for (const list of source.matchAll(/^export\s*(?:type\s*)?\{([^}]*)\}/gm)) {
+		for (const item of (list[1] ?? "").split(",")) {
+			const [local, alias] = item.trim().split(/\s+as\s+/);
+			if (local === undefined || local === "") continue;
+			names.set(local, [...(names.get(local) ?? []), alias ?? local]);
+		}
+	}
+	return names;
+}
+
+/** The exported lib declarations that name a limited plugin route, under every
+ *  name a page can import them by (an `export` keyword, or an `export { … }`
+ *  list, alias included): a page that calls one dispatches that route as
+ *  surely as a page that names it. */
+function limitedRouteHelpers(lib = path.join(SRC, "lib")): string[] {
+	const reference = limitedRouteReference();
+	return libFiles(lib).flatMap(({ source }) => {
+		const listed = exportListNames(source);
+		return topLevelDeclarations(source)
+			.filter(({ text }) => reference.test(text))
+			.flatMap(({ name, exported }) => [...(exported ? [name] : []), ...(listed.get(name) ?? [])]);
+	});
+}
 
 /** Violations of the page-level default-deny, as readable lines: every page
- *  (`.ts` or `.astro`) that references a limited plugin route constant is in
- *  SITE_ROUTES or exempt, and `anyMethod` when it answers GET. */
-function pageCoverageViolations(pages = path.join(SRC, "pages")): string[] {
-	const names = [...limitedPluginRouteConstants(), ...LIMITED_ROUTE_HELPERS];
-	const reference = new RegExp(String.raw`\b(${names.join("|")})\b`);
+ *  (`.ts` or `.astro`) that references a limited plugin route (constant, quoted
+ *  route string or lib helper) is in SITE_ROUTES or exempt, and `anyMethod`
+ *  when it answers GET. */
+function pageCoverageViolations(
+	pages = path.join(SRC, "pages"),
+	lib = path.join(SRC, "lib"),
+): string[] {
+	const reference = limitedRouteReference(limitedRouteHelpers(lib));
 	const problems: string[] = [];
 	for (const page of pageFiles(pages, PAGE_FILE)) {
 		if (!reference.test(page.source)) continue;
@@ -348,6 +469,16 @@ function pageCoverageViolations(pages = path.join(SRC, "pages")): string[] {
 		}
 	}
 	return problems;
+}
+
+/** A temp dir for the scans' fixtures, removed after `body`. */
+function withTempDir(body: (dir: string) => void): void {
+	const dir = mkdtempSync(path.join(tmpdir(), "rl-scan-"));
+	try {
+		body(dir);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 describe("every write route is limited or explicitly exempt (default-deny)", () => {
@@ -370,28 +501,88 @@ describe("every write route is limited or explicitly exempt (default-deny)", () 
 		expect(pageCoverageViolations()).toEqual([]);
 	});
 
-	test("lib helpers that dispatch a limited route are listed (guard for the page scan)", () => {
-		const lib = path.join(SRC, "lib");
-		const names = limitedPluginRouteConstants();
-		const reference = new RegExp(String.raw`\b(${names.join("|")})\b`);
-		const referencing = readdirSync(lib)
-			.filter(
-				(file) =>
-					ENDPOINT_FILE.test(file) && reference.test(readFileSync(path.join(lib, file), "utf8")),
-			)
-			.toSorted();
-		expect(referencing).toEqual(LIB_DISPATCHERS);
-		const cartActions = readFileSync(path.join(lib, "cart-actions.ts"), "utf8");
-		for (const helper of LIMITED_ROUTE_HELPERS) {
-			expect(cartActions).toMatch(
-				new RegExp(String.raw`export\s+(async\s+)?function\s+${helper}\b`),
+	test("lib code that names a limited route is pinned per declaration (guard for the page scan, #669)", () => {
+		expect(libDispatchViolations()).toEqual([]);
+		expect(limitedRouteHelpers()).toContain("ensureCartId");
+	});
+
+	test("a new helper in an already-listed lib file is flagged, and a page calling it is scanned (#669)", () => {
+		withTempDir((dir) => {
+			const lib = path.join(dir, "lib");
+			const pages = path.join(dir, "pages");
+			mkdirSync(lib);
+			mkdirSync(pages);
+			for (const { file, source } of libFiles(path.join(SRC, "lib"))) {
+				writeFileSync(path.join(lib, file), source);
+			}
+			writeFileSync(
+				path.join(lib, "otta-api.ts"),
+				`${readFileSync(path.join(SRC, "lib", "otta-api.ts"), "utf8")}
+export async function quickAdd(handler: never, url: URL) {
+	return dispatchOttaRoute(handler, STOREFRONT_CART_LINE_ADD_ROUTE, {}, url);
+}
+`,
 			);
-		}
+			writeFileSync(
+				path.join(pages, "quick.astro"),
+				"---\nimport { quickAdd } from '../lib/otta-api.js';\nawait quickAdd(undefined as never, Astro.url);\n---\n<p>added</p>\n",
+			);
+			expect(libDispatchViolations(lib)).toEqual([
+				"otta-api.ts: quickAdd names a limited route; not pinned",
+			]);
+			expect(pageCoverageViolations(pages, lib)).toEqual([
+				"/quick: dispatches a limited plugin route; in neither map",
+			]);
+			// Against the real lib, which has no quickAdd, the page is not a reference.
+			expect(pageCoverageViolations(pages)).toEqual([]);
+		});
+	});
+
+	test("a helper exported through an export list, under its own name or an alias, is a reference too (#669)", () => {
+		withTempDir((dir) => {
+			const lib = path.join(dir, "lib");
+			const pages = path.join(dir, "pages");
+			mkdirSync(lib);
+			mkdirSync(pages);
+			writeFileSync(
+				path.join(lib, "quick-cart.ts"),
+				"const quickAdd = (h: never) => dispatchOttaRoute(h, STOREFRONT_CART_LINE_ADD_ROUTE, {});\n" +
+					"function quickCreate(h: never) {\n\treturn dispatchOttaRoute(h, STOREFRONT_CART_CREATE_ROUTE, {});\n}\n" +
+					"export { quickAdd, quickCreate as fastCreate };\n",
+			);
+			writeFileSync(
+				path.join(pages, "add.astro"),
+				"---\nimport { quickAdd } from '../lib/quick-cart.js';\nawait quickAdd(undefined as never);\n---\n",
+			);
+			writeFileSync(
+				path.join(pages, "create.astro"),
+				"---\nimport { fastCreate } from '../lib/quick-cart.js';\nawait fastCreate(undefined as never);\n---\n",
+			);
+			expect(limitedRouteHelpers(lib).toSorted()).toEqual(["fastCreate", "quickAdd"]);
+			expect(pageCoverageViolations(pages, lib).toSorted()).toEqual([
+				"/add: dispatches a limited plugin route; in neither map",
+				"/create: dispatches a limited plugin route; in neither map",
+			]);
+		});
+	});
+
+	test("the lib guard flags a new lib file that names a limited route (#669)", () => {
+		withTempDir((lib) => {
+			for (const { file, source } of libFiles(path.join(SRC, "lib"))) {
+				writeFileSync(path.join(lib, file), source);
+			}
+			writeFileSync(
+				path.join(lib, "quick-cart.ts"),
+				"export const quickCreate = (h: never) => dispatchOttaRoute(h, 'storefront/cart/create', {});\n",
+			);
+			expect(libDispatchViolations(lib)).toEqual([
+				"quick-cart.ts: names a limited plugin route; not in LIB_DISPATCHERS",
+			]);
+		});
 	});
 
 	test("the page scan flags a GET on a non-anyMethod route and a page using a dispatching helper (#661)", () => {
-		const dir = mkdtempSync(path.join(tmpdir(), "rl-pages-"));
-		try {
+		withTempDir((dir) => {
 			mkdirSync(path.join(dir, "cart"));
 			writeFileSync(
 				path.join(dir, "cart", "add.ts"),
@@ -405,14 +596,11 @@ describe("every write route is limited or explicitly exempt (default-deny)", () 
 				"/cart/add: answers GET but is not anyMethod",
 				"/mint: dispatches a limited plugin route; in neither map",
 			]);
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
+		});
 	});
 
 	test("the page scan catches a GET endpoint and an .astro page that dispatch a limited route (#661)", () => {
-		const dir = mkdtempSync(path.join(tmpdir(), "rl-pages-"));
-		try {
+		withTempDir((dir) => {
 			mkdirSync(path.join(dir, "cart"));
 			writeFileSync(
 				path.join(dir, "cart", "quick-add.ts"),
@@ -426,9 +614,28 @@ describe("every write route is limited or explicitly exempt (default-deny)", () 
 				"/cart/quick-add: dispatches a limited plugin route; in neither map",
 				"/go: dispatches a limited plugin route; in neither map",
 			]);
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
+		});
+	});
+
+	test("the page scan catches a route string written as a literal, not one named in a comment (#669)", () => {
+		withTempDir((dir) => {
+			writeFileSync(
+				path.join(dir, "double.ts"),
+				'export const POST = (c) => dispatchOttaRoute(h, "storefront/cart/create", {}, c.url);\n',
+			);
+			writeFileSync(
+				path.join(dir, "single.astro"),
+				"---\nawait dispatchOttaRoute(h, 'storefront/cart/lines/add', {}, Astro.url);\n---\n<p>added</p>\n",
+			);
+			writeFileSync(
+				path.join(dir, "comment.ts"),
+				"/** Reads, unlike the plugin's `storefront/cart/create`. */\nexport const POST = () => null;\n",
+			);
+			expect(pageCoverageViolations(dir).toSorted()).toEqual([
+				"/double: dispatches a limited plugin route; in neither map",
+				"/single: dispatches a limited plugin route; in neither map",
+			]);
+		});
 	});
 
 	test("/checkout/resume is limited on GET too (its GET dispatches the plugin's resume step)", () => {
