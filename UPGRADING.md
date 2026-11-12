@@ -2,7 +2,8 @@
 
 A store made from the one-click template ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.6) gets Otta
 as a dependency, `@urumi.ai/otta-store`. Most releases need nothing from you: merge the
-Dependabot pull request and Workers Builds deploys it.
+Dependabot pull request and Workers Builds deploys it. Each version's release notes are in
+[`docs/release-notes/`](./docs/release-notes/).
 
 Two kinds of release need you.
 
