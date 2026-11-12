@@ -503,43 +503,60 @@ describe("prune-carts (#39)", () => {
 		expect(pruneLeg(await tick(cursors, { now: next, queryBudget: 600 })).count).toBe(2);
 	});
 
-	test("a run the tick's ceiling stops part-way keeps its deletes in the day's and the cadence's counts", async () => {
-		const ids: string[] = [];
-		for (let i = 0; i < 4; i++) ids.push(await emptyCart(OLD));
-		// The ceiling refuses the third cart's versioned read, after two are pruned.
-		let reads = 0;
-		const ceilingOnThirdCart: StorageAccess = {};
-		for (const [name, collection] of Object.entries(storage)) {
-			ceilingOnThirdCart[name] = new Proxy(collection, {
-				get(target, prop, receiver) {
-					const value: unknown = Reflect.get(target, prop, receiver);
-					if (typeof value !== "function") return value;
-					return (...args: unknown[]) => {
-						if (name === CARTS_COLLECTION && prop === "getVersioned" && ++reads === 3) {
-							throw new SweepQueryCeilingError(600, "prune-carts");
-						}
-						return (value as (...a: unknown[]) => unknown).apply(target, args);
-					};
-				},
+	test.each([
+		// Free: the day's count is what caps it; the cadence's is not kept.
+		[30, 0],
+		// Paid: no daily cap, so the cadence's count is the one that binds (#663).
+		[600, 1],
+	] as const)(
+		"a run the tick's ceiling stops part-way keeps its deletes in the cursor's counts (budget %i)",
+		async (queryBudget, deletedSinceStamp) => {
+			const ids: string[] = [];
+			for (let i = 0; i < 3; i++) ids.push(await emptyCart(OLD));
+			// The ceiling refuses the second cart's versioned read, after one is pruned.
+			let reads = 0;
+			const ceilingOnSecondCart: StorageAccess = {};
+			for (const [name, collection] of Object.entries(storage)) {
+				ceilingOnSecondCart[name] = new Proxy(collection, {
+					get(target, prop, receiver) {
+						const value: unknown = Reflect.get(target, prop, receiver);
+						if (typeof value !== "function") return value;
+						return (...args: unknown[]) => {
+							if (name === CARTS_COLLECTION && prop === "getVersioned" && ++reads === 2) {
+								throw new SweepQueryCeilingError(queryBudget, "prune-carts");
+							}
+							return (value as (...a: unknown[]) => unknown).apply(target, args);
+						};
+					},
+				});
+			}
+			const cursors = await onlyPruneCartsDue();
+			const today = NOW.toISOString().slice(0, 10);
+			await cursors.write("prune-carts", JSON.stringify({ day: today, deletedToday: 7 }));
+			const summary = await runCommerceSweeps(sweepContext(ceilingOnSecondCart), SWEEP_TASK_NAME, {
+				cursors,
+				emailSender: recordingSender([]),
+				now: NOW,
+				queryBudget,
 			});
-		}
-		const cursors = await onlyPruneCartsDue();
-		const today = NOW.toISOString().slice(0, 10);
-		await cursors.write("prune-carts", JSON.stringify({ day: today, deletedToday: 7 }));
-		const summary = await runCommerceSweeps(sweepContext(ceilingOnThirdCart), SWEEP_TASK_NAME, {
-			cursors,
-			emailSender: recordingSender([]),
-			now: NOW,
-			queryBudget: 600,
-		});
-		expect(pruneLeg(summary)).toMatchObject({ ok: true, incomplete: true });
-		expect((await Promise.all(ids.map((id) => carts().get(id)))).filter(Boolean)).toHaveLength(2);
-		expect(JSON.parse((await cursors.read("prune-carts"))!)).toMatchObject({
-			day: today,
-			deletedToday: 9,
-			deletedSinceStamp: 2,
-		});
-	});
+			// Stopped at the ceiling (the savePlace in the catch path), not failed.
+			expect(
+				vi
+					.mocked(console.warn)
+					.mock.calls.some((args) =>
+						String(args[0]).includes("prune-carts stopped at the tick's query ceiling"),
+					),
+			).toBe(true);
+			expect(pruneLeg(summary)).toMatchObject({ ok: true, incomplete: true });
+			expect(reads).toBe(2);
+			expect((await Promise.all(ids.map((id) => carts().get(id)))).filter(Boolean)).toHaveLength(2);
+			expect(JSON.parse((await cursors.read("prune-carts"))!)).toMatchObject({
+				day: today,
+				deletedToday: 8,
+				deletedSinceStamp,
+			});
+		},
+	);
 
 	test("a real add-line landing between the prune's read and its delete keeps the cart and its line", async () => {
 		const s = adapters(storage, NOW);

@@ -1249,8 +1249,9 @@ its `cart_create_keys` record. It pages the active carts at most once a day (its
 run. A run that reaches 50 is stamped and carries on at its next fifteen-minute cadence, not the
 next tick (it gets no second run in the tick either). Above the Free preset the 50 counts every run
 since the leg was last stamped, runs its share cut short included, so a backlog drains at most 50
-carts a quarter hour. On the Workers Free preset it also deletes at most **300 carts a UTC day** (counted in the same
-cursor); once that is reached each cadence run is one kv read until the UTC day turns.
+carts a quarter hour. On the Workers Free preset it also deletes at most **300 carts a UTC day**
+(counted in the same cursor); once that is reached each cadence run is one kv read until the UTC
+day turns.
 A replay of a cart-create, rotation or re-currency key that hands out a fresh cookie also moves the
 cart's `updatedAt`, so no cart cookie outlives its cart's window. A cart is never deleted while an
 `order_keys` record names its storefront checkout (`checkout:<cartId>`); a headless client that
@@ -1281,7 +1282,7 @@ since it was last stamped. The leg's share stops a run sooner (about 23 carts at
 600); that run goes again on the tick's second pass or the next minute, with only what is left of
 the 50. So a backlog drains at most about 4,800 carts a day, roughly 500,000 rows written, idle or
 under load, until it clears. These figures are derived from the index model, not measured on
-D1. Overlapping ticks can pass the day's cap by at most one run (50 carts).
+D1. Overlapping ticks can pass the day's cap, or a cadence's, by at most one run (50 carts).
 
 The cap keys off the **Background work per minute** setting, not the plan: 50 or less (every
 budget Workers Free can run) counts as Free. So a Workers Paid store left at 50 or below is capped

@@ -5796,9 +5796,10 @@ interface PruneCartsCursor {
 }
 
 /** The carts deleted on one UTC day (`YYYY-MM-DD`), for the Free daily cap. Kept
- *  beside the place and never reset by a pass ending or a cursor refused. Also the
- *  carts deleted since the leg was last stamped, for the per-cadence cap where there
- *  is no daily one (`ABANDONED_CARTS_PER_RUN`): back to 0 by a run that is stamped. */
+ *  beside the place and never reset by a pass ending or a cursor refused. Also, where
+ *  there is no daily cap, the carts deleted since the leg was last stamped, for the
+ *  per-cadence cap (`ABANDONED_CARTS_PER_RUN`): back to 0 by a run that is stamped,
+ *  and always 0 under a daily cap. */
 interface PruneCartsDay {
 	readonly day: string | null;
 	readonly deletedToday: number;
@@ -6001,8 +6002,12 @@ async function pruneAbandonedCarts(
 			? Math.max(0, ABANDONED_CARTS_PER_RUN - saved.deletedSinceStamp)
 			: Math.min(ABANDONED_CARTS_PER_RUN, Math.max(0, dailyCap - deletedBefore));
 	if (runLimit === 0) {
-		// This cadence's allowance is spent: the leg is stamped now, so its count
-		// starts again.
+		// The allowance is spent, and the leg waits its cadence. With a daily cap
+		// (Free) that is one kv read until the UTC day turns, logged once, by the run
+		// that reached the cap (below), not at every cadence after. Without one, the
+		// cadence's was spent by runs that were not stamped (their share or the
+		// tick's ceiling stopped them, or an overlapping tick's run); this run is
+		// stamped, so it writes the count back to 0.
 		if (dailyCap === null) {
 			allowCursorWrite();
 			await cursors.write(
@@ -6010,8 +6015,6 @@ async function pruneAbandonedCarts(
 				serializePruneCarts(saved, { ...saved, deletedSinceStamp: 0 }),
 			);
 		}
-		// Today's allowance is spent: one kv read, and the leg waits its cadence.
-		// Logged once, by the run that reached the cap (below), not at every cadence after.
 		return { count: 0, incomplete: true, waitsCadence: true };
 	}
 	const collections = {
@@ -6032,8 +6035,10 @@ async function pruneAbandonedCarts(
 	// may still record its place, and the day's count its deletes. No write when
 	// nothing moved: the place read back, or a fresh start where nothing was stored.
 	const savePlace = async (): Promise<void> => {
-		// A run that is stamped (capped, or its pass done) starts the count again.
-		const deletedSinceStamp = capped || !incomplete ? 0 : saved.deletedSinceStamp + pruned;
+		// Kept only where there is no daily cap. A run that is stamped (capped, or its
+		// pass done) starts it again.
+		const deletedSinceStamp =
+			dailyCap !== null || capped || !incomplete ? 0 : saved.deletedSinceStamp + pruned;
 		const day: PruneCartsDay =
 			pruned > 0
 				? { day: today, deletedToday: deletedBefore + pruned, deletedSinceStamp }
