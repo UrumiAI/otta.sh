@@ -1326,11 +1326,12 @@ index layout records that UTC day in the sweep's tick state (`cron:sweep:cursor:
 the three capped legs spend no allowance: the Reports backfill builds no new day, `prune-carts`
 deletes no cart and `product-reconcile` makes no repair, and each waits its cadence.
 `reporting-heal` still rebuilds the days and months whose orders moved, and walks the closed day, as
-on any day; those are few. The rest of the day's rows written are left to the index build and the
-store's traffic. Only that one UTC day is held: a build that runs past 00:00 UTC, or fails and is
-retried on a later day, is not. A store with no tick state yet (a fresh install) has no Otta rows to
-index and is not held; the build still writes an index row for each of other plugins' rows in
-`_plugin_storage`.
+on any day, and the verifier still re-checks clean months and rewrites one that has drifted (its day
+re-check waits for the next day); those are few. The rest of the day's rows written are left to the
+index build and the store's traffic. Only that one UTC day is held: a build that runs past 00:00
+UTC, or fails and is retried on a later day, is not. A store with no tick state yet (a fresh
+install) has no Otta rows to index and is not held; the build still writes an index row for each of
+other plugins' rows in `_plugin_storage`.
 
 From the next UTC day the backfill builds at most **100 days a day**, newest first: about 21,000
 rows written in two currencies, 16,000 in one. It goes back 800 days at most (the 400-day custom
