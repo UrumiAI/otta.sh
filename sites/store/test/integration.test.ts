@@ -179,6 +179,13 @@ describe("the peer versions this release supports, checked at run time", () => {
 		expect(satisfiesPeerPin("7.3.7-beta.1", "7.3.7")).toBe(false);
 	});
 
+	test("build metadata (+...) is ignored, as npm's semver does (#679)", () => {
+		expect(satisfiesPeerPin("1.3.1+build.5", "1.3.1")).toBe(true);
+		expect(satisfiesPeerPin("1.3.2+build.5", "1.3.1")).toBe(false);
+		expect(satisfiesPeerPin("1.3.1-rc.1+build.5", "1.3.1")).toBe(false);
+		expect(satisfiesPeerPin("7.3.8+build.5", "~7.3.6")).toBe(true);
+	});
+
 	test("^0.y.z stays in 0.y; ^0.0.z is exactly 0.0.z", () => {
 		expect(satisfiesPeerPin("0.2.5", "^0.2.3")).toBe(true);
 		expect(satisfiesPeerPin("0.3.0", "^0.2.3")).toBe(false);

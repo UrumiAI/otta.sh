@@ -152,13 +152,14 @@ function parseVersion(version: string): [number, number, number, boolean] | unde
  * write) is not checked and counts as satisfied. A prerelease satisfies only an
  * exact pin equal to it: npm's semver matches one against a range only when the
  * range's own comparator is a prerelease of the same `x.y.z`, which none of the
- * forms above is. `^0.0.z` means exactly `0.0.z`.
+ * forms above is. `^0.0.z` means exactly `0.0.z`. Build metadata (`+…`) is
+ * ignored, as npm's semver ignores it: `1.3.1+build.5` satisfies `1.3.1`.
  */
 export function satisfiesPeerPin(version: string, pin: string): boolean {
 	const range = /^([~^]?)(\d+\.\d+\.\d+)$/.exec(pin.trim());
 	if (range === null) return true;
 	const operator = range[1] ?? "";
-	if (operator === "") return version.trim() === range[2];
+	if (operator === "") return version.trim().replace(/\+[0-9A-Za-z.-]+$/, "") === range[2];
 	const found = parseVersion(version);
 	const floor = parseVersion(range[2] ?? "");
 	if (found === undefined || floor === undefined) return false;
