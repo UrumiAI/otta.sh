@@ -504,6 +504,42 @@ describe("the backfill's write volume", () => {
 		expect(await productsDirtyOf(ancient.day)).toEqual([undefined]);
 		expect(await productsDirtyOf(recent.day)).toEqual([0]);
 	}, 300_000);
+
+	test("a spent allowance keeps the strikes and short needs of the unbuilt days it no longer lists (#668)", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		const unbuilt = await orderDaysAgo("kept-strike", 40);
+		await seedBuiltToday(cursors, REPORTING_BACKFILL_DAYS_PER_DAY_FREE);
+		const raw = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		const strikes = [{ day: unbuilt.day, n: 2 }];
+		const short = [{ day: unbuilt.day, need: 6 }];
+		await cursors.write("reporting-refresh", JSON.stringify({ ...raw, strikes, short }));
+		for (let run = 0; run < 4; run++) await sweep(cursors, 30, QUIET);
+		// Not listed while the allowance is spent, so not built — and not forgotten either.
+		expect(await productsDirtyOf(unbuilt.day)).toEqual([undefined]);
+		const state = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		expect(state.strikes).toEqual(strikes);
+		expect(state.short).toEqual(short);
+	}, 300_000);
+
+	test("an allowance down to its last day keeps the strikes and short needs of the days its shorter listing leaves out (#668)", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		const newer = await orderDaysAgo("last-allowed", 35);
+		const older = await orderDaysAgo("kept-behind", 40);
+		// One build left today: the listing holds the newer day alone, and builds it.
+		await seedBuiltToday(cursors, REPORTING_BACKFILL_DAYS_PER_DAY_FREE - 1);
+		const raw = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		const strikes = [{ day: older.day, n: 2 }];
+		const short = [{ day: older.day, need: 6 }];
+		await cursors.write("reporting-refresh", JSON.stringify({ ...raw, strikes, short }));
+		for (let run = 0; run < 4; run++) await sweep(cursors, 30, QUIET);
+		expect(await productsDirtyOf(newer.day)).toEqual([0]);
+		expect(await productsDirtyOf(older.day)).toEqual([undefined]);
+		const state = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		expect(state.strikes).toEqual(strikes);
+		expect(state.short).toEqual(short);
+	}, 300_000);
 });
 
 describe("a month held by a claim", () => {

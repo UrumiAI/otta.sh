@@ -4127,10 +4127,14 @@ async function refreshReportingRollups(
 	});
 	let incomplete = days.length >= listLimit;
 	// A listed day is either built, marked, or still stale: `short` and `strikes` keep
-	// only the last.
+	// only the last. Only a full listing drops the days it did not list: one cut short by
+	// the daily allowance (or, spent, listing only the dirty days) leaves them as they
+	// were, so their strikes and needs carry over to the run that lists them again (#668).
 	const listed = new Set(days);
-	state.short = state.short.filter(({ day }) => listed.has(day));
-	state.strikes = state.strikes.filter(({ day }) => listed.has(day));
+	if (allowance !== 0 && listLimit === REPORTING_REFRESH_BATCH) {
+		state.short = state.short.filter(({ day }) => listed.has(day));
+		state.strikes = state.strikes.filter(({ day }) => listed.has(day));
+	}
 	const settle = (day: string): void => {
 		state.short = state.short.filter((entry) => entry.day !== day);
 		state.strikes = state.strikes.filter((entry) => entry.day !== day);
