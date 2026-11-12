@@ -131,9 +131,15 @@
  *
  * D1 ROWS WRITTEN, the other Free limit. A repair writes about 150 rows (see
  * `RECONCILE_REPAIRS_PER_DAY_FREE`), so on Workers Free the leg makes at most 200
- * repairs a UTC day, counted in the cursor document. A capped day keeps the pass
- * exactly where it is — its start, its page, its nominated products — and the leg
- * waits its cadence until 00:00 UTC.
+ * syncs a UTC day, counted in the cursor document in thirds of a repair (a lost
+ * unpublish's deactivation, one document write, spends one third), with a reserve of
+ * thirty more units only deactivations may spend. A capped day keeps the pass exactly
+ * where it is — its start, its page, its nominated products — and the walk waits
+ * until 00:00 UTC. Meanwhile, while a deactivation still fits, a separate LAP lists
+ * the whole catalogue once per pass interval for lost unpublishes alone (THE SCAN FOR
+ * LOST UNPUBLISHES, in `reconcileProductCommerce`), so a withdrawn product is not left
+ * on sale behind the first syncs. It reads what a pass reads (about N²/100 + 2N rows)
+ * and writes only the cursor document and its deactivations.
  */
 import { InProcessCommerceClient } from "../commerce/in-process-commerce-client.js";
 import { ALLOWED_HOSTS } from "../manifest.js";
@@ -181,6 +187,14 @@ export const PRODUCT_RECONCILE_CURSOR = "product-reconcile";
  * the commerce rows' `in` read is split at `RECONCILE_IN_BATCH`.
  */
 export const RECONCILE_PAGE_SIZE = 100;
+
+/** The most products the cursor document keeps nominated: a page's own, and as
+ *  many again found by the lap for lost unpublishes (which lists no page while more
+ *  than a page's worth are nominated, so a page it adds stays under this). A release
+ *  from before #664 parses only the first 100: the walk's own nominations come first
+ *  and the lap's are appended after them, so a rollback drops only lap nominations,
+ *  which the next lap finds again. */
+const RECONCILE_MAX_PENDING = 2 * RECONCILE_PAGE_SIZE;
 
 /**
  * Ids per commerce-row `in` read: D1 binds at most 100 parameters a statement and
@@ -239,10 +253,13 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
  * host's list index and Otta's 49 declared expression indexes, none of them
  * partial), and a sync is about three document writes (the upsert, the activate,
  * the variant write) plus its sku claims — about 156 rows a product. 200 repairs is
- * then about 31,000 rows written a day. Beside `prune-carts`' own cap
- * (`ABANDONED_CARTS_PER_DAY_FREE`, about 31,000) and the reporting backfill's
- * (`REPORTING_BACKFILL_DAYS_PER_DAY_FREE`, about 16,000–21,000), all three at once
- * write about 83,000–88,000, which leaves the store's traffic about 12,000–17,000. On
+ * then about 31,200 rows written a day, and the deactivations' reserve
+ * (`RECONCILE_DEACTIVATION_RESERVE_UNITS`) at most 1,560 more: about 32,800. Beside
+ * `prune-carts`' own cap (`ABANDONED_CARTS_PER_DAY_FREE`, about 31,200) and the
+ * reporting backfill's (`REPORTING_BACKFILL_DAYS_PER_DAY_FREE`, about 15,600–20,800),
+ * all three at once write about 80,000–85,000 (79,600–84,800), which leaves the
+ * store's traffic and the sweep's own cursor and tick-state writes about
+ * 15,000–20,000. On
  * the deploy day of a new index layout all three spend nothing (`indexBuildHold`).
  * Without it a first install over an existing catalogue — every product
  * without a row — heals at the leg's pace, about 460 repairs a day measured, about
@@ -258,6 +275,40 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
  * no cap.
  */
 export const RECONCILE_REPAIRS_PER_DAY_FREE = 200;
+
+/**
+ * Deactivations that count as ONE repair against the day's cap (issue #664). A lost
+ * unpublish's deactivation is one document write (about 52 rows written), a sync
+ * about three (about 156), so three of them write what one sync does. The day's
+ * count is therefore kept in UNITS of a third of a repair (`reconcileCostUnits`): a
+ * sync spends three, a deactivation one, against a cap of
+ * `RECONCILE_REPAIRS_PER_DAY_FREE` × 3. Counted at that share rather than not at all,
+ * so a run of lost unpublishes stays inside the same rows-written bound.
+ *
+ * Why a deactivation is worth the special case: a lost unpublish leaves a withdrawn
+ * product ON SALE, while a lost publish only leaves one off sale (fail-closed). So a
+ * page's deactivations are nominated before its syncs, deactivations keep a reserve
+ * no sync can spend (`RECONCILE_DEACTIVATION_RESERVE_UNITS`), and while the cap holds
+ * the walk the leg runs a LAP over the catalogue for lost unpublishes
+ * (`reconcileProductCommerce`).
+ */
+export const RECONCILE_DEACTIVATIONS_PER_REPAIR = 3;
+
+/**
+ * Units of the day's count (thirds of a repair) that only deactivations may spend, ON
+ * TOP of the syncs' `RECONCILE_REPAIRS_PER_DAY_FREE` × 3. A first-install day is spent
+ * entirely by syncs; without a reserve the cap would then have no room left for the
+ * deactivation of a lost unpublish, and the lap that finds one would never start.
+ * Thirty units are thirty deactivations, about 1,560 rows written (ten syncs' worth):
+ * the leg's daily bound is about 31,200 + 1,560 ≈ 32,800 rows written. Syncs spend at
+ * most `RECONCILE_REPAIRS_PER_DAY_FREE` × 3 of the total; deactivations spend any of it.
+ */
+export const RECONCILE_DEACTIVATION_RESERVE_UNITS = 30;
+
+/** What one repair of `kind` spends of the day's cap, in thirds of a repair. */
+export function reconcileCostUnits(kind: "sync" | "deactivate"): number {
+	return kind === "sync" ? RECONCILE_DEACTIVATIONS_PER_REPAIR : 1;
+}
 
 /** The daily repair cap for a tick whose query budget is `queryBudget`: the Free
  *  cap at any budget Workers Free can run, none above it — the threshold
@@ -279,10 +330,10 @@ export const PRODUCT_RECONCILE_ENTRY_QUERIES =
 /** The writes of a sync (`syncLiveProduct`): the upsert's versioned read and
  *  compare-and-set, the activate's, and — for a document with a repeater — the one
  *  variant write's. */
-const SYNC_WRITE_CALLS = 6;
+export const SYNC_WRITE_CALLS = 6;
 
 /** The writes of a deactivation: its versioned read and compare-and-set. */
-const DEACTIVATE_WRITE_CALLS = 2;
+export const DEACTIVATE_WRITE_CALLS = 2;
 
 /** What every visit to a nominated product reads before it decides anything: the
  *  cursor write that records the attempt, then the product's row, then its document
@@ -435,8 +486,15 @@ interface RepairCheck {
  *  - `interrupted`: how many runs in a row each pending product was cut short;
  *  - `passStartedAt`: when the pass in progress STARTED (null between passes), and
  *    `lastPassStartedAt`: when the last COMPLETED one did — what the next waits on;
- *  - `day` and `repairsToday`: the UTC day (`YYYY-MM-DD`) of the last repair sent,
- *    and how many were sent that day (`RECONCILE_REPAIRS_PER_DAY_FREE`). */
+ *  - `day` and `unitsToday`: the UTC day (`YYYY-MM-DD`) of the last repair sent, and
+ *    what that day's repairs spent of the cap, in thirds of a repair
+ *    (`reconcileCostUnits`). `repairsToday` beside them is the same count in whole
+ *    repairs, ROUNDED UP — what a release from before #664 reads, so a same-day
+ *    rollback stops at the cap rather than starting the day's count again;
+ *  - the scan for lost unpublishes: `scanStartedAt`, when the lap in progress
+ *    started (null when none), `scan`, the cursor of the next page it lists (null at
+ *    the top), and `lastScanStartedAt`, when the last lap started — the next waits
+ *    the pass interval. */
 interface ReconcileState {
 	cursor: string | null;
 	pending: PendingRepair[];
@@ -446,6 +504,15 @@ interface ReconcileState {
 	lastPassStartedAt: string | null;
 	day: string | null;
 	repairsToday: number;
+	unitsToday: number;
+	scan: string | null;
+	scanStartedAt: string | null;
+	lastScanStartedAt: string | null;
+}
+
+/** A count stored in the document: a safe, non-negative integer, else undefined. */
+function count(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function parseCheck(value: unknown): RepairCheck | undefined {
@@ -478,6 +545,10 @@ function parseReconcileState(raw: string | null): ReconcileState {
 		lastPassStartedAt: null,
 		day: null,
 		repairsToday: 0,
+		unitsToday: 0,
+		scan: null,
+		scanStartedAt: null,
+		lastScanStartedAt: null,
 	};
 	if (raw === null || raw === "") return state;
 	try {
@@ -485,13 +556,14 @@ function parseReconcileState(raw: string | null): ReconcileState {
 		if (typeof parsed !== "object" || parsed === null) return state;
 		const { cursor, pending, next, interrupted, passStartedAt, lastPassStartedAt } =
 			parsed as Record<string, unknown>;
-		const { day, repairsToday } = parsed as Record<string, unknown>;
+		const { day, repairsToday, unitsToday } = parsed as Record<string, unknown>;
+		const { scan, scanStartedAt, lastScanStartedAt } = parsed as Record<string, unknown>;
 		if (typeof cursor === "string" && cursor !== "") state.cursor = cursor;
 		if (typeof next === "string" && next !== "") state.next = next;
 		// A page in progress is kept only whole: without its `next` it cannot be left
 		// (`null` is a real "last page"), so a document missing it re-lists the page.
 		if (Array.isArray(pending) && "next" in (parsed as object)) {
-			for (const entry of pending.slice(0, RECONCILE_PAGE_SIZE)) {
+			for (const entry of pending.slice(0, RECONCILE_MAX_PENDING)) {
 				if (typeof entry !== "object" || entry === null) continue;
 				const { id, deactivate, check } = entry as Record<string, unknown>;
 				if (typeof id !== "string" || id.length === 0) continue;
@@ -504,7 +576,7 @@ function parseReconcileState(raw: string | null): ReconcileState {
 			}
 		}
 		if (typeof interrupted === "object" && interrupted !== null) {
-			for (const [id, n] of Object.entries(interrupted).slice(0, RECONCILE_PAGE_SIZE)) {
+			for (const [id, n] of Object.entries(interrupted).slice(0, RECONCILE_MAX_PENDING)) {
 				if (typeof n === "number" && Number.isSafeInteger(n) && n > 0) state.interrupted[id] = n;
 			}
 		}
@@ -520,7 +592,22 @@ function parseReconcileState(raw: string | null): ReconcileState {
 		) {
 			state.day = day;
 			state.repairsToday = repairsToday;
+			// Units are what this release reads. Absent or garbled (a document from before
+			// #664), the whole repairs stand for them. Never fewer than the whole repairs
+			// say: a release from before #664 that ran meanwhile counted only those.
+			const whole = repairsToday * RECONCILE_DEACTIVATIONS_PER_REPAIR;
+			const units = count(unitsToday);
+			state.unitsToday =
+				units === undefined
+					? whole
+					: Math.max(units, whole - RECONCILE_DEACTIVATIONS_PER_REPAIR + 1);
 		}
+		// A lap in progress is its start, and its place (none: the top).
+		state.scanStartedAt = instant(scanStartedAt);
+		if (state.scanStartedAt !== null && typeof scan === "string" && scan !== "") {
+			state.scan = scan;
+		}
+		state.lastScanStartedAt = instant(lastScanStartedAt);
 		return state;
 	} catch {
 		return state;
@@ -592,11 +679,14 @@ function sayNoWrite(
  * products it has to repair.
  *
  * A DAY'S REPAIRS ARE CAPPED on Workers Free (`timing.dailyRepairCap`,
- * `RECONCILE_REPAIRS_PER_DAY_FREE`). Once the day's count reaches it, a product that
+ * `RECONCILE_REPAIRS_PER_DAY_FREE`; a deactivation counts a third of one,
+ * `RECONCILE_DEACTIVATIONS_PER_REPAIR`). Once the day's count reaches it, a product that
  * still needs writes stays nominated and the run stops — after the checks of the
- * repairs it already made, which write nothing — returning `waitsCadence`, so the leg
- * is stamped and comes back at its cadence; the pass is never ended and no product
- * is stepped past, and the walk resumes the same nominations after 00:00 UTC.
+ * repairs it already made, which write nothing, and the scan for lost unpublishes
+ * while a deactivation still fits (see `scanAhead` below) — returning `waitsCadence`
+ * once there is nothing left to scan, so the leg is stamped and comes back at its
+ * cadence; the pass is never ended and no product is stepped past, and the walk
+ * resumes the same nominations after 00:00 UTC.
  */
 export async function reconcileProductCommerce(
 	ctx: PluginContext,
@@ -634,15 +724,26 @@ export async function reconcileProductCommerce(
 	// The day's count is the stored one only when it is today's.
 	const dailyCap = timing.dailyRepairCap ?? null;
 	const today = timing.now.toISOString().slice(0, 10);
-	const repairsBefore = state.day === today ? state.repairsToday : 0;
-	/** Repairs this run SENT writes for (not the ones it counts as held). */
-	let sent = 0;
-	const capReached = (): boolean => dailyCap !== null && repairsBefore + sent >= dailyCap;
+	/** What today's repairs have spent of the cap, in thirds of a repair. */
+	let usedUnits = state.day === today ? state.unitsToday : 0;
+	/** Whether today's cap has room for one more repair of `kind`
+	 *  (`reconcileCostUnits`). Syncs stop at `dailyCap` × 3 units; deactivations may
+	 *  also spend the reserve above it (`RECONCILE_DEACTIVATION_RESERVE_UNITS`), so a
+	 *  day the syncs spent still deactivates a lost unpublish, and neither kind passes
+	 *  its own limit. */
+	const capRoomFor = (kind: "sync" | "deactivate"): boolean =>
+		dailyCap === null ||
+		usedUnits + reconcileCostUnits(kind) <=
+			dailyCap * RECONCILE_DEACTIVATIONS_PER_REPAIR +
+				(kind === "deactivate" ? RECONCILE_DEACTIVATION_RESERVE_UNITS : 0);
+	/** Said once, by the run whose repairs leave no room for another sync. */
+	const syncRoomAtStart = capRoomFor("sync");
 	/** Counted BEFORE the writes, so a run the ceiling stops in them keeps it. */
-	const countRepair = (): void => {
-		sent++;
+	const countRepair = (kind: "sync" | "deactivate"): void => {
+		usedUnits += reconcileCostUnits(kind);
 		state.day = today;
-		state.repairsToday = repairsBefore + sent;
+		state.unitsToday = usedUnits;
+		state.repairsToday = Math.ceil(usedUnits / RECONCILE_DEACTIVATIONS_PER_REPAIR);
 	};
 	let capped = false;
 	const save = async (): Promise<void> => {
@@ -670,6 +771,92 @@ export async function reconcileProductCommerce(
 		}
 	};
 	const pageGate = budget.gate(0, RECONCILE_PAGE_QUERIES);
+	/** The scan's lap is over (it reached the end, or its cursor died). */
+	const endLap = (): void => {
+		if (state.scanStartedAt !== null) state.lastScanStartedAt = state.scanStartedAt;
+		state.scan = null;
+		state.scanStartedAt = null;
+	};
+	/**
+	 * THE SCAN FOR LOST UNPUBLISHES (issue #664). While the cap holds the walk on its
+	 * page, a lost unpublish anywhere else would wait for the walk — on a page ahead of
+	 * it, behind every first sync before it; on a page behind it, for the next pass: on
+	 * a large Free first install, about N / 200 days either way, still on sale. So,
+	 * while the cap holds the syncs and still has room for a deactivation (the reserve
+	 * no sync can spend, `RECONCILE_DEACTIVATION_RESERVE_UNITS`), the leg lists the catalogue in a
+	 * separate lap, one page per call: the list and its row reads
+	 * (`RECONCILE_PAGE_QUERIES`, gated like the walk's own page), nothing written but
+	 * the cursor document. A product found active while its document is not published
+	 * is nominated for a deactivation beside the walk's nominations, and visited,
+	 * checked and counted (a third of a repair) like any other. Nothing else is
+	 * nominated: the syncs wait for the walk.
+	 *
+	 * A lap runs from the top of the catalogue to its end at most once per pass
+	 * interval (`timing.passIntervalMs`: it reads what a pass reads), and its place
+	 * persists in the cursor document across ticks and days. Returns whether it listed
+	 * a page.
+	 */
+	const scanAhead = async (): Promise<boolean> => {
+		// Only while the cap holds the syncs (else the walk finds what the lap would),
+		// and while a deactivation still fits.
+		if (capRoomFor("sync") || !capRoomFor("deactivate")) return false;
+		if (state.pending.length > RECONCILE_PAGE_SIZE) return false;
+		if (state.scanStartedAt === null) {
+			const last =
+				state.lastScanStartedAt === null ? Number.NaN : Date.parse(state.lastScanStartedAt);
+			// A stamp from the future (a clock stepped back) does not hold the lap off.
+			if (last <= nowMs && nowMs - last < timing.passIntervalMs) return false;
+			state.scan = null;
+			state.scanStartedAt = timing.now.toISOString();
+		}
+		if (!pageGate()) return false;
+		let page: Awaited<ReturnType<ContentReadAccess["list"]>>;
+		try {
+			page = await content.list(PRODUCTS_COLLECTION, {
+				limit: RECONCILE_PAGE_SIZE,
+				...(state.scan === null ? {} : { cursor: state.scan }),
+			});
+		} catch (err) {
+			if (isInvalidCursorError(err)) {
+				// A cursor the host can no longer decode: the lap starts again from the top
+				// (keeping its start, so it still runs once per interval). The top needs no
+				// cursor; if even that is refused, the lap ends.
+				if (state.scan !== null) {
+					console.warn(
+						"[otta] cron sweep product-reconcile: the CMS refused the lap's cursor; the lap restarts from the top",
+					);
+					state.scan = null;
+					return true;
+				}
+				endLap();
+				return false;
+			}
+			throw err;
+		}
+		const items = page.items.filter(
+			(item): item is Record<string, unknown> & { id: string } =>
+				typeof item["id"] === "string" && item["id"].length > 0,
+		);
+		const found = items.length > 0 ? await rows.many(items.map((item) => item.id)) : new Map();
+		for (const item of items) {
+			if (planReconcile(item, found.get(item.id)).kind !== "deactivate") continue;
+			const at = state.pending.findIndex((entry) => entry.id === item.id);
+			if (at === -1) {
+				state.pending.push({ id: item.id, deactivate: true });
+			} else if (state.pending[at]?.check === undefined && state.pending[at]?.deactivate !== true) {
+				// Nominated by the walk as a sync, now unpublished: as a sync it would wait
+				// behind the syncs' cap, still on sale.
+				state.pending[at] = { id: item.id, deactivate: true };
+			}
+		}
+		if (page.hasMore && page.cursor !== undefined) {
+			state.scan = page.cursor;
+		} else {
+			endLap();
+		}
+		await save();
+		return true;
+	};
 	try {
 		walk: for (;;) {
 			if (state.pending.length === 0) {
@@ -700,6 +887,11 @@ export async function reconcileProductCommerce(
 						typeof item["id"] === "string" && item["id"].length > 0,
 				);
 				const found = items.length > 0 ? await rows.many(items.map((item) => item.id)) : new Map();
+				// A lost unpublish leaves a product ON SALE that the merchant withdrew; a
+				// lost publish leaves one off sale (fail-closed). So the page's
+				// deactivations are nominated FIRST: on a capped Free day they are not
+				// queued behind the page's first syncs.
+				const syncs: PendingRepair[] = [];
 				for (const item of items) {
 					const plan = planReconcile(item, found.get(item.id));
 					if (plan.kind === "none") continue;
@@ -707,10 +899,10 @@ export async function reconcileProductCommerce(
 						sayNoWrite(item.id, item, plan.kind);
 						continue;
 					}
-					state.pending.push(
-						plan.kind === "deactivate" ? { id: item.id, deactivate: true } : { id: item.id },
-					);
+					if (plan.kind === "deactivate") state.pending.push({ id: item.id, deactivate: true });
+					else syncs.push({ id: item.id });
 				}
+				state.pending.push(...syncs);
 				state.next = page.hasMore && page.cursor !== undefined ? page.cursor : null;
 				if (state.pending.length === 0) {
 					advance();
@@ -725,16 +917,32 @@ export async function reconcileProductCommerce(
 			// `done()` replaces `state.pending` with a new array, so this one is stable.
 			for (const nominated of state.pending) {
 				const id = nominated.id;
+				const interrupts = state.interrupted[id] ?? 0;
 				const done = (): void => {
 					state.pending = state.pending.filter((entry) => entry.id !== id);
 					delete state.interrupted[id];
+				};
+				/** Keep the product pending as the repair its FRESH plan needs, not the
+				 *  one the page (or a check) nominated it for, so its next visit is gated
+				 *  on that repair's cost. Not counted against it. A CHECK's record is
+				 *  dropped: its document moved, so the next visit plans a repair afresh,
+				 *  and the earlier repair is not reported as held. */
+				const renominate = (kind: "sync" | "deactivate"): void => {
+					state.interrupted[id] = interrupts;
+					if (interrupts === 0) delete state.interrupted[id];
+					state.pending = state.pending.map((entry) =>
+						entry.id !== id
+							? entry
+							: kind === "deactivate"
+								? { id, deactivate: true as const }
+								: { id },
+					);
 				};
 				/** Keep the product pending, now as a check of the repair just made. */
 				const toCheck = (check: RepairCheck): void => {
 					state.pending = state.pending.map((entry) => (entry.id === id ? { id, check } : entry));
 					delete state.interrupted[id];
 				};
-				const interrupts = state.interrupted[id] ?? 0;
 				if (interrupts >= RECONCILE_MAX_INTERRUPTS) {
 					const line = `the repair of product ${id} was cut short by the tick's query ceiling on ${String(interrupts)} runs in a row; it is stepped past until the next pass`;
 					console.error(`[otta] cron sweep product-reconcile: ${line}`);
@@ -743,8 +951,12 @@ export async function reconcileProductCommerce(
 					continue;
 				}
 				// The day's repairs are spent: a product that still needs writes stays
-				// nominated for tomorrow. Checks (reads alone) still run.
-				if (nominated.check === undefined && capReached()) {
+				// nominated for tomorrow. Checks (reads alone) still run, and so does a
+				// deactivation the cap still has a third of a repair's room for.
+				if (
+					nominated.check === undefined &&
+					!capRoomFor(nominated.deactivate === true ? "deactivate" : "sync")
+				) {
 					capped = true;
 					continue;
 				}
@@ -817,31 +1029,24 @@ export async function reconcileProductCommerce(
 					}
 					// Gated again on the FRESH plan: a product nominated for a deactivation
 					// may now need a sync. Without room for its writes, nothing is written;
-					// the product stays pending, and this visit does not count against it.
+					// the product stays pending — nominated now as what the fresh plan needs,
+					// so the next tick gates it on THAT cost — and this visit does not count
+					// against it.
 					const writes = plan.kind === "deactivate" ? DEACTIVATE_WRITE_CALLS : SYNC_WRITE_CALLS;
 					if (budget.remainingQueries() < writes) {
-						state.interrupted[id] = interrupts;
-						if (interrupts === 0) delete state.interrupted[id];
+						renominate(plan.kind);
 						budget.stopped = true;
 						break walk;
 					}
 					// The day's cap, on the fresh plan too (a check that found its document
 					// moved): no visit counted against it, and nominated again as a repair,
 					// so it is not read again before tomorrow.
-					if (capReached()) {
-						state.interrupted[id] = interrupts;
-						if (interrupts === 0) delete state.interrupted[id];
-						state.pending = state.pending.map((entry) =>
-							entry.id !== id
-								? entry
-								: plan.kind === "deactivate"
-									? { id, deactivate: true as const }
-									: { id },
-						);
+					if (!capRoomFor(plan.kind)) {
+						renominate(plan.kind);
 						capped = true;
 						continue;
 					}
-					countRepair();
+					countRepair(plan.kind);
 					client ??= new InProcessCommerceClient(ctx);
 					const recorded = {
 						status: String(doc["status"]),
@@ -887,8 +1092,12 @@ export async function reconcileProductCommerce(
 				done();
 			}
 			// Capped for the day: what is left waits for tomorrow — once the checks of
-			// this run's repairs (left pending as checks) have run.
-			if (capped && !state.pending.some((entry) => entry.check !== undefined)) break;
+			// this run's repairs (left pending as checks) have run, and the scan ahead has
+			// looked for lost unpublishes while the budget and the cap allow.
+			if (capped && !state.pending.some((entry) => entry.check !== undefined)) {
+				if (await scanAhead()) continue;
+				break;
+			}
 			// A repair leaves its product pending, to be CHECKED: go round again while any
 			// is left, rather than stepping past the page.
 			if (state.pending.length > 0) continue;
@@ -900,11 +1109,11 @@ export async function reconcileProductCommerce(
 	} finally {
 		await save();
 	}
-	// Said once a day, by the run whose repairs reached the cap.
-	if (dailyCap !== null && sent > 0 && capReached()) {
+	// Said once a day, by the run whose repairs left no room for another sync.
+	if (dailyCap !== null && syncRoomAtStart && !capRoomFor("sync")) {
 		console.info(
-			`[otta] cron sweep product-reconcile: today's cap of ${String(dailyCap)} repairs is reached` +
-				" (Workers Free); the pass carries on after 00:00 UTC",
+			`[otta] cron sweep product-reconcile: no room for another sync today (the Workers Free cap of ${String(dailyCap)} repairs);` +
+				` lost unpublishes are still deactivated from a reserve of ${String(RECONCILE_DEACTIVATION_RESERVE_UNITS)}, and the pass carries on after 00:00 UTC`,
 		);
 	}
 	// Stopped by the cap alone, the leg waits its cadence (it is stamped, and not run

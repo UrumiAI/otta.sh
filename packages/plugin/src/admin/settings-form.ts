@@ -3,7 +3,12 @@ import {
 	BACKGROUND_WORK_PRESETS,
 	readBackgroundWork,
 	validateBackgroundWork,
+	WORKERS_FREE_MAX_QUERY_BUDGET,
 } from "../cron/background-work-setting.js";
+import {
+	RECONCILE_REPAIRS_PER_DAY_FREE,
+	reconcileRepairsDailyCap,
+} from "../cron/product-reconcile.js";
 import { currencyChoiceLabel, currencyChoicesWith } from "@urumi.ai/otta-admin-presentation";
 import {
 	effectiveStoreCurrency,
@@ -1955,6 +1960,29 @@ const backgroundWorkContext: Block = {
 	text: "Background work: how much the every-minute sweep (hold expiry, order emails) may do. Free allows 50 database queries a run, Paid 1000 — stores with sale spikes should be on Paid.",
 };
 
+/** The preset the daily repair cap applies to, named as the radio names it, without
+ *  its number ("Workers Free (30)" → "Workers Free"). */
+const CAPPED_PRESET_NAME = (
+	BACKGROUND_WORK_PRESETS.find((preset) => reconcileRepairsDailyCap(preset.value) !== null)
+		?.label ?? "Workers Free"
+).replace(/\s*\(\d+\)$/, "");
+
+/** What a capped setting means for a first install over an existing catalogue
+ *  (#664): every product without a commerce row waits for the `product-reconcile`
+ *  sweep, which repairs at most `RECONCILE_REPAIRS_PER_DAY_FREE` a day at a budget of
+ *  `WORKERS_FREE_MAX_QUERY_BUDGET` or less. The cap follows the SETTING, not the
+ *  plan the store is really on, so the line is shown only while the setting is
+ *  capped, and names it by the setting. */
+function firstInstallContext(backgroundWork: number): Block[] {
+	if (reconcileRepairsDailyCap(backgroundWork) === null) return [];
+	return [
+		{
+			type: "context",
+			text: `With Background work at ${String(WORKERS_FREE_MAX_QUERY_BUDGET)} or less (the ${CAPPED_PRESET_NAME} preset), products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day. "Publish changes" on a product makes it buyable at once.`,
+		},
+	];
+}
+
 /**
  * "Background work per minute" — a radio of the two plan presets, beside the
  * hold TTL because it decides how fast expired holds come back on sale.
@@ -2007,6 +2035,7 @@ function checkoutGroup(
 					},
 					// Stored in plugin kv, not the settings store, so it stays usable.
 					backgroundWorkContext,
+					...firstInstallContext(backgroundWork),
 					backgroundWorkForm(backgroundWork),
 				]
 			: [
@@ -2043,6 +2072,7 @@ function checkoutGroup(
 						},
 					}),
 					backgroundWorkContext,
+					...firstInstallContext(backgroundWork),
 					backgroundWorkForm(backgroundWork),
 				];
 	return section({

@@ -28,6 +28,7 @@ import {
 import { afterEach, describe, expect, test } from "vitest";
 import { SETTINGS_ACTION_IDS } from "../src/admin/settings-form.js";
 import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
+import { RECONCILE_REPAIRS_PER_DAY_FREE } from "../src/cron/product-reconcile.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
@@ -1282,6 +1283,20 @@ describe("Background work per minute (the sweep's query budget)", () => {
 			{ value: "30", label: "Workers Free (30)" },
 			{ value: "600", label: "Workers Paid (600)" },
 		]);
+	});
+
+	test("at the Free preset, says how fast a first install's products become buyable; at Paid, says nothing (#664)", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const line = `With Background work at 50 or less (the Workers Free preset), products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day`;
+		const contexts = async (): Promise<string[]> =>
+			findBlocks(await settingsPage(), "context").map((b) => String(b.text));
+		expect(await contexts()).toContainEqual(expect.stringContaining(line));
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-background-work",
+			values: { backgroundWorkPerMinute: "600" },
+		});
+		expect((await contexts()).filter((text) => text.includes("published before Otta"))).toEqual([]);
 	});
 
 	test("choosing Workers Paid persists it, and the next page load agrees", async () => {

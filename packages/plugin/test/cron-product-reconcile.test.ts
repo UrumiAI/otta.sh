@@ -46,7 +46,12 @@ import {
 	PRODUCT_RECONCILE_CURSOR,
 	PRODUCT_RECONCILE_REPAIR_CALLS,
 	planReconcile,
+	DEACTIVATE_WRITE_CALLS,
+	RECONCILE_DEACTIVATION_RESERVE_UNITS,
+	RECONCILE_DEACTIVATIONS_PER_REPAIR,
 	RECONCILE_MAX_INTERRUPTS,
+	reconcileCostUnits,
+	SYNC_WRITE_CALLS,
 	RECONCILE_PAGE_SIZE,
 	RECONCILE_PASS_INTERVAL_FREE_MS,
 	RECONCILE_PASS_INTERVAL_PAID_MS,
@@ -133,6 +138,9 @@ class Cms {
 	 *  returns: a content hook landing between the reconcile's document read and its
 	 *  write. */
 	afterGet: { id: string; run: () => Promise<void> } | undefined;
+	/** Cursors the host can no longer decode: a list from one throws EmDash's
+	 *  `InvalidCursorError`. */
+	readonly invalidCursors = new Set<string>();
 	put(doc: Partial<Doc> & { id: string; title?: string }): Doc {
 		const { title, ...rest } = doc;
 		const full: Doc = {
@@ -173,6 +181,11 @@ class Cms {
 			list: async (_collection, options) => {
 				charge(CONTENT_LIST_QUERIES);
 				this.listCalls++;
+				if (options?.cursor !== undefined && this.invalidCursors.has(options.cursor)) {
+					const refused = new Error(`invalid cursor ${options.cursor}`);
+					refused.name = "InvalidCursorError";
+					throw refused;
+				}
 				const limit = Math.min(options?.limit ?? 50, 100);
 				const all = ordered();
 				const start = options?.cursor === undefined ? 0 : Number(options.cursor);
@@ -1070,26 +1083,120 @@ describe("the flip window: a lifecycle event between the repair's document read 
 		const fresh = { ...listed, status: "published", updatedAt: T3, version: 2 };
 		const writes: string[] = [];
 		const cursors: SweepCursorStore = {
-			read: async () => null,
+			read: async () => writes.at(-1) ?? null,
 			write: async (_name, value) => {
 				spend(1);
+				writes.push(value);
+			},
+		};
+		let rowReads = 0;
+		const run = async () =>
+			await reconcileProductCommerce(
+				{} as PluginContext,
+				{
+					many: async () => new Map([["p1", active]]),
+					one: async () => {
+						rowReads++;
+						spend(1);
+						return active;
+					},
+				},
+				{
+					list: async () => ({ items: [listed], hasMore: false }),
+					get: async () => {
+						spend(3);
+						return fresh;
+					},
+				},
+				cursors,
+				budget,
+				{ now: NOW, passIntervalMs: RECONCILE_PASS_INTERVAL_PAID_MS },
+			);
+		const result = await run();
+
+		expect(result).toMatchObject({ count: 0, incomplete: true });
+		const last = JSON.parse(writes.at(-1) ?? "{}") as {
+			pending?: { id: string; deactivate?: true }[];
+			interrupted?: Record<string, number>;
+		};
+		// Still nominated, and this visit is not counted against it.
+		expect(last.pending?.map((entry) => entry.id)).toEqual(["p1"]);
+		expect(last.interrupted).toEqual({});
+		// Nominated again as the SYNC it now is (#664), not as the stale deactivation:
+		// the next tick gates it on the sync's cost, so a tick with the same room does
+		// not spend the deactivation's reads again only to stop.
+		expect(last.pending).toEqual([{ id: "p1" }]);
+		expect(rowReads).toBe(1);
+		remaining = 9;
+		budget.stopped = false;
+		await run();
+		expect(rowReads).toBe(1);
+	});
+});
+
+describe("a CHECK whose document moved, stopped for room before its repair", () => {
+	test("is renominated as the repair its fresh plan needs, and the check record is dropped", async () => {
+		// The check visit's reads (5) fit, the deactivation's writes (2) after them do not.
+		let remaining = PRODUCT_RECONCILE_CHECK_CALLS + DEACTIVATE_WRITE_CALLS - 1;
+		const budget = {
+			stopped: false,
+			gate: () => () => true,
+			remainingQueries: () => remaining,
+		} as unknown as Parameters<typeof reconcileProductCommerce>[4];
+		const active = {
+			lifecycle: "live",
+			title: "Shirt",
+			titleRejection: null,
+			active: true,
+			contentUpdatedAt: T1,
+			activeUpdatedAt: T1,
+			variants: {},
+		};
+		// The repair synced the published document at T1; it has been unpublished since.
+		const moved = {
+			id: "p1",
+			status: "draft",
+			updatedAt: T2,
+			version: 2,
+			data: { title: "Shirt" },
+		};
+		const writes: string[] = [
+			JSON.stringify({
+				cursor: null,
+				next: null,
+				pending: [
+					{
+						id: "p1",
+						check: { status: "published", updatedAt: T1, did: "sync", why: "inactive", note: "-" },
+					},
+				],
+				interrupted: {},
+				passStartedAt: NOW.toISOString(),
+			}),
+		];
+		const cursors: SweepCursorStore = {
+			read: async () => writes.at(-1) ?? null,
+			write: async (_name, value) => {
+				remaining -= 1;
 				writes.push(value);
 			},
 		};
 		const result = await reconcileProductCommerce(
 			{} as PluginContext,
 			{
-				many: async () => new Map([["p1", active]]),
+				many: async () => new Map(),
 				one: async () => {
-					spend(1);
+					remaining -= 1;
 					return active;
 				},
 			},
 			{
-				list: async () => ({ items: [listed], hasMore: false }),
+				list: async () => {
+					throw new Error("a page in progress is not listed again");
+				},
 				get: async () => {
-					spend(3);
-					return fresh;
+					remaining -= 3;
+					return moved;
 				},
 			},
 			cursors,
@@ -1099,26 +1206,37 @@ describe("the flip window: a lifecycle event between the repair's document read 
 
 		expect(result).toMatchObject({ count: 0, incomplete: true });
 		const last = JSON.parse(writes.at(-1) ?? "{}") as {
-			pending?: { id: string }[];
+			pending?: unknown[];
 			interrupted?: Record<string, number>;
 		};
-		// Still nominated, and this visit is not counted against it.
-		expect(last.pending?.map((entry) => entry.id)).toEqual(["p1"]);
+		expect(last.pending).toEqual([{ id: "p1", deactivate: true }]);
 		expect(last.interrupted).toEqual({});
 	});
 });
+
+/** The id of the `i`th first-sync product a cap test seeds. */
+function first(i: number): string {
+	return `f${String(i).padStart(3, "0")}`;
+}
 
 describe("the daily repair cap: on Workers Free a first-install heal cannot spend D1 Free's rows written", () => {
 	/** The leg's kv document, as the suite reads it back. */
 	interface Stored {
 		day?: string | null;
 		repairsToday?: number;
+		unitsToday?: number;
+		scanStartedAt?: string | null;
+		lastScanStartedAt?: string | null;
 		passStartedAt?: string | null;
 		pending?: { id: string }[];
 	}
 	const stored = async (cursors: SweepCursorStore): Promise<Stored> =>
 		JSON.parse((await cursors.read(PRODUCT_RECONCILE_CURSOR)) ?? "{}") as Stored;
 	const TODAY = NOW.toISOString().slice(0, 10);
+	/** All a day may spend: the syncs' cap and the deactivations' reserve, in units. */
+	const LIMIT_UNITS =
+		RECONCILE_REPAIRS_PER_DAY_FREE * RECONCILE_DEACTIVATIONS_PER_REPAIR +
+		RECONCILE_DEACTIVATION_RESERVE_UNITS;
 
 	test("on the deploy day of a new index layout a Free tick repairs nothing and waits its cadence; the next UTC day it repairs", async () => {
 		const cms = new Cms();
@@ -1213,8 +1331,10 @@ describe("the daily repair cap: on Workers Free a first-install heal cannot spen
 		}
 		expect(finished).toBe(true);
 		for (const id of ids) expect(await row(id), id).toMatchObject({ active: true });
-		// Listed once for the whole pass: the capped day never skipped or re-listed a product.
-		expect(cms.pageLists).toBe(1);
+		// The walk listed its page once for the whole pass: the capped day never skipped
+		// or re-listed a product. The one other list is the capped day's lap for lost
+		// unpublishes, not run again within the pass interval.
+		expect(cms.pageLists).toBe(2);
 		const after = await stored(cursors);
 		expect(after).toMatchObject({ repairsToday: 2, passStartedAt: null });
 		expect(after.day).not.toBe(TODAY);
@@ -1252,6 +1372,388 @@ describe("the daily repair cap: on Workers Free a first-install heal cannot spen
 		expect(outcome).toMatchObject({ ok: true, count: 2 });
 		expect(outcome.incomplete).toBeUndefined();
 		expect(await stored(cursors)).toMatchObject({ day: TODAY, repairsToday: 2 });
+	});
+
+	test("a lost unpublish counts a third of a repair: its one document write is a third of a sync's three", async () => {
+		const cms = new Cms();
+		const ids = ["p1", "p2", "p3", "p4"];
+		for (const [i, id] of ids.entries()) {
+			await syncedRow(id, `Product ${id}`, T1);
+			cms.put({
+				id,
+				title: `Product ${id}`,
+				status: "draft",
+				updatedAt: T2,
+				createdAt: new Date(Date.parse(T3) - i * 1000).toISOString(),
+			});
+		}
+		const cursors = memoryCursors();
+		// Three units left of today's allowance, all of them the deactivations' reserve:
+		// room for three deactivations, where whole repairs would allow none.
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({
+				day: TODAY,
+				repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE + 9,
+				unitsToday: LIMIT_UNITS - 3,
+			}),
+		);
+		for (let t = 0; t < 60; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		const deactivated = [];
+		for (const id of ids) if ((await row(id))?.active === false) deactivated.push(id);
+		expect(deactivated).toEqual(["p1", "p2", "p3"]);
+		const capped = await stored(cursors);
+		expect(capped).toMatchObject({
+			day: TODAY,
+			unitsToday: LIMIT_UNITS,
+			repairsToday: Math.ceil(LIMIT_UNITS / RECONCILE_DEACTIVATIONS_PER_REPAIR),
+		});
+		expect(capped.pending?.map((entry) => entry.id)).toEqual(["p4"]);
+		expect(errors).toEqual([]);
+	});
+
+	test("a lost unpublish is not queued behind its page's first syncs: it goes first, and a sync that would pass the cap waits", async () => {
+		const cms = new Cms();
+		// The page lists newest first: two first syncs, then the lost unpublish.
+		cms.put({ id: "p1", title: "One", updatedAt: T2, createdAt: T3 });
+		cms.put({ id: "p2", title: "Two", updatedAt: T2, createdAt: T2 });
+		await syncedRow("p3", "Three", T1);
+		cms.put({ id: "p3", title: "Three", status: "draft", updatedAt: T2, createdAt: T1 });
+		const cursors = memoryCursors();
+		// One repair left of today's allowance: the deactivation takes a third of it,
+		// and a sync no longer fits in the rest.
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({ day: TODAY, repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE - 1 }),
+		);
+		for (let t = 0; t < 60; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		expect(await row("p3")).toMatchObject({ active: false });
+		expect(await row("p1")).toBeNull();
+		expect(await row("p2")).toBeNull();
+		const capped = await stored(cursors);
+		expect(capped).toMatchObject({
+			day: TODAY,
+			// One third spent: older releases read the whole repairs, rounded up.
+			unitsToday: (RECONCILE_REPAIRS_PER_DAY_FREE - 1) * RECONCILE_DEACTIVATIONS_PER_REPAIR + 1,
+			repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE,
+		});
+		expect(capped.pending?.map((entry) => entry.id)).toEqual(["p1", "p2"]);
+
+		// After 00:00 UTC both counts start again and the syncs go through.
+		const nextDay = Date.parse(`${TODAY}T00:00:00.000Z`) + 24 * 3_600_000 - NOW.getTime();
+		for (let t = 0; t < 60; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: nextDay + t * MINUTE_MS });
+		}
+		for (const id of ["p1", "p2"]) expect(await row(id), id).toMatchObject({ active: true });
+		expect(await stored(cursors)).toMatchObject({
+			repairsToday: 2,
+			unitsToday: 2 * RECONCILE_DEACTIVATIONS_PER_REPAIR,
+		});
+		expect(errors).toEqual([]);
+	});
+
+	test.each([
+		[
+			"a count from before #664 (whole repairs only)",
+			0,
+			{ repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE },
+		],
+		["the day's last syncs, spent live", 3, { repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE - 3 }],
+	])(
+		"a lost unpublish on page 3, AHEAD of a walk whose cap the syncs spent (%s), is deactivated that day",
+		async (_label, liveSyncs, seed) => {
+			const cms = new Cms();
+			// 201 products published before the install (no rows): pages 1 and 2 and the
+			// head of page 3, newest first. Then the lost unpublish, oldest, on page 3.
+			const base = Date.parse(T3);
+			for (let i = 0; i < 201; i++) {
+				cms.put({
+					id: first(i),
+					title: `First ${String(i)}`,
+					updatedAt: T2,
+					createdAt: new Date(base - i * 1000).toISOString(),
+				});
+			}
+			await syncedRow("gone", "Withdrawn", T1);
+			cms.put({
+				id: "gone",
+				title: "Withdrawn",
+				status: "draft",
+				updatedAt: T2,
+				createdAt: new Date(base - 500_000).toISOString(),
+			});
+			const cursors = memoryCursors();
+			await cursors.write(PRODUCT_RECONCILE_CURSOR, JSON.stringify({ day: TODAY, ...seed }));
+			// Two hours, all inside today (UTC).
+			for (let t = 0; t < 120; t++) {
+				await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+			}
+			expect(await row("gone")).toMatchObject({ active: false });
+			// Only the syncs the day still had room for were written; the walk is held
+			// on page 1 with the rest of its nominations.
+			for (let i = 0; i < 201; i++) {
+				const synced = (await row(first(i))) !== null;
+				expect(synced, first(i)).toBe(i < liveSyncs);
+			}
+			const after = await stored(cursors);
+			expect(after.pending?.map((entry) => entry.id)).toEqual(
+				Array.from({ length: RECONCILE_PAGE_SIZE - liveSyncs }, (_, i) => first(i + liveSyncs)),
+			);
+			// The walk's page once, and the lap's three: it is not run again before the
+			// pass interval.
+			expect(cms.pageLists).toBe(4);
+			expect(errors).toEqual([]);
+		},
+	);
+
+	test("a lost unpublish on a page BEHIND a capped walk is found by the lap, not left for the next pass", async () => {
+		const cms = new Cms();
+		const base = Date.parse(T3);
+		// The newest product, on page 1, lost its unpublish after the walk had left it.
+		await syncedRow("gone", "Withdrawn", T1);
+		cms.put({
+			id: "gone",
+			title: "Withdrawn",
+			status: "draft",
+			updatedAt: T2,
+			createdAt: new Date(base + 1000).toISOString(),
+		});
+		for (let i = 0; i < 101; i++) {
+			const id = `f${String(i).padStart(3, "0")}`;
+			cms.put({
+				id,
+				title: `First ${String(i)}`,
+				updatedAt: T2,
+				createdAt: new Date(base - i * 1000).toISOString(),
+			});
+		}
+		const cursors = memoryCursors();
+		// The walk holds page 2 (from index 100) with its first syncs nominated, and the
+		// day's syncs are spent.
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({
+				cursor: "100",
+				next: null,
+				pending: [{ id: "f099" }, { id: "f100" }],
+				interrupted: {},
+				passStartedAt: NOW.toISOString(),
+				day: TODAY,
+				// Spent entirely by syncs.
+				repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE,
+				unitsToday: RECONCILE_REPAIRS_PER_DAY_FREE * RECONCILE_DEACTIVATIONS_PER_REPAIR,
+			}),
+		);
+		for (let t = 0; t < 120; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		expect(await row("gone")).toMatchObject({ active: false });
+		expect(await row("f099")).toBeNull();
+		expect(await row("f100")).toBeNull();
+		expect((await stored(cursors)).pending?.map((entry) => entry.id)).toEqual(["f099", "f100"]);
+		expect(errors).toEqual([]);
+	});
+
+	test("the reserve is the deactivations' alone: on a day the syncs spent, exactly 30 lost unpublishes are deactivated, and the 31st waits", async () => {
+		const cms = new Cms();
+		const ids = Array.from({ length: 31 }, (_, i) => `u${String(i).padStart(2, "0")}`);
+		for (const [i, id] of ids.entries()) {
+			await syncedRow(id, `Product ${id}`, T1);
+			cms.put({
+				id,
+				title: `Product ${id}`,
+				status: "draft",
+				updatedAt: T2,
+				createdAt: new Date(Date.parse(T3) - i * 1000).toISOString(),
+			});
+		}
+		const cursors = memoryCursors();
+		// Today's 600 units are spent, all of them by syncs.
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({
+				day: TODAY,
+				repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE,
+				unitsToday: RECONCILE_REPAIRS_PER_DAY_FREE * RECONCILE_DEACTIVATIONS_PER_REPAIR,
+			}),
+		);
+		for (let t = 0; t < 120; t++) {
+			// The largest budget Workers Free runs (still capped): beside the product-orphans
+			// walk over these 31 rows, a 30-query tick seldom reaches this leg.
+			await tick(cms, cursors, { budget: 50, offsetMs: t * MINUTE_MS });
+		}
+		const deactivated = [];
+		for (const id of ids) if ((await row(id))?.active === false) deactivated.push(id);
+		expect(deactivated).toEqual(ids.slice(0, RECONCILE_DEACTIVATION_RESERVE_UNITS));
+		expect(await row(ids[30] ?? "")).toMatchObject({ active: true });
+		const after = await stored(cursors);
+		expect(after).toMatchObject({ day: TODAY, unitsToday: LIMIT_UNITS });
+		expect(after.pending?.map((entry) => entry.id)).toEqual([ids[30]]);
+		expect(errors).toEqual([]);
+	});
+
+	test("a product the walk nominated as a SYNC that the lap finds unpublished is renominated as the deactivation", async () => {
+		const cms = new Cms();
+		// The walk nominated p1 for its title; it has been unpublished since, and the hook
+		// that would have deactivated it was lost.
+		await syncedRow("p1", "Old title", T1);
+		cms.put({ id: "p1", title: "New title", status: "draft", updatedAt: T2, createdAt: T3 });
+		cms.put({ id: "p2", title: "Two", updatedAt: T2, createdAt: T2 });
+		const cursors = memoryCursors();
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({
+				cursor: null,
+				next: null,
+				pending: [{ id: "p1" }, { id: "p2" }],
+				interrupted: {},
+				passStartedAt: NOW.toISOString(),
+				day: TODAY,
+				repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE,
+			}),
+		);
+		for (let t = 0; t < 60; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		expect(await row("p1")).toMatchObject({ active: false });
+		expect(await row("p2")).toBeNull();
+		expect((await stored(cursors)).pending).toEqual([{ id: "p2" }]);
+		expect(errors).toEqual([]);
+	});
+
+	test("a lap whose cursor the CMS refuses starts again from the top, rather than waiting a pass interval", async () => {
+		const cms = new Cms();
+		cms.put({ id: "p1", title: "One", updatedAt: T2, createdAt: T3 });
+		await syncedRow("gone", "Withdrawn", T1);
+		cms.put({ id: "gone", title: "Withdrawn", status: "draft", updatedAt: T2, createdAt: T1 });
+		cms.invalidCursors.add("stale");
+		const lapStart = new Date(NOW.getTime() - 3_600_000).toISOString();
+		const cursors = memoryCursors();
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({
+				cursor: null,
+				next: null,
+				pending: [{ id: "p1" }],
+				interrupted: {},
+				passStartedAt: NOW.toISOString(),
+				day: TODAY,
+				repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE,
+				scan: "stale",
+				scanStartedAt: lapStart,
+			}),
+		);
+		const warned = vi.spyOn(console, "warn");
+		for (let t = 0; t < 60; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		expect(await row("gone")).toMatchObject({ active: false });
+		expect(
+			warned.mock.calls.some((args) => String(args[0]).includes("the lap restarts from the top")),
+		).toBe(true);
+		// The restarted lap kept its start: the next waits the interval from it.
+		expect(await stored(cursors)).toMatchObject({
+			lastScanStartedAt: lapStart,
+			scanStartedAt: null,
+		});
+	});
+
+	test("a deactivation's third of a repair is what its writes cost beside a sync's", () => {
+		expect(reconcileCostUnits("sync")).toBe(RECONCILE_DEACTIVATIONS_PER_REPAIR);
+		expect(reconcileCostUnits("deactivate")).toBe(1);
+		// One versioned document write against the sync's three.
+		expect(DEACTIVATE_WRITE_CALLS * RECONCILE_DEACTIVATIONS_PER_REPAIR).toBeLessThanOrEqual(
+			SYNC_WRITE_CALLS,
+		);
+	});
+
+	test.each([
+		["negative", -1],
+		["fractional", 1.5],
+		["string", "599"],
+	])("a %s unitsToday is no count: the whole repairs stand for it", async (_label, unitsToday) => {
+		const cms = new Cms();
+		cms.put({ id: "p1", title: "One", updatedAt: T2 });
+		const cursors = memoryCursors();
+		// One whole repair left, by the count an older release reads.
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({ day: TODAY, repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE - 1, unitsToday }),
+		);
+		for (let t = 0; t < 30; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		expect(await row("p1")).toMatchObject({ active: true });
+		expect(await stored(cursors)).toMatchObject({
+			repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE,
+			unitsToday: RECONCILE_REPAIRS_PER_DAY_FREE * RECONCILE_DEACTIVATIONS_PER_REPAIR,
+		});
+	});
+
+	test("units below what the whole repairs say (an older release ran since) give way to them", async () => {
+		const cms = new Cms();
+		cms.put({ id: "p1", title: "One", updatedAt: T2 });
+		const cursors = memoryCursors();
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({ day: TODAY, repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE, unitsToday: 3 }),
+		);
+		for (let t = 0; t < 30; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		expect(await row("p1")).toBeNull();
+	});
+
+	test("a count from an earlier day is no count: both the units and the whole repairs start again", async () => {
+		const cms = new Cms();
+		cms.put({ id: "p1", title: "One", updatedAt: T2 });
+		const cursors = memoryCursors();
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({
+				day: "2000-01-01",
+				repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE,
+				unitsToday: RECONCILE_REPAIRS_PER_DAY_FREE * RECONCILE_DEACTIVATIONS_PER_REPAIR,
+			}),
+		);
+		for (let t = 0; t < 30; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		expect(await row("p1")).toMatchObject({ active: true });
+		expect(await stored(cursors)).toMatchObject({
+			day: TODAY,
+			repairsToday: 1,
+			unitsToday: RECONCILE_DEACTIVATIONS_PER_REPAIR,
+		});
+	});
+
+	test("the info line is said once, by the run that leaves no room for another sync", async () => {
+		const cms = new Cms();
+		for (const [i, id] of ["p1", "p2"].entries()) {
+			cms.put({
+				id,
+				title: id,
+				updatedAt: T2,
+				createdAt: new Date(Date.parse(T3) - i * 1000).toISOString(),
+			});
+		}
+		const cursors = memoryCursors();
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({ day: TODAY, repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE - 1 }),
+		);
+		const info = vi.spyOn(console, "info");
+		for (let t = 0; t < 60; t++) {
+			await tick(cms, cursors, { budget: FREE, offsetMs: t * MINUTE_MS });
+		}
+		const said = info.mock.calls.filter((args) =>
+			String(args[0]).includes("no room for another sync today"),
+		);
+		expect(said).toHaveLength(1);
 	});
 
 	test("a run the tick's ceiling stops part-way through a repair's writes still keeps the day's count", async () => {
