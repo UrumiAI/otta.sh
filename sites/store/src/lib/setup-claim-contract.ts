@@ -3,7 +3,7 @@
  * people and tools that hold the setup token: the deployer's link, the e2e
  * harness and the docs.
  *
- * Pure constants with no imports, so the Playwright harness (Node, no EmDash
+ * Pure constants and functions with no imports, so the Playwright harness (Node, no EmDash
  * runtime) can import them without loading the gate itself.
  */
 
@@ -39,6 +39,19 @@ export const SETUP_CLAIM_LOG_TAG = "[otta-setup]";
  * that copied it from here fails closed instead of being claimable by anyone.
  */
 export const PUBLIC_E2E_SETUP_TOKEN = "_3ouNlu8f91xzqLPeDpRl8xUjNGzvb6o69tpEOM3K8M";
+
+/** A loopback host (`localhost`, `127.0.0.1`, `[::1]`, `*.localhost`), as
+ *  `URL.hostname` spells it: where the dev server runs over plain HTTP and the
+ *  public e2e token is accepted. The scripts use a narrower list
+ *  (`scripts/setup-claim-cookie.ts`). */
+export function isLoopbackHostname(hostname: string): boolean {
+	return (
+		hostname === "localhost" ||
+		hostname === "127.0.0.1" ||
+		hostname === "[::1]" ||
+		hostname.endsWith(".localhost")
+	);
+}
 
 /** The claim link for a token, on a site origin. */
 export function setupClaimUrl(origin: string, token: string): string {

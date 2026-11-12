@@ -39,8 +39,8 @@ Options considered:
    `/_emdash/api/plugins/[pluginId]/[...path]` (the storefront's commerce calls; plugins
    cannot create EmDash users, and their admin routes need a signed-in user, which an
    unclaimed store does not have) and `/_emdash/api/health`. The storefront is never
-   looked at: the first check is a string test that returns before any state or database
-   is read.
+   looked at: the first check is a few prefix tests and one `decodeURI`, and it returns
+   before any state or database is read.
 
 2. **Where the token comes from**, in this order:
    - **The Worker secret `OTTA_SETUP_TOKEN`**, if it is set. It must be at least 32
@@ -83,7 +83,14 @@ Options considered:
    `SameSite=Strict` cookie on a redirect chain that began cross-site. A navigation started
    by a same-origin page does carry it. After that, the wizard page and all of its API
    calls carry the cookie. A write is admitted by the cookie only, never by the query
-   string. Tokens are compared with the plugin's `constantTimeEquals`.
+   string. A query token that does not match is not a refusal on its own: the request
+   falls through to the cookie check, so a deployer who reopens an old link while holding
+   a valid claim cookie still reaches the wizard (when the link is pasted or bookmarked: a
+   link followed from another site does not carry the `SameSite=Strict` cookie, and gets
+   the 403 page). That request gets a `303` to the same URL without the parameter, so the
+   stale token never sits in the wizard's address bar, history or `Referer`: a stored token
+   that a secret replaced becomes valid again if the secret is deleted. Tokens are compared
+   with the plugin's `constantTimeEquals`.
 
    A link opened over plain HTTP on a non-loopback host gets a `307` to the same URL on
    `https://`, before the token is checked: the browser would drop the `Secure` cookie of
@@ -114,7 +121,12 @@ Options considered:
    gives a throwaway token (`E2E_SETUP_TOKEN` in `e2e/harness.ts`) to the dev server it boots as
    `OTTA_SETUP_TOKEN`, and to its own processes. The suite then presents that token: as the
    cookie in browser contexts (`grantSetupClaim`) and in scripts' `fetch`
-   (`scripts/setup-claim-cookie.ts`). That throwaway token,
+   (`scripts/setup-claim-cookie.ts`). Both look the token up the same way the dev Worker
+   gets it: `OTTA_SETUP_TOKEN` in `sites/staging/.dev.vars` when that file exists, else the
+   process env, so a seed script run on its own against a fresh dev store sends the right
+   cookie too. A script reads `.dev.vars` only for a `SITE_URL` on `localhost`,
+   `127.0.0.1` or `[::1]` (not `*.localhost`, which Node may resolve through DNS); any
+   other site gets only an `OTTA_SETUP_TOKEN` set explicitly in the env. That throwaway token,
    `PUBLIC_E2E_SETUP_TOKEN` in `src/lib/setup-claim-contract.ts`, is public, so the gate
    refuses it as `OTTA_SETUP_TOKEN` on any host but loopback (fail closed, with the same
    warning as a weak secret). `pnpm test:e2e:claim` (`playwright.claim.config.ts`) boots its

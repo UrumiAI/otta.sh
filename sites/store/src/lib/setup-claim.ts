@@ -13,7 +13,8 @@
  * except the three in {@link SETUP_GATE_EXEMPT_ROUTES}: none of them can
  * create a user or finish setup. A route a future EmDash adds is gated without
  * anyone remembering to list it. The storefront is never looked at: the check
- * is a string test that returns before any state or database is touched.
+ * is a few prefix tests and one `decodeURI`, and returns before any state or
+ * database is touched.
  *
  * THE TOKEN. The Worker secret `OTTA_SETUP_TOKEN` when it is set (it must pass
  * {@link validateSetupTokenSecret}; a set-but-weak secret fails CLOSED, it does
@@ -31,7 +32,9 @@
  * a redirect chain that starts cross-site does not carry a SameSite=Strict
  * cookie, while a same-origin page's own navigation does. The wizard's API
  * calls then carry the cookie. The token is accepted from the query string on
- * GET/HEAD only; a write must carry the cookie.
+ * GET/HEAD only; a write must carry the cookie. A query token that does not
+ * match is checked no further: the request then needs the cookie, like any
+ * other, and if it has it, gets a 303 to the same URL without the token.
  *
  * ONCE CLAIMED, INERT. Setup is complete when EmDash's `emdash:setup_complete`
  * option is true AND a user exists (EmDash's own definition in passkey mode).
@@ -55,6 +58,7 @@ import {
 	SETUP_CLAIM_PATH,
 	SETUP_TOKEN_PARAM,
 	SETUP_TOKEN_SECRET,
+	isLoopbackHostname,
 	setupClaimUrl,
 } from "./setup-claim-contract.js";
 
@@ -96,8 +100,6 @@ export const MIN_SETUP_TOKEN_LENGTH = 32;
 export const MIN_SETUP_TOKEN_BITS = 128;
 
 const URL_SAFE = /^[A-Za-z0-9_-]+$/;
-
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 // ── pure decisions ─────────────────────────────────────────────────────────
 
@@ -163,7 +165,7 @@ export function generateSetupToken(): string {
 }
 
 function isLoopback(url: URL): boolean {
-	return LOOPBACK_HOSTS.has(url.hostname) || url.hostname.endsWith(".localhost");
+	return isLoopbackHostname(url.hostname);
 }
 
 /**
@@ -316,6 +318,25 @@ function toHttps(url: URL): Response {
 	});
 }
 
+/** Does the request carry the claim cookie for this token? Never, with no token. */
+function hasClaimCookie(cookies: SetupClaimContext["cookies"], expected: string | null): boolean {
+	const cookie = cookies.get(SETUP_CLAIM_COOKIE)?.value;
+	return expected !== null && cookie !== undefined && constantTimeEquals(cookie, expected);
+}
+
+/** A `303` to the same URL without the token parameter. Sets no cookie: the
+ *  request already holds a valid one, and the redirect is same-origin. The
+ *  Location is absolute, on the request's own origin, so a path can never be
+ *  read as a protocol-relative `//host`. */
+function withoutToken(url: URL): Response {
+	const clean = new URL(url);
+	clean.searchParams.delete(SETUP_TOKEN_PARAM);
+	return new Response(null, {
+		status: 303,
+		headers: { ...REFUSAL_HEADERS, Location: clean.toString() },
+	});
+}
+
 function claimCookie(token: string, url: URL): string {
 	const parts = [
 		`${SETUP_CLAIM_COOKIE}=${token}`,
@@ -462,15 +483,17 @@ export function createSetupClaimGate(options: SetupClaimGateOptions = {}): Setup
 				// the claim would end on the 403 page with no reason given. Move the
 				// same request to HTTPS first; the token is checked there.
 				if (url.protocol === "http:" && !isLoopback(url)) return toHttps(url);
-				return expected !== null && constantTimeEquals(presented, expected)
-					? claimed(expected, url)
-					: refusal(url);
+				if (expected !== null && constantTimeEquals(presented, expected)) {
+					return claimed(expected, url);
+				}
+				// A token that does not match is not a refusal on its own: a deployer
+				// who reopens an old link (say, after setting the secret) may already
+				// hold a valid claim cookie. Then the request is sent on WITHOUT the
+				// stale token, never handed to the wizard with it: a stored token a
+				// secret replaced becomes valid again if the secret is deleted.
+				return hasClaimCookie(cookies, expected) ? withoutToken(url) : refusal(url);
 			}
-			const cookie = cookies.get(SETUP_CLAIM_COOKIE)?.value;
-			if (expected !== null && cookie !== undefined && constantTimeEquals(cookie, expected)) {
-				return null;
-			}
-			return refusal(url);
+			return hasClaimCookie(cookies, expected) ? null : refusal(url);
 		},
 	};
 }
