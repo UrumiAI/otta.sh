@@ -2344,9 +2344,10 @@ export class EmdashOrderStore implements OrderStore {
 			// the SAME write that recorded one — so an outstanding bracket is findable
 			// the instant it exists, and never a moment after it is closed.
 			next.holdsPendingAt = computeHoldsPendingAt(next);
-			// ADR-0044 §7: an offline order keeps its network key only while it is open
-			// (it is what the per-network cap counts); leaving the open states — paid,
-			// delivered, cancelled — drops it in this same write.
+			// ADR-0044 §7: an offline order keeps its network key only while it is open;
+			// leaving the open states — paid, delivered, cancelled — drops it in this same
+			// write. The per-network cap counts only `awaiting_payment` keys (#678); a
+			// `shipped_awaiting_payment` order still carries its key, uncounted.
 			if (next.offlineClientKey !== undefined && !OFFLINE_UNPAID_STATES.has(input.toState)) {
 				delete next.offlineClientKey;
 			}

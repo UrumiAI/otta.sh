@@ -173,13 +173,13 @@ describe("createOrderFromCart — an offline (cash-on-delivery) checkout", () =>
 	});
 
 	/**
-	 * #678: the unit cap is checked BEFORE the open-order caps, from the cart
-	 * alone. An oversized order is refused the same way whatever the buyer's or
-	 * network's open orders, so it can never be used, placing nothing, to learn
-	 * whether an email or a network is at its cap (`OFFLINE_ORDER_LIMIT` stays
-	 * neutral: it never says orders are open). Nor does it read the store.
+	 * #678 guard: the unit cap stays AHEAD of the open-order caps (as it already
+	 * was), judged from the cart alone. With its own reason, moving it after them
+	 * would let an oversized order, placing nothing, tell whether an email or a
+	 * network is at its cap (`OFFLINE_ORDER_LIMIT` stays neutral: it never says
+	 * orders are open). Nor does it read the store.
 	 */
-	test("an order over the unit cap is OFFLINE_ORDER_TOO_LARGE whether or not the buyer is at a cap, and counts nothing", async () => {
+	test("keeps the unit cap ahead of the open-order caps: an oversized order is OFFLINE_ORDER_TOO_LARGE whether or not the buyer is at a cap, and counts nothing", async () => {
 		const capped = { ...ON, maxOpenPerBuyer: 1, maxUnitsPerOrder: 10 };
 		const big = () => h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 11, kind: "physical" }]);
 		const tooLarge = { ok: false, reason: "OFFLINE_ORDER_TOO_LARGE" };

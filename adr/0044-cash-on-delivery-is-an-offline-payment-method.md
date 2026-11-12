@@ -189,7 +189,10 @@ orders on the next tick. The Settings copy says so.
        rotate its /64s around the cap. The limiter keeps the /64, so a /48 neighbour does not
        share its write budget. The cost: a mobile carrier can put many subscribers in one /48,
        as carrier NAT puts them behind one IPv4 address. That is why the cap is high and counts
-       only orders not yet shipped; a store that sees honest buyers refused raises it;
+       only orders not yet shipped; a store that sees honest buyers refused raises it. Two
+       edge cases are negligible: a 6to4 address (`2002::/16`) keys as the /48 of its embedded
+       IPv4, apart from that IPv4 address bare, and every Teredo client (`2001:0::/32`) of one
+       server prefix shares a key;
      - the site forwards that header on its synthetic request;
      - a direct call carries the one Cloudflare set;
      - no address means no COD.
@@ -205,7 +208,10 @@ orders on the next tick. The Settings copy says so.
    - The per-network cap counts only `awaiting_payment` orders (#678). A
      `shipped_awaiting_payment` order is never auto-cancelled, so on a shared network a busy
      store's parcels in transit would otherwise hold its slots until each is marked paid. The
-     per-email cap still counts both states: that is one buyer's own unpaid parcels.
+     per-email cap still counts both states: that is one buyer's own unpaid parcels. The
+     trade-off is deliberate: the network cap now bounds the stock a network holds unshipped,
+     not the merchant's exposure to unpaid deliveries. Watching that exposure is the job of the
+     old-unpaid-orders report, a follow-up (see Consequences).
    - A third cap is on one order's size: the physical units a single COD order may hold
      (`settings:codMaxUnitsPerOrder`), default **10**, 0 to 1000, 0 means no cap. The open-order
      caps count orders, and one cart line may hold up to `CART_LINE_MAX_QTY` (10,000) units, so
@@ -226,8 +232,8 @@ orders on the next tick. The Settings copy says so.
      - Two first uses racing could each create a secret, and the last write wins. Orders placed
        under the losing secret then under-count for their network until they close.
      - Orders placed before the /48 change (#678) keep the key of their /64. They under-count for
-       their network until they are shipped, paid or cancelled: at most the auto-cancel window,
-       when it is on.
+       their network until they are shipped, paid or cancelled: at most the auto-cancel window
+       when it is on, unbounded when it is off.
        No stored key is rewritten.
    - Over a buyer or network cap, the order is refused `OFFLINE_ORDER_LIMIT`. The buyer copy is
      neutral: it does not say they have orders open.
