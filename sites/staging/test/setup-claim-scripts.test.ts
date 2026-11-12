@@ -82,7 +82,7 @@ describe("the claim cookie a script sends", () => {
 		);
 	});
 
-	test.each(["http://localhost:4321", "http://[::1]:4321", "http://shop.localhost:4321"])(
+	test.each(["http://localhost:4321", "http://[::1]:4321", "http://127.0.0.1:4321"])(
 		"%s is loopback: the local .dev.vars is read",
 		(site) => {
 			writeFileSync(devVars, `${SETUP_TOKEN_SECRET}=from-file\n`);
@@ -91,6 +91,21 @@ describe("the claim cookie a script sends", () => {
 			);
 		},
 	);
+
+	test("a *.localhost site is not loopback to a script: only the env token goes", () => {
+		// The gate treats *.localhost as loopback, but Node may resolve it through
+		// DNS on some hosts, so the local .dev.vars token is never sent to one.
+		writeFileSync(devVars, `${SETUP_TOKEN_SECRET}=from-file\n`);
+		expect(setupClaimCookie("http://x.localhost:4321", { env: {}, devVarsPath: devVars })).toBe(
+			undefined,
+		);
+		expect(
+			setupClaimCookie("http://x.localhost:4321", {
+				env: { [SETUP_TOKEN_SECRET]: "from-env" },
+				devVarsPath: devVars,
+			}),
+		).toBe(`${SETUP_CLAIM_COOKIE}=from-env`);
+	});
 
 	test("a REMOTE site never gets the local .dev.vars token; an explicit env token still goes", () => {
 		writeFileSync(devVars, `${SETUP_TOKEN_SECRET}=from-file\n`);

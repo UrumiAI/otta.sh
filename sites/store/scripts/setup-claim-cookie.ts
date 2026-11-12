@@ -6,7 +6,7 @@
  * request without the setup token, including the dev-bypass sign-in the
  * scripts and the e2e suite fall back on. A browser gets the cookie from the
  * claim link; a script has no browser, so it sends the same cookie itself.
- * For a LOOPBACK site it is built from the token the dev store holds
+ * For a LOOPBACK site (`localhost`, `127.0.0.1`, `[::1]`) it is built from the token the dev store holds
  * ({@link devSetupToken}): the one in the dev store's `.dev.vars` first, then
  * `OTTA_SETUP_TOKEN` in the script's environment. The e2e suite's own token
  * lookup (`sites/staging/e2e/setup-token.ts`) is the same one, with a public
@@ -17,11 +17,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseDotEnv } from "../src/lib/dot-env.js";
-import {
-	isLoopbackHostname,
-	SETUP_CLAIM_COOKIE,
-	SETUP_TOKEN_SECRET,
-} from "../src/lib/setup-claim-contract.js";
+import { SETUP_CLAIM_COOKIE, SETUP_TOKEN_SECRET } from "../src/lib/setup-claim-contract.js";
 
 /** `sites/staging/.dev.vars`, the dev store's: when it exists, wrangler gives
  *  the dev Worker its values INSTEAD of the process env (DEPLOYMENT.md §3).
@@ -60,9 +56,14 @@ function envSetupToken(env: Record<string, string | undefined>): string | undefi
 	return fromEnv === undefined || fromEnv === "" ? undefined : fromEnv;
 }
 
+/** The hosts a script sends the local `.dev.vars` token to. Narrower than the
+ *  gate's loopback test: `*.localhost` is left out, because Node may resolve it
+ *  through DNS on some hosts and the token would leave the machine. */
+const SCRIPT_LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 function isLoopbackSite(siteUrl: string): boolean {
 	try {
-		return isLoopbackHostname(new URL(siteUrl).hostname);
+		return SCRIPT_LOOPBACK_HOSTS.has(new URL(siteUrl).hostname);
 	} catch {
 		return false;
 	}
@@ -75,7 +76,8 @@ export interface SetupClaimSource {
 }
 
 /** `name=value` for a `Cookie` header to `siteUrl`, or undefined without a
- *  token. Only a loopback site gets the local `.dev.vars` token. */
+ *  token. Only `localhost`, `127.0.0.1` and `[::1]` get the local `.dev.vars`
+ *  token. */
 export function setupClaimCookie(
 	siteUrl: string,
 	{ env = process.env, devVarsPath = DEV_VARS_PATH }: SetupClaimSource = {},

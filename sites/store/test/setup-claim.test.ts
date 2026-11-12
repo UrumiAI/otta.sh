@@ -409,6 +409,27 @@ describe("while unclaimed — the link sets the cookie and strips itself from th
 		},
 	);
 
+	test("a path that looks protocol-relative is redirected on the request's own origin", async () => {
+		// `//evil.com/x` is a PATH here; a relative Location of it would send the
+		// browser to evil.com.
+		const { g } = gate();
+		const res = await g.check(
+			ctx({
+				path: `${HTTPS_SITE}//evil.com/x?${SETUP_TOKEN_PARAM}=${"S".repeat(43)}`,
+				routePattern: ADMIN_PAGE,
+				cookie: SECRET,
+			}),
+			{ [SETUP_TOKEN_SECRET]: SECRET },
+		);
+		expect(res?.status).toBe(303);
+		const location = res?.headers.get("location") ?? "";
+		expect(location).toBe(`${HTTPS_SITE}//evil.com/x`);
+		const target = new URL(location);
+		expect(target.origin).toBe(HTTPS_SITE);
+		expect(target.pathname).toBe("//evil.com/x");
+		expect(target.hostname).not.toBe("evil.com");
+	});
+
 	test("a stale token alone in the link: the redirect drops the whole query", async () => {
 		const { g } = gate();
 		const res = await g.check(

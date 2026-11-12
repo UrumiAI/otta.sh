@@ -41,8 +41,9 @@ export const SETUP_CLAIM_LOG_TAG = "[otta-setup]";
 export const PUBLIC_E2E_SETUP_TOKEN = "_3ouNlu8f91xzqLPeDpRl8xUjNGzvb6o69tpEOM3K8M";
 
 /** A loopback host (`localhost`, `127.0.0.1`, `[::1]`, `*.localhost`), as
- *  `URL.hostname` spells it: where the dev server runs over plain HTTP, the
- *  public e2e token is accepted, and a script may read the local `.dev.vars`. */
+ *  `URL.hostname` spells it: where the dev server runs over plain HTTP and the
+ *  public e2e token is accepted. The scripts use a narrower list
+ *  (`scripts/setup-claim-cookie.ts`). */
 export function isLoopbackHostname(hostname: string): boolean {
 	return (
 		hostname === "localhost" ||
