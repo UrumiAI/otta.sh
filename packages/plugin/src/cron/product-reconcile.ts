@@ -131,14 +131,15 @@
  *
  * D1 ROWS WRITTEN, the other Free limit. A repair writes about 150 rows (see
  * `RECONCILE_REPAIRS_PER_DAY_FREE`), so on Workers Free the leg makes at most 200
- * repairs a UTC day, counted in the cursor document in thirds of a repair (a lost
- * unpublish's deactivation, one document write, spends one third). A capped day keeps
- * the pass exactly where it is — its start, its page, its nominated products — and
- * the walk waits until 00:00 UTC. Meanwhile, while a deactivation still fits, a
- * separate LAP lists the whole catalogue once per pass interval for lost unpublishes
- * alone (THE SCAN FOR LOST UNPUBLISHES, in `reconcileProductCommerce`), so a withdrawn
- * product is not left on sale behind the first syncs. It reads what a pass reads and
- * writes only the cursor document and its deactivations.
+ * syncs a UTC day, counted in the cursor document in thirds of a repair (a lost
+ * unpublish's deactivation, one document write, spends one third), with a reserve of
+ * thirty more units only deactivations may spend. A capped day keeps the pass exactly
+ * where it is — its start, its page, its nominated products — and the walk waits
+ * until 00:00 UTC. Meanwhile, while a deactivation still fits, a separate LAP lists
+ * the whole catalogue once per pass interval for lost unpublishes alone (THE SCAN FOR
+ * LOST UNPUBLISHES, in `reconcileProductCommerce`), so a withdrawn product is not left
+ * on sale behind the first syncs. It reads what a pass reads (about N²/100 + 2N rows)
+ * and writes only the cursor document and its deactivations.
  */
 import { InProcessCommerceClient } from "../commerce/in-process-commerce-client.js";
 import { ALLOWED_HOSTS } from "../manifest.js";
@@ -188,8 +189,11 @@ export const PRODUCT_RECONCILE_CURSOR = "product-reconcile";
 export const RECONCILE_PAGE_SIZE = 100;
 
 /** The most products the cursor document keeps nominated: a page's own, and as
- *  many again found by the scan ahead (which lists no page while more than a page's
- *  worth are nominated, so a page it adds stays under this). */
+ *  many again found by the lap for lost unpublishes (which lists no page while more
+ *  than a page's worth are nominated, so a page it adds stays under this). A release
+ *  from before #664 parses only the first 100: the walk's own nominations come first
+ *  and the lap's are appended after them, so a rollback drops only lap nominations,
+ *  which the next lap finds again. */
 const RECONCILE_MAX_PENDING = 2 * RECONCILE_PAGE_SIZE;
 
 /**
@@ -249,10 +253,11 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
  * host's list index and Otta's 49 declared expression indexes, none of them
  * partial), and a sync is about three document writes (the upsert, the activate,
  * the variant write) plus its sku claims — about 156 rows a product. 200 repairs is
- * then about 31,000 rows written a day. Beside `prune-carts`' own cap
- * (`ABANDONED_CARTS_PER_DAY_FREE`, about 31,000) and the reporting backfill's
+ * then about 31,000 rows written a day, and the deactivations' reserve
+ * (`RECONCILE_DEACTIVATION_RESERVE_UNITS`) about 1,600 more. Beside `prune-carts`' own
+ * cap (`ABANDONED_CARTS_PER_DAY_FREE`, about 31,000) and the reporting backfill's
  * (`REPORTING_BACKFILL_DAYS_PER_DAY_FREE`, about 16,000–21,000), all three at once
- * write about 83,000–88,000, which leaves the store's traffic about 12,000–17,000. On
+ * write about 85,000–90,000, which leaves the store's traffic about 10,000–15,000. On
  * the deploy day of a new index layout all three spend nothing (`indexBuildHold`).
  * Without it a first install over an existing catalogue — every product
  * without a row — heals at the leg's pace, about 460 repairs a day measured, about
@@ -280,11 +285,23 @@ export const RECONCILE_REPAIRS_PER_DAY_FREE = 200;
  *
  * Why a deactivation is worth the special case: a lost unpublish leaves a withdrawn
  * product ON SALE, while a lost publish only leaves one off sale (fail-closed). So a
- * page's deactivations are nominated before its syncs, a sync that would pass the cap
- * waits while a deactivation still fits, and while the cap holds the walk the leg
- * SCANS AHEAD of it for lost unpublishes (`reconcileProductCommerce`).
+ * page's deactivations are nominated before its syncs, deactivations keep a reserve
+ * no sync can spend (`RECONCILE_DEACTIVATION_RESERVE_UNITS`), and while the cap holds
+ * the walk the leg runs a LAP over the catalogue for lost unpublishes
+ * (`reconcileProductCommerce`).
  */
 export const RECONCILE_DEACTIVATIONS_PER_REPAIR = 3;
+
+/**
+ * Units of the day's count (thirds of a repair) that only deactivations may spend, ON
+ * TOP of the syncs' `RECONCILE_REPAIRS_PER_DAY_FREE` × 3. A first-install day is spent
+ * entirely by syncs; without a reserve the cap would then have no room left for the
+ * deactivation of a lost unpublish, and the lap that finds one would never start.
+ * Thirty units are thirty deactivations, about 1,560 rows written (ten syncs' worth):
+ * the leg's daily bound is about 31,200 + 1,560 ≈ 32,800 rows written. Syncs spend at
+ * most `RECONCILE_REPAIRS_PER_DAY_FREE` × 3 of the total; deactivations spend any of it.
+ */
+export const RECONCILE_DEACTIVATION_RESERVE_UNITS = 30;
 
 /** What one repair of `kind` spends of the day's cap, in thirds of a repair. */
 export function reconcileCostUnits(kind: "sync" | "deactivate"): number {
@@ -708,11 +725,15 @@ export async function reconcileProductCommerce(
 	/** What today's repairs have spent of the cap, in thirds of a repair. */
 	let usedUnits = state.day === today ? state.unitsToday : 0;
 	/** Whether today's cap has room for one more repair of `kind`
-	 *  (`reconcileCostUnits`). A sync that would pass the cap is refused even while a
-	 *  deactivation still fits, so the day's writes never pass it. */
+	 *  (`reconcileCostUnits`). Syncs stop at `dailyCap` × 3 units; deactivations may
+	 *  also spend the reserve above it (`RECONCILE_DEACTIVATION_RESERVE_UNITS`), so a
+	 *  day the syncs spent still deactivates a lost unpublish, and neither kind passes
+	 *  its own limit. */
 	const capRoomFor = (kind: "sync" | "deactivate"): boolean =>
 		dailyCap === null ||
-		usedUnits + reconcileCostUnits(kind) <= dailyCap * RECONCILE_DEACTIVATIONS_PER_REPAIR;
+		usedUnits + reconcileCostUnits(kind) <=
+			dailyCap * RECONCILE_DEACTIVATIONS_PER_REPAIR +
+				(kind === "deactivate" ? RECONCILE_DEACTIVATION_RESERVE_UNITS : 0);
 	/** Said once, by the run whose repairs leave no room for another sync. */
 	const syncRoomAtStart = capRoomFor("sync");
 	/** Counted BEFORE the writes, so a run the ceiling stops in them keeps it. */
@@ -759,7 +780,8 @@ export async function reconcileProductCommerce(
 	 * page, a lost unpublish anywhere else would wait for the walk — on a page ahead of
 	 * it, behind every first sync before it; on a page behind it, for the next pass: on
 	 * a large Free first install, about N / 200 days either way, still on sale. So,
-	 * while the cap still has room for a deactivation, the leg lists the catalogue in a
+	 * while the cap holds the syncs and still has room for a deactivation (the reserve
+	 * no sync can spend, `RECONCILE_DEACTIVATION_RESERVE_UNITS`), the leg lists the catalogue in a
 	 * separate lap, one page per call: the list and its row reads
 	 * (`RECONCILE_PAGE_QUERIES`, gated like the walk's own page), nothing written but
 	 * the cursor document. A product found active while its document is not published
@@ -773,7 +795,9 @@ export async function reconcileProductCommerce(
 	 * a page.
 	 */
 	const scanAhead = async (): Promise<boolean> => {
-		if (!capRoomFor("deactivate")) return false;
+		// Only while the cap holds the syncs (else the walk finds what the lap would),
+		// and while a deactivation still fits.
+		if (capRoomFor("sync") || !capRoomFor("deactivate")) return false;
 		if (state.pending.length > RECONCILE_PAGE_SIZE) return false;
 		if (state.scanStartedAt === null) {
 			const last =
@@ -792,9 +816,16 @@ export async function reconcileProductCommerce(
 			});
 		} catch (err) {
 			if (isInvalidCursorError(err)) {
-				console.warn(
-					"[otta] cron sweep product-reconcile: the CMS refused the scan's cursor; the lap ends",
-				);
+				// A cursor the host can no longer decode: the lap starts again from the top
+				// (keeping its start, so it still runs once per interval). The top needs no
+				// cursor; if even that is refused, the lap ends.
+				if (state.scan !== null) {
+					console.warn(
+						"[otta] cron sweep product-reconcile: the CMS refused the lap's cursor; the lap restarts from the top",
+					);
+					state.scan = null;
+					return true;
+				}
 				endLap();
 				return false;
 			}
@@ -807,8 +838,14 @@ export async function reconcileProductCommerce(
 		const found = items.length > 0 ? await rows.many(items.map((item) => item.id)) : new Map();
 		for (const item of items) {
 			if (planReconcile(item, found.get(item.id)).kind !== "deactivate") continue;
-			if (state.pending.some((entry) => entry.id === item.id)) continue;
-			state.pending.push({ id: item.id, deactivate: true });
+			const at = state.pending.findIndex((entry) => entry.id === item.id);
+			if (at === -1) {
+				state.pending.push({ id: item.id, deactivate: true });
+			} else if (state.pending[at]?.check === undefined && state.pending[at]?.deactivate !== true) {
+				// Nominated by the walk as a sync, now unpublished: as a sync it would wait
+				// behind the syncs' cap, still on sale.
+				state.pending[at] = { id: item.id, deactivate: true };
+			}
 		}
 		if (page.hasMore && page.cursor !== undefined) {
 			state.scan = page.cursor;
@@ -1074,7 +1111,7 @@ export async function reconcileProductCommerce(
 	if (dailyCap !== null && syncRoomAtStart && !capRoomFor("sync")) {
 		console.info(
 			`[otta] cron sweep product-reconcile: no room for another sync today (the Workers Free cap of ${String(dailyCap)} repairs);` +
-				" a lost unpublish is still deactivated while a third of a repair is left, and the pass carries on after 00:00 UTC",
+				` lost unpublishes are still deactivated from a reserve of ${String(RECONCILE_DEACTIVATION_RESERVE_UNITS)}, and the pass carries on after 00:00 UTC`,
 		);
 	}
 	// Stopped by the cap alone, the leg waits its cadence (it is stamped, and not run

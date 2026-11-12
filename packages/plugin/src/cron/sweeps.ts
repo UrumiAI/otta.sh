@@ -3931,9 +3931,9 @@ export const REPORTING_LINES_HISTORY_DAYS = 2 * MAX_REPORT_RANGE_DAYS;
  * index — about 52 rows. A day in one currency is three writes (the month touch before,
  * its day document, the touch after), in two currencies four: about 210 rows. 100 builds
  * is then about 21,000 rows written a day (16,000 in one currency). Not more: the
- * abandoned-cart prune (about 31,000) and the product reconcile (about 31,000) have
+ * abandoned-cart prune (about 31,000) and the product reconcile (about 33,000) have
  * daily caps of their own on Free, and with all three running at once (about
- * 83,000–88,000) the store's own traffic still keeps about 12,000–17,000 of D1 Free's
+ * 85,000–90,000) the store's own traffic still keeps about 10,000–15,000 of D1 Free's
  * 100,000. It builds newest first and starts the UTC day after the deploy
  * (`indexBuildHold`). Day documents exist only from the release that introduced them
  * (about 2026-09-07), so a store upgrading now has about 55 of them — one capped day. Only a store with a year of them would take about four days for the
