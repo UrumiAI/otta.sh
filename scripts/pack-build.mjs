@@ -263,6 +263,9 @@ try {
 	// The scratch dir, the whole PATH, the home directory, and each PATH entry under
 	// the home directory (the builder's own tools, e.g. setup-pnpm). System entries
 	// such as /usr/local/bin are left out: library code names them on purpose.
+	// The home directory may trip on a dependency that ships a source map carrying
+	// its publisher's `/home/runner/…` path. If Pack build goes red on that, narrow
+	// this to `work` plus the home PATH entries; do not ignore the hit.
 	const home = homedir();
 	const homeEntries = (process.env.PATH ?? "")
 		.split(path.delimiter)

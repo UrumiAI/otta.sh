@@ -661,6 +661,17 @@ export async function scrubBuildPathsInDir(dir: string, root: string): Promise<n
  *    it starts a path: not after a letter, digit, `_`, `.`, `-`, `/`, `~` or `@`,
  *    so `/_emdash/api/plugins/otta/admin` survives a root of `/otta`.
  * A map with nothing to rewrite comes back unchanged, byte for byte.
+ *
+ * Limits (`scripts/pack-build.mjs` is the backstop, and fails on any build path
+ * left anywhere in a packed build's `dist/`):
+ *  - POSIX roots only: a Windows root (`C:\…`) is not handled, the same as the
+ *    server scrub;
+ *  - flat maps only: an index map's `sections[].map` is not walked;
+ *  - `sourceRoot`, `file` and `sources` change only when they START with the
+ *    root, so `webpack://<root>/…`, `vite:` and `\0` ids are left as they are;
+ *  - a short root that is also a real route (a Docker WORKDIR such as `/app`)
+ *    also rewrites matching literals in `sourcesContent` (`"/app/x"` becomes
+ *    `"/x"`). That changes only the text devtools shows, never code that runs.
  */
 export function scrubSourceMap(text: string, root: string): string {
 	let map: unknown;

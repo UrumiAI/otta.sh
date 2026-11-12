@@ -205,9 +205,9 @@ The Deploy to Cloudflare button goes into README.md only after all of these:
    public, the repository variable `OTTA_TEMPLATE_PUBLIC=true` turns on the `Pack build` job
    (`scripts/pack-build.mjs`: the packed packages, installed with npm into a copy of the
    template, and built), which is skipped until then.
-   *2026-11-12:* done. 0.2.0 is on npm, the template's lockfile is committed, the template is
-   public, `OTTA_TEMPLATE_PUBLIC=true` has been set since 2026-11-09, and `Pack build` runs on
-   pull requests and passes.
+   Publish, lockfile and public template: done (2026-11-12: 0.2.0 is on npm, the template's
+   lockfile is committed, the template is public, `OTTA_TEMPLATE_PUBLIC=true` has been set
+   since 2026-11-09, and `Pack build` runs on pull requests and passes).
    Also: the template's lockfile and this repository resolve the same Cloudflare adapter
    chain. The adapter chain follows the **hoisted** `workerd` (the one
    `@cloudflare/unenv-preset`'s `workerd` peer resolves to), not the one the top-level
@@ -217,11 +217,12 @@ The Deploy to Cloudflare button goes into README.md only after all of these:
    hoisted `node_modules/workerd` equals the catalog `workerd` (`pnpm-workspace.yaml`). Only
    then do `sites/store` and `sites/staging` resolve the Cloudflare adapter variants a
    merchant gets (`sites/store/test/workerd-pin.test.ts`). Bump one side to match the other.
-   *2026-11-12:* not yet. The template's lockfile (its `main`, `ea9d06ae`) has
+   Adapter chain: not yet. The template's lockfile (its `main`, `ea9d06ae`) has
    `@cloudflare/vite-plugin` 1.68.0, which pins wrangler 4.157.0, so the hoisted `workerd` is
    1.20261103.1 (the top-level wrangler 4.159.0 nests its own `workerd` 1.20261109.1, which the
    adapter chain does not use). This repository has `@cloudflare/vite-plugin` 1.44.0, wrangler
    4.110.0 and `workerd` 1.20260708.1.
+   *2026-11-12:* **Gate 1: not yet met.** The adapter chains still differ; the rest is done.
 2. The links merchants follow resolve publicly: otta.sh is public, or `OTTA_UPGRADE_NOTES_URL`
    and the documentation URLs in the package's messages and README point somewhere public.
    *2026-11-05:* otta.sh is public; `UPGRADING.md` resolves once this branch is on `main`.
