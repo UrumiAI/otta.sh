@@ -98,7 +98,11 @@ catalog:
   # Must equal the `workerd` that this catalog's wrangler depends on (see
   # `sites/store/test/workerd-pin.test.ts`). Pinned in `sites/store` and
   # `sites/staging` so both resolve the same `@astrojs/cloudflare` /
-  # `@emdash-cms/cloudflare` variant. Bump together with wrangler.
+  # `@emdash-cms/cloudflare` variant. Bump together with wrangler. It matches a
+  # merchant's tree only while the template lockfile's hoisted `workerd` (from
+  # its `@cloudflare/vite-plugin`'s pinned wrangler, not its top-level wrangler)
+  # equals this pin and the two `@cloudflare/vite-plugin` versions match
+  # (ADR-0045 launch gate 1).
   workerd: 1.20260708.1
   "@types/node": ^22.15.0
   fast-check: ^3.23.2
