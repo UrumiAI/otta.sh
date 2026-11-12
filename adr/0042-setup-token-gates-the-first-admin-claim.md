@@ -39,8 +39,8 @@ Options considered:
    `/_emdash/api/plugins/[pluginId]/[...path]` (the storefront's commerce calls; plugins
    cannot create EmDash users, and their admin routes need a signed-in user, which an
    unclaimed store does not have) and `/_emdash/api/health`. The storefront is never
-   looked at: the first check is a string test that returns before any state or database
-   is read.
+   looked at: the first check is a few prefix tests and one `decodeURI`, and it returns
+   before any state or database is read.
 
 2. **Where the token comes from**, in this order:
    - **The Worker secret `OTTA_SETUP_TOKEN`**, if it is set. It must be at least 32

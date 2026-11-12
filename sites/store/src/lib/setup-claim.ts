@@ -13,7 +13,8 @@
  * except the three in {@link SETUP_GATE_EXEMPT_ROUTES}: none of them can
  * create a user or finish setup. A route a future EmDash adds is gated without
  * anyone remembering to list it. The storefront is never looked at: the check
- * is a string test that returns before any state or database is touched.
+ * is a few prefix tests and one `decodeURI`, and returns before any state or
+ * database is touched.
  *
  * THE TOKEN. The Worker secret `OTTA_SETUP_TOKEN` when it is set (it must pass
  * {@link validateSetupTokenSecret}; a set-but-weak secret fails CLOSED, it does
