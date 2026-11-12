@@ -22,9 +22,16 @@ name: Pack build
 # the Actions cache, and a cache saved in main's scope is restored by every
 # ci.yml job (CodeQL actions/cache-poisoning). So this job never runs in main's
 # scope: no push-to-main or schedule trigger, no dispatch on main, and the
-# template is always its own `main` (no free-form ref input). Pull-request
-# runs only save caches into that PR's scope. A change in the template
-# repository alone is tested by that repository's CI, not here.
+# template is its own `main` or the commit TEMPLATE_REF below pins (no
+# free-form ref input). Pull-request runs only save caches into that PR's scope.
+#
+# So this job does NOT run on a push to main or on a schedule. A change in the
+# template repository, or a `~` patch release of a peer that breaks the packed
+# build, shows up only on the next pull request that matches `paths:`, as a red
+# check unrelated to that PR (ADR-0045 records this gap). The run logs the
+# template commit it built; to rule the template out, pin TEMPLATE_REF to the
+# last green commit in that PR. Revert the pin to `main` before merging: a run
+# with a pin warns, and a pinned main stops catching template drift at all.
 on:
   pull_request:
     paths:
@@ -41,6 +48,11 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # The template ref to build: `main` by default. Set it to a commit SHA, in a
+  # reviewed change to this file, to pin the template (never a dispatch input).
+  TEMPLATE_REF: main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,15 +71,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # The template is its own repository, always at its `main`. Its code runs in
-      # this job, so pass no secret here: the job only runs once the template is
-      # public (OTTA_TEMPLATE_PUBLIC), and the default token can read it then.
+      # The template is its own repository, at TEMPLATE_REF (default `main`). Its
+      # code runs in this job, so pass no secret here: the job only runs once the
+      # template is public (OTTA_TEMPLATE_PUBLIC), and the default token can read
+      # it then.
       - uses: actions/checkout@v4
         with:
           repository: UrumiAI/otta-store-template
-          ref: main
+          ref: ${{ env.TEMPLATE_REF }}
           path: otta-store-template
           persist-credentials: false
+      # The template commit this run builds, in the log and the run summary.
+      - name: Template commit
+        run: |
+          sha=$(git -C otta-store-template rev-parse HEAD)
+          echo "UrumiAI/otta-store-template at $sha (TEMPLATE_REF=$TEMPLATE_REF)"
+          echo "Template: UrumiAI/otta-store-template@$sha (TEMPLATE_REF=$TEMPLATE_REF)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$TEMPLATE_REF" != "main" ]; then
+            echo "::warning::TEMPLATE_REF is pinned to $TEMPLATE_REF, not main: revert the pin before merging"
+          fi
       - uses: pnpm/action-setup@v4
       # No `cache: pnpm`, so this job never saves a pnpm cache, even into a PR's
       # scope. That is not what keeps main's cache safe (template code could still

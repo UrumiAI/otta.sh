@@ -30,6 +30,14 @@ section for each contract number between yours and the new one, in order, then s
 `template` to the new number and push. This message covers template-file changes only; a
 version move announces itself as above.
 
+## Deploying this repository's `sites/staging` by hand
+
+The store's source moved from `sites/staging/src` to `sites/store/src` in 0.2.0. If you deploy
+`sites/staging` by hand (DEPLOYMENT.md §2.1 to §2.5) with local edits under its `src/`, the
+pull that brings the move reports modify/delete conflicts for edited files git does not follow
+to their new path: re-apply each edit to the same file under `sites/store/src/`, then `git rm`
+the old path.
+
 ## Your own middleware runs before Otta's
 
 `otta()` registers the store's middleware after EmDash's (`order: "post"`), and Astro runs a

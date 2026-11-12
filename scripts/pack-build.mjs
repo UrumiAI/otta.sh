@@ -16,7 +16,8 @@
  * ASSERTS: the build exits 0 (so the integration's guards passed), the sample
  * photographs the seed names are in the client output at their URLs, the seed
  * ships in the installed package, and no build-environment value leaked into
- * the output (the scrub guard's concern: the builder's PATH, the scratch dir).
+ * the output, source maps included (the scrub guard's concern: the builder's
+ * PATH, the scratch dir). It logs the template commit it built.
  *
  * Needs the registry (emdash, astro, ... at the template's pins), unlike
  * `pack-consume-types.mjs`.
@@ -34,6 +35,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -142,6 +144,24 @@ try {
 	if (!existsSync(path.join(TEMPLATE, "astro.config.mjs"))) {
 		throw new Error(`template not found at ${TEMPLATE} (pass --template or OTTA_TEMPLATE_DIR)`);
 	}
+	// The template commit this run built, so a red run can be reproduced.
+	// Only the template's own repository: a copy inside another checkout would
+	// otherwise report that checkout's commit.
+	let templateCommit = "unknown (not a git checkout)";
+	try {
+		const top = run("git", ["rev-parse", "--show-toplevel"], TEMPLATE).trim();
+		if (realpathSync(top) === realpathSync(TEMPLATE)) {
+			templateCommit = run("git", ["rev-parse", "HEAD"], TEMPLATE).trim();
+			if (run("git", ["status", "--porcelain"], TEMPLATE).trim() !== "") {
+				templateCommit += " (with uncommitted changes)";
+			}
+		} else {
+			templateCommit = `unknown (not the root of a git checkout; inside ${top})`;
+		}
+	} catch {
+		// Not a git checkout: keep "unknown".
+	}
+	step(`template ${TEMPLATE} at ${templateCommit}`);
 
 	// 1. Pack everything (prepack builds each package's dist/).
 	const tarballs = path.join(work, "tarballs");
@@ -240,12 +260,23 @@ try {
 		}
 	}
 	// No builder value in the output (the build scrub's concern, checked again from outside).
-	const leaks = [work, process.env.PATH ?? ""].filter((v) => v.length > 8);
+	// The scratch dir, the whole PATH, the home directory, and each PATH entry under
+	// the home directory (the builder's own tools, e.g. setup-pnpm). System entries
+	// such as /usr/local/bin are left out: library code names them on purpose.
+	// The home directory may trip on a dependency that ships a source map carrying
+	// its publisher's `/home/runner/…` path. If Pack build goes red on that, narrow
+	// this to `work` plus the home PATH entries; do not ignore the hit.
+	const home = homedir();
+	const homeEntries = (process.env.PATH ?? "")
+		.split(path.delimiter)
+		.filter((entry) => home.length > 1 && entry.startsWith(`${home}/`));
+	const leaks = [...new Set([work, process.env.PATH ?? "", home, ...homeEntries])].filter(
+		(v) => v.length > 8,
+	);
 	for (const rel of listFiles(path.join(site, "dist"))) {
-		// The scrub's scope (build-path-scrub.ts): code, markup, data and the worker's
-		// source maps, not `wrangler.json` (local deploy metadata).
+		// The scrub's scope (build-path-scrub.ts): code, markup, data and every
+		// source map (server and client), not `wrangler.json` (local deploy metadata).
 		if (rel === "server/wrangler.json") continue;
-		if (rel.endsWith(".map") && !rel.startsWith("server/")) continue;
 		if (!/\.(m?js|json|html|txt|css|map)$/.test(rel)) continue;
 		const text = readFileSync(path.join(site, "dist", rel), "utf8");
 		for (const leak of leaks) {
@@ -254,19 +285,6 @@ try {
 			}
 		}
 	}
-	// Client maps are outside the scrub's scope; report them, do not fail.
-	const leakyMaps = listFiles(path.join(site, "dist")).filter(
-		(rel) =>
-			rel.endsWith(".map") &&
-			!rel.startsWith("server/") &&
-			readFileSync(path.join(site, "dist", rel), "utf8").includes(work),
-	);
-	if (leakyMaps.length > 0) {
-		console.warn(
-			`pack-build: WARNING — ${leakyMaps.length} source map(s) in dist/ carry the build path: ${leakyMaps.join(", ")}`,
-		);
-	}
-
 	if (problems.length > 0) {
 		console.error("pack-build: FAILED — assertions on the packed build:");
 		for (const p of problems) console.error(`  ${p}`);

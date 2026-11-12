@@ -30,10 +30,14 @@
  *  - build only: `astro dev` never fires `astro:build:done`, so dev keeps real
  *    paths for error overlays, the dev toolbar and editor links;
  *  - after prerendering, which reads files by these paths on this machine;
- *  - only `.mjs`/`.js` (and their `.map`s) under `build.server` (the worker). The client bundle
- *    carries none of these paths, and `wrangler.json` is local deploy metadata
- *    that wrangler reads from this machine. `test/build-path-leak.test.ts` scans
- *    all of `dist/`;
+ *  - `.mjs`/`.js` (and their `.map`s) under `build.server` (the worker), and
+ *    only the `.map`s under `build.client`. Client code carries none of these
+ *    paths; a client source map can (its `sourceRoot`, `sources` and
+ *    `sourcesContent`), so each is rewritten as JSON ({@link scrubSourceMap}).
+ *    `wrangler.json` is local deploy metadata that wrangler reads from this
+ *    machine. `test/build-path-leak.test.ts` scans all of the repo's
+ *    `dist/`, and `scripts/pack-build.mjs` fails on a build path anywhere in a
+ *    packed build's `dist/`, client maps included;
  *  - the rewrite only shortens strings inside a line, so line numbers in a stack
  *    trace still match the chunk. Columns on a rewritten line shift, though, so a
  *    scrubbed chunk's source map has slightly wrong columns on those lines (the
@@ -647,6 +651,91 @@ export async function scrubBuildPathsInDir(dir: string, root: string): Promise<n
 	return changed;
 }
 
+/**
+ * Removes the root from one source map, reading it as JSON (a map that does not
+ * parse gets the anchored {@link scrubBuildPaths} rewrite instead):
+ *  - `sourceRoot`, `file` and each of `sources` lose a leading root, with or
+ *    without a trailing slash, plain or as a file URL (`<root>` → `/`,
+ *    `<root>/x` → `/x`, `file://<root>/x` → `file:///x`);
+ *  - each of `sourcesContent` (source text, never run) loses the root wherever
+ *    it starts a path: not after a letter, digit, `_`, `.`, `-`, `/`, `~` or `@`,
+ *    so `/_emdash/api/plugins/otta/admin` survives a root of `/otta`.
+ * A map with nothing to rewrite comes back unchanged, byte for byte.
+ *
+ * Limits (`scripts/pack-build.mjs` is the backstop, and fails on any build path
+ * left anywhere in a packed build's `dist/`):
+ *  - POSIX roots only: a Windows root (`C:\…`) is not handled, the same as the
+ *    server scrub;
+ *  - flat maps only: an index map's `sections[].map` is not walked;
+ *  - `sourceRoot`, `file` and `sources` change only when they START with the
+ *    root, so `webpack://<root>/…`, `vite:` and `\0` ids are left as they are;
+ *  - a short root that is also a real route (a Docker WORKDIR such as `/app`)
+ *    also rewrites matching literals in `sourcesContent` (`"/app/x"` becomes
+ *    `"/x"`). That changes only the text devtools shows, never code that runs.
+ */
+export function scrubSourceMap(text: string, root: string): string {
+	let map: unknown;
+	try {
+		map = JSON.parse(text);
+	} catch {
+		return scrubBuildPaths(text, root);
+	}
+	if (typeof map !== "object" || map === null || Array.isArray(map)) {
+		return scrubBuildPaths(text, root);
+	}
+	const bare = root.replace(/\/+$/, "");
+	// A root of `/` would match every absolute path; there is nothing to remove.
+	if (bare === "") return text;
+	const urls = [`file://${bare}`, pathToFileURL(bare).href];
+	const relativize = (value: unknown): unknown => {
+		if (typeof value !== "string") return value;
+		if (value === bare || value === `${bare}/`) return "/";
+		if (value.startsWith(`${bare}/`)) return value.slice(bare.length);
+		for (const url of urls) {
+			if (value === url || value === `${url}/`) return "file:///";
+			if (value.startsWith(`${url}/`)) return `file://${value.slice(url.length)}`;
+		}
+		return value;
+	};
+	const inText = new RegExp(`(?<![\\w.\\-/~@])${escapeRegExp(bare)}(?=(/)|[^\\w.\\-]|$)`, "g");
+	const content = (value: unknown): unknown =>
+		typeof value === "string"
+			? scrubBuildPaths(value, root).replace(inText, (_match, slash: string | undefined) =>
+					slash === undefined ? "/" : "",
+				)
+			: value;
+	const record = map as Record<string, unknown>;
+	const scrubbed: Record<string, unknown> = { ...record };
+	for (const key of ["sourceRoot", "file"]) {
+		if (key in record) scrubbed[key] = relativize(record[key]);
+	}
+	if (Array.isArray(record.sources)) scrubbed.sources = record.sources.map(relativize);
+	if (Array.isArray(record.sourcesContent)) {
+		scrubbed.sourcesContent = record.sourcesContent.map(content);
+	}
+	const out = JSON.stringify(scrubbed);
+	return out === JSON.stringify(record) ? text : out;
+}
+
+/**
+ * Rewrites every `.map` file under `dir` in place with {@link scrubSourceMap},
+ * nothing else; returns how many changed. For the client output, where only
+ * source maps carry build paths.
+ */
+export async function scrubSourceMapsInDir(dir: string, root: string): Promise<number> {
+	let changed = 0;
+	for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
+		if (!entry.isFile() || !entry.name.endsWith(".map")) continue;
+		const file = path.join(entry.parentPath, entry.name);
+		const map = await readFile(file, "utf8");
+		const scrubbed = scrubSourceMap(map, root);
+		if (scrubbed === map) continue;
+		await writeFile(file, scrubbed);
+		changed += 1;
+	}
+	return changed;
+}
+
 /** @param rootOption the prefix to remove; default {@link workspaceRoot} of the project root. */
 export function buildPathScrub(rootOption?: string): AstroIntegration {
 	let root = rootOption ?? "";
@@ -775,6 +864,10 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 				if (root === "") throw new Error("build-path-scrub: no root was resolved");
 				const changed = await scrubBuildPathsInDir(server, root);
 				logger.info(`removed the workspace root from ${changed} server file(s)`);
+				if (clientDir !== undefined && existsSync(clientDir)) {
+					const maps = await scrubSourceMapsInDir(fileURLToPath(clientDir), root);
+					logger.info(`removed the workspace root from ${maps} client source map(s)`);
+				}
 			},
 		},
 	};

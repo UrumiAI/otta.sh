@@ -4,11 +4,17 @@ import { describe, expect, test } from "vitest";
 
 /**
  * `sites/store` and `sites/staging` pin `workerd` (the catalog's `workerd`
- * entry in `pnpm-workspace.yaml`) so pnpm resolves the Cloudflare adapter chain
- * the way a merchant's npm install does: with the workerd that the template's
- * wrangler depends on. Without the pin, pnpm gave the two sites different
- * `@astrojs/cloudflare` / `@emdash-cms/cloudflare` variants, so staging was not
- * the tree a merchant gets. Bumping wrangler means bumping the pin with it.
+ * entry in `pnpm-workspace.yaml`) to the workerd that this workspace's wrangler
+ * depends on, so both sites resolve the same `@astrojs/cloudflare` /
+ * `@emdash-cms/cloudflare` variants. Without the pin, pnpm gave the two sites
+ * different variants. Bumping wrangler means bumping the pin with it.
+ *
+ * That is the tree a merchant gets only while the template's committed
+ * `package-lock.json` hoists the same `workerd` (the one the adapter chain's
+ * `@cloudflare/unenv-preset` peer resolves to) and has the same
+ * `@cloudflare/vite-plugin`. The hoisted copy comes from that vite-plugin's own
+ * pinned wrangler, not from the template's top-level wrangler, which nests its
+ * own workerd. Keeping the two equal is ADR-0045 launch gate 1.
  *
  * `packages/store-emdash` (the D1 test tier) intentionally resolves its own
  * variant and is not compared here.
