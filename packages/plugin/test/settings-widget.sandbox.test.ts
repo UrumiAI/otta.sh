@@ -1285,14 +1285,18 @@ describe("Background work per minute (the sweep's query budget)", () => {
 		]);
 	});
 
-	test("says how fast a first install's products become buyable on Free (#664)", async () => {
+	test("at the Free preset, says how fast a first install's products become buyable; at Paid, says nothing (#664)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
-		const texts = findBlocks(await settingsPage(), "context").map((b) => String(b.text));
-		expect(texts).toContainEqual(
-			expect.stringContaining(
-				`On Workers Free, products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day`,
-			),
-		);
+		const line = `At Workers Free (30) (or any setting of 50 or less), products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day`;
+		const contexts = async (): Promise<string[]> =>
+			findBlocks(await settingsPage(), "context").map((b) => String(b.text));
+		expect(await contexts()).toContainEqual(expect.stringContaining(line));
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-background-work",
+			values: { backgroundWorkPerMinute: "600" },
+		});
+		expect((await contexts()).filter((text) => text.includes("published before Otta"))).toEqual([]);
 	});
 
 	test("choosing Workers Paid persists it, and the next page load agrees", async () => {
