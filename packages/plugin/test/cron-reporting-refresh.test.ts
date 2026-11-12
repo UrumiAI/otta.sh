@@ -479,7 +479,7 @@ describe("the backfill's write volume", () => {
 
 	test("on Free, the deploy day of a new index layout builds no backfill; the next UTC day does", async () => {
 		const cursors = memoryCursors();
-		// A fresh store notes the layout and is not held: it has nothing to index.
+		// A fresh store notes the layout and is not held: it has no Otta rows to index.
 		await sweep(cursors, 30, QUIET);
 		const a = await orderDaysAgo("deploy-day", 40);
 		// The release before declared other indexes: this is its deploy day.

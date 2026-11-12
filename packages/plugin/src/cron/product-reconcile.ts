@@ -242,8 +242,8 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
  * then about 31,000 rows written a day. Beside `prune-carts`' own cap
  * (`ABANDONED_CARTS_PER_DAY_FREE`, about 31,000) and the reporting backfill's
  * (`REPORTING_BACKFILL_DAYS_PER_DAY_FREE`, about 16,000–21,000), all three at once
- * write about 83,000–88,000, which leaves the store's traffic about 12,000–17,000. On
- * the deploy day of a new index layout all three spend nothing (`indexBuildHold`).
+ * write about 78,000–83,000, which leaves the store's traffic about 17,000–22,000. On
+ * the deploy day of a new index layout none of the three spends its cap (`indexBuildHold`).
  * Without it a first install over an existing catalogue — every product
  * without a row — heals at the leg's pace, about 460 repairs a day measured, about
  * 70,000 rows written a day, for as many days as that takes. With it a catalogue of

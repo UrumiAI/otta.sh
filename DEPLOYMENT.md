@@ -1288,8 +1288,8 @@ at 300 carts a day too (choose the Paid preset to drain faster). A Free store th
 than 300 empty carts a day never fully catches up; the rest wait their turn, untouched.
 `product-reconcile` has a daily cap of its own on Free (200 repairs, about 31,000 rows written; see
 "Rows written, and the daily repair cap" below), and so does the Reports backfill (#572, below).
-All three together write about 83,000–88,000 rows a day, which leaves about 12,000–17,000 for the
-store's traffic.
+All three together write about 78,000–83,000 rows a day, which leaves about 17,000–22,000 for the
+store's traffic and the sweep's own cursor and tick-state writes.
 
 `stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
 nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
@@ -1317,15 +1317,20 @@ with 30,000 rows writes about 90,000 on that tick. **Past about 33,000 plugin-st
 index build alone exceeds D1 Free's 100,000 rows written a day.** Once it does, every write fails
 until 00:00 UTC, and the build does not finish. EmDash retries the build once per new Worker
 process, so a store of 100,000 rows can hit the limit several days running. A Free store that size
-should move to Workers Paid before this deploy. Every later plugin-row write then costs three
-index rows more (about 52 rows in all).
+should move to Workers Paid before this deploy: the hold below covers only the first of those days,
+and from the second the three capped legs run beside the rest of the build. Every later plugin-row
+write then costs three index rows more (about 52 rows in all).
 
 **On Workers Free (a budget of 50 or less) the deploy day is held.** The first tick that sees a new
 index layout records that UTC day in the sweep's tick state (`cron:sweep:cursor:state`). That day
-the three capped legs write nothing: the Reports backfill, `prune-carts` and `product-reconcile`
-each cost one kv read and wait their cadence. The day's rows written are left to the index build
-and the store's traffic. A store with no tick state yet (a fresh install) has nothing to index and
-is not held.
+the three capped legs spend no allowance: the Reports backfill builds no new day, `prune-carts`
+deletes no cart and `product-reconcile` makes no repair, and each waits its cadence.
+`reporting-heal` still rebuilds the days and months whose orders moved, and walks the closed day, as
+on any day; those are few. The rest of the day's rows written are left to the index build and the
+store's traffic. Only that one UTC day is held: a build that runs past 00:00 UTC, or fails and is
+retried on a later day, is not. A store with no tick state yet (a fresh install) has no Otta rows to
+index and is not held; the build still writes an index row for each of other plugins' rows in
+`_plugin_storage`.
 
 From the next UTC day the backfill builds at most **100 days a day**, newest first: about 21,000
 rows written in two currencies, 16,000 in one. It goes back 800 days at most (the 400-day custom
@@ -1472,14 +1477,14 @@ last repairs); the pass keeps its start, its page and its nominated products and
 product at once). On Workers Paid there is no daily cap.
 
 Together the three capped legs bound the sweep's **daily rows written on Free** at about
-83,000–88,000: `prune-carts` about 31,000 (300 carts), `product-reconcile` about 31,000 (200
-repairs) and the Reports backfill about 16,000–21,000 (100 days). That leaves about 12,000–17,000 of
+78,000–83,000: `prune-carts` about 31,000 (300 carts), `product-reconcile` about 31,000 (200
+repairs) and the Reports backfill about 16,000–21,000 (100 days). That leaves about 17,000–22,000 of
 D1 Free's 100,000 for the store's own traffic (carts, checkouts, orders, admin edits) and the
-sweep's own cursor and tick-state writes. On the deploy day of a new index layout all three write
-nothing (see "Deploying the Reports month cache" above). All three caps key off the **Background
-work per minute** setting the same way — 50 or less counts as Free — and all three are derived from
-the index model, not measured on D1. Overlapping ticks can pass the day's repair cap by at most one run's
-repairs.
+sweep's own cursor and tick-state writes. On the deploy day of a new index layout none of the three
+spends its allowance (see "Deploying the Reports month cache" above). All three caps key off the
+**Background work per minute** setting the same way — 50 or less counts as Free — and all three are
+derived from the index model, not measured on D1. Overlapping ticks can pass the day's repair cap by
+at most one run's repairs.
 
 What it does not repair: a **leaked price** from before PR 1b (the sync carries no commercial
 field and the published content holds no price to compare against — re-price it in Pricing &

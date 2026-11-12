@@ -2940,10 +2940,12 @@ export const INDEX_LAYOUT: string = (() => {
  * layout, at a budget of `WORKERS_FREE_MAX_QUERY_BUDGET` or less. On D1 the build writes
  * about one row per `_plugin_storage` row PER new index, counted against Free's 100,000
  * rows written a day, so the three capped legs — the reporting backfill, the cart prune
- * and the product reconcile — spend nothing that UTC day and leave it to the build
- * (DEPLOYMENT.md §5). Marked on the tick's own state (read every tick already), by the
- * first tick that sees the new layout; a store with no state yet (a fresh install) has
- * no history to build indexes over, and is not held.
+ * and the product reconcile — spend none of their daily caps that UTC day and leave it
+ * to the build (DEPLOYMENT.md §5). The rollup heal still rebuilds the days and months
+ * whose orders moved. Only that one day: a build that runs into the next is not held.
+ * Marked on the tick's own state (read every tick already), by the first tick that sees
+ * the new layout; a store with no state yet (a fresh install) has no Otta rows to build
+ * indexes over (other plugins' rows still count), and is not held.
  */
 function noteIndexLayout(state: SweepState, existed: boolean, today: string): boolean {
 	if (state.indexLayout === INDEX_LAYOUT) return false;
@@ -3933,7 +3935,7 @@ export const REPORTING_LINES_HISTORY_DAYS = 2 * MAX_REPORT_RANGE_DAYS;
  * is then about 21,000 rows written a day (16,000 in one currency). Not more: the
  * abandoned-cart prune (about 31,000) and the product reconcile (about 31,000) have
  * daily caps of their own on Free, and with all three running at once (about
- * 83,000–88,000) the store's own traffic still keeps about 12,000–17,000 of D1 Free's
+ * 78,000–83,000) the store's own traffic still keeps about 17,000–22,000 of D1 Free's
  * 100,000. It builds newest first and starts the UTC day after the deploy
  * (`indexBuildHold`). Day documents exist only from the release that introduced them
  * (about 2026-09-07), so a store upgrading now has about 55 of them — one capped day. Only a store with a year of them would take about four days for the
