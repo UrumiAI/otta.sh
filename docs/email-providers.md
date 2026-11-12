@@ -132,7 +132,10 @@ are write-only in the admin and are never echoed back.
    why, in a few words with no recipient address. It shows while no send has gone through
    since, under "email set" or "email TBC". A provider that worked once and then fails (a
    daily quota, a sender domain no longer active) shows it under "email set". A failed
-   sign-in email is not shown: it spends no order-email attempt.
+   sign-in email is not shown: it spends no order-email attempt. A timeout shows as "timed
+   out (may have been delivered)". The line clearing does **not** mean the emails that failed
+   were sent: an email parked `failed` after its five attempts stays parked, and there is no
+   re-queue action yet (a follow-up).
 
    Email API keys that older otta builds stored are **not** deleted automatically; remove them
    by hand ([`DEPLOYMENT.md`](../DEPLOYMENT.md), "Leftover email and x402 keys").

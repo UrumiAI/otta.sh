@@ -235,8 +235,15 @@ export class CtxEmailSender implements EmailSender {
 	 *  send writes at most one record, so {@link EMAIL_SENT_RECORD_WRITES} holds. */
 	#recordFailure(err: unknown, to: string): void {
 		if (this.#onFailed === undefined || this.#recorded === "failed") return;
-		this.#recorded = "failed";
-		void this.#onFailed(sendFailureReason(err, to)).catch(() => undefined);
+		// Nothing here may replace the send's own error, which the caller
+		// rethrows next: an error whose `message` getter throws, or a record that
+		// fails, is dropped.
+		try {
+			this.#recorded = "failed";
+			void this.#onFailed(sendFailureReason(err, to)).catch(() => undefined);
+		} catch {
+			// Fail-soft: the next failed send records it.
+		}
 	}
 }
 
@@ -244,42 +251,119 @@ export class CtxEmailSender implements EmailSender {
  *  stays inside its 200-character budget. */
 export const SEND_FAILURE_REASON_MAX = 80;
 
+/** How much of a provider's message {@link sendFailureReason} looks at. Cut
+ *  BEFORE any pattern runs, so a long minified, base64 or HTML body costs a
+ *  bounded amount of synchronous work (#677 review). */
+const SEND_FAILURE_INPUT_MAX = 1024;
+
+/** A timeout: the provider may well have delivered it (the race only stops
+ *  waiting), and the ceiling may be the tick's own remaining time, so the words
+ *  blame nobody. */
+export const SEND_TIMEOUT_REASON = "timed out (may have been delivered)";
+
+/** The value after a credential-like word: `key=…`, `Authorization: …`. */
+const SECRET_AFTER_NAME =
+	/\b((?:[a-z_-]{0,20}(?:key|token|secret|signature|password|passwd|pwd))|auth[a-z_-]{0,20})(\s{0,3}[:=]\s{0,3})["']?[^\s"',;&]{1,256}/gi;
+/** The credential after an HTTP auth scheme: `Bearer …`, `Basic …`. */
+const SECRET_AFTER_SCHEME = /\b(bearer|basic)\s{1,3}[^\s"',;&]{1,256}/gi;
+/** A URL with a scheme. */
+const URL_WITH_SCHEME = /\b[a-z][a-z0-9+.-]{0,31}:\/\/\S{0,2048}/gi;
+/** A URL without one: `host.tld/path?query`. */
+const URL_WITHOUT_SCHEME = /\b[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){1,8}\/\S{0,2048}/gi;
+/** An address with a quoted local part: `"Jane Doe"@example.com`. */
+const QUOTED_ADDRESS = /"[^"\r\n]{1,64}"@[^\s"'<>()[\],;:@]{1,255}/g;
+/** Anything address-shaped. */
+const ADDRESS = /[^\s"'<>()[\],;:@]{1,64}@[^\s"'<>()[\],;:@]{1,255}/g;
+/** A token-like run: 24+ characters, or 16+ mixing letters and digits. */
+const TOKEN_RUN = /[A-Za-z0-9_\-+/=]{16,}/g;
+
+/** Every common spelling of `@` a provider or mail header may use. */
+function normalizeAt(text: string): string {
+	return text
+		.replace(/=\?[a-z0-9_-]{1,40}\?[qb]\?/gi, " ")
+		.replace(/\?=/g, " ")
+		.replace(/%40|=40|&#0*64;|&#x0*40;|&commat;|[\uFF20\uFE6B]/gi, "@")
+		.replace(/\s{0,3}[([{]\s{0,3}at\s{0,3}[)\]}]\s{0,3}/gi, "@");
+}
+
+/** `needle` replaced in `text` regardless of case, as a literal. */
+function replaceLiteral(text: string, needle: string, replacement: string): string {
+	if (needle === "") return text;
+	const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return text.replace(new RegExp(escaped, "gi"), replacement);
+}
+
+/** The error's message, or "" — never throws, and never more than is needed. */
+function messageOf(err: unknown): string {
+	try {
+		if (typeof err === "string") return err.slice(0, SEND_FAILURE_INPUT_MAX * 2);
+		if (typeof err === "object" && err !== null) {
+			const message = (err as { message?: unknown }).message;
+			if (typeof message === "string") return message.slice(0, SEND_FAILURE_INPUT_MAX * 2);
+		}
+	} catch {
+		// A throwing getter: no reason.
+	}
+	return "";
+}
+
 /**
  * A short reason for a failed send, safe to store and show to the merchant
- * (issue #677). A provider's error may quote the recipient, a URL or a key, so:
- * the recipient and anything shaped like an email address become `[address]`,
- * URLs become `[url]`, long token-like runs become `[redacted]`, control
- * characters and runs of spaces collapse, and the result is cut to
- * {@link SEND_FAILURE_REASON_MAX}. A timeout says so; anything without a
- * message is "no reason given".
+ * (issue #677). A provider's error may quote the recipient, a URL or a key, so
+ * only its first {@link SEND_FAILURE_INPUT_MAX} characters are read (cut back to
+ * a space), and then:
+ *  - every spelling of `@` (`%40`, `=40`, `&#64;`, `&commat;`, fullwidth,
+ *    `(at)`) becomes `@`;
+ *  - the recipient (any case) and its local part become `[address]`, and so
+ *    does anything address-shaped, a quoted local part included;
+ *  - the value after a credential word (`key=`, `Authorization:`, `Bearer`)
+ *    becomes `[redacted]`, URLs with or without a scheme become `[url]`, and
+ *    token-like runs (24+ characters, or 16+ mixing letters and digits) become
+ *    `[redacted]`;
+ *  - control characters and runs of spaces collapse, trailing punctuation goes,
+ *    and the result is cut to {@link SEND_FAILURE_REASON_MAX}.
+ * Every pattern is bounded, so the work is linear in that capped input. A
+ * timeout is {@link SEND_TIMEOUT_REASON}; no message is "no reason given".
  */
 export function sendFailureReason(err: unknown, to: string): string {
-	if (isEmailSendTimeoutError(err)) return "the provider did not answer in time";
-	const message =
-		typeof err === "object" &&
-		err !== null &&
-		typeof (err as { message?: unknown }).message === "string"
-			? (err as { message: string }).message
-			: typeof err === "string"
-				? err
-				: "";
-	let reason = message;
-	if (to !== "") reason = reason.split(to).join("[address]");
+	if (isEmailSendTimeoutError(err)) return SEND_TIMEOUT_REASON;
+	let reason = messageOf(err);
+	if (reason.length > SEND_FAILURE_INPUT_MAX) {
+		const cut = reason.slice(0, SEND_FAILURE_INPUT_MAX);
+		const space = cut.search(/\s\S*$/);
+		reason = space > 0 ? cut.slice(0, space) : cut;
+	}
 	// Control characters (CR/LF included) become spaces.
 	reason = Array.from(reason, (c) => {
 		const code = c.codePointAt(0) ?? 0;
 		return code < 0x20 || code === 0x7f ? " " : c;
-	})
-		.join("")
-		.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[url]")
-		.replace(/[^\s"'<>()[\],;:]+@[^\s"'<>()[\],;:]+/g, "[address]")
-		.replace(/[A-Za-z0-9_\-+/=]{24,}/g, "[redacted]")
+	}).join("");
+	reason = normalizeAt(reason);
+	const recipient = to.slice(0, 320);
+	reason = replaceLiteral(reason, recipient, "[address]");
+	const at = recipient.lastIndexOf("@");
+	const local = at > 0 ? recipient.slice(0, at) : "";
+	if (local.length >= 3) reason = replaceLiteral(reason, local, "[address]");
+	reason = reason
+		.replace(SECRET_AFTER_SCHEME, "$1 [redacted]")
+		.replace(SECRET_AFTER_NAME, "$1$2[redacted]")
+		.replace(URL_WITH_SCHEME, "[url]")
+		.replace(QUOTED_ADDRESS, "[address]")
+		.replace(ADDRESS, "[address]")
+		.replace(URL_WITHOUT_SCHEME, "[url]")
+		.replace(TOKEN_RUN, (run) =>
+			run.length >= 24 || (/[A-Za-z]/.test(run) && /[0-9]/.test(run)) ? "[redacted]" : run,
+		)
 		.replace(/\s+/g, " ")
-		.trim();
+		.trim()
+		.replace(/[\s.,;:!]+$/, "");
 	if (reason === "") return "no reason given";
 	return reason.length <= SEND_FAILURE_REASON_MAX
 		? reason
-		: `${reason.slice(0, SEND_FAILURE_REASON_MAX - 1).trimEnd()}…`;
+		: `${reason
+				.slice(0, SEND_FAILURE_REASON_MAX - 1)
+				.trimEnd()
+				.replace(/[\s.,;:!]+$/, "")}…`;
 }
 
 /** EmDash's sandbox bridge's refusal when no provider is wired (emdash 0.38
@@ -308,12 +392,18 @@ export const EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE =
  */
 export function isEmailNotConfiguredError(err: unknown): boolean {
 	if (typeof err !== "object" || err === null) return false;
-	const { name, message } = err as { name?: unknown; message?: unknown };
-	if (name === "EmailNotConfiguredError") return true;
-	return (
-		message === EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE ||
-		message === EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE
-	);
+	// An odd error object (a throwing getter) is simply not this one (#677 review):
+	// the send's own error must reach the caller unchanged.
+	try {
+		const { name, message } = err as { name?: unknown; message?: unknown };
+		if (name === "EmailNotConfiguredError") return true;
+		return (
+			message === EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE ||
+			message === EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE
+		);
+	} catch {
+		return false;
+	}
 }
 
 /** Whether this context can send at all — the trusted-mode answer. A sandboxed
@@ -483,7 +573,7 @@ export async function emailSendingReport(
 				: "unconfirmed";
 	const current =
 		lastFailure !== undefined &&
-		(lastSentAt === undefined || Date.parse(lastFailure.at) >= lastSentAt);
+		(lastSentAt === undefined || Date.parse(lastFailure.at) > lastSentAt);
 	return current ? { status, lastFailure } : { status };
 }
 

@@ -9,6 +9,7 @@ import {
 	effectiveStoreCurrency,
 	isSupportedCurrency,
 	MAX_HOLD_TTL_MINUTES,
+	ORDER_EMAIL_MAX_ATTEMPTS,
 } from "@urumi.ai/otta-domain";
 import {
 	emailSendingReport,
@@ -2251,7 +2252,7 @@ export function emailStatusLine(status: EmailSendingStatus): string {
 		case "confirmed":
 			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM come from that provider's setup (the Cloudflare default: the OTTA_EMAIL_FROM build variable).";
 		case "unconfirmed":
-			return "Email: provider not confirmed — nothing sent since setup or a refusal. If it fails, each try uses one of an order email's 5 attempts; with no provider, emails wait 72 h. See docs/email-providers.md.";
+			return `Email: provider not confirmed since setup or a "no provider" answer. A failed try uses 1 of an order email's ${String(ORDER_EMAIL_MAX_ATTEMPTS)} attempts; with none, mail waits up to 72 h, then is skipped. See docs/email-providers.md.`;
 		case "unavailable":
 			return "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 	}
@@ -2261,7 +2262,9 @@ export function emailStatusLine(status: EmailSendingStatus): string {
  *  provider's reason with no recipient address (`sendFailureReason`). Shown only
  *  while no send has gone through since. Within the nested-context budget (200). */
 export function emailFailureLine(failure: EmailSendFailure): string {
-	return `Email: last send failed ${failure.at.slice(0, 10)} ${failure.at.slice(11, 16)} UTC — ${failure.reason}. Each failure uses one of an order email's 5 attempts.`;
+	// The reason carries no trailing punctuation; a cut one ends in "…".
+	const end = failure.reason.endsWith("…") ? "" : ".";
+	return `Email: last send failed ${failure.at.slice(0, 10)} ${failure.at.slice(11, 16)} UTC — ${failure.reason}${end} Each failure uses one of an order email's ${String(ORDER_EMAIL_MAX_ATTEMPTS)} attempts.`;
 }
 
 /** Issue #498 — what the stored publishable key means for card checkout, under

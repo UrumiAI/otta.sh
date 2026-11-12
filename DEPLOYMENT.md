@@ -1583,7 +1583,8 @@ email is handed back without counting an attempt, due again in 5 minutes. There 
 action to re-queue a parked email yet (a follow-up); until there is, a parked email is a provider
 or configuration problem to fix at the provider, and the customer will not receive that message.
 otta's **Settings → Payments & email** shows the provider's last failed send ("last send
-failed", its time and a short reason with no recipient address) until a send goes through again.
+failed", its time and a short reason with no recipient address) until a send goes through again;
+that clears the line, not the parked emails, which stay `failed`.
 
 **The plan this assumes.** Cloudflare caps one Worker invocation at **50 D1 queries and 50
 subrequests on Workers Free** (1000 queries and 10,000 subrequests on Workers Paid; see

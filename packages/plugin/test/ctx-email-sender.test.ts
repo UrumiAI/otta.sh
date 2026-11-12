@@ -335,7 +335,7 @@ describe("issue #677: a failed send is recorded for Settings, without the recipi
 		await vi.advanceTimersByTimeAsync(10);
 		expect(await pending).toBeDefined();
 		expect((kv.get(EMAIL_LAST_FAILURE_KEY) as { reason: string }).reason).toBe(
-			"the provider did not answer in time",
+			"timed out (may have been delivered)",
 		);
 	});
 
@@ -416,6 +416,80 @@ describe("issue #677: a failed send is recorded for Settings, without the recipi
 		);
 	});
 
+	// #677 review: a provider may answer with a long minified, base64 or HTML
+	// body. The reason runs synchronously before the send's own error is
+	// rethrown, inside a cron tick or the settle request, so it must be linear.
+	test("a 100 KB message with no spaces is reduced in a few ms", () => {
+		for (const huge of [
+			"a".repeat(100_000),
+			"a@".repeat(50_000),
+			"a.".repeat(50_000) + "/",
+			"http://" + "x".repeat(100_000),
+			"x".repeat(100_000) + "@" + "y".repeat(100_000),
+			'"' + "q".repeat(100_000) + '"@example.com',
+		]) {
+			const start = performance.now();
+			const reason = sendFailureReason(new Error(huge), "buyer@example.com");
+			expect(performance.now() - start).toBeLessThan(50);
+			expect(reason.length).toBeLessThanOrEqual(SEND_FAILURE_REASON_MAX);
+		}
+	});
+
+	test("the reason redacts addresses however they are encoded, keys, tokens and URLs", () => {
+		const to = "Jane.Buyer@Example.com";
+		const cases: [string, RegExp][] = [
+			["rejected JANE.BUYER@EXAMPLE.COM", /jane|example/i],
+			["rejected mailbox jane.buyer", /jane/i],
+			["bad rcpt jane.buyer%40example.com", /jane|example/i],
+			["bad rcpt other%40mail.test", /other|mail\.test/i],
+			["bad rcpt other=40mail.test", /other|mail\.test/i],
+			["To: =?UTF-8?Q?other=40mail.test?=", /other|mail\.test/i],
+			["bad rcpt other&#64;mail.test", /other|mail\.test/i],
+			["bad rcpt other&#x40;mail.test", /other|mail\.test/i],
+			["bad rcpt other&commat;mail.test", /other|mail\.test/i],
+			["bad rcpt other＠mail.test", /other|mail\.test/i],
+			["bad rcpt other﹫mail.test", /other|mail\.test/i],
+			["bad rcpt other (at) mail.test", /other|mail\.test/i],
+			["bad rcpt other[at]mail.test", /other|mail\.test/i],
+			['bad rcpt "Jane Doe"@mail.test', /jane|doe|mail\.test/i],
+			["auth failed key=abc123", /abc123/],
+			["Authorization: Bearer abcdef", /abcdef/],
+			["api_key: s3cr3tvalue", /s3cr3t/],
+			["password=hunter2 rejected", /hunter2/],
+			["signature=deadbeef invalid", /deadbeef/],
+			["Basic dXNlcjpwYXNz rejected", /dXNlcjpwYXNz/],
+			["token sk_live_51Habc123", /sk_live|51Habc/],
+			["AKIAIOSFODNN7EXAMPLE denied", /AKIAIOSFODNN7/],
+			["see dash.example.com/acct/9?token=q", /dash\.example|acct|token=q/],
+			["see https://dash.example/x?y=1", /dash\.example|y=1/],
+		];
+		for (const [message, leak] of cases) {
+			const reason = sendFailureReason(new Error(message), to);
+			expect(reason, message).not.toMatch(leak);
+			expect(reason, message).not.toBe("no reason given");
+		}
+		// Words the merchant needs survive.
+		expect(sendFailureReason(new Error("daily sending quota exceeded."), to)).toBe(
+			"daily sending quota exceeded",
+		);
+		expect(
+			sendFailureReason(new Error('[cloudflare-email] send_email binding "EMAIL" not found'), to),
+		).toBe('[cloudflare-email] send_email binding "EMAIL" not found');
+	});
+
+	test("an error whose message cannot be read never replaces the send's own error", async () => {
+		const odd = {
+			get message(): string {
+				throw new Error("getter boom");
+			},
+		};
+		const { ctx, kv } = counted(() => Promise.reject(odd));
+		const err = await rejectionOf((await makeEmailSender(ctx))!.send(INPUT));
+		expect(err).toBe(odd);
+		await settle();
+		expect((kv.get(EMAIL_LAST_FAILURE_KEY) as { reason: string }).reason).toBe("no reason given");
+	});
+
 	describe("emailSendingReport", () => {
 		const now = Date.parse("2026-10-08T12:00:00.000Z");
 		const failure = { at: "2026-10-08T11:30:00.000Z", reason: "quota exceeded" };
@@ -443,6 +517,17 @@ describe("issue #677: a failed send is recorded for Settings, without the recipi
 				status: "unconfirmed",
 				lastFailure: failure,
 			});
+		});
+
+		test("a send in the same millisecond as the failure hides it: ties go to the delivery", async () => {
+			const ctx = ctxWith(
+				{ send: async () => undefined },
+				new Map<string, unknown>([
+					[EMAIL_LAST_SENT_KEY, failure.at],
+					[EMAIL_LAST_FAILURE_KEY, failure],
+				]),
+			);
+			expect(await emailSendingReport(ctx, now)).toEqual({ status: "confirmed" });
 		});
 
 		test("a send delivered since hides it; 'no provider' and garbage show none", async () => {
