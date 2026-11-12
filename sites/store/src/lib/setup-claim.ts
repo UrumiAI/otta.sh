@@ -33,7 +33,8 @@
  * cookie, while a same-origin page's own navigation does. The wizard's API
  * calls then carry the cookie. The token is accepted from the query string on
  * GET/HEAD only; a write must carry the cookie. A query token that does not
- * match is checked no further: the request then needs the cookie, like any other.
+ * match is checked no further: the request then needs the cookie, like any
+ * other, and if it has it, gets a 303 to the same URL without the token.
  *
  * ONCE CLAIMED, INERT. Setup is complete when EmDash's `emdash:setup_complete`
  * option is true AND a user exists (EmDash's own definition in passkey mode).
@@ -57,6 +58,7 @@ import {
 	SETUP_CLAIM_PATH,
 	SETUP_TOKEN_PARAM,
 	SETUP_TOKEN_SECRET,
+	isLoopbackHostname,
 	setupClaimUrl,
 } from "./setup-claim-contract.js";
 
@@ -98,8 +100,6 @@ export const MIN_SETUP_TOKEN_LENGTH = 32;
 export const MIN_SETUP_TOKEN_BITS = 128;
 
 const URL_SAFE = /^[A-Za-z0-9_-]+$/;
-
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 // ── pure decisions ─────────────────────────────────────────────────────────
 
@@ -165,7 +165,7 @@ export function generateSetupToken(): string {
 }
 
 function isLoopback(url: URL): boolean {
-	return LOOPBACK_HOSTS.has(url.hostname) || url.hostname.endsWith(".localhost");
+	return isLoopbackHostname(url.hostname);
 }
 
 /**
@@ -315,6 +315,25 @@ function toHttps(url: URL): Response {
 	return new Response(null, {
 		status: 307,
 		headers: { ...REFUSAL_HEADERS, Location: secure.toString() },
+	});
+}
+
+/** Does the request carry the claim cookie for this token? Never, with no token. */
+function hasClaimCookie(cookies: SetupClaimContext["cookies"], expected: string | null): boolean {
+	const cookie = cookies.get(SETUP_CLAIM_COOKIE)?.value;
+	return expected !== null && cookie !== undefined && constantTimeEquals(cookie, expected);
+}
+
+/** A `303` to the same URL without the token parameter. Sets no cookie: the
+ *  request already holds a valid one, and the redirect is same-origin. The
+ *  Location is absolute, on the request's own origin, so a path can never be
+ *  read as a protocol-relative `//host`. */
+function withoutToken(url: URL): Response {
+	const clean = new URL(url);
+	clean.searchParams.delete(SETUP_TOKEN_PARAM);
+	return new Response(null, {
+		status: 303,
+		headers: { ...REFUSAL_HEADERS, Location: clean.toString() },
 	});
 }
 
@@ -469,13 +488,12 @@ export function createSetupClaimGate(options: SetupClaimGateOptions = {}): Setup
 				}
 				// A token that does not match is not a refusal on its own: a deployer
 				// who reopens an old link (say, after setting the secret) may already
-				// hold a valid claim cookie. Fall through to the cookie check.
+				// hold a valid claim cookie. Then the request is sent on WITHOUT the
+				// stale token, never handed to the wizard with it: a stored token a
+				// secret replaced becomes valid again if the secret is deleted.
+				return hasClaimCookie(cookies, expected) ? withoutToken(url) : refusal(url);
 			}
-			const cookie = cookies.get(SETUP_CLAIM_COOKIE)?.value;
-			if (expected !== null && cookie !== undefined && constantTimeEquals(cookie, expected)) {
-				return null;
-			}
-			return refusal(url);
+			return hasClaimCookie(cookies, expected) ? null : refusal(url);
 		},
 	};
 }

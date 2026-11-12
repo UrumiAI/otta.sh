@@ -381,40 +381,111 @@ describe("while unclaimed — the link sets the cookie and strips itself from th
 	});
 
 	test.each(["GET", "HEAD"])(
-		"a stale token in the link (%s) with a valid cookie: the cookie admits it",
+		"a stale token in the link (%s) with a valid cookie: 303 to the same URL without it",
 		async (method) => {
 			// The deployer reopens an old link after setting the secret: the
-			// query token no longer matches, but the browser holds the claim.
+			// query token no longer matches, but the browser holds the claim. The
+			// stale token is taken out of the address bar (and so out of history
+			// and any Referer) rather than handed on to the wizard.
+			const stale = "S".repeat(43);
 			const { g } = gate();
 			const res = await g.check(
 				ctx({
 					method,
-					path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${"S".repeat(43)}`,
+					path: `${SETUP_CLAIM_PATH}?step=1&${SETUP_TOKEN_PARAM}=${stale}&x=2`,
 					routePattern: ADMIN_PAGE,
 					cookie: SECRET,
 				}),
 				{ [SETUP_TOKEN_SECRET]: SECRET },
 			);
-			expect(res).toBeNull();
+			expect(res?.status).toBe(303);
+			// Absolute and on the request's own origin: a path is never read as a
+			// protocol-relative `//host` Location.
+			expect(res?.headers.get("location")).toBe(`${HTTPS_SITE}${SETUP_CLAIM_PATH}?step=1&x=2`);
+			expect(res?.headers.get("set-cookie")).toBeNull();
+			expect(res?.headers.get("referrer-policy")).toBe("no-referrer");
+			expect(res?.headers.get("cache-control")).toContain("no-store");
+			expect((await res?.text()) ?? "").not.toContain(stale);
 		},
 	);
 
-	test.each([
-		["no cookie", undefined],
-		["a wrong cookie", "U".repeat(43)],
-		["the stale token as the cookie", "S".repeat(43)],
-	])("a stale token in the link with %s: still 403, no cookie", async (_why, cookie) => {
+	test("a stale token alone in the link: the redirect drops the whole query", async () => {
 		const { g } = gate();
 		const res = await g.check(
 			ctx({
 				path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${"S".repeat(43)}`,
 				routePattern: ADMIN_PAGE,
-				...(cookie === undefined ? {} : { cookie }),
+				cookie: SECRET,
 			}),
 			{ [SETUP_TOKEN_SECRET]: SECRET },
 		);
+		expect(res?.status).toBe(303);
+		expect(res?.headers.get("location")).toBe(`${HTTPS_SITE}${SETUP_CLAIM_PATH}`);
+	});
+
+	test("the token-free URL the redirect lands on is let through by the cookie", async () => {
+		const { g } = gate();
+		const res = await g.check(
+			ctx({ path: SETUP_CLAIM_PATH, routePattern: ADMIN_PAGE, cookie: SECRET }),
+			{ [SETUP_TOKEN_SECRET]: SECRET },
+		);
+		expect(res).toBeNull();
+	});
+
+	test.each([
+		["no cookie", undefined],
+		["a wrong cookie", "U".repeat(43)],
+		["the stale token as the cookie", "S".repeat(43)],
+	])(
+		"a stale token in the link with %s: the same 403 as no token, no cookie",
+		async (_why, cookie) => {
+			const { g } = gate();
+			const env = { [SETUP_TOKEN_SECRET]: SECRET };
+			const bare = await g.check(ctx({ path: SETUP_CLAIM_PATH, routePattern: ADMIN_PAGE }), env);
+			const res = await g.check(
+				ctx({
+					path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${"S".repeat(43)}`,
+					routePattern: ADMIN_PAGE,
+					...(cookie === undefined ? {} : { cookie }),
+				}),
+				env,
+			);
+			expect(res?.status).toBe(403);
+			expect(res?.headers.get("set-cookie")).toBeNull();
+			expect(await res?.text()).toBe(await bare?.text());
+		},
+	);
+
+	test("a stale token with a cookie equal to a REFUSED secret: still 403 (fails closed)", async () => {
+		// A set-but-weak secret leaves no expected token at all; a cookie that
+		// matches the weak value must not count.
+		const weak = "short";
+		const { g } = gate();
+		const res = await g.check(
+			ctx({
+				path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${"S".repeat(43)}`,
+				routePattern: ADMIN_PAGE,
+				cookie: weak,
+			}),
+			{ [SETUP_TOKEN_SECRET]: weak },
+		);
 		expect(res?.status).toBe(403);
 		expect(res?.headers.get("set-cookie")).toBeNull();
+	});
+
+	test("a stale token over plain HTTP off loopback: HTTPS first, even with a valid cookie", async () => {
+		const { g } = gate();
+		const res = await g.check(
+			ctx({
+				site: "http://shop.example",
+				path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${"S".repeat(43)}`,
+				routePattern: ADMIN_PAGE,
+				cookie: SECRET,
+			}),
+			{ [SETUP_TOKEN_SECRET]: SECRET },
+		);
+		expect(res?.status).toBe(307);
+		expect(res?.headers.get("location")).toMatch(/^https:\/\/shop\.example\//);
 	});
 
 	test("the cookie lets every setup write and the wizard page through", async () => {

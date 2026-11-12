@@ -87,7 +87,10 @@ Options considered:
    falls through to the cookie check, so a deployer who reopens an old link while holding
    a valid claim cookie still reaches the wizard (when the link is pasted or bookmarked: a
    link followed from another site does not carry the `SameSite=Strict` cookie, and gets
-   the 403 page). Tokens are compared with the plugin's `constantTimeEquals`.
+   the 403 page). That request gets a `303` to the same URL without the parameter, so the
+   stale token never sits in the wizard's address bar, history or `Referer`: a stored token
+   that a secret replaced becomes valid again if the secret is deleted. Tokens are compared
+   with the plugin's `constantTimeEquals`.
 
    A link opened over plain HTTP on a non-loopback host gets a `307` to the same URL on
    `https://`, before the token is checked: the browser would drop the `Secure` cookie of
