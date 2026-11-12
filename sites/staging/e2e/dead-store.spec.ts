@@ -23,8 +23,14 @@
  * whole. If both the live and the parked table exist, it stops and says so
  * rather than guess.
  *
- * It needs a seeded stack (a product to break); without one it skips, or fails
- * under `OTTA_E2E_REQUIRE_SITE=1`.
+ * AFTER A HARD KILL. A run killed mid-spec (SIGKILL, a closed terminal) skips
+ * the restore and `test.afterAll`. With `reuseExistingServer` that leaves YOUR
+ * dev store answering 503 on its product pages until the table is back. Rerun
+ * `pnpm test:e2e` (its global setup heals it), or rename
+ * `ec_products_e2e_659_parked` back to `ec_products` in the local D1 file by hand.
+ *
+ * It needs a seeded stack (a product to break) and ONE local D1 file holding the
+ * products table; without them it skips, or fails under `OTTA_E2E_REQUIRE_SITE=1`.
  */
 import type Database from "better-sqlite3";
 import type { Page } from "@playwright/test";
@@ -37,9 +43,8 @@ import {
 } from "./harness.js";
 import {
 	CONTENT_TABLE,
-	D1_DIR,
 	healParkedTable,
-	openContentDb,
+	openContentDbForSpec,
 	PARKED_TABLE,
 	renameTable,
 } from "./local-d1.js";
@@ -81,11 +86,14 @@ test.describe("a missing products table is an outage, not a missing product (#65
 		page,
 	}, testInfo) => {
 		await skipWithoutSite(testInfo);
-		db = openContentDb();
-		if (db === undefined) {
-			skipWithoutLocalD1(testInfo, D1_DIR, CONTENT_TABLE);
+		// No such file, more than one, or an unreadable one: a skip, not a
+		// failure, unless this is a gate run.
+		const opened = openContentDbForSpec();
+		if (!opened.ok) {
+			skipWithoutLocalD1(testInfo, opened.why);
 			return;
 		}
+		db = opened.db;
 		// An interrupted earlier run may have left the table parked. Throws,
 		// before any rename, if both tables exist.
 		healParkedTable(db);

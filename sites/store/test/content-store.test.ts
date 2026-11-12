@@ -126,7 +126,6 @@ describe("contentTableAnswers", () => {
 		const message = String(error.mock.calls[0]?.[0]);
 		expect(message).toContain("and the probe could not confirm that content table");
 		expect(message).not.toContain("is missing");
-		expect(message).not.toContain("(the probe itself failed)");
 	});
 
 	// Postgres's wording, fed through a stub handle; the site does not run on

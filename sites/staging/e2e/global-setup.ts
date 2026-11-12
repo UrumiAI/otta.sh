@@ -242,7 +242,8 @@ async function somethingListens(): Promise<boolean> {
  * fails only a gate run (`OTTA_E2E_SEED=1` / `OTTA_E2E_REQUIRE_SITE=1`), as the
  * warm-up below does; anywhere else it is a warning, so a bare or unrelated run
  * never fails over leftover local state. Product specs may skip until it is
- * resolved. The dead-store spec itself always throws on it.
+ * resolved. The dead-store spec itself throws on a file holding both tables;
+ * on an unreadable or second products file it skips, or fails under a gate.
  */
 function healDeadStoreSpec(): void {
 	healOrWarn(E2E_SEEDS || E2E_REQUIRES_SITE);
