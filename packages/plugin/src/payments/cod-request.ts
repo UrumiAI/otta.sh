@@ -14,8 +14,12 @@
  *
  * THE NETWORK. Read from `cf-connecting-ip` (with Cloudflare's pseudo-IPv4 mapped
  * back to `cf-connecting-ipv6`), which the site forwards on its synthetic request
- * and Cloudflare sets on a direct one — the same rule the site's limiter keys by:
- * IPv4 whole, IPv6 cut to its /64. It is stored only as an HMAC-SHA-256 under a
+ * and Cloudflare sets on a direct one: IPv4 whole, IPv6 cut to its /48. That is
+ * wider than the site limiter's /64 on purpose (#678): one host often holds a
+ * whole /48 and can rotate its /64s, which would dodge a per-network CAP. (The
+ * limiter keeps the /64, so a /48 neighbour does not share its write budget.)
+ * Orders placed before the change keep the key of their /64, so they under-count
+ * for their network until they close. It is stored only as an HMAC-SHA-256 under a
  * per-store secret ({@link COD_NETWORK_KEY_SECRET_KEY}, random, created on first
  * use): a bare hash of an IPv4 address is reversible by enumeration.
  */
@@ -33,7 +37,7 @@ export const COD_NETWORK_KEY_SECRET_KEY = "settings:codNetworkKeySecret";
 export interface CodRequestFacts {
 	/** The call came through the site's rate-limited path. */
 	attested: boolean;
-	/** The client's network (IPv4, or an IPv6 /64), or null when none is known. */
+	/** The client's network (IPv4, or an IPv6 /48), or null when none is known. */
 	network: string | null;
 }
 
@@ -98,7 +102,8 @@ function hexBytes(hex: string): Uint8Array<ArrayBuffer> {
 	return out;
 }
 
-// -- the client's network: the site limiter's own rule (sites/store/src/lib/rate-limit.ts)
+// -- the client's network: the site limiter's rule (sites/store/src/lib/rate-limit.ts),
+// except that an IPv6 address is cut to its /48, not its /64 (#678)
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const HEXTET = /^[0-9a-f]{1,4}$/;
@@ -140,7 +145,7 @@ function ipv6Groups(value: string): number[] | null {
 	return groups.map((group) => Number.parseInt(group, 16));
 }
 
-/** IPv4 whole; IPv6 cut to its /64 (mapped, compatible and NAT64 forms collapse to
+/** IPv4 whole; IPv6 cut to its /48 (mapped, compatible and NAT64 forms collapse to
  *  their IPv4 host); anything else bounded and tagged `raw:`. `null` for none. */
 export function clientNetwork(ip: string | null): string | null {
 	const value = (ip ?? "").trim().toLowerCase();
@@ -158,5 +163,5 @@ export function clientNetwork(ip: string | null): string | null {
 		const low = groups[7] ?? 0;
 		return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
 	}
-	return `${hex.slice(0, 4).join(":")}::/64`;
+	return `${hex.slice(0, 3).join(":")}::/48`;
 }

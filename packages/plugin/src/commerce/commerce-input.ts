@@ -124,8 +124,8 @@ export const LOGIN_TOKEN_MAX = 400;
  *  storefront's email field use this one number. */
 export const BUYER_REF_MAX = 320;
 
-/** ADR-0044: the longest client network key checkout accepts. An IPv6 /64
- *  prefix is far shorter; the bound only keeps a junk key out. */
+/** ADR-0044: the longest client network key checkout accepts. The route's key
+ *  (a hex HMAC) is far shorter; the bound only keeps a junk key out. */
 export const CLIENT_KEY_MAX = 128;
 
 /**
