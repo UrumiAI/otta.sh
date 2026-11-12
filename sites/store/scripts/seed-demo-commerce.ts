@@ -117,7 +117,11 @@ import {
 	OTTA_PLUGIN_ID,
 	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
 } from "@urumi.ai/otta-plugin";
-import { setupClaimCookie, setupClaimHeaders } from "./setup-claim-cookie.js";
+import {
+	setupClaimCookie,
+	setupClaimHeaders,
+	type SetupClaimSource,
+} from "./setup-claim-cookie.js";
 
 export interface DemoPricing {
 	sku: string;
@@ -357,8 +361,13 @@ function trimUrl(value: string): string {
 	return value.replace(/\/+$/, "");
 }
 
-/** Authenticate against the site and return the headers to read content with. */
-export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> {
+/** Authenticate against the site and return the headers to read content with.
+ *  `claimSource` is where the setup token is looked up (tests point it at a
+ *  temporary `.dev.vars`). */
+export async function cmsAuthHeaders(
+	siteUrl: string,
+	claimSource: SetupClaimSource = {},
+): Promise<Record<string, string>> {
 	const token = process.env["EMDASH_TOKEN"];
 	if (token !== undefined && token.length > 0) {
 		console.info("[otta] using EMDASH_TOKEN");
@@ -371,11 +380,11 @@ export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, st
 	// production build; it just returns 403 there (it is gated on
 	// `import.meta.env.DEV`), so a deployed site needs EMDASH_TOKEN. On a store
 	// not yet claimed, the route also needs the setup token (ADR-0042): sent as
-	// the claim cookie when OTTA_SETUP_TOKEN is set in sites/staging/.dev.vars
-	// or here.
+	// the claim cookie: from sites/staging/.dev.vars or this env for a loopback
+	// SITE_URL, from this env only for any other.
 	const res = await fetch(`${siteUrl}/_emdash/api/auth/dev-bypass`, {
 		redirect: "manual",
-		headers: setupClaimHeaders(),
+		headers: setupClaimHeaders(siteUrl, claimSource),
 	});
 	const cookies = res.headers
 		.getSetCookie()
@@ -389,7 +398,7 @@ export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, st
 	console.info("[otta] using the dev auth bypass (no EMDASH_TOKEN set)");
 	// Keep the claim cookie too (ADR-0042): until the store is claimed, every
 	// later /_emdash call this session makes needs it as much as the bypass did.
-	const claim = setupClaimCookie();
+	const claim = setupClaimCookie(siteUrl, claimSource);
 	return { Cookie: [...cookies, ...(claim === undefined ? [] : [claim])].join("; ") };
 }
 

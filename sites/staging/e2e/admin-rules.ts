@@ -13,7 +13,7 @@ export type Block = Record<string, unknown>;
 export async function adminHeaders(): Promise<Record<string, string>> {
 	const res = await fetch(`${E2E_BASE_URL}/_emdash/api/auth/dev-bypass`, {
 		redirect: "manual",
-		headers: setupClaimHeaders(),
+		headers: setupClaimHeaders(E2E_BASE_URL),
 	});
 	const cookie = res.headers
 		.getSetCookie()

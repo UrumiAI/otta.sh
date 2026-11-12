@@ -124,7 +124,8 @@ Options considered:
    (`scripts/setup-claim-cookie.ts`). Both look the token up the same way the dev Worker
    gets it: `OTTA_SETUP_TOKEN` in `sites/staging/.dev.vars` when that file exists, else the
    process env, so a seed script run on its own against a fresh dev store sends the right
-   cookie too. That throwaway token,
+   cookie too. A script reads `.dev.vars` only for a loopback `SITE_URL`; any other site
+   gets only an `OTTA_SETUP_TOKEN` set explicitly in the env. That throwaway token,
    `PUBLIC_E2E_SETUP_TOKEN` in `src/lib/setup-claim-contract.ts`, is public, so the gate
    refuses it as `OTTA_SETUP_TOKEN` on any host but loopback (fail closed, with the same
    warning as a weak secret). `pnpm test:e2e:claim` (`playwright.claim.config.ts`) boots its
