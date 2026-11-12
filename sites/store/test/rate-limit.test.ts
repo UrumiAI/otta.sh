@@ -335,7 +335,7 @@ function limitedRouteReference(helpers: readonly string[] = []): RegExp {
 	const literals = [...PLUGIN_ROUTES.keys()].flatMap((route) =>
 		['"', "'", "`"].map((quote) => `${quote}${escapeRegExp(route)}${quote}`),
 	);
-	return new RegExp(String.raw`\b(${names.join("|")})\b|${literals.join("|")}`);
+	return new RegExp(String.raw`(?<![\w$])(${names.join("|")})(?![\w$])|${literals.join("|")}`);
 }
 
 /**
@@ -343,7 +343,10 @@ function limitedRouteReference(helpers: readonly string[] = []): RegExp {
  * line stays where it was). Strings are kept whole (`'…'` and `"…"` end at the
  * line, `` `…` `` at its closing backtick), and a backslash outside a string (a
  * regex literal's) escapes the next character. A heuristic, not a parser:
- * enough for this site's formatted source.
+ * enough for this site's formatted source. Not understood: a `//`, `/*` or
+ * quote inside a regex literal's character class (an unterminated `/*` throws;
+ * the others can hide or keep the rest of that line), and a template literal
+ * nested inside another's `${…}`.
  */
 function stripComments(source: string): string {
 	let out = "";
@@ -356,7 +359,13 @@ function stripComments(source: string): string {
 			i = end === -1 ? source.length : end;
 		} else if (char === "/" && next === "*") {
 			const end = source.indexOf("*/", i + 2);
-			const stop = end === -1 ? source.length : end + 2;
+			if (end === -1) {
+				// Never erase to the end of the file: a `/*` inside a regex
+				// literal's class (`/[/*]/`) would hide everything after it.
+				const line = source.slice(0, i).split("\n").length;
+				throw new Error(`stripComments: unterminated block comment at line ${line}`);
+			}
+			const stop = end + 2;
 			out += source.slice(i, stop).replace(/[^\n]/g, "");
 			i = stop;
 		} else if (char === "'" || char === '"' || char === "`") {
@@ -382,11 +391,11 @@ function stripComments(source: string): string {
  *  export, an import, an export list (`export { … }`, `export * …`, with or
  *  without `from`), or other code (a call, a destructured export). */
 type Chunk =
-	| { kind: "declaration"; name: string; body: string }
+	| { kind: "declaration"; name: string; exported: boolean; body: string }
 	| { kind: "default" | "import" | "exports" | "code"; body: string };
 
 const DECLARATION =
-	/^(?:export\s+)?(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:function\*?|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/;
+	/^(export\s+)?(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:const\s+enum|function\*?|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/;
 
 /** `source`'s top-level chunks, each running from a column-0 line to the next
  *  one; a line opening with whitespace or a closing bracket continues the
@@ -397,8 +406,13 @@ function topLevelChunks(source: string): Chunk[] {
 	return starts.map((start, i): Chunk => {
 		const text = source.slice(start, starts[i + 1] ?? source.length);
 		const declaration = DECLARATION.exec(text);
-		if (declaration?.[1] !== undefined) {
-			return { kind: "declaration", name: declaration[1], body: text.slice(declaration[0].length) };
+		if (declaration?.[2] !== undefined) {
+			return {
+				kind: "declaration",
+				name: declaration[2],
+				exported: declaration[1] !== undefined,
+				body: text.slice(declaration[0].length),
+			};
 		}
 		if (/^export\s+default\b/.test(text)) return { kind: "default", body: text };
 		if (/^import\b/.test(text)) return { kind: "import", body: text };
@@ -441,8 +455,11 @@ type LibPins = Readonly<Record<string, readonly string[]>>;
  * reference for the page scan: a page that calls it is scanned as if it named
  * the route.
  * Limitations: the scan matches names, not bindings (a page's own local of the
- * same name is a reference too, which errs loud); and a default export that
- * dispatches is refused outright, as a page imports it under any name.
+ * same name is a reference too, which errs loud); a default export that
+ * dispatches is refused outright, as a page imports it under any name; and a
+ * route passed as a computed value (`dispatchOttaRoute(h, route)`, the route
+ * from a parameter or a variable) is not seen where it is dispatched, only
+ * where it is named.
  */
 const LIB_DISPATCHERS: LibPins = {
 	"cart-actions.ts": ["ensureCartId"],
@@ -500,6 +517,39 @@ function limitedRouteHelpers(
 	return [...helpers].toSorted();
 }
 
+/** Is a route table's body (what follows its name) a plain `new Set([…])`,
+ *  `new Map([…])` or object literal whose entries are only route constants,
+ *  string literals and keys? Then it can only be read, never dispatch. */
+function isPlainRouteTable(body: string): boolean {
+	const shape =
+		/^\s*(?::[^=]*)?=\s*(?:new\s+(?:Set|Map)(?:<[^>]*>)?\(\s*\[([\s\S]*)\]\s*\)|\{([\s\S]*)\})\s*;?\s*$/.exec(
+			body,
+		);
+	if (shape === null) return false;
+	const residue = (shape[1] ?? shape[2] ?? "")
+		.replace(/"[^"\n]*"|'[^'\n]*'|`[^`]*`/g, "")
+		.replace(/(?<![\w$])[A-Z][A-Z0-9_]*_ROUTE(?![\w$])/g, "")
+		.replace(/[\w$]+\s*:/g, "");
+	return /^[\s,[\]]*$/.test(residue);
+}
+
+/** The names a page can import a route table by: an `export`ed one's own
+ *  name, and every name an `export { … }` list gives one. */
+function exportedTableNames(lib: string, tables: LibPins): string[] {
+	return libChunks(lib).flatMap(({ file, chunks }) => {
+		const pinned = tables[file] ?? [];
+		return chunks.flatMap((chunk) => {
+			if (chunk.kind === "declaration") {
+				return chunk.exported && pinned.includes(chunk.name) ? [chunk.name] : [];
+			}
+			if (chunk.kind !== "exports") return [];
+			return exportPairs(chunk.body)
+				.filter(([local]) => pinned.includes(local))
+				.map(([, exported]) => exported);
+		});
+	});
+}
+
 /** Violations of the lib pin, as readable lines (sorted). */
 function libDispatchViolations(
 	lib = path.join(SRC, "lib"),
@@ -513,8 +563,14 @@ function libDispatchViolations(
 		const named: string[] = [];
 		for (const chunk of chunks) {
 			if (!reference.test(chunk.body)) continue;
-			if (chunk.kind === "declaration") named.push(chunk.name);
-			else if (chunk.kind === "default") {
+			if (chunk.kind === "declaration") {
+				named.push(chunk.name);
+				if (tables[file]?.includes(chunk.name) === true && !isPlainRouteTable(chunk.body)) {
+					problems.push(
+						`${file}: ${chunk.name} is pinned as a route table but is not a plain Set, Map or object of routes`,
+					);
+				}
+			} else if (chunk.kind === "default") {
 				problems.push(`${file}: a default export names a limited route; export it by name`);
 			} else if (chunk.kind === "code") {
 				problems.push(`${file}: names a limited route outside a recognised declaration`);
@@ -540,12 +596,17 @@ function libDispatchViolations(
 }
 
 /** The pages (`.ts` or `.astro`) whose code, comments stripped, references a
- *  limited plugin route: by constant, route literal or lib helper. */
+ *  limited plugin route: by constant, route literal, lib helper, or exported
+ *  route table (a page that reads one to pick a route dispatches it). */
 function pagesDispatchingLimitedRoutes(
 	pages = path.join(SRC, "pages"),
 	lib = path.join(SRC, "lib"),
+	tables: LibPins = LIB_ROUTE_TABLES,
 ): PageFile[] {
-	const reference = limitedRouteReference(limitedRouteHelpers(lib));
+	const reference = limitedRouteReference([
+		...limitedRouteHelpers(lib, tables),
+		...exportedTableNames(lib, tables),
+	]);
 	return pageFiles(pages, PAGE_FILE).filter((page) => reference.test(stripComments(page.source)));
 }
 
@@ -803,6 +864,86 @@ export async function quickAdd(handler: never, url: URL) {
 		expect(stripped).toContain('"//kept"');
 		// Line count kept, so column-0 declarations stay where they were.
 		expect(stripped.split("\n").length).toBe(source.split("\n").length);
+	});
+
+	test("a page that reads an exported route table is a reference too (#669)", () => {
+		withTempDir((dir) => {
+			const lib = path.join(dir, "lib");
+			const pages = path.join(dir, "pages");
+			mkdirSync(lib);
+			mkdirSync(pages);
+			writeFileSync(
+				path.join(lib, "routes.ts"),
+				"export const QUICK = new Set([STOREFRONT_CART_CREATE_ROUTE]);\n" +
+					"const HIDDEN = new Set([STOREFRONT_CART_LINE_ADD_ROUTE]);\nexport { HIDDEN as SHOWN };\n",
+			);
+			writeFileSync(
+				path.join(pages, "first.ts"),
+				"export const POST = (c) => dispatchOttaRoute(h, [...QUICK][0], {});\n",
+			);
+			writeFileSync(
+				path.join(pages, "second.ts"),
+				"export const POST = (c) => dispatchOttaRoute(h, [...SHOWN][0], {});\n",
+			);
+			const tables = { "routes.ts": ["QUICK", "HIDDEN"] };
+			expect(libDispatchViolations(lib, {}, tables)).toEqual([]);
+			// Tables are not followed, so neither is a helper: only their names count.
+			expect(limitedRouteHelpers(lib, tables)).toEqual([]);
+			expect(
+				pagesDispatchingLimitedRoutes(pages, lib, tables)
+					.map(({ route }) => route)
+					.toSorted(),
+			).toEqual(["/first", "/second"]);
+		});
+	});
+
+	test("a route table must be a plain Set, Map or object of routes: a dispatcher cannot be parked there (#669)", () => {
+		withTempDir((lib) => {
+			writeFileSync(
+				path.join(lib, "routes.ts"),
+				"export const SET: ReadonlySet<string> = new Set([\n\tSTOREFRONT_CART_CREATE_ROUTE,\n]);\n" +
+					'export const MAP: ReadonlyMap<string, Cls> = new Map([\n\t[STOREFRONT_CART_CREATE_ROUTE, "writes"],\n]);\n' +
+					"export const OBJ = { create: STOREFRONT_CART_CREATE_ROUTE, add: 'storefront/cart/lines/add' };\n" +
+					"export const SNEAKY = new Set([dispatchOttaRoute(h, STOREFRONT_CART_CREATE_ROUTE, {})]);\n" +
+					"export function quickAdd(h: never) {\n\treturn dispatchOttaRoute(h, STOREFRONT_CART_LINE_ADD_ROUTE, {});\n}\n",
+			);
+			expect(
+				libDispatchViolations(
+					lib,
+					{},
+					{ "routes.ts": ["SET", "MAP", "OBJ", "SNEAKY", "quickAdd"] },
+				),
+			).toEqual([
+				"routes.ts: SNEAKY is pinned as a route table but is not a plain Set, Map or object of routes",
+				"routes.ts: quickAdd is pinned as a route table but is not a plain Set, Map or object of routes",
+			]);
+		});
+	});
+
+	test("an unterminated block comment is a scan error, not a silent erase to the end (#669)", () => {
+		expect(() =>
+			stripComments("const r = /[/*]/;\nexport const x = STOREFRONT_CART_CREATE_ROUTE;\n"),
+		).toThrow(/unterminated block comment at line 1/);
+	});
+
+	test("a helper name that starts or ends with $ is matched whole (#669)", () => {
+		const reference = limitedRouteReference(["$add", "mint$"]);
+		expect(reference.test("await $add(c)")).toBe(true);
+		expect(reference.test("await mint$(c)")).toBe(true);
+		expect(reference.test("await x$add(c)")).toBe(false);
+		expect(reference.test("await mint$x(c)")).toBe(false);
+	});
+
+	test("a const enum is parsed under its own name (#669)", () => {
+		withTempDir((lib) => {
+			writeFileSync(
+				path.join(lib, "routes.ts"),
+				'export const enum Routes {\n\tCreate = "storefront/cart/create",\n}\n',
+			);
+			expect(libDispatchViolations(lib, {}, {})).toEqual([
+				"routes.ts: Routes names a limited route; not pinned",
+			]);
+		});
 	});
 
 	test("the page scan flags a GET on a non-anyMethod route and a page using a dispatching helper (#661)", () => {
