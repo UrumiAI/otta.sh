@@ -31,7 +31,8 @@
  * a redirect chain that starts cross-site does not carry a SameSite=Strict
  * cookie, while a same-origin page's own navigation does. The wizard's API
  * calls then carry the cookie. The token is accepted from the query string on
- * GET/HEAD only; a write must carry the cookie.
+ * GET/HEAD only; a write must carry the cookie. A query token that does not
+ * match is checked no further: the request then needs the cookie, like any other.
  *
  * ONCE CLAIMED, INERT. Setup is complete when EmDash's `emdash:setup_complete`
  * option is true AND a user exists (EmDash's own definition in passkey mode).
@@ -462,9 +463,12 @@ export function createSetupClaimGate(options: SetupClaimGateOptions = {}): Setup
 				// the claim would end on the 403 page with no reason given. Move the
 				// same request to HTTPS first; the token is checked there.
 				if (url.protocol === "http:" && !isLoopback(url)) return toHttps(url);
-				return expected !== null && constantTimeEquals(presented, expected)
-					? claimed(expected, url)
-					: refusal(url);
+				if (expected !== null && constantTimeEquals(presented, expected)) {
+					return claimed(expected, url);
+				}
+				// A token that does not match is not a refusal on its own: a deployer
+				// who reopens an old link (say, after setting the secret) may already
+				// hold a valid claim cookie. Fall through to the cookie check.
 			}
 			const cookie = cookies.get(SETUP_CLAIM_COOKIE)?.value;
 			if (expected !== null && cookie !== undefined && constantTimeEquals(cookie, expected)) {

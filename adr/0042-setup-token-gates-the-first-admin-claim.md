@@ -83,7 +83,11 @@ Options considered:
    `SameSite=Strict` cookie on a redirect chain that began cross-site. A navigation started
    by a same-origin page does carry it. After that, the wizard page and all of its API
    calls carry the cookie. A write is admitted by the cookie only, never by the query
-   string. Tokens are compared with the plugin's `constantTimeEquals`.
+   string. A query token that does not match is not a refusal on its own: the request
+   falls through to the cookie check, so a deployer who reopens an old link while holding
+   a valid claim cookie still reaches the wizard (when the link is pasted or bookmarked: a
+   link followed from another site does not carry the `SameSite=Strict` cookie, and gets
+   the 403 page). Tokens are compared with the plugin's `constantTimeEquals`.
 
    A link opened over plain HTTP on a non-loopback host gets a `307` to the same URL on
    `https://`, before the token is checked: the browser would drop the `Secure` cookie of

@@ -380,6 +380,43 @@ describe("while unclaimed — the link sets the cookie and strips itself from th
 		expect(res?.status).toBe(403);
 	});
 
+	test.each(["GET", "HEAD"])(
+		"a stale token in the link (%s) with a valid cookie: the cookie admits it",
+		async (method) => {
+			// The deployer reopens an old link after setting the secret: the
+			// query token no longer matches, but the browser holds the claim.
+			const { g } = gate();
+			const res = await g.check(
+				ctx({
+					method,
+					path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${"S".repeat(43)}`,
+					routePattern: ADMIN_PAGE,
+					cookie: SECRET,
+				}),
+				{ [SETUP_TOKEN_SECRET]: SECRET },
+			);
+			expect(res).toBeNull();
+		},
+	);
+
+	test.each([
+		["no cookie", undefined],
+		["a wrong cookie", "U".repeat(43)],
+		["the stale token as the cookie", "S".repeat(43)],
+	])("a stale token in the link with %s: still 403, no cookie", async (_why, cookie) => {
+		const { g } = gate();
+		const res = await g.check(
+			ctx({
+				path: `${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=${"S".repeat(43)}`,
+				routePattern: ADMIN_PAGE,
+				...(cookie === undefined ? {} : { cookie }),
+			}),
+			{ [SETUP_TOKEN_SECRET]: SECRET },
+		);
+		expect(res?.status).toBe(403);
+		expect(res?.headers.get("set-cookie")).toBeNull();
+	});
+
 	test("the cookie lets every setup write and the wizard page through", async () => {
 		const { g } = gate();
 		const env = { [SETUP_TOKEN_SECRET]: SECRET };
