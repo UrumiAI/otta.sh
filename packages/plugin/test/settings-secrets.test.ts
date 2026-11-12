@@ -20,7 +20,13 @@
  */
 import type { StorageAccess, StorageCollection } from "@urumi.ai/otta-store-emdash";
 import { describe, expect, test } from "vitest";
-import { createSettingsFormHandler } from "../src/admin/settings-form.js";
+import { ORDER_EMAIL_MAX_ATTEMPTS } from "@urumi.ai/otta-domain";
+import {
+	createSettingsFormHandler,
+	emailFailureLine,
+	emailStatusLine,
+} from "../src/admin/settings-form.js";
+import { SEND_FAILURE_REASON_MAX } from "../src/email/ctx-email-sender.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
 import {
 	checkOpaqueToken,
@@ -390,6 +396,86 @@ describe("Settings: how a key field renders", () => {
 		for (const page of [none, via]) {
 			const ids = JSON.stringify(page).match(/"action_id":"[^"]*"/g) ?? [];
 			for (const id of ids) expect(id).not.toMatch(/email|smtp/i);
+		}
+	});
+
+	test("issue #677: the email lines say what a failing provider costs, and show its last failure", async () => {
+		// Confirmed: the from-address is the provider's setup, which on the
+		// Cloudflare default is a build variable, not something "set in" a provider.
+		const via = await invoke(
+			makeCtx({ "state:emailLastSentAt": new Date().toISOString() }, { email: true }).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		const viaText = contextTexts(via.blocks).join("\n");
+		expect(viaText).toContain("OTTA_EMAIL_FROM build variable");
+		expect(viaText).not.toContain("are set in that provider");
+		expect(viaText).not.toContain("last send failed");
+		// Unconfirmed: a selected provider may be failing, spending attempts — not
+		// only "waiting up to 72 h".
+		const idle = await invoke(makeCtx({}, { email: true }).ctx, {
+			type: "page_load",
+			page: "/settings",
+		});
+		const idleText = contextTexts(idle.blocks).join("\n");
+		expect(idleText).toContain(
+			'Email: provider not confirmed since setup or a "no provider" answer. A failed try uses 1 of an order email\'s 5 attempts; with none, mail is skipped after 72 h. See docs/email-providers.md.',
+		);
+		expect(idleText).not.toContain("Without one, order emails wait");
+		// Confirmed, then failing (a daily quota): the failure is on the screen,
+		// with its time and reason, and the heading still reads from the status.
+		const failure = { at: "2026-11-10T14:03:09.000Z", reason: "daily sending quota exceeded" };
+		const failing = await invoke(
+			makeCtx(
+				{
+					"state:emailLastSentAt": "2026-11-10T09:00:00.000Z",
+					"state:emailLastFailure": failure,
+				},
+				{ email: true },
+			).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		const failingText = contextTexts(failing.blocks).join("\n");
+		expect(failingText).toContain("sent via EmDash");
+		expect(failingText).toContain(
+			"Email: last send failed 2026-11-10 14:03 UTC — daily sending quota exceeded. Each failure uses one of an order email's 5 attempts.",
+		);
+		// Unconfirmed with a failure: shown too.
+		const neverSent = await invoke(
+			makeCtx({ "state:emailLastFailure": failure }, { email: true }).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		expect(contextTexts(neverSent.blocks).join("\n")).toContain(
+			"last send failed 2026-11-10 14:03 UTC",
+		);
+		// A send delivered after it: the failure is no longer the latest word.
+		const recovered = await invoke(
+			makeCtx(
+				{
+					"state:emailLastSentAt": "2026-11-10T15:00:00.000Z",
+					"state:emailLastFailure": failure,
+				},
+				{ email: true },
+			).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		expect(contextTexts(recovered.blocks).join("\n")).not.toContain("last send failed");
+	});
+
+	test("issue #677 review: the failure line takes the outbox's attempt count and never doubles its punctuation", () => {
+		expect(ORDER_EMAIL_MAX_ATTEMPTS).toBe(5);
+		const at = "2026-11-10T14:03:09.000Z";
+		expect(emailFailureLine({ at, reason: "quota exceeded" })).toBe(
+			`Email: last send failed 2026-11-10 14:03 UTC — quota exceeded. Each failure uses one of an order email's ${String(ORDER_EMAIL_MAX_ATTEMPTS)} attempts.`,
+		);
+		const cut = emailFailureLine({ at, reason: `${"w".repeat(10)} cut…` });
+		expect(cut).toContain("cut… Each failure");
+		expect(cut).not.toMatch(/\.\.|…\./);
+		// The longest reason still fits the nested-context budget (200).
+		expect(
+			emailFailureLine({ at, reason: "x".repeat(SEND_FAILURE_REASON_MAX) }).length,
+		).toBeLessThanOrEqual(200);
+		for (const status of ["confirmed", "unconfirmed", "unavailable"] as const) {
+			expect(emailStatusLine(status).length).toBeLessThanOrEqual(200);
 		}
 	});
 

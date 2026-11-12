@@ -72,9 +72,12 @@ export const LOGIN_EMAIL_TIMEOUT_MS = 3_000;
  *  three, as a ceiling. */
 export const EMAIL_SENDER_BUILD_READS = 3;
 
-/** The kv write the FIRST delivered send of a sender adds after the host call:
- *  the "last sent" record ({@link markEmailSent}). The cron's query budget counts
- *  it, like {@link EMAIL_SENDER_BUILD_READS}. */
+/** The kv write a delivered send adds after the host call when it is the
+ *  sender's first, or the first since a recorded failure: the "last sent" record
+ *  ({@link markEmailSent}). A failed ORDER-email send writes the "last failure"
+ *  record instead ({@link markEmailSendFailed}) on the same terms, so one send
+ *  writes at most one of the two. The cron's query budget counts it,
+ *  like {@link EMAIL_SENDER_BUILD_READS}. */
 export const EMAIL_SENT_RECORD_WRITES = 1;
 
 export interface CtxEmailSenderOptions {
@@ -107,6 +110,13 @@ export interface CtxEmailSenderOptions {
 	/** Told when the host ACCEPTED a send — {@link makeEmailSender} records it
 	 *  ({@link markEmailSent}). Started, not awaited. */
 	onSent?: (() => Promise<void>) | undefined;
+	/** Told when the host's provider FAILED a send — it threw, or did not answer
+	 *  in time (issue #677). Not for "no provider" or a cut-short send, which
+	 *  spend no attempt. Gets a short reason with no recipient address
+	 *  ({@link sendFailureReason}). {@link makeEmailSender} records it
+	 *  ({@link markEmailSendFailed}). Started, not awaited; once per change of
+	 *  outcome. */
+	onFailed?: ((reason: string) => Promise<void>) | undefined;
 }
 
 /** Renders with the storefront's money, the store name and the order link, and
@@ -122,11 +132,15 @@ export class CtxEmailSender implements EmailSender {
 	readonly #canStart: (() => boolean) | undefined;
 	readonly #onUnavailable: (() => Promise<void>) | undefined;
 	readonly #onSent: (() => Promise<void>) | undefined;
-	#sentRecorded = false;
+	readonly #onFailed: ((reason: string) => Promise<void>) | undefined;
+	/** The outcome this sender last recorded, so a provider costs one kv write
+	 *  per CHANGE of outcome, never one per email (issue #677). */
+	#recorded: "sent" | "failed" | undefined;
 
 	constructor(options: CtxEmailSenderOptions) {
 		this.#onUnavailable = options.onUnavailable;
 		this.#onSent = options.onSent;
+		this.#onFailed = options.onFailed;
 		this.#email = options.email;
 		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
 		this.#storeName = options.storeName;
@@ -192,11 +206,11 @@ export class CtxEmailSender implements EmailSender {
 		try {
 			await Promise.race([sending, timeout]);
 		} catch (err) {
-			if (isEmailSendTimeoutError(err)) throw err;
 			if (isEmailNotConfiguredError(err)) {
 				await this.#onUnavailable?.();
 				throw new EmailTransportUnavailableError();
 			}
+			this.#recordFailure(err, input.to);
 			throw err;
 		} finally {
 			clearTimeout(timer);
@@ -205,12 +219,193 @@ export class CtxEmailSender implements EmailSender {
 		// awaited: the email has gone, so a slow or hung kv write must never turn it
 		// into a timeout (a counted attempt, a duplicate). Started here, so a query
 		// budget counts it with this send; fail-soft, so nothing is left to reject.
-		// Once per sender (one per tick or request): a timestamp, not a log.
-		if (!this.#sentRecorded) {
-			this.#sentRecorded = true;
+		// A timestamp, not a log: once per change of outcome. After a recorded
+		// failure a delivery is recorded again, so Settings stops showing the
+		// failure (issue #677).
+		if (this.#recorded !== "sent") {
+			this.#recorded = "sent";
 			void this.#onSent?.().catch(() => undefined);
 		}
 	}
+
+	/** A provider failure, for the Settings line (issue #677). Like the "last
+	 *  sent" record: not awaited, fail-soft, and once per change of outcome, so a
+	 *  failing provider costs one kv write per tick or request, not one per
+	 *  email, and a failure after a delivery in the same tick is still seen. One
+	 *  send writes at most one record, so {@link EMAIL_SENT_RECORD_WRITES} holds. */
+	#recordFailure(err: unknown, to: string): void {
+		if (this.#onFailed === undefined || this.#recorded === "failed") return;
+		// Nothing here may replace the send's own error, which the caller
+		// rethrows next: an error whose `message` getter throws, or a record that
+		// fails, is dropped.
+		try {
+			const pending = this.#onFailed(sendFailureReason(err, to));
+			// Only once it was handed over: a reporter that throws at once leaves
+			// the next failure free to try again.
+			this.#recorded = "failed";
+			void pending.catch(() => undefined);
+		} catch {
+			// Fail-soft: the next failed send records it.
+		}
+	}
+}
+
+/** The longest reason {@link sendFailureReason} returns, so the Settings line
+ *  stays inside its 200-character budget. */
+export const SEND_FAILURE_REASON_MAX = 80;
+
+/** How much of a provider's message {@link sendFailureReason} looks at. Cut
+ *  BEFORE any pattern runs, so a long minified, base64 or HTML body costs a
+ *  bounded amount of synchronous work (#677 review). */
+const SEND_FAILURE_INPUT_MAX = 1024;
+
+/** A timeout: the provider may well have delivered it (the race only stops
+ *  waiting), and the ceiling may be the tick's own remaining time, so the words
+ *  blame nobody. */
+export const SEND_TIMEOUT_REASON = "timed out (may have been delivered)";
+
+/** The value after a credential-like word: `key=…`, `Authorization: …`. */
+const SECRET_AFTER_NAME =
+	/\b((?:[a-z_-]{0,20}(?:key|token|secret|signature|password|passwd|pwd))|auth[a-z_-]{0,20})(\s{0,3}[:=]\s{0,3})["']?[^\s"',;&]{1,256}/gi;
+/** The credential after an HTTP auth scheme: `Bearer …`, `Basic …`. */
+const SECRET_AFTER_SCHEME = /\b(bearer|basic)\s{1,3}[^\s"',;&]{1,256}/gi;
+/** A URL with a scheme. */
+const URL_WITH_SCHEME = /\b[a-z][a-z0-9+.-]{0,31}:\/\/\S{0,2048}/gi;
+/** A URL without one: `host.tld/path?query`. */
+const URL_WITHOUT_SCHEME = /\b[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){1,8}\/\S{0,2048}/gi;
+/** An address with a quoted local part: `"Jane Doe"@example.com`. */
+const QUOTED_ADDRESS = /"[^"\r\n]{1,64}"@[^\s"'<>()[\],;:@]{1,255}/g;
+/** Anything address-shaped. */
+const ADDRESS = /[^\s"'<>()[\],;:@]{1,64}@[^\s"'<>()[\],;:@]{1,255}/g;
+/** A run that may be a token: 16+ characters of the base64/identifier set. */
+const TOKEN_RUN = /[A-Za-z0-9_\-+/=]{16,}/g;
+/** A provider's error code: words joined by `_`, `.` or `-`, no digits. */
+const ERROR_CODE = /^[A-Za-z]+(?:[_.-][A-Za-z]+)+$/;
+
+/** Whether a {@link TOKEN_RUN} match is redacted: any run mixing letters and
+ *  digits (a key, a hex request id), any run of digits, and a digit-free run of
+ *  32+ that is not an error code (`E_SENDER_DOMAIN_NOT_VERIFIED` stays). */
+function isSecretRun(run: string): boolean {
+	const digits = /[0-9]/.test(run);
+	if (digits) return true;
+	if (ERROR_CODE.test(run)) return false;
+	return run.length >= 32;
+}
+
+/** One RFC 2047 encoded word, matched whole (`=?utf-8?q?…?=`): its text is kept,
+ *  its wrapper dropped. A lone `?=` (a URL's query) is left alone. */
+const ENCODED_WORD = /=\?[^?\s]{1,40}\?[qb]\?([^?\s]{0,200})\?=/gi;
+/** `%40` / `=40` between an address's local part and a domain. */
+const ENCODED_AT = /(?<=[A-Za-z0-9._%+-])(?:%40|=40)(?=[A-Za-z0-9-]{1,63}\.[A-Za-z])/gi;
+/** `(at)`, `[at]`, `{at}` between an address's local part and a domain. */
+const SPELLED_AT =
+	/(?<=[A-Za-z0-9._%+-])\s{0,3}[([{]\s{0,3}at\s{0,3}[)\]}]\s{0,3}(?=[A-Za-z0-9-]{1,63}\.[A-Za-z])/gi;
+
+/** Every common spelling of `@` a provider or mail header may use. The ones
+ *  that are also ordinary text (`=40`, `%40`, `(at)`) only between address-like
+ *  text, so "limit=400" and "failed (at) 10:00" stay as they are. */
+function normalizeAt(text: string): string {
+	return text
+		.replace(ENCODED_WORD, " $1 ")
+		.replace(/&#0*64;|&#x0*40;|&commat;|[\uFF20\uFE6B]/gi, "@")
+		.replace(ENCODED_AT, "@")
+		.replace(SPELLED_AT, "@");
+}
+
+/** Characters that may sit inside an address's local part. */
+const LOCAL_PART_CHAR = "A-Za-z0-9._%+-";
+
+/** The recipient's local part as a whole token, when it looks like an
+ *  identifier rather than a word (a `.`, `_`, `+`, `-` or digit, or 6+
+ *  characters): `jane.doe` is redacted, but `not`, `info` or `user` never turn
+ *  "domain not verified" into nonsense (#677 review). */
+function redactLocalPart(text: string, local: string): string {
+	if (!/[._+\-0-9]/.test(local) && local.length < 6) return text;
+	const escaped = local.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return text.replace(
+		new RegExp(`(?<![${LOCAL_PART_CHAR}])${escaped}(?![${LOCAL_PART_CHAR}])`, "gi"),
+		"[address]",
+	);
+}
+
+/** `needle` replaced in `text` regardless of case, as a literal. */
+function replaceLiteral(text: string, needle: string, replacement: string): string {
+	if (needle === "") return text;
+	const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return text.replace(new RegExp(escaped, "gi"), replacement);
+}
+
+/** The error's message, or "" — never throws, and never more than is needed. */
+function messageOf(err: unknown): string {
+	try {
+		if (typeof err === "string") return err.slice(0, SEND_FAILURE_INPUT_MAX * 2);
+		if (typeof err === "object" && err !== null) {
+			const message = (err as { message?: unknown }).message;
+			if (typeof message === "string") return message.slice(0, SEND_FAILURE_INPUT_MAX * 2);
+		}
+	} catch {
+		// A throwing getter: no reason.
+	}
+	return "";
+}
+
+/**
+ * A short reason for a failed send, safe to store and show to the merchant
+ * (issue #677). A provider's error may quote the recipient, a URL or a key, so
+ * only its first {@link SEND_FAILURE_INPUT_MAX} characters are read (cut back to
+ * a space), and then:
+ *  - every spelling of `@` (`&#64;`, `&commat;`, fullwidth; and `%40`, `=40`,
+ *    `(at)` between address-like text) becomes `@`, and a whole RFC 2047
+ *    encoded word is unwrapped;
+ *  - the recipient (any case) becomes `[address]`, and so does its local part
+ *    as a whole token when it looks like an identifier; so does anything
+ *    address-shaped, a quoted local part included;
+ *  - the value after a credential word (`key=`, `Authorization:`, `Bearer`)
+ *    becomes `[redacted]`, URLs with or without a scheme become `[url]`, and
+ *    token-like runs ({@link isSecretRun}: 16+ with a digit, or 32+ that is not
+ *    an error code) become `[redacted]` — so a long hex request id is too;
+ *  - control characters and runs of spaces collapse, trailing punctuation goes,
+ *    and the result is cut to {@link SEND_FAILURE_REASON_MAX}.
+ * Every pattern is bounded, so the work is linear in that capped input. A
+ * timeout is {@link SEND_TIMEOUT_REASON}; no message is "no reason given".
+ */
+export function sendFailureReason(err: unknown, to: string): string {
+	if (isEmailSendTimeoutError(err)) return SEND_TIMEOUT_REASON;
+	let reason = messageOf(err);
+	if (reason.length > SEND_FAILURE_INPUT_MAX) {
+		const cut = reason.slice(0, SEND_FAILURE_INPUT_MAX);
+		const space = cut.search(/\s\S*$/);
+		reason = space > 0 ? cut.slice(0, space) : cut;
+	}
+	// Control characters (CR/LF included) become spaces.
+	reason = Array.from(reason, (c) => {
+		const code = c.codePointAt(0) ?? 0;
+		return code < 0x20 || code === 0x7f ? " " : c;
+	}).join("");
+	reason = normalizeAt(reason);
+	const recipient = to.slice(0, 320);
+	reason = replaceLiteral(reason, recipient, "[address]");
+	const at = recipient.lastIndexOf("@");
+	const local = at > 0 ? recipient.slice(0, at) : "";
+	if (local.length >= 3) reason = redactLocalPart(reason, local);
+	reason = reason
+		.replace(SECRET_AFTER_SCHEME, "$1 [redacted]")
+		.replace(SECRET_AFTER_NAME, "$1$2[redacted]")
+		.replace(URL_WITH_SCHEME, "[url]")
+		.replace(QUOTED_ADDRESS, "[address]")
+		.replace(ADDRESS, "[address]")
+		.replace(URL_WITHOUT_SCHEME, "[url]")
+		.replace(TOKEN_RUN, (run) => (isSecretRun(run) ? "[redacted]" : run))
+		.replace(/\s+/g, " ")
+		.trim()
+		.replace(/[\s.,;:!]+$/, "");
+	if (reason === "") return "no reason given";
+	return reason.length <= SEND_FAILURE_REASON_MAX
+		? reason
+		: `${reason
+				.slice(0, SEND_FAILURE_REASON_MAX - 1)
+				.trimEnd()
+				.replace(/[\s.,;:!]+$/, "")}…`;
 }
 
 /** EmDash's sandbox bridge's refusal when no provider is wired (emdash 0.38
@@ -239,12 +434,18 @@ export const EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE =
  */
 export function isEmailNotConfiguredError(err: unknown): boolean {
 	if (typeof err !== "object" || err === null) return false;
-	const { name, message } = err as { name?: unknown; message?: unknown };
-	if (name === "EmailNotConfiguredError") return true;
-	return (
-		message === EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE ||
-		message === EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE
-	);
+	// An odd error object (a throwing getter) is simply not this one (#677 review):
+	// the send's own error must reach the caller unchanged.
+	try {
+		const { name, message } = err as { name?: unknown; message?: unknown };
+		if (name === "EmailNotConfiguredError") return true;
+		return (
+			message === EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE ||
+			message === EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE
+		);
+	} catch {
+		return false;
+	}
 }
 
 /** Whether this context can send at all — the trusted-mode answer. A sandboxed
@@ -308,8 +509,8 @@ export const EMAIL_AVAILABILITY_READS = 1;
  * ({@link EMAIL_TRANSPORT_UNAVAILABLE_KEY}) lapses after 5 minutes, so neither
  * says a provider WORKS. This does: the Settings line only says "sent via
  * EmDash's email provider" once it is newer than any "no provider" answer. Plain kv, written fail-soft by the
- * first delivered send of each sender — once per tick or request
- * ({@link EMAIL_SENT_RECORD_WRITES}).
+ * first delivered send of each sender, and again after one of its recorded
+ * failures — at most once per change of outcome ({@link EMAIL_SENT_RECORD_WRITES}).
  */
 export const EMAIL_LAST_SENT_KEY = "state:emailLastSentAt";
 
@@ -319,6 +520,37 @@ export async function markEmailSent(ctx: PluginContext, nowMs: number = Date.now
 		await ctx.kv.set(EMAIL_LAST_SENT_KEY, new Date(nowMs).toISOString());
 	} catch {
 		// Fail-soft: the email went; only the confirmation waits for the next send.
+	}
+}
+
+/**
+ * The last FAILED send through the host's provider (issue #677): a JSON object
+ * `{ at, reason }` — an ISO time and {@link sendFailureReason}'s short reason,
+ * never the recipient. A provider that fails after a success (a daily quota, a
+ * sender domain gone inactive) would otherwise still read "sent via EmDash's
+ * email provider". Plain kv, written fail-soft by an order-email sender's first
+ * failed send, and again after one of its recorded deliveries
+ * ({@link EMAIL_SENT_RECORD_WRITES}). One small object, overwritten: bounded.
+ */
+export const EMAIL_LAST_FAILURE_KEY = "state:emailLastFailure";
+
+/** A recorded failed send: when, and why in a few words. */
+export interface EmailSendFailure {
+	at: string;
+	reason: string;
+}
+
+/** Record a failed send, now. Never throws. */
+export async function markEmailSendFailed(
+	ctx: PluginContext,
+	reason: string,
+	nowMs: number = Date.now(),
+): Promise<void> {
+	try {
+		const failure: EmailSendFailure = { at: new Date(nowMs).toISOString(), reason };
+		await ctx.kv.set(EMAIL_LAST_FAILURE_KEY, failure);
+	} catch {
+		// Fail-soft: the next failed send records it again.
 	}
 }
 
@@ -340,20 +572,67 @@ export async function emailSendingStatus(
 	ctx: PluginContext,
 	nowMs: number = Date.now(),
 ): Promise<EmailSendingStatus> {
-	if (!emailSendingConfigured(ctx)) return "unavailable";
-	const [unavailableAt, lastSentAt] = await Promise.all([
+	return (await emailSendingReport(ctx, nowMs)).status;
+}
+
+/** {@link emailSendingStatus}, and the last failed send when nothing has gone
+ *  through the provider since it (issue #677). */
+export interface EmailSendingReport {
+	status: EmailSendingStatus;
+	/** Absent when `unavailable`, when none is recorded, or when a send has
+	 *  gone through since. */
+	lastFailure?: EmailSendFailure;
+}
+
+/**
+ * {@link emailSendingStatus} plus the last failed send ({@link EMAIL_LAST_FAILURE_KEY}),
+ * kept only while it is the latest word: a send accepted after it hides it.
+ * Three kv reads when `ctx.email` is there, none when it is not. Fail-soft: an
+ * unreadable or malformed failure record reads as absent.
+ */
+export async function emailSendingReport(
+	ctx: PluginContext,
+	nowMs: number = Date.now(),
+): Promise<EmailSendingReport> {
+	if (!emailSendingConfigured(ctx)) return { status: "unavailable" };
+	const [unavailableAt, lastSentAt, lastFailure] = await Promise.all([
 		readIsoMs(ctx, EMAIL_TRANSPORT_UNAVAILABLE_KEY),
 		readIsoMs(ctx, EMAIL_LAST_SENT_KEY),
+		readLastFailure(ctx),
 	]);
 	if (
 		unavailableAt !== undefined &&
 		unavailableAt <= nowMs &&
 		nowMs - unavailableAt < TRANSPORT_UNAVAILABLE_RETRY_MS
 	) {
-		return "unavailable";
+		return { status: "unavailable" };
 	}
-	if (lastSentAt === undefined) return "unconfirmed";
-	return unavailableAt === undefined || lastSentAt >= unavailableAt ? "confirmed" : "unconfirmed";
+	const status: EmailSendingStatus =
+		lastSentAt === undefined
+			? "unconfirmed"
+			: unavailableAt === undefined || lastSentAt >= unavailableAt
+				? "confirmed"
+				: "unconfirmed";
+	const current =
+		lastFailure !== undefined &&
+		(lastSentAt === undefined || Date.parse(lastFailure.at) > lastSentAt);
+	return current ? { status, lastFailure } : { status };
+}
+
+/** The failure record, or `undefined` when missing, malformed or unreadable. */
+async function readLastFailure(ctx: PluginContext): Promise<EmailSendFailure | undefined> {
+	let value: unknown;
+	try {
+		value = await ctx.kv.get<unknown>(EMAIL_LAST_FAILURE_KEY);
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null) return undefined;
+	const { at, reason } = value as { at?: unknown; reason?: unknown };
+	if (typeof at !== "string" || typeof reason !== "string") return undefined;
+	const ms = Date.parse(at);
+	if (!Number.isFinite(ms)) return undefined;
+	return { at: new Date(ms).toISOString(), reason: reason.slice(0, SEND_FAILURE_REASON_MAX) };
 }
 
 /** A kv ISO time as epoch ms; `undefined` when missing, malformed or unreadable. */
@@ -384,6 +663,9 @@ export async function makeEmailSender(
 		orderTotals?: boolean;
 		/** {@link CtxEmailSenderOptions.canStart}. */
 		canStart?: () => boolean;
+		/** Record a provider failure for Settings (default). Off for the sign-in
+		 *  email, whose failures spend no order-email attempt (issue #677). */
+		recordFailures?: boolean;
 	} = {},
 ): Promise<EmailSender | undefined> {
 	const email = ctx.email;
@@ -405,6 +687,12 @@ export async function makeEmailSender(
 			: { readTaxTotalsDisplay: () => emailTaxTotalsDisplay(ctx) }),
 		onUnavailable: () => markEmailTransportUnavailable(ctx),
 		onSent: () => markEmailSent(ctx),
+		// Issue #677: only a COUNTED failure — an order email's. A sign-in email
+		// has no outbox row, and its short ceiling times out a provider that is
+		// merely slow; neither may read as a spent order-email attempt.
+		...(options.recordFailures === false
+			? {}
+			: { onFailed: (reason: string) => markEmailSendFailed(ctx, reason) }),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),
@@ -438,7 +726,11 @@ async function emailTaxTotalsDisplay(ctx: PluginContext): Promise<TaxTotalsDispl
  *  behind it, so nothing to count: a failed or timed-out sign-in email is logged.) */
 export async function makeLoginEmailSender(ctx: PluginContext): Promise<EmailSender | undefined> {
 	if (!(await emailSendingAvailable(ctx))) return undefined;
-	return makeEmailSender(ctx, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS, orderTotals: false });
+	return makeEmailSender(ctx, {
+		requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS,
+		orderTotals: false,
+		recordFailures: false,
+	});
 }
 
 /**

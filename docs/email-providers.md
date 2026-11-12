@@ -22,7 +22,7 @@ covers it.
 [`DEPLOYMENT.md`](../DEPLOYMENT.md) §3, Email. It needs Workers Paid and a sender domain on
 Cloudflare. Workers Free merchants must leave it unset.
 
-**If Settings says "provider not confirmed" or mail does not arrive, check in order:**
+**If Settings says "provider not confirmed" or "last send failed", or mail does not arrive, check in order:**
 1. The `send_email` binding named `EMAIL` is in the wrangler config you DEPLOYED
    (`wrangler.local.jsonc`; the build refuses a set sender without it).
 2. The sender domain shows **active** under Compute > Email Service > Email Sending, and
@@ -121,10 +121,23 @@ are write-only in the admin and are never echoed back.
 4. Check otta's **Settings → Payments & email**. Its email line has three states:
    - **"email set"**: "sent via EmDash's email provider". An email has gone through it.
    - **"email TBC"**: "provider not confirmed". Nothing has been sent through it since setup
-     or since the host last refused a send. A sandboxed host looks like this even with no
-     provider, so place a test order or request a sign-in link to confirm it.
+     or since the host last said it has no provider. A sandboxed host looks like this even
+     with no provider, so place a test order or request a sign-in link to confirm it. A
+     selected provider that fails also looks like this, and each try spends one of an order
+     email's five attempts.
    - **"no email"**: "no EmDash email provider". Order emails wait up to 72 h, then are
      skipped.
+
+   Under it, **"last send failed"** shows when the provider last failed an order email and
+   why, in a few words with no recipient address. It shows while no send has gone through
+   since, under "email set" or "email TBC". A provider that worked once and then fails (a
+   daily quota, a sender domain no longer active) shows it under "email set". A failed
+   sign-in email is not shown: it spends no order-email attempt. A timeout shows as "timed
+   out (may have been delivered)". The line clearing does **not** mean the emails that failed
+   were sent: an email parked `failed` after its five attempts stays parked, and there is no
+   re-queue action yet (a follow-up). Long codes in the reason (hex request ids, keys,
+   numbers of 16+ digits) show as `[redacted]`; to ask the provider's support about one,
+   quote the failure time instead.
 
    Email API keys that older otta builds stored are **not** deleted automatically; remove them
    by hand ([`DEPLOYMENT.md`](../DEPLOYMENT.md), "Leftover email and x402 keys").

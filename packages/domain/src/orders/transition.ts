@@ -639,7 +639,10 @@ export const OUTBOX_EMAIL_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 export const TIMEOUT_FAILURE_REASON = "provider kept timing out";
 
 const DEFAULT_LEASE_MS = 5 * 60 * 1000;
-const DEFAULT_MAX_ATTEMPTS = 5;
+/** The attempts an outbox email gets before it is parked `failed`, unless a
+ *  dispatcher passes its own `maxAttempts`. Exported for the admin's wording
+ *  (issue #677). */
+export const ORDER_EMAIL_MAX_ATTEMPTS = 5;
 const DEFAULT_BATCH_LIMIT = 100;
 /** The per-order cap. The outbox holds at most one state row per `(order, toState)`
  *  (the UNIQUE the stores enforce) plus at most one notice row per `(order, kind)`
@@ -715,7 +718,7 @@ async function drainOutbox(
 	const now = deps.clock.now();
 	const nowIso = now.toISOString();
 	const leaseUntil = new Date(now.getTime() + (options.leaseMs ?? DEFAULT_LEASE_MS)).toISOString();
-	const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+	const maxAttempts = options.maxAttempts ?? ORDER_EMAIL_MAX_ATTEMPTS;
 	const batchLimit = options.batchLimit ?? defaultBatchLimit;
 
 	let sent = 0;

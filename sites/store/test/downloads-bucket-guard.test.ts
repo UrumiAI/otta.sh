@@ -162,8 +162,13 @@ describe("the build wiring", () => {
 		expect(integration).toMatch(
 			/const wranglerConfig = options\.wranglerConfig \?\? "wrangler\.jsonc";/,
 		);
+		// Issue #677: read ONCE, and the email guard gets the same text and name.
+		expect(integration).toMatch(/const wranglerText = read\(wranglerConfig\);/);
+		expect(integration.match(/read\(wranglerConfig\)/g)).toHaveLength(1);
+		expect(integration).not.toMatch(/read\("wrangler\.jsonc"\)/);
+		expect(integration).toMatch(/assertDownloadsBucketPrivate\(wranglerText, wranglerConfig\);/);
 		expect(integration).toMatch(
-			/assertDownloadsBucketPrivate\(read\(wranglerConfig\), wranglerConfig\);/,
+			/assertEmailBindingForBuild\(emailFrom, \{ text: wranglerText, name: wranglerConfig \}\);/,
 		);
 	});
 });
