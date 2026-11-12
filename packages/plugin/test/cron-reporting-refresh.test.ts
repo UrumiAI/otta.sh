@@ -416,6 +416,35 @@ describe("the backfill does not wedge on the Free preset (#660 review)", () => {
 		expect(errors.filter((l) => l.includes(edge.day))).toEqual([]);
 	}, 300_000);
 
+	test("a day that runs short behind a full set of kept entries still gets one: an unlisted day's makes room (#668)", async () => {
+		const cursors = memoryCursors();
+		const edge = await orderDaysAgo("full-short", 20);
+		await cloneOrder(edge.id, 499);
+		await sweep(cursors);
+		const id = `USD:${edge.day}`;
+		await daily().put(id, { ...(await daily().get(id))!, productsDirty: 1 });
+		// The allowance is spent, so only the dirty day is listed, and the entries a
+		// cut-short listing keeps fill every slot: days it does not list.
+		await seedBuiltToday(cursors, REPORTING_BACKFILL_DAYS_PER_DAY_FREE);
+		const raw = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		const kept = Array.from({ length: 10 }, (_, i) => ({
+			day: `2001-01-${String(i + 1).padStart(2, "0")}`,
+			need: 7,
+		}));
+		await cursors.write("reporting-refresh", JSON.stringify({ ...raw, short: kept }));
+		// Not QUIET: other legs keep the ticks busy, so the day runs short of its six units.
+		let recorded = false;
+		for (let run = 0; run < 12 && !recorded; run++) {
+			await sweep(cursors, 30);
+			const state = JSON.parse((await cursors.read("reporting-refresh"))!) as {
+				short: { day: string; need: number }[];
+			};
+			expect(state.short.length).toBeLessThanOrEqual(10);
+			recorded = state.short.some(({ day }) => day === edge.day);
+		}
+		expect(recorded).toBe(true);
+	}, 300_000);
+
 	test("a legacy day still absorbing its claims a few a run is built, not struck out", async () => {
 		const cursors = memoryCursors();
 		await sweep(cursors);
@@ -479,7 +508,7 @@ describe("the backfill's write volume", () => {
 
 	test("on Free, the deploy day of a new index layout builds no backfill; the next UTC day does", async () => {
 		const cursors = memoryCursors();
-		// A fresh store notes the layout and is not held: it has nothing to index.
+		// A fresh store notes the layout and is not held: it has no Otta rows to index.
 		await sweep(cursors, 30, QUIET);
 		const a = await orderDaysAgo("deploy-day", 40);
 		// The release before declared other indexes: this is its deploy day.
@@ -503,6 +532,107 @@ describe("the backfill's write volume", () => {
 		await sweep(cursors);
 		expect(await productsDirtyOf(ancient.day)).toEqual([undefined]);
 		expect(await productsDirtyOf(recent.day)).toEqual([0]);
+	}, 300_000);
+
+	test("a spent allowance keeps the strikes and short needs of the unbuilt days it no longer lists (#668)", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		const unbuilt = await orderDaysAgo("kept-strike", 40);
+		await seedBuiltToday(cursors, REPORTING_BACKFILL_DAYS_PER_DAY_FREE);
+		const raw = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		const strikes = [{ day: unbuilt.day, n: 2 }];
+		const short = [{ day: unbuilt.day, need: 6 }];
+		await cursors.write("reporting-refresh", JSON.stringify({ ...raw, strikes, short }));
+		for (let run = 0; run < 4; run++) await sweep(cursors, 30, QUIET);
+		// Not listed while the allowance is spent, so not built — and not forgotten either.
+		expect(await productsDirtyOf(unbuilt.day)).toEqual([undefined]);
+		const state = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		expect(state.strikes).toEqual(strikes);
+		expect(state.short).toEqual(short);
+	}, 300_000);
+
+	test("an allowance down to its last day keeps the strikes and short needs of the days its shorter listing leaves out (#668)", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		const newer = await orderDaysAgo("last-allowed", 35);
+		const older = await orderDaysAgo("kept-behind", 40);
+		// One build left today: the listing holds the newer day alone, and builds it.
+		await seedBuiltToday(cursors, REPORTING_BACKFILL_DAYS_PER_DAY_FREE - 1);
+		const raw = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		const strikes = [{ day: older.day, n: 2 }];
+		const short = [{ day: older.day, need: 6 }];
+		await cursors.write("reporting-refresh", JSON.stringify({ ...raw, strikes, short }));
+		for (let run = 0; run < 4; run++) await sweep(cursors, 30, QUIET);
+		expect(await productsDirtyOf(newer.day)).toEqual([0]);
+		expect(await productsDirtyOf(older.day)).toEqual([undefined]);
+		const state = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		expect(state.strikes).toEqual(strikes);
+		expect(state.short).toEqual(short);
+	}, 300_000);
+});
+
+describe("a run that passes a short day over (#668)", () => {
+	test("logs the days it built, and its deferral warning does not blame the tick's budget", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		const skipped = await orderDaysAgo("short-skipped", 20);
+		const built = await orderDaysAgo("short-behind", 30);
+		// A day no run here has room for (more than the six units a Free tick gives one
+		// build): every run passes it over and reports the leg deferred.
+		const raw = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		await cursors.write(
+			"reporting-refresh",
+			JSON.stringify({ ...raw, short: [{ day: skipped.day, need: 7 }] }),
+		);
+		const logs: string[] = [];
+		const warns: string[] = [];
+		vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+			logs.push(a.map(String).join(" "));
+		});
+		vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+			warns.push(a.map(String).join(" "));
+		});
+		const outcomes: ReturnType<typeof heal>[] = [];
+		// Eight runs: the refresh's three turns in four and the walk's, before the verifier's
+		// turn (which re-checks, and so builds, the skipped day too).
+		for (let run = 0; run < 8; run++) outcomes.push(heal(await sweep(cursors, 30, QUIET)));
+
+		expect(await productsDirtyOf(built.day)).toEqual([0]);
+		expect(await productsDirtyOf(skipped.day)).toEqual([undefined]);
+		// The run that built the day behind it was a deferred one, and it still says so.
+		const building = outcomes.filter((o) => o.deferred === true && o.count > 0);
+		expect(building.length).toBeGreaterThan(0);
+		for (const o of building) {
+			expect(logs).toContain(
+				`[otta] cron sweep reporting-heal ${String(o.count)} (more next tick)`,
+			);
+		}
+		// A deferred run that built nothing says nothing.
+		expect(logs.filter((l) => l.startsWith("[otta] cron sweep reporting-heal 0"))).toEqual([]);
+		// It ran every time, so the streak's warning is about the day, not the budget.
+		const streak = warns.filter((l) => l.includes("cron sweep reporting-heal"));
+		expect(streak.length).toBeGreaterThan(0);
+		for (const line of streak) {
+			expect(line).not.toContain("the tick's budget is not reaching it");
+			expect(line).toContain("the last because it ran and passed work over");
+		}
+	}, 300_000);
+
+	test("a leg the budget never reaches still warns that the budget is not reaching it", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		await orderDaysAgo("budget-deferred", 20);
+		const warns: string[] = [];
+		vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+			warns.push(a.map(String).join(" "));
+		});
+		// Too small a tick for the leg to start at all: deferred by the budget, every tick.
+		for (let run = 0; run < 5; run++)
+			expect(heal(await sweep(cursors, 3, QUIET)).deferred).toBe(true);
+		expect(warns).toContain(
+			"[otta] cron sweep reporting-heal has been deferred 5 ticks in a row" +
+				" — the tick's budget is not reaching it; see DEPLOYMENT.md §5 (Cron)",
+		);
 	}, 300_000);
 });
 

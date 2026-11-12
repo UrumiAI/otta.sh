@@ -1401,7 +1401,10 @@ export async function runCommerceSweeps(
 	const reached = new Set<SweepLeg>();
 	const waited = new Set<SweepLeg>();
 
-	const noteDeferral = (leg: SweepLeg): void => {
+	/** `ran`: the leg's own body ran and passed work over (a day it had no room for),
+	 *  so the budget did reach it THIS tick. Budget and body deferrals share one streak,
+	 *  so the warning names only what the last tick did (#668). */
+	const noteDeferral = (leg: SweepLeg, ran = false): void => {
 		waited.add(leg);
 		const streak = (state.deferrals[leg] ?? 0) + 1;
 		state.deferrals[leg] = streak;
@@ -1409,7 +1412,10 @@ export async function runCommerceSweeps(
 		if (streak % DEFERRAL_WARN_EVERY === 0) {
 			console.warn(
 				`[otta] cron sweep ${leg} has been deferred ${String(streak)} ticks in a row` +
-					" — the tick's budget is not reaching it; see DEPLOYMENT.md §5 (Cron)",
+					(ran
+						? ", the last because it ran and passed work over (too little room left for its next unit)"
+						: " — the tick's budget is not reaching it") +
+					"; see DEPLOYMENT.md §5 (Cron)",
 			);
 		}
 	};
@@ -1562,8 +1568,10 @@ export async function runCommerceSweeps(
 			};
 			record(outcome);
 			if (outcome.deferred === true) {
-				// Deferred by its own body, which logged why.
-				noteDeferral(leg);
+				// Deferred by its own body, which passed work over: what it did do is still
+				// logged (#668), and the streak ages it to the head of a later tick.
+				if (outcome.count > 0) logOutcome(outcome);
+				noteDeferral(leg, true);
 				return;
 			}
 			clearDeferral(leg);
@@ -2940,10 +2948,12 @@ export const INDEX_LAYOUT: string = (() => {
  * layout, at a budget of `WORKERS_FREE_MAX_QUERY_BUDGET` or less. On D1 the build writes
  * about one row per `_plugin_storage` row PER new index, counted against Free's 100,000
  * rows written a day, so the three capped legs — the reporting backfill, the cart prune
- * and the product reconcile — spend nothing that UTC day and leave it to the build
- * (DEPLOYMENT.md §5). Marked on the tick's own state (read every tick already), by the
- * first tick that sees the new layout; a store with no state yet (a fresh install) has
- * no history to build indexes over, and is not held.
+ * and the product reconcile — spend none of their daily caps that UTC day and leave it
+ * to the build (DEPLOYMENT.md §5). The rollup heal still rebuilds the days and months
+ * whose orders moved. Only that one day: a build that runs into the next is not held.
+ * Marked on the tick's own state (read every tick already), by the first tick that sees
+ * the new layout; a store with no state yet (a fresh install) has no Otta rows to build
+ * indexes over (other plugins' rows still count), and is not held.
  */
 function noteIndexLayout(state: SweepState, existed: boolean, today: string): boolean {
 	if (state.indexLayout === INDEX_LAYOUT) return false;
@@ -3933,7 +3943,7 @@ export const REPORTING_LINES_HISTORY_DAYS = 2 * MAX_REPORT_RANGE_DAYS;
  * is then about 21,000 rows written a day (16,000 in one currency). Not more: the
  * abandoned-cart prune (about 31,000) and the product reconcile (about 31,000) have
  * daily caps of their own on Free, and with all three running at once (about
- * 83,000–88,000) the store's own traffic still keeps about 12,000–17,000 of D1 Free's
+ * 78,000–83,000) the store's own traffic still keeps about 17,000–22,000 of D1 Free's
  * 100,000. It builds newest first and starts the UTC day after the deploy
  * (`indexBuildHold`). Day documents exist only from the release that introduced them
  * (about 2026-09-07), so a store upgrading now has about 55 of them — one capped day. Only a store with a year of them would take about four days for the
@@ -4125,13 +4135,31 @@ async function refreshReportingRollups(
 	});
 	let incomplete = days.length >= listLimit;
 	// A listed day is either built, marked, or still stale: `short` and `strikes` keep
-	// only the last.
+	// only the last. Only a full listing — dirty and unbuilt days, a whole batch of them —
+	// drops the days it did not list. One cut short by the daily allowance (or, spent,
+	// listing only the dirty days) leaves them as they were, so their strikes and needs
+	// carry over to the run that lists them again (#668). A full listing that is itself
+	// truncated (more stale days than a batch) still forgets the entries of the days
+	// ranked past it, as it always has: they are re-learned when listed again.
 	const listed = new Set(days);
-	state.short = state.short.filter(({ day }) => listed.has(day));
-	state.strikes = state.strikes.filter(({ day }) => listed.has(day));
+	const fullListing = allowance === null || allowance >= REPORTING_REFRESH_BATCH;
+	if (fullListing) {
+		state.short = state.short.filter(({ day }) => listed.has(day));
+		state.strikes = state.strikes.filter(({ day }) => listed.has(day));
+	}
 	const settle = (day: string): void => {
 		state.short = state.short.filter((entry) => entry.day !== day);
 		state.strikes = state.strikes.filter((entry) => entry.day !== day);
+	};
+	/** Record a listed day's entry. At most a batch of entries: when the ones a cut-short
+	 *  listing kept fill it, an unlisted day's entry makes room for this listed one. */
+	const keep = <T extends { day: string }>(entries: T[], entry: T): void => {
+		if (entries.length >= REPORTING_REFRESH_BATCH) {
+			const stale = entries.findIndex(({ day }) => !listed.has(day));
+			if (stale === -1) return;
+			entries.splice(stale, 1);
+		}
+		entries.push(entry);
 	};
 	const markUnbuildable = async (day: string, why: string): Promise<void> => {
 		// It would head every batch forever: skip it, loudly. A report scans its orders,
@@ -4179,7 +4207,7 @@ async function refreshReportingRollups(
 			if (units < buildUnits) {
 				// Short of budget this tick (another leg or the walk spent it).
 				if (known !== undefined) known.need = need;
-				else if (state.short.length < REPORTING_REFRESH_BATCH) state.short.push({ day, need });
+				else keep(state.short, { day, need });
 				continue;
 			}
 			// It had the whole build and still ran out. Absorbing a legacy day's claims, that
@@ -4199,7 +4227,7 @@ async function refreshReportingRollups(
 				continue;
 			}
 			if (strike !== undefined) strike.n = n;
-			else if (state.strikes.length < REPORTING_REFRESH_BATCH) state.strikes.push({ day, n });
+			else keep(state.strikes, { day, n });
 		}
 	}
 

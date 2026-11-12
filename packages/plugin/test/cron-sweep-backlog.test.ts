@@ -650,9 +650,11 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
  * hour, and the pace holds everywhere, with the midnight straddle given its
  * measured floor rather than hidden by the fixed instant above: 0.5 a minute until
  * ADR-0044 added a stale COD order to the backlog — its cancel and its two emails
- * (placed, cancelled) — after which the straddle measured 105 ticks (0.476).
+ * (placed, cancelled) — after which the straddle measured 105 ticks (0.476). At 0.47
+ * (107 ticks) that left two ticks of room, so the floor is 0.45 (112 ticks): re-measured
+ * for #668, 105 ticks seeded at 22:00 and 22:30, 92 at 21:00, 85 at every other hour.
  */
-const MIDNIGHT_EXPIRY_WITHIN = Math.ceil(LAPSED_ORDERS / 0.47);
+const MIDNIGHT_EXPIRY_WITHIN = Math.ceil(LAPSED_ORDERS / 0.45);
 
 describe("the same backlog at any time of day", () => {
 	test.each([
