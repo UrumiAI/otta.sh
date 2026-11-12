@@ -3,6 +3,7 @@ import {
 	dispatchOrderEmails,
 	idempotencyKey,
 	renderEmail,
+	transitionOrderAsAdmin,
 	type CreateOrderCommand,
 	type PaymentGateway,
 } from "@urumi.ai/otta-domain";
@@ -168,6 +169,47 @@ describe("createOrderFromCart — an offline (cash-on-delivery) checkout", () =>
 			{ sku: "SKU-1", productId: "p1", qty: 25, kind: "physical" },
 		]);
 		expect((await place(uncapped, { offline: { ...ON, maxUnitsPerOrder: 0 } })).ok).toBe(true);
+	});
+
+	/**
+	 * #678: a shipped, unpaid order is never auto-cancelled, so it no longer holds
+	 * a slot of the per-NETWORK cap (carrier NAT: many honest buyers share it).
+	 * It still counts toward its own buyer's cap.
+	 */
+	test("a shipped unpaid order frees its network's slot but still counts for its buyer", async () => {
+		const netCap = { ...ON, maxOpenPerBuyer: 0, maxOpenPerClient: 1 };
+		const first = await place(await physicalCart(), { offline: netCap });
+		if (!first.ok) throw new Error(`placement refused: ${first.reason}`);
+		const other = { buyerRef: "neighbour@example.com" };
+		expect(await place(await physicalCart(), { ...other, offline: netCap })).toEqual({
+			ok: false,
+			reason: "OFFLINE_ORDER_LIMIT",
+		});
+		const shipped = await transitionOrderAsAdmin(
+			{
+				orderStore: h.orderStore,
+				entitlementStore: h.entitlementStore,
+				offlinePayment: {
+					inventoryStore: h.inventory,
+					paymentEventStore: h.paymentEventStore,
+					clock: h.clock,
+				},
+			},
+			{
+				orderId: first.order.id,
+				toState: "shipped_awaiting_payment",
+				idempotencyKey: idempotencyKey(`ship:${first.order.id}`),
+				actor: "Ops Person",
+			},
+		);
+		expect(shipped).toMatchObject({ ok: true, transitioned: true });
+		expect((await place(await physicalCart(), { ...other, offline: netCap })).ok).toBe(true);
+		// The first buyer's shipped order is still theirs to pay: at a buyer cap of 1, refused.
+		expect(
+			await place(await physicalCart(), {
+				offline: { ...netCap, clientKey: "net-2", maxOpenPerBuyer: 1, maxOpenPerClient: 0 },
+			}),
+		).toEqual({ ok: false, reason: "OFFLINE_ORDER_LIMIT" });
 	});
 
 	test("the caps: a buyer, or a network, with the maximum open cod orders is refused", async () => {

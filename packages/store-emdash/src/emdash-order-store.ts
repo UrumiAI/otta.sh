@@ -617,8 +617,10 @@ export class EmdashOrderStore implements OrderStore {
 
 	/**
 	 * ADR-0044: open offline orders per buyer (the indexed `buyerRefLower`, folded
-	 * as the order was) and per client network (the indexed `offlineClientKey`) —
-	 * two `count()` calls, each a predicate on declared index fields.
+	 * as the order was) and `awaiting_payment` orders per client network (the
+	 * indexed `offlineClientKey`; a shipped order is never auto-cancelled, so it
+	 * does not hold a network's slot, #678) — two `count()` calls, each a predicate
+	 * on declared index fields.
 	 */
 	async countOpenOfflineOrders(input: {
 		buyerRef: string;
@@ -632,7 +634,10 @@ export class EmdashOrderStore implements OrderStore {
 		const byClient =
 			input.clientKey === undefined
 				? 0
-				: await this.#orders.count({ offlineClientKey: input.clientKey, state: open });
+				: await this.#orders.count({
+						offlineClientKey: input.clientKey,
+						state: "awaiting_payment",
+					});
 		return { byBuyer, byClient };
 	}
 
