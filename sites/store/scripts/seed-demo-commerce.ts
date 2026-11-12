@@ -371,7 +371,8 @@ export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, st
 	// production build; it just returns 403 there (it is gated on
 	// `import.meta.env.DEV`), so a deployed site needs EMDASH_TOKEN. On a store
 	// not yet claimed, the route also needs the setup token (ADR-0042): sent as
-	// the claim cookie when OTTA_SETUP_TOKEN is set here.
+	// the claim cookie when OTTA_SETUP_TOKEN is set in sites/staging/.dev.vars
+	// or here.
 	const res = await fetch(`${siteUrl}/_emdash/api/auth/dev-bypass`, {
 		redirect: "manual",
 		headers: setupClaimHeaders(),
