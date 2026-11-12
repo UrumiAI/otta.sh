@@ -20,6 +20,7 @@ import {
 	findContentDbFile,
 	healLocalD1,
 	healOrWarn,
+	openContentDbForSpec,
 	PARKED_TABLE,
 } from "../e2e/local-d1.js";
 
@@ -137,5 +138,44 @@ describe("findContentDbFile: the spec's choice of ONE file to break", () => {
 	it("names the one file when there is one", () => {
 		const live = d1File("live", [CONTENT_TABLE]);
 		expect(findContentDbFile(dir)).toBe(live);
+	});
+});
+
+describe("openContentDbForSpec: what the spec skips on (or, under a gate, fails on)", () => {
+	it("opens the one file when there is one", () => {
+		const live = d1File("live", [CONTENT_TABLE]);
+		const opened = openContentDbForSpec(dir);
+		expect(opened.ok).toBe(true);
+		if (opened.ok) {
+			expect(opened.db.name).toBe(live);
+			opened.db.close();
+		}
+	});
+
+	it("gives a reason, not a throw, when no file holds the products table", () => {
+		const opened = openContentDbForSpec(dir);
+		expect(opened.ok).toBe(false);
+		if (!opened.ok) expect(opened.why).toContain(`no local D1 file under ${dir}`);
+	});
+
+	it("gives a reason naming both files, not a throw, when more than one holds it", () => {
+		const live = d1File("live", [CONTENT_TABLE]);
+		const stale = d1File("stale", [CONTENT_TABLE]);
+		const opened = openContentDbForSpec(dir);
+		expect(opened.ok).toBe(false);
+		if (!opened.ok) {
+			expect(opened.why).toContain("more than one local D1 file");
+			expect(opened.why).toContain(live);
+			expect(opened.why).toContain(stale);
+		}
+	});
+
+	it("gives a reason naming the unreadable file, not a throw", () => {
+		const junk = join(dir, "junk.sqlite");
+		writeFileSync(junk, "not a database, just bytes ".repeat(200));
+		d1File("live", [CONTENT_TABLE]);
+		const opened = openContentDbForSpec(dir);
+		expect(opened.ok).toBe(false);
+		if (!opened.ok) expect(opened.why).toContain(junk);
 	});
 });

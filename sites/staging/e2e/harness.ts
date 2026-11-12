@@ -411,18 +411,15 @@ export async function skipWithoutProducts(testInfo: TestInfo, rowCount: number):
 }
 
 /**
- * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when there is no local D1
- * file with a products table to take away.
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when there is no ONE local
+ * D1 file with a products table to take away: none, more than one, or one that
+ * cannot be read. `how` is `openContentDbForSpec`'s reason (#669).
  *
  * `dead-store.spec.ts` (#659) is the first spec that mutates the local
  * `.wrangler` state directly instead of going through the site; the helpers it
  * uses live in `./local-d1.js`, and `global-setup.ts` heals what it may leave.
  */
-export function skipWithoutLocalD1(testInfo: TestInfo, d1Dir: string, table: string): void {
-	const how =
-		`no local D1 file under ${d1Dir} has a "${table}" table. Seed the stack ` +
-		`(OTTA_E2E_SEED=1), or, if it is seeded, miniflare may have moved its D1 ` +
-		`layout and e2e/local-d1.ts needs the new path.`;
+export function skipWithoutLocalD1(testInfo: TestInfo, how: string): void {
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }

@@ -54,6 +54,10 @@ instead, or have the proxy keep the scheme.
 `pnpm test:e2e:claim` runs the claim-link spec against its own fresh, unseeded stack
 (`playwright.claim.config.ts`); stop any other `astro dev` in this worktree first, since Astro
 allows one per project.
+`e2e/dead-store.spec.ts` renames `ec_products` in this worktree's local D1 for a moment. If a
+run is killed mid-spec, a dev server you started yourself answers 503 on product pages until the
+table is back: rerun `pnpm test:e2e` (its global setup heals it), or rename
+`ec_products_e2e_659_parked` back to `ec_products` by hand.
 
 ### Plugin settings are namespaced by plugin id
 
