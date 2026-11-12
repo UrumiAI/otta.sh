@@ -1457,25 +1457,37 @@ product at once.
 **Rows written, and the daily repair cap.** By the same index model as "Draining a backlog writes
 rows" above, every `_plugin_storage` document write is about 52 rows written (49 declared indexes
 since #572), and a repair's sync is about three document writes (the upsert, the activate, the
-variant write) plus its SKU claims — about **156 rows written a product**. At the leg's own pace (about 460 repairs a day) a first
-install over an existing catalogue, where every product has no commerce row, would write about
-70,000 rows a day for days on end, which beside `prune-carts` and the store's own traffic passes
-D1 Free's 100,000 a day, after which every write fails until the UTC reset. So on the Workers Free
-preset the leg makes at most **200 repairs a UTC day** (counted in its cursor document): about
-31,000 rows written. A lost unpublish's deactivation is one document write, so it counts a **third
-of a repair**, and a page's deactivations are made before its syncs: a lost unpublish leaves a
-withdrawn product on sale, a lost publish only leaves one off sale, so the cap holds back a page's
-syncs before its deactivations (a sync that would pass the cap waits even while a deactivation
-still fits). Only a repair's writes count — not the visit that checks it, not a product found in sync, not
-one its own hook synced first — and the count is kept when the tick's query ceiling stops a run
-part-way through a repair. Once the cap is reached the leg stops repairing, is stamped and runs
-only at its fifteen-minute cadence (one kv read, and the checks of the day's last repairs); the
-pass keeps its start, its page and its nominated products and carries on after 00:00 UTC, so
-nothing is skipped. A first install over N products therefore heals in about **N / 200 days** on
-Free (a 1 000-product catalogue in five days; "Publish changes" repairs any one product at once),
-and the Settings page says so beside the **Background work per minute** choice. A pass that long
-also delays what it has already walked past: a lost unpublish of a product on a page the pass has
-left is found by the next pass. On Workers Paid there is no daily cap.
+variant write) plus its SKU claims — about **156 rows written a product**. At the leg's own pace
+(about 460 repairs a day) a first install over an existing catalogue, where every product has no
+commerce row, would write about 70,000 rows a day for days on end, which beside `prune-carts` and
+the store's own traffic passes D1 Free's 100,000 a day, after which every write fails until the UTC
+reset. So on the Workers Free preset the leg makes at most **200 repairs a UTC day** (counted in its
+cursor document): about 31,000 rows written. The count is kept in thirds of a repair: a sync spends
+three, a lost unpublish's deactivation (one document write against a sync's three) spends one. When
+the day's allowance runs low, syncs stop first; a deactivation still runs while a third of a repair
+is left. A lost unpublish leaves a withdrawn product on sale, where a lost publish only leaves one
+off sale, so a page's deactivations also go before its syncs. Only a repair's writes count — not the
+visit that checks it, not a product found in sync, not one its own hook synced first — and the count
+is kept when the tick's query ceiling stops a run part-way through a repair. The cursor document
+also keeps the count in whole repairs, rounded up, which is what a release from before #664 reads: a
+same-day rollback stops at the cap rather than counting the day again.
+
+Once no sync fits, the walk holds its page: the pass keeps its start, its page and its nominated
+products and carries on after 00:00 UTC, so nothing is skipped. While it is held and a deactivation
+still fits, the leg **scans for lost unpublishes** in a separate lap: it lists the catalogue from
+the top, one page at a time, reads each page's commerce rows and deactivates only a product whose
+row is active while its document is not published — on a page ahead of the walk or behind it. A
+scanned page costs what a walked page does (seven queries: the list, two row reads, the cursor
+write) and writes nothing else; a lap runs at most once per pass interval (24 hours on Free), so it
+reads what one pass reads (the rows-read table above), and its place persists across ticks and days.
+When the lap has nothing left to do the leg is stamped and runs only at its fifteen-minute cadence
+(one kv read, and the checks of the day's last repairs). A first install over N products therefore
+heals in about **N / 200 days** on Free (a 1 000-product catalogue in five days; "Publish changes"
+repairs any one product at once), and the Settings page says so beside the **Background work per
+minute** choice while it is set to the Free preset (or any setting of 50 or less). On a capped day a
+lost unpublish is found by the lap in progress or, if the lap has already passed its page, by the
+next one, a pass interval later; on a day the cap does not hold the walk, the walk itself finds it.
+On Workers Paid there is no daily cap.
 
 Together the three capped legs bound the sweep's **daily rows written on Free** at about
 83,000–88,000: `prune-carts` about 31,000 (300 carts), `product-reconcile` about 31,000 (200
