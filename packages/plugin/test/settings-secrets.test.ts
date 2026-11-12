@@ -393,6 +393,68 @@ describe("Settings: how a key field renders", () => {
 		}
 	});
 
+	test("issue #677: the email lines say what a failing provider costs, and show its last failure", async () => {
+		// Confirmed: the from-address is the provider's setup, which on the
+		// Cloudflare default is a build variable, not something "set in" a provider.
+		const via = await invoke(
+			makeCtx({ "state:emailLastSentAt": new Date().toISOString() }, { email: true }).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		const viaText = contextTexts(via.blocks).join("\n");
+		expect(viaText).toContain("OTTA_EMAIL_FROM build variable");
+		expect(viaText).not.toContain("are set in that provider");
+		expect(viaText).not.toContain("last send failed");
+		// Unconfirmed: a selected provider may be failing, spending attempts — not
+		// only "waiting up to 72 h".
+		const idle = await invoke(makeCtx({}, { email: true }).ctx, {
+			type: "page_load",
+			page: "/settings",
+		});
+		const idleText = contextTexts(idle.blocks).join("\n");
+		expect(idleText).toContain(
+			"Email: provider not confirmed — nothing sent since setup or a refusal. If it fails, each try uses one of an order email's 5 attempts; with no provider, emails wait 72 h.",
+		);
+		expect(idleText).not.toContain("Without one, order emails wait");
+		// Confirmed, then failing (a daily quota): the failure is on the screen,
+		// with its time and reason, and the heading still reads from the status.
+		const failure = { at: "2026-11-10T14:03:09.000Z", reason: "daily sending quota exceeded" };
+		const failing = await invoke(
+			makeCtx(
+				{
+					"state:emailLastSentAt": "2026-11-10T09:00:00.000Z",
+					"state:emailLastFailure": failure,
+				},
+				{ email: true },
+			).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		const failingText = contextTexts(failing.blocks).join("\n");
+		expect(failingText).toContain("sent via EmDash");
+		expect(failingText).toContain(
+			"Email: last send failed 2026-11-10 14:03 UTC — daily sending quota exceeded. Each failure uses one of an order email's 5 attempts.",
+		);
+		// Unconfirmed with a failure: shown too.
+		const neverSent = await invoke(
+			makeCtx({ "state:emailLastFailure": failure }, { email: true }).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		expect(contextTexts(neverSent.blocks).join("\n")).toContain(
+			"last send failed 2026-11-10 14:03 UTC",
+		);
+		// A send delivered after it: the failure is no longer the latest word.
+		const recovered = await invoke(
+			makeCtx(
+				{
+					"state:emailLastSentAt": "2026-11-10T15:00:00.000Z",
+					"state:emailLastFailure": failure,
+				},
+				{ email: true },
+			).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		expect(contextTexts(recovered.blocks).join("\n")).not.toContain("last send failed");
+	});
+
 	test("the label follows a save on the same response", async () => {
 		const { ctx } = makeCtx();
 		const saved = await saveSecret(ctx, "save-stripe-secret-key", "stripeSecretKey", SK_LIVE);

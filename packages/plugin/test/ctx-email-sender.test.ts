@@ -35,15 +35,19 @@ import {
 	CtxEmailSender,
 	EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE,
 	EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE,
+	EMAIL_LAST_FAILURE_KEY,
 	EMAIL_LAST_SENT_KEY,
 	EMAIL_TRANSPORT_UNAVAILABLE_KEY,
 	emailSendingAvailable,
+	emailSendingReport,
 	emailSendingStatus,
 	emailSendingConfigured,
 	isEmailNotConfiguredError,
 	LOGIN_EMAIL_TIMEOUT_MS,
 	makeEmailSender,
 	makeLoginEmailSender,
+	SEND_FAILURE_REASON_MAX,
+	sendFailureReason,
 } from "../src/email/ctx-email-sender.js";
 import type { EmailAccess, EmailMessage, PluginContext } from "../src/types.js";
 
@@ -285,6 +289,180 @@ describe("PR #418 review: a delivered send is recorded, and the status has three
 		const failing = ctxWith({ send: async () => undefined });
 		failing.kv.get = () => Promise.reject(new Error("kv down"));
 		expect(await emailSendingStatus(failing)).toBe("unconfirmed");
+	});
+});
+
+describe("issue #677: a failed send is recorded for Settings, without the recipient", () => {
+	/** A context whose kv counts its writes. */
+	function counted(send: EmailAccess["send"], kv = new Map<string, unknown>()) {
+		const ctx = ctxWith({ send }, kv);
+		const writes: string[] = [];
+		const set = ctx.kv.set.bind(ctx.kv);
+		ctx.kv.set = async (key, value) => {
+			writes.push(key);
+			await set(key, value);
+		};
+		return { ctx, kv, writes };
+	}
+
+	test("a provider error is recorded with its time and a reason that names no recipient, URL or key", async () => {
+		const { ctx, kv } = counted(() =>
+			Promise.reject(
+				new Error(
+					"[cloudflare-email] daily sending quota exceeded for buyer@example.com; see https://dash.example/x?token=abc key " +
+						["sk", "live", "0123456789abcdefghijklmnop"].join("_"),
+				),
+			),
+		);
+		const before = Date.now();
+		expect(await rejectionOf((await makeEmailSender(ctx))!.send(INPUT))).toBeDefined();
+		await settle();
+		const failure = kv.get(EMAIL_LAST_FAILURE_KEY) as { at: string; reason: string };
+		expect(Date.parse(failure.at)).toBeGreaterThanOrEqual(before);
+		expect(failure.reason).toContain("daily sending quota exceeded for [address]");
+		expect(failure.reason).not.toMatch(/buyer|example\.com|https|token|sk_live/);
+		expect(failure.reason.length).toBeLessThanOrEqual(SEND_FAILURE_REASON_MAX);
+		// Nothing claims it was sent.
+		expect(kv.has(EMAIL_LAST_SENT_KEY)).toBe(false);
+	});
+
+	test("a timed-out send is recorded as one", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const { ctx, kv } = counted(() => new Promise<void>(() => {}));
+		const pending = rejectionOf(
+			(await makeEmailSender(ctx, { requestTimeoutMs: 10 }))!.send(INPUT),
+		);
+		await vi.advanceTimersByTimeAsync(10);
+		expect(await pending).toBeDefined();
+		expect((kv.get(EMAIL_LAST_FAILURE_KEY) as { reason: string }).reason).toBe(
+			"the provider did not answer in time",
+		);
+	});
+
+	test("'no provider', a cut-short send and a delivered send record no failure", async () => {
+		for (const [send, canStart] of [
+			[notConfigured, undefined],
+			[async () => undefined, () => false],
+			[async () => undefined, undefined],
+		] as const) {
+			const { ctx, kv } = counted(send);
+			const sender = await makeEmailSender(ctx, canStart === undefined ? {} : { canStart });
+			await rejectionOf(sender!.send(INPUT));
+			await settle();
+			expect(kv.has(EMAIL_LAST_FAILURE_KEY)).toBe(false);
+		}
+	});
+
+	test("writes stay bounded: one record per sender, failing or delivering", async () => {
+		const failing = counted(() => Promise.reject(new Error("quota")));
+		const sender = (await makeEmailSender(failing.ctx))!;
+		for (let i = 0; i < 3; i++) await rejectionOf(sender.send(INPUT));
+		await settle();
+		expect(failing.writes).toEqual([EMAIL_LAST_FAILURE_KEY]);
+
+		const delivering = counted(async () => undefined);
+		const ok = (await makeEmailSender(delivering.ctx))!;
+		for (let i = 0; i < 3; i++) await ok.send(INPUT);
+		await settle();
+		expect(delivering.writes).toEqual([EMAIL_LAST_SENT_KEY]);
+	});
+
+	test("the record follows the provider's latest outcome: fail, deliver, fail writes each change once", async () => {
+		const outcomes = ["fail", "fail", "ok", "ok", "fail", "fail"];
+		const { ctx, kv, writes } = counted(() =>
+			outcomes.shift() === "ok" ? Promise.resolve() : Promise.reject(new Error("quota")),
+		);
+		const sender = (await makeEmailSender(ctx))!;
+		for (let i = 0; i < 6; i++) {
+			await rejectionOf(sender.send(INPUT));
+			// Distinct timestamps, as sends seconds apart have.
+			await new Promise<void>((resolve) => setTimeout(resolve, 2));
+		}
+		await settle();
+		// One write per change of outcome, never one per email.
+		expect(writes).toEqual([EMAIL_LAST_FAILURE_KEY, EMAIL_LAST_SENT_KEY, EMAIL_LAST_FAILURE_KEY]);
+		// The last word is the failure after the delivery: Settings shows it.
+		expect((await emailSendingReport(ctx)).lastFailure).toMatchObject({ reason: "quota" });
+		expect(kv.has(EMAIL_LAST_SENT_KEY)).toBe(true);
+	});
+
+	test("a sign-in email's failure is not recorded: it spends no order-email attempt", async () => {
+		const { ctx, kv } = counted(() => Promise.reject(new Error("quota")));
+		await rejectionOf((await makeLoginEmailSender(ctx))!.send(INPUT));
+		await settle();
+		expect(kv.has(EMAIL_LAST_FAILURE_KEY)).toBe(false);
+	});
+
+	test("a failing record write never changes the send's own error", async () => {
+		const ctx = ctxWith({ send: () => Promise.reject(new Error("quota")) });
+		ctx.kv.set = () => Promise.reject(new Error("kv down"));
+		const err = await rejectionOf((await makeEmailSender(ctx))!.send(INPUT));
+		expect((err as Error).message).toBe("quota");
+		await settle();
+	});
+
+	test("the reason: control characters collapse, long ones are cut, and an empty one says so", () => {
+		expect(sendFailureReason(new Error("line one\r\nline\ttwo"), "x@y.test")).toBe(
+			"line one line two",
+		);
+		const long = sendFailureReason(new Error("word ".repeat(40)), "x@y.test");
+		expect(long.length).toBe(SEND_FAILURE_REASON_MAX);
+		expect(long.endsWith("…")).toBe(true);
+		expect(sendFailureReason(new Error(""), "x@y.test")).toBe("no reason given");
+		expect(sendFailureReason({}, "x@y.test")).toBe("no reason given");
+		// The recipient is removed even when it is not address-shaped.
+		expect(sendFailureReason(new Error("rejected Buyer-Name"), "Buyer-Name")).toBe(
+			"rejected [address]",
+		);
+	});
+
+	describe("emailSendingReport", () => {
+		const now = Date.parse("2026-10-08T12:00:00.000Z");
+		const failure = { at: "2026-10-08T11:30:00.000Z", reason: "quota exceeded" };
+
+		test("a failure AFTER the last delivered send is shown, and the status stays confirmed", async () => {
+			const ctx = ctxWith(
+				{ send: async () => undefined },
+				new Map<string, unknown>([
+					[EMAIL_LAST_SENT_KEY, "2026-10-08T11:00:00.000Z"],
+					[EMAIL_LAST_FAILURE_KEY, failure],
+				]),
+			);
+			expect(await emailSendingReport(ctx, now)).toEqual({
+				status: "confirmed",
+				lastFailure: failure,
+			});
+		});
+
+		test("a failure with nothing ever delivered is shown beside unconfirmed", async () => {
+			const ctx = ctxWith(
+				{ send: async () => undefined },
+				new Map<string, unknown>([[EMAIL_LAST_FAILURE_KEY, failure]]),
+			);
+			expect(await emailSendingReport(ctx, now)).toEqual({
+				status: "unconfirmed",
+				lastFailure: failure,
+			});
+		});
+
+		test("a send delivered since hides it; 'no provider' and garbage show none", async () => {
+			const since = ctxWith(
+				{ send: async () => undefined },
+				new Map<string, unknown>([
+					[EMAIL_LAST_SENT_KEY, "2026-10-08T11:45:00.000Z"],
+					[EMAIL_LAST_FAILURE_KEY, failure],
+				]),
+			);
+			expect(await emailSendingReport(since, now)).toEqual({ status: "confirmed" });
+			expect(await emailSendingReport(ctxWith(), now)).toEqual({ status: "unavailable" });
+			for (const garbage of ["2026-10-08", { at: "nope", reason: "x" }, { at: failure.at }]) {
+				const ctx = ctxWith(
+					{ send: async () => undefined },
+					new Map<string, unknown>([[EMAIL_LAST_FAILURE_KEY, garbage]]),
+				);
+				expect(await emailSendingReport(ctx, now)).toEqual({ status: "unconfirmed" });
+			}
+		});
 	});
 });
 

@@ -10,7 +10,11 @@ import {
 	isSupportedCurrency,
 	MAX_HOLD_TTL_MINUTES,
 } from "@urumi.ai/otta-domain";
-import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
+import {
+	emailSendingReport,
+	type EmailSendFailure,
+	type EmailSendingStatus,
+} from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import {
 	countryRequiresBuyerAddress,
@@ -430,8 +434,11 @@ interface SettingsPageState {
 	 *  Stripe only when it holds nothing usable for the stored key. */
 	stripeAccount: StripeAccountCountryStatus;
 	/** What is known about the EmDash host's email provider (`ctx.email`, ADR-0031):
-	 *  none, not yet confirmed by a send, or confirmed — two kv reads. */
+	 *  none, not yet confirmed by a send, or confirmed — three kv reads with
+	 *  {@link emailLastFailure}. */
 	emailStatus: EmailSendingStatus;
+	/** Issue #677: the last failed send, while no send has gone through since. */
+	emailLastFailure: EmailSendFailure | undefined;
 	/** #531: when a Stripe webhook last verified — one kv read, fail-soft. */
 	stripeWebhookLastVerified: StripeWebhookLastVerified;
 	/** #497: whether a payment key saved now could be stored encrypted. Not kv,
@@ -491,7 +498,7 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		plain,
 		backgroundWork,
 		stripeAccount,
-		emailStatus,
+		emailReport,
 		stripeWebhookLastVerified,
 		cashOnDelivery,
 	] = await Promise.all([
@@ -510,8 +517,9 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		// reads only what is cached: that action never waits on Stripe.
 		peekCountry ? peekStripeAccountCountry(ctx) : readStripeAccountCountry(ctx),
 		// ADR-0031: `ctx.email`, no recent "no email provider" answer, and whether a
-		// send has gone through it since (PR #418 review: three states).
-		emailSendingStatus(ctx),
+		// send has gone through it since (PR #418 review: three states); and the
+		// last failed send, while it is the latest word (issue #677).
+		emailSendingReport(ctx),
 		// #531: never throws; a failed read is its own state, never "never".
 		readStripeWebhookLastVerified(ctx),
 		// ADR-0044: fail-soft — an unread toggle leaves its form out, never "off".
@@ -533,7 +541,8 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 	return {
 		backgroundWork,
 		stripeAccount,
-		emailStatus,
+		emailStatus: emailReport.status,
+		emailLastFailure: emailReport.lastFailure,
 		stripeWebhookLastVerified,
 		plainSettings: plain.values,
 		plainUnread: plain.unread,
@@ -1605,6 +1614,7 @@ function buildSettingsBlocks(args: {
 	backgroundWork: number;
 	stripeAccount: StripeAccountCountryStatus;
 	emailStatus: EmailSendingStatus;
+	emailLastFailure: EmailSendFailure | undefined;
 	stripeWebhookLastVerified: StripeWebhookLastVerified;
 	/** #497: whether a payment key typed below could be stored encrypted. */
 	encryptionKey: EncryptionKeyStatus;
@@ -1637,6 +1647,7 @@ function buildSettingsBlocks(args: {
 			args.plainUnread,
 			args.stripeAccount,
 			args.emailStatus,
+			args.emailLastFailure,
 			args.stripeWebhookLastVerified,
 			args.paymentRefusal,
 		),
@@ -2071,6 +2082,7 @@ function paymentsGroup(
 	unread: ReadonlySet<string>,
 	stripeAccount: StripeAccountCountryStatus,
 	emailStatus: EmailSendingStatus,
+	emailLastFailure: EmailSendFailure | undefined,
 	webhookLastVerified: StripeWebhookLastVerified,
 	refusal?: PaymentRefusal,
 ): Block[] {
@@ -2138,6 +2150,11 @@ function paymentsGroup(
 			// keys-first. It prefills with what is stored, which says on its own that
 			// it is not a write-only key.
 			{ type: "context", text: emailStatusLine(emailStatus) },
+			// Issue #677: a provider that fails after it was confirmed (a daily
+			// quota) must not read as fine, nor an unconfirmed one as merely waiting.
+			...(emailLastFailure === undefined
+				? []
+				: [{ type: "context", text: emailFailureLine(emailLastFailure) } satisfies Block]),
 			...publishableKeyWarnings(plain.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "", state),
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
@@ -2220,19 +2237,31 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
  *  - `confirmed`: the host's provider has accepted a send since any "no provider";
  *  - `unconfirmed`: `ctx.email` is there but nothing has gone through it yet. A
  *    sandboxed host ALWAYS hands over `ctx.email`, so an idle store with no
- *    provider looks like this — it must not read as reassurance;
+ *    provider looks like this — it must not read as reassurance. Nor may it say
+ *    the mail is only waiting: a selected provider that fails spends an order
+ *    email's attempts on every try (ADR-0043, issue #677);
  *  - `unavailable`: no provider: order emails wait (72 h at most, then are
  *    skipped) and sign-in links are not sent.
+ *
+ * The from-address belongs to the provider's own setup: on the reference site's
+ * Cloudflare default it is the `OTTA_EMAIL_FROM` build variable (issue #677).
  */
 export function emailStatusLine(status: EmailSendingStatus): string {
 	switch (status) {
 		case "confirmed":
-			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM are set in that provider.";
+			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM come from that provider's setup (the Cloudflare default: the OTTA_EMAIL_FROM build variable).";
 		case "unconfirmed":
-			return "Email: provider not confirmed — nothing sent through it since setup or a refusal. Without one, order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
+			return "Email: provider not confirmed — nothing sent since setup or a refusal. If it fails, each try uses one of an order email's 5 attempts; with no provider, emails wait 72 h. See docs/email-providers.md.";
 		case "unavailable":
 			return "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 	}
+}
+
+/** Issue #677 — the last failed send, under the email line: when, and the
+ *  provider's reason with no recipient address (`sendFailureReason`). Shown only
+ *  while no send has gone through since. Within the nested-context budget (200). */
+export function emailFailureLine(failure: EmailSendFailure): string {
+	return `Email: last send failed ${failure.at.slice(0, 10)} ${failure.at.slice(11, 16)} UTC — ${failure.reason}. Each failure uses one of an order email's 5 attempts.`;
 }
 
 /** Issue #498 — what the stored publishable key means for card checkout, under

@@ -72,9 +72,12 @@ export const LOGIN_EMAIL_TIMEOUT_MS = 3_000;
  *  three, as a ceiling. */
 export const EMAIL_SENDER_BUILD_READS = 3;
 
-/** The kv write the FIRST delivered send of a sender adds after the host call:
- *  the "last sent" record ({@link markEmailSent}). The cron's query budget counts
- *  it, like {@link EMAIL_SENDER_BUILD_READS}. */
+/** The kv write a delivered send adds after the host call when it is the
+ *  sender's first, or the first since a recorded failure: the "last sent" record
+ *  ({@link markEmailSent}). A failed ORDER-email send writes the "last failure"
+ *  record instead ({@link markEmailSendFailed}) on the same terms, so one send
+ *  writes at most one of the two. The cron's query budget counts it,
+ *  like {@link EMAIL_SENDER_BUILD_READS}. */
 export const EMAIL_SENT_RECORD_WRITES = 1;
 
 export interface CtxEmailSenderOptions {
@@ -107,6 +110,13 @@ export interface CtxEmailSenderOptions {
 	/** Told when the host ACCEPTED a send — {@link makeEmailSender} records it
 	 *  ({@link markEmailSent}). Started, not awaited. */
 	onSent?: (() => Promise<void>) | undefined;
+	/** Told when the host's provider FAILED a send — it threw, or did not answer
+	 *  in time (issue #677). Not for "no provider" or a cut-short send, which
+	 *  spend no attempt. Gets a short reason with no recipient address
+	 *  ({@link sendFailureReason}). {@link makeEmailSender} records it
+	 *  ({@link markEmailSendFailed}). Started, not awaited; once per change of
+	 *  outcome. */
+	onFailed?: ((reason: string) => Promise<void>) | undefined;
 }
 
 /** Renders with the storefront's money, the store name and the order link, and
@@ -122,11 +132,15 @@ export class CtxEmailSender implements EmailSender {
 	readonly #canStart: (() => boolean) | undefined;
 	readonly #onUnavailable: (() => Promise<void>) | undefined;
 	readonly #onSent: (() => Promise<void>) | undefined;
-	#sentRecorded = false;
+	readonly #onFailed: ((reason: string) => Promise<void>) | undefined;
+	/** The outcome this sender last recorded, so a provider costs one kv write
+	 *  per CHANGE of outcome, never one per email (issue #677). */
+	#recorded: "sent" | "failed" | undefined;
 
 	constructor(options: CtxEmailSenderOptions) {
 		this.#onUnavailable = options.onUnavailable;
 		this.#onSent = options.onSent;
+		this.#onFailed = options.onFailed;
 		this.#email = options.email;
 		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
 		this.#storeName = options.storeName;
@@ -192,11 +206,11 @@ export class CtxEmailSender implements EmailSender {
 		try {
 			await Promise.race([sending, timeout]);
 		} catch (err) {
-			if (isEmailSendTimeoutError(err)) throw err;
 			if (isEmailNotConfiguredError(err)) {
 				await this.#onUnavailable?.();
 				throw new EmailTransportUnavailableError();
 			}
+			this.#recordFailure(err, input.to);
 			throw err;
 		} finally {
 			clearTimeout(timer);
@@ -205,12 +219,67 @@ export class CtxEmailSender implements EmailSender {
 		// awaited: the email has gone, so a slow or hung kv write must never turn it
 		// into a timeout (a counted attempt, a duplicate). Started here, so a query
 		// budget counts it with this send; fail-soft, so nothing is left to reject.
-		// Once per sender (one per tick or request): a timestamp, not a log.
-		if (!this.#sentRecorded) {
-			this.#sentRecorded = true;
+		// A timestamp, not a log: once per change of outcome. After a recorded
+		// failure a delivery is recorded again, so Settings stops showing the
+		// failure (issue #677).
+		if (this.#recorded !== "sent") {
+			this.#recorded = "sent";
 			void this.#onSent?.().catch(() => undefined);
 		}
 	}
+
+	/** A provider failure, for the Settings line (issue #677). Like the "last
+	 *  sent" record: not awaited, fail-soft, and once per change of outcome, so a
+	 *  failing provider costs one kv write per tick or request, not one per
+	 *  email, and a failure after a delivery in the same tick is still seen. One
+	 *  send writes at most one record, so {@link EMAIL_SENT_RECORD_WRITES} holds. */
+	#recordFailure(err: unknown, to: string): void {
+		if (this.#onFailed === undefined || this.#recorded === "failed") return;
+		this.#recorded = "failed";
+		void this.#onFailed(sendFailureReason(err, to)).catch(() => undefined);
+	}
+}
+
+/** The longest reason {@link sendFailureReason} returns, so the Settings line
+ *  stays inside its 200-character budget. */
+export const SEND_FAILURE_REASON_MAX = 80;
+
+/**
+ * A short reason for a failed send, safe to store and show to the merchant
+ * (issue #677). A provider's error may quote the recipient, a URL or a key, so:
+ * the recipient and anything shaped like an email address become `[address]`,
+ * URLs become `[url]`, long token-like runs become `[redacted]`, control
+ * characters and runs of spaces collapse, and the result is cut to
+ * {@link SEND_FAILURE_REASON_MAX}. A timeout says so; anything without a
+ * message is "no reason given".
+ */
+export function sendFailureReason(err: unknown, to: string): string {
+	if (isEmailSendTimeoutError(err)) return "the provider did not answer in time";
+	const message =
+		typeof err === "object" &&
+		err !== null &&
+		typeof (err as { message?: unknown }).message === "string"
+			? (err as { message: string }).message
+			: typeof err === "string"
+				? err
+				: "";
+	let reason = message;
+	if (to !== "") reason = reason.split(to).join("[address]");
+	// Control characters (CR/LF included) become spaces.
+	reason = Array.from(reason, (c) => {
+		const code = c.codePointAt(0) ?? 0;
+		return code < 0x20 || code === 0x7f ? " " : c;
+	})
+		.join("")
+		.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[url]")
+		.replace(/[^\s"'<>()[\],;:]+@[^\s"'<>()[\],;:]+/g, "[address]")
+		.replace(/[A-Za-z0-9_\-+/=]{24,}/g, "[redacted]")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (reason === "") return "no reason given";
+	return reason.length <= SEND_FAILURE_REASON_MAX
+		? reason
+		: `${reason.slice(0, SEND_FAILURE_REASON_MAX - 1).trimEnd()}…`;
 }
 
 /** EmDash's sandbox bridge's refusal when no provider is wired (emdash 0.38
@@ -308,8 +377,8 @@ export const EMAIL_AVAILABILITY_READS = 1;
  * ({@link EMAIL_TRANSPORT_UNAVAILABLE_KEY}) lapses after 5 minutes, so neither
  * says a provider WORKS. This does: the Settings line only says "sent via
  * EmDash's email provider" once it is newer than any "no provider" answer. Plain kv, written fail-soft by the
- * first delivered send of each sender — once per tick or request
- * ({@link EMAIL_SENT_RECORD_WRITES}).
+ * first delivered send of each sender, and again after one of its recorded
+ * failures — at most once per change of outcome ({@link EMAIL_SENT_RECORD_WRITES}).
  */
 export const EMAIL_LAST_SENT_KEY = "state:emailLastSentAt";
 
@@ -319,6 +388,37 @@ export async function markEmailSent(ctx: PluginContext, nowMs: number = Date.now
 		await ctx.kv.set(EMAIL_LAST_SENT_KEY, new Date(nowMs).toISOString());
 	} catch {
 		// Fail-soft: the email went; only the confirmation waits for the next send.
+	}
+}
+
+/**
+ * The last FAILED send through the host's provider (issue #677): a JSON object
+ * `{ at, reason }` — an ISO time and {@link sendFailureReason}'s short reason,
+ * never the recipient. A provider that fails after a success (a daily quota, a
+ * sender domain gone inactive) would otherwise still read "sent via EmDash's
+ * email provider". Plain kv, written fail-soft by an order-email sender's first
+ * failed send, and again after one of its recorded deliveries
+ * ({@link EMAIL_SENT_RECORD_WRITES}). One small object, overwritten: bounded.
+ */
+export const EMAIL_LAST_FAILURE_KEY = "state:emailLastFailure";
+
+/** A recorded failed send: when, and why in a few words. */
+export interface EmailSendFailure {
+	at: string;
+	reason: string;
+}
+
+/** Record a failed send, now. Never throws. */
+export async function markEmailSendFailed(
+	ctx: PluginContext,
+	reason: string,
+	nowMs: number = Date.now(),
+): Promise<void> {
+	try {
+		const failure: EmailSendFailure = { at: new Date(nowMs).toISOString(), reason };
+		await ctx.kv.set(EMAIL_LAST_FAILURE_KEY, failure);
+	} catch {
+		// Fail-soft: the next failed send records it again.
 	}
 }
 
@@ -340,20 +440,67 @@ export async function emailSendingStatus(
 	ctx: PluginContext,
 	nowMs: number = Date.now(),
 ): Promise<EmailSendingStatus> {
-	if (!emailSendingConfigured(ctx)) return "unavailable";
-	const [unavailableAt, lastSentAt] = await Promise.all([
+	return (await emailSendingReport(ctx, nowMs)).status;
+}
+
+/** {@link emailSendingStatus}, and the last failed send when nothing has gone
+ *  through the provider since it (issue #677). */
+export interface EmailSendingReport {
+	status: EmailSendingStatus;
+	/** Absent when `unavailable`, when none is recorded, or when a send has
+	 *  gone through since. */
+	lastFailure?: EmailSendFailure;
+}
+
+/**
+ * {@link emailSendingStatus} plus the last failed send ({@link EMAIL_LAST_FAILURE_KEY}),
+ * kept only while it is the latest word: a send accepted after it hides it.
+ * Three kv reads when `ctx.email` is there, none when it is not. Fail-soft: an
+ * unreadable or malformed failure record reads as absent.
+ */
+export async function emailSendingReport(
+	ctx: PluginContext,
+	nowMs: number = Date.now(),
+): Promise<EmailSendingReport> {
+	if (!emailSendingConfigured(ctx)) return { status: "unavailable" };
+	const [unavailableAt, lastSentAt, lastFailure] = await Promise.all([
 		readIsoMs(ctx, EMAIL_TRANSPORT_UNAVAILABLE_KEY),
 		readIsoMs(ctx, EMAIL_LAST_SENT_KEY),
+		readLastFailure(ctx),
 	]);
 	if (
 		unavailableAt !== undefined &&
 		unavailableAt <= nowMs &&
 		nowMs - unavailableAt < TRANSPORT_UNAVAILABLE_RETRY_MS
 	) {
-		return "unavailable";
+		return { status: "unavailable" };
 	}
-	if (lastSentAt === undefined) return "unconfirmed";
-	return unavailableAt === undefined || lastSentAt >= unavailableAt ? "confirmed" : "unconfirmed";
+	const status: EmailSendingStatus =
+		lastSentAt === undefined
+			? "unconfirmed"
+			: unavailableAt === undefined || lastSentAt >= unavailableAt
+				? "confirmed"
+				: "unconfirmed";
+	const current =
+		lastFailure !== undefined &&
+		(lastSentAt === undefined || Date.parse(lastFailure.at) >= lastSentAt);
+	return current ? { status, lastFailure } : { status };
+}
+
+/** The failure record, or `undefined` when missing, malformed or unreadable. */
+async function readLastFailure(ctx: PluginContext): Promise<EmailSendFailure | undefined> {
+	let value: unknown;
+	try {
+		value = await ctx.kv.get<unknown>(EMAIL_LAST_FAILURE_KEY);
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null) return undefined;
+	const { at, reason } = value as { at?: unknown; reason?: unknown };
+	if (typeof at !== "string" || typeof reason !== "string") return undefined;
+	const ms = Date.parse(at);
+	if (!Number.isFinite(ms)) return undefined;
+	return { at: new Date(ms).toISOString(), reason: reason.slice(0, SEND_FAILURE_REASON_MAX) };
 }
 
 /** A kv ISO time as epoch ms; `undefined` when missing, malformed or unreadable. */
@@ -384,6 +531,9 @@ export async function makeEmailSender(
 		orderTotals?: boolean;
 		/** {@link CtxEmailSenderOptions.canStart}. */
 		canStart?: () => boolean;
+		/** Record a provider failure for Settings (default). Off for the sign-in
+		 *  email, whose failures spend no order-email attempt (issue #677). */
+		recordFailures?: boolean;
 	} = {},
 ): Promise<EmailSender | undefined> {
 	const email = ctx.email;
@@ -405,6 +555,12 @@ export async function makeEmailSender(
 			: { readTaxTotalsDisplay: () => emailTaxTotalsDisplay(ctx) }),
 		onUnavailable: () => markEmailTransportUnavailable(ctx),
 		onSent: () => markEmailSent(ctx),
+		// Issue #677: only a COUNTED failure — an order email's. A sign-in email
+		// has no outbox row, and its short ceiling times out a provider that is
+		// merely slow; neither may read as a spent order-email attempt.
+		...(options.recordFailures === false
+			? {}
+			: { onFailed: (reason: string) => markEmailSendFailed(ctx, reason) }),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),
@@ -438,7 +594,11 @@ async function emailTaxTotalsDisplay(ctx: PluginContext): Promise<TaxTotalsDispl
  *  behind it, so nothing to count: a failed or timed-out sign-in email is logged.) */
 export async function makeLoginEmailSender(ctx: PluginContext): Promise<EmailSender | undefined> {
 	if (!(await emailSendingAvailable(ctx))) return undefined;
-	return makeEmailSender(ctx, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS, orderTotals: false });
+	return makeEmailSender(ctx, {
+		requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS,
+		orderTotals: false,
+		recordFailures: false,
+	});
 }
 
 /**

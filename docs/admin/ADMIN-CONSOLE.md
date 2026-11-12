@@ -3309,6 +3309,9 @@ section     block_id settings:payments
                         email provider. Order emails wait up to 72 h, then are skipped;
                         sign-in links are not sent. See docs/email-providers.md."
                                                           ← ADR-0031: `ctx.email` present?
+               context (cond, #677) the provider's last failed send, while none has gone
+                     through since: "Email: last send failed <date> <time> UTC — <reason>. …"
+                     (the reason has no recipient address)
                context (cond, #498) a stored publishable key that is not a pk_ key: "…so card
                      payment is off. Enter it again below." | the two keys' modes differ:
                      "The publishable key is a test key but the Stripe secret key is live. …"
