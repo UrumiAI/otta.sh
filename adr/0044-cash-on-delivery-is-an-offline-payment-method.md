@@ -12,6 +12,11 @@
   - The per-network cap defaults to 20.
   - Auto-cancel frees the coupon use before it cancels.
   - A Mark paid that loses to a Record shipment is retryable.
+- Revised again: 2026-11-12, after the follow-ups in #678 (after 0.2.0 was published).
+  - The per-network cap counts only `awaiting_payment` orders.
+  - The per-network cap keys an IPv6 client by its /48, not its /64.
+  - An order over the unit cap is refused `OFFLINE_ORDER_TOO_LARGE`, with its own buyer copy,
+    not `OFFLINE_ORDER_LIMIT`. This is a new failure value; see Consequences.
 - Decided by: the product owner, 2026-11-03. That covers a separate package, a Settings toggle,
   each method enabled independently, dedicated order states, auto-cancel, abuse controls and
   physical carts only. This record holds the engineering decisions made within those.
@@ -179,7 +184,15 @@ orders on the next tick. The Settings copy says so.
      - A site other than the reference one that hosts the plugin must strip or refuse the same
        header at its edge, or it does not offer COD safely.
    - **The network** is derived by the plugin from the request's `cf-connecting-ip` header:
-     - an IPv4 address is used whole, and an IPv6 address is cut to its /64;
+     - an IPv4 address is used whole, and an IPv6 address is cut to its /48. That is wider than
+       the site limiter's /64 on purpose (#678): one host often holds a whole /48 and could
+       rotate its /64s around the cap. The limiter keeps the /64, so a /48 neighbour does not
+       share its write budget. The cost: a mobile carrier can put many subscribers in one /48,
+       as carrier NAT puts them behind one IPv4 address. That is why the cap is high and counts
+       only orders not yet shipped; a store that sees honest buyers refused raises it. Two
+       edge cases are negligible: a 6to4 address (`2002::/16`) keys as the /48 of its embedded
+       IPv4, apart from that IPv4 address bare, and every Teredo client (`2001:0::/32`) of one
+       server prefix shares a key;
      - the site forwards that header on its synthetic request;
      - a direct call carries the one Cloudflare set;
      - no address means no COD.
@@ -192,12 +205,23 @@ orders on the next tick. The Settings copy says so.
      - per client network (`settings:codMaxOpenPerClient`), default **20**, because carrier and
        office NAT put many honest buyers behind one address, common in COD's main markets.
      0 means no cap.
+   - The per-network cap counts only `awaiting_payment` orders (#678). A
+     `shipped_awaiting_payment` order is never auto-cancelled, so on a shared network a busy
+     store's parcels in transit would otherwise hold its slots until each is marked paid. The
+     per-email cap still counts both states: that is one buyer's own unpaid parcels. The
+     trade-off is deliberate: the network cap now bounds the stock a network holds unshipped,
+     not the merchant's exposure to unpaid deliveries. Watching that exposure is the job of the
+     old-unpaid-orders report, a follow-up (see Consequences).
    - A third cap is on one order's size: the physical units a single COD order may hold
      (`settings:codMaxUnitsPerOrder`), default **10**, 0 to 1000, 0 means no cap. The open-order
      caps count orders, and one cart line may hold up to `CART_LINE_MAX_QTY` (10,000) units, so
      without it one anonymous order could hold a SKU's whole stock for the auto-cancel window.
-     It is checked first, from the cart's lines, and refused `OFFLINE_ORDER_LIMIT` like the others.
-   - The domain checks both before minting anything, through
+     It is checked first, from the cart's lines alone, and refused `OFFLINE_ORDER_TOO_LARGE`
+     (#678; before that, `OFFLINE_ORDER_LIMIT`). The buyer copy asks them to order fewer items.
+     It stays ahead of the open-order caps on purpose: an oversized order gets the same answer
+     whatever the open orders, so it cannot be used, placing nothing, to learn whether an email
+     or a network is at its cap. A buyer who then orders fewer items may still meet a cap.
+   - The domain checks the caps before minting anything, through
      `OrderStore.countOpenOfflineOrders`. The buyer count uses the indexed `buyerRefLower`.
    - The order stores `offlineClientKey`, a new indexed field: an HMAC-SHA-256 of the network
      under a per-store secret. The secret is random and kept in plugin kv
@@ -207,8 +231,12 @@ orders on the next tick. The Settings copy says so.
        cancelled order keeps no network trace.
      - Two first uses racing could each create a secret, and the last write wins. Orders placed
        under the losing secret then under-count for their network until they close.
-   - Over a cap, the order is refused `OFFLINE_ORDER_LIMIT`. The buyer copy is neutral: it does
-     not say they have orders open.
+     - Orders placed before the /48 change (#678) keep the key of their /64. They under-count for
+       their network until they are shipped, paid or cancelled: at most the auto-cancel window
+       when it is on, unbounded when it is off.
+       No stored key is rewritten.
+   - Over a buyer or network cap, the order is refused `OFFLINE_ORDER_LIMIT`. The buyer copy is
+     neutral: it does not say they have orders open.
    - The caps are soft under a true race: two simultaneous placements may both pass. The per-IP
      write limit bounds that.
 
@@ -348,8 +376,16 @@ per-network count is correct, only unindexed.
       that sent junk was relying on nothing before, because the field did not exist.
   - **Storefront cost.** The storefront reads three or four more kv keys per checkout place and
     payment-config call: the COD toggle, its instructions and the caps.
+- **After 0.2.0 (#678).** `CreateOrderFailure` and `CheckoutPlaceRouteResult` gain
+  `OFFLINE_ORDER_TOO_LARGE`, which 0.2.0 reported as `OFFLINE_ORDER_LIMIT`. An exhaustive
+  `switch` or `Record` over either must add it. A site that does not know the value shows its
+  generic error, so an older site still refuses the order, only with less specific copy.
+  `OrderStore.countOpenOfflineOrders` keeps its signature; its `byClient` now counts only
+  `awaiting_payment` orders, and every adapter must count that way.
 - Follow-ups:
-  - a report of old unpaid COD orders;
+  - a report of old unpaid COD orders. Since #678 a shipped unpaid order no longer holds a
+    network's slot, but it still holds its buyer's and its cash is still outstanding, so the
+    report is still wanted;
   - COD instructions in the emails;
   - the attestation as a per-store secret rather than a fixed marker (review R3-2). A host other
     than the reference site that does not strip the header would then fail closed instead of

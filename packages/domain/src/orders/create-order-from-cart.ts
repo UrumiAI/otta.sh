@@ -948,7 +948,11 @@ async function rememberIntent(
  * offered (the toggle, or no client key: the caller could not attest its per-IP
  * write limit), a cart with nothing to deliver, a delivery address without a phone
  * number, the cap on one order's units, and the caps on open offline orders.
- * `null` ⇒ place it.
+ * The unit cap has its own reason (`OFFLINE_ORDER_TOO_LARGE`, "order fewer
+ * items", #678) and is judged from the cart alone, BEFORE the open-order caps:
+ * an oversized order gets the same answer whatever the buyer's or network's open
+ * orders, so it cannot be used, placing nothing, to learn whether an email is at
+ * its cap (`OFFLINE_ORDER_LIMIT` stays neutral). `null` ⇒ place it.
  */
 async function offlineRefusal(
 	deps: CreateOrderDeps,
@@ -966,7 +970,7 @@ async function offlineRefusal(
 	if (maxUnits > 0) {
 		let units = 0;
 		for (const line of lines) if (line.fulfillmentKind === "physical") units += line.quantity;
-		if (units > maxUnits) return "OFFLINE_ORDER_LIMIT";
+		if (units > maxUnits) return "OFFLINE_ORDER_TOO_LARGE";
 	}
 	const perBuyer = offline.maxOpenPerBuyer ?? 0;
 	const perClient = offline.maxOpenPerClient ?? 0;

@@ -18,6 +18,10 @@ export type CreateOrderFailure =
 	/** The buyer, or the client network, already has the maximum number of open
 	 *  (unpaid) offline orders the store allows. */
 	| "OFFLINE_ORDER_LIMIT"
+	/** An offline order would hold more physical units than the store allows in
+	 *  one order (`maxUnitsPerOrder`), #678. Judged from the cart alone, before
+	 *  the open-order caps, so it says nothing about the buyer's open orders. */
+	| "OFFLINE_ORDER_TOO_LARGE"
 	| "CART_NOT_FOUND"
 	| "CART_EMPTY"
 	| "CART_CHECKED_OUT"

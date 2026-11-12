@@ -177,11 +177,11 @@ describe("createOrder with cash on delivery", () => {
 		expect((await placeCod(await physicalCart())).ok).toBe(true);
 	});
 
-	test("the policy's unit cap reaches the domain: an order over it is OFFLINE_ORDER_LIMIT", async () => {
+	test("the policy's unit cap reaches the domain: an order over it is OFFLINE_ORDER_TOO_LARGE", async () => {
 		policy = { enabled: true, maxOpenPerBuyer: 0, maxOpenPerClient: 0, maxUnitsPerOrder: 2 };
 		expect(await placeCod(await physicalCart(3))).toEqual({
 			ok: false,
-			reason: "OFFLINE_ORDER_LIMIT",
+			reason: "OFFLINE_ORDER_TOO_LARGE",
 		});
 		expect((await placeCod(await physicalCart(2))).ok).toBe(true);
 	});

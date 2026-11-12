@@ -617,8 +617,10 @@ export class EmdashOrderStore implements OrderStore {
 
 	/**
 	 * ADR-0044: open offline orders per buyer (the indexed `buyerRefLower`, folded
-	 * as the order was) and per client network (the indexed `offlineClientKey`) —
-	 * two `count()` calls, each a predicate on declared index fields.
+	 * as the order was) and `awaiting_payment` orders per client network (the
+	 * indexed `offlineClientKey`; a shipped order is never auto-cancelled, so it
+	 * does not hold a network's slot, #678) — two `count()` calls, each a predicate
+	 * on declared index fields.
 	 */
 	async countOpenOfflineOrders(input: {
 		buyerRef: string;
@@ -632,7 +634,10 @@ export class EmdashOrderStore implements OrderStore {
 		const byClient =
 			input.clientKey === undefined
 				? 0
-				: await this.#orders.count({ offlineClientKey: input.clientKey, state: open });
+				: await this.#orders.count({
+						offlineClientKey: input.clientKey,
+						state: "awaiting_payment",
+					});
 		return { byBuyer, byClient };
 	}
 
@@ -2339,9 +2344,10 @@ export class EmdashOrderStore implements OrderStore {
 			// the SAME write that recorded one — so an outstanding bracket is findable
 			// the instant it exists, and never a moment after it is closed.
 			next.holdsPendingAt = computeHoldsPendingAt(next);
-			// ADR-0044 §7: an offline order keeps its network key only while it is open
-			// (it is what the per-network cap counts); leaving the open states — paid,
-			// delivered, cancelled — drops it in this same write.
+			// ADR-0044 §7: an offline order keeps its network key only while it is open;
+			// leaving the open states — paid, delivered, cancelled — drops it in this same
+			// write. The per-network cap counts only `awaiting_payment` keys (#678); a
+			// `shipped_awaiting_payment` order still carries its key, uncounted.
 			if (next.offlineClientKey !== undefined && !OFFLINE_UNPAID_STATES.has(input.toState)) {
 				delete next.offlineClientKey;
 			}

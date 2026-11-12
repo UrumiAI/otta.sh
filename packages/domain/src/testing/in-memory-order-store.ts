@@ -882,7 +882,13 @@ export class InMemoryOrderStore implements OrderStore {
 		for (const stored of this.#orders.values()) {
 			if (!OFFLINE_UNPAID_STATES.has(stored.order.state)) continue;
 			if (stored.order.buyerRef.toLowerCase() === buyer) byBuyer++;
-			if (input.clientKey !== undefined && stored.offlineClientKey === input.clientKey) byClient++;
+			if (
+				input.clientKey !== undefined &&
+				stored.order.state === "awaiting_payment" &&
+				stored.offlineClientKey === input.clientKey
+			) {
+				byClient++;
+			}
 		}
 		return { byBuyer, byClient };
 	}

@@ -1080,7 +1080,8 @@ with none of the Stripe values above.
     the binding. The site middleware refuses that header (400) on every incoming request, so a
     direct call to the plugin's public place route can never place a cash-on-delivery order.
   - The plugin derives the client's network itself from `cf-connecting-ip`: an IPv4 address, or
-    an IPv6 /64. It stores only an HMAC of the network under a random per-store secret
+    an IPv6 /48. That is wider than the rate limiter's /64, because one host can often rotate
+    through the /64s of a /48. It stores only an HMAC of the network under a random per-store secret
     (`settings:codNetworkKeySecret`), and drops it once the order is paid or cancelled.
   - **If you host the plugin behind a site other than the reference one**, that site's edge must
     strip or refuse `x-otta-cod-attest` too.
@@ -1149,8 +1150,11 @@ neither counts as revenue, and neither expires at the checkout hold:
   set it to 0 there. One order may hold at most **10** physical items
   (`settings:codMaxUnitsPerOrder`, 0 to 1000), so one unpaid order cannot take a product's whole
   stock off sale for the auto-cancel window.
-  "Open" means `awaiting_payment` or `shipped_awaiting_payment`; `0` means no cap. Over a cap,
-  checkout refuses the order and asks the buyer to pay another way. Two orders placed at the same
+  "Open" means `awaiting_payment` or `shipped_awaiting_payment`; `0` means no cap. The
+  per-network cap counts only `awaiting_payment`: a shipped order is never auto-cancelled, so it
+  would hold a shared network's slot until it is marked paid. Over a buyer or network cap,
+  checkout refuses the order and asks the buyer to pay another way. Over the items cap, it asks
+  the buyer to order fewer items for cash on delivery. Two orders placed at the same
   instant can both pass; the per-IP write limit bounds that.
 - **Orders list.** A cash-on-delivery order carries a "Cash on delivery" badge, and the Status
   filter's **awaiting payment (COD)** lists the orders still waiting for their cash.
