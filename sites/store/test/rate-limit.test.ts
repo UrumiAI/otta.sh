@@ -326,37 +326,96 @@ function escapeRegExp(text: string): string {
 
 /**
  * A reference to a limited plugin route: its constant by name, its route string
- * as a quoted literal (`"storefront/cart/create"` or `'storefront/cart/create'`),
- * or one of `helpers` by name (#669). Backticks are left out: comments name
- * routes in backticks all the time.
+ * as a literal (`"…"`, `'…'` or a backticked one), or one of `helpers` by name
+ * (#669). Callers match it against {@link stripComments}'d source, so a route
+ * named in a comment is not a reference.
  */
 function limitedRouteReference(helpers: readonly string[] = []): RegExp {
-	const names = [...limitedPluginRouteConstants(), ...helpers];
-	const literals = [...PLUGIN_ROUTES.keys()].flatMap((route) => [
-		`"${escapeRegExp(route)}"`,
-		`'${escapeRegExp(route)}'`,
-	]);
+	const names = [...limitedPluginRouteConstants(), ...helpers].map(escapeRegExp);
+	const literals = [...PLUGIN_ROUTES.keys()].flatMap((route) =>
+		['"', "'", "`"].map((quote) => `${quote}${escapeRegExp(route)}${quote}`),
+	);
 	return new RegExp(String.raw`\b(${names.join("|")})\b|${literals.join("|")}`);
 }
 
-interface Declaration {
-	name: string;
-	exported: boolean;
-	text: string;
+/**
+ * `source` with its `//` and block comments removed (newlines kept, so every
+ * line stays where it was). Strings are kept whole (`'…'` and `"…"` end at the
+ * line, `` `…` `` at its closing backtick), and a backslash outside a string (a
+ * regex literal's) escapes the next character. A heuristic, not a parser:
+ * enough for this site's formatted source.
+ */
+function stripComments(source: string): string {
+	let out = "";
+	let i = 0;
+	while (i < source.length) {
+		const char = source.charAt(i);
+		const next = source.charAt(i + 1);
+		if (char === "/" && next === "/") {
+			const end = source.indexOf("\n", i);
+			i = end === -1 ? source.length : end;
+		} else if (char === "/" && next === "*") {
+			const end = source.indexOf("*/", i + 2);
+			const stop = end === -1 ? source.length : end + 2;
+			out += source.slice(i, stop).replace(/[^\n]/g, "");
+			i = stop;
+		} else if (char === "'" || char === '"' || char === "`") {
+			let j = i + 1;
+			while (j < source.length && source.charAt(j) !== char) {
+				if (char !== "`" && source.charAt(j) === "\n") break;
+				j += source.charAt(j) === "\\" ? 2 : 1;
+			}
+			out += source.slice(i, j + 1);
+			i = j + 1;
+		} else if (char === "\\") {
+			out += source.slice(i, i + 2);
+			i += 2;
+		} else {
+			out += char;
+			i += 1;
+		}
+	}
+	return out;
 }
 
-/** A source file's top-level declarations, each running to the next top-level
- *  line that starts something else (a declaration, an import, a comment).
- *  Top level means column 0, the house style that `pnpm format` keeps. */
-function topLevelDeclarations(source: string): Declaration[] {
-	const start =
-		/^(export\s+)?(?:declare\s+)?(?:async\s+)?(?:function\*?|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)|^(?:import\b|export\s*[{*]|\/[*/])/gm;
-	const marks = [...source.matchAll(start)];
-	return marks.flatMap((mark, i) => {
-		const name = mark[2];
-		if (name === undefined) return [];
-		const end = marks[i + 1]?.index ?? source.length;
-		return [{ name, exported: mark[1] !== undefined, text: source.slice(mark.index, end) }];
+/** One top-level statement of a lib file: a named declaration, a default
+ *  export, an import, an export list (`export { … }`, `export * …`, with or
+ *  without `from`), or other code (a call, a destructured export). */
+type Chunk =
+	| { kind: "declaration"; name: string; body: string }
+	| { kind: "default" | "import" | "exports" | "code"; body: string };
+
+const DECLARATION =
+	/^(?:export\s+)?(?:declare\s+)?(?:async\s+)?(?:abstract\s+)?(?:function\*?|const|let|var|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/;
+
+/** `source`'s top-level chunks, each running from a column-0 line to the next
+ *  one; a line opening with whitespace or a closing bracket continues the
+ *  chunk (the house style that `pnpm format` keeps). A declaration's `body`
+ *  leaves out its own name, so it never matches itself. */
+function topLevelChunks(source: string): Chunk[] {
+	const starts = [...source.matchAll(/^[^\s})\]]/gm)].map((mark) => mark.index);
+	return starts.map((start, i): Chunk => {
+		const text = source.slice(start, starts[i + 1] ?? source.length);
+		const declaration = DECLARATION.exec(text);
+		if (declaration?.[1] !== undefined) {
+			return { kind: "declaration", name: declaration[1], body: text.slice(declaration[0].length) };
+		}
+		if (/^export\s+default\b/.test(text)) return { kind: "default", body: text };
+		if (/^import\b/.test(text)) return { kind: "import", body: text };
+		if (/^export\s*(?:type\s*)?[{*]/.test(text)) return { kind: "exports", body: text };
+		return { kind: "code", body: text };
+	});
+}
+
+/** An `export { a, b as c }` chunk's [local, exported] name pairs. */
+function exportPairs(text: string): [string, string][] {
+	const list = /^export\s*(?:type\s*)?\{([^}]*)\}/.exec(text)?.[1] ?? "";
+	return list.split(",").flatMap((item): [string, string][] => {
+		const [local, exported] = item
+			.trim()
+			.replace(/^type\s+/, "")
+			.split(/\s+as\s+/);
+		return local === undefined || local === "" ? [] : [[local, exported ?? local]];
 	});
 }
 
@@ -371,96 +430,135 @@ function libFiles(lib: string): { file: string; source: string }[] {
 		.toSorted((a, b) => a.file.localeCompare(b.file));
 }
 
+type LibPins = Readonly<Record<string, readonly string[]>>;
+
 /**
- * The lib code that names a limited plugin route, pinned per file down to each
- * top-level declaration (#669). Pinning files alone let a new `quickAdd()` in an
- * already-listed file through. The scan cannot follow calls in general, so a new
- * declaration that names a limited route fails the guard until it is added here.
- * Every EXPORTED one (by keyword or through an `export { … }` list) is then a
- * reference in its own right: a page that calls it is scanned as if it named
- * the route ({@link limitedRouteHelpers}).
- * Limitation: only direct references are seen; a lib helper in another file
- * that calls one of these is not.
+ * The lib declarations that dispatch a limited plugin route, pinned per file
+ * (#669). A declaration dispatches one when it names a limited route (constant
+ * or literal) or another dispatcher: a wrapper, in the same file or another,
+ * however many hops ({@link limitedRouteHelpers} computes the fixed point). A
+ * new one fails the guard until it is pinned here, and every one is a
+ * reference for the page scan: a page that calls it is scanned as if it named
+ * the route.
+ * Limitations: the scan matches names, not bindings (a page's own local of the
+ * same name is a reference too, which errs loud); and a default export that
+ * dispatches is refused outright, as a page imports it under any name.
  */
-const LIB_DISPATCHERS: Readonly<Record<string, readonly string[]>> = {
+const LIB_DISPATCHERS: LibPins = {
 	"cart-actions.ts": ["ensureCartId"],
+};
+
+/** Declarations that name limited routes as DATA — tables a dispatch is
+ *  checked against — pinned like a dispatcher, but NOT followed: reading one
+ *  dispatches nothing (`dispatchOttaRoute` reads the replay tables for every
+ *  route). Add one here only if it never dispatches. */
+const LIB_ROUTE_TABLES: LibPins = {
 	"otta-api.ts": ["KEYED_REPLAY_ROUTES", "REPLAYING_ROUTES"],
 	"rate-limit.ts": ["PLUGIN_ROUTES"],
 };
 
-/** Violations of the lib pin, as readable lines. */
-function libDispatchViolations(lib = path.join(SRC, "lib")): string[] {
-	const reference = limitedRouteReference();
-	const problems: string[] = [];
-	const files = libFiles(lib);
-	for (const { file, source } of files) {
-		const pinned = LIB_DISPATCHERS[file];
-		if (!reference.test(source)) continue;
-		if (pinned === undefined) {
-			problems.push(`${file}: names a limited plugin route; not in LIB_DISPATCHERS`);
-			continue;
+/** The lib's top-level chunks, comments stripped, per file. */
+function libChunks(lib: string): { file: string; chunks: Chunk[] }[] {
+	return libFiles(lib).map(({ file, source }) => ({
+		file,
+		chunks: topLevelChunks(stripComments(source)),
+	}));
+}
+
+/** Every name that dispatches a limited route from the lib (sorted): the fixed
+ *  point of "a declaration that names a limited route or one of these", plus
+ *  every name an `export { … }` list (re-exports included) gives one of them.
+ *  `tables` are never followed. */
+function limitedRouteHelpers(
+	lib = path.join(SRC, "lib"),
+	tables: LibPins = LIB_ROUTE_TABLES,
+): string[] {
+	const files = libChunks(lib);
+	const helpers = new Set<string>();
+	for (let grew = true; grew;) {
+		grew = false;
+		const reference = limitedRouteReference([...helpers]);
+		const add = (name: string): void => {
+			if (helpers.has(name)) return;
+			helpers.add(name);
+			grew = true;
+		};
+		for (const { file, chunks } of files) {
+			for (const chunk of chunks) {
+				if (chunk.kind === "declaration") {
+					if (tables[file]?.includes(chunk.name) !== true && reference.test(chunk.body)) {
+						add(chunk.name);
+					}
+				} else if (chunk.kind === "exports") {
+					for (const [local, exported] of exportPairs(chunk.body)) {
+						if (helpers.has(local)) add(exported);
+					}
+				}
+			}
 		}
-		const found = topLevelDeclarations(source)
-			.filter(({ text }) => reference.test(text))
-			.map(({ name }) => name);
-		for (const name of found) {
+	}
+	return [...helpers].toSorted();
+}
+
+/** Violations of the lib pin, as readable lines (sorted). */
+function libDispatchViolations(
+	lib = path.join(SRC, "lib"),
+	dispatchers: LibPins = LIB_DISPATCHERS,
+	tables: LibPins = LIB_ROUTE_TABLES,
+): string[] {
+	const reference = limitedRouteReference(limitedRouteHelpers(lib, tables));
+	const problems: string[] = [];
+	const found = new Map<string, string[]>();
+	for (const { file, chunks } of libChunks(lib)) {
+		const named: string[] = [];
+		for (const chunk of chunks) {
+			if (!reference.test(chunk.body)) continue;
+			if (chunk.kind === "declaration") named.push(chunk.name);
+			else if (chunk.kind === "default") {
+				problems.push(`${file}: a default export names a limited route; export it by name`);
+			} else if (chunk.kind === "code") {
+				problems.push(`${file}: names a limited route outside a recognised declaration`);
+			}
+		}
+		found.set(file, named);
+	}
+	const files = new Set([...found.keys(), ...Object.keys(dispatchers), ...Object.keys(tables)]);
+	for (const file of files) {
+		const named = found.get(file) ?? [];
+		const pinned = [...(dispatchers[file] ?? []), ...(tables[file] ?? [])];
+		for (const name of named) {
 			if (!pinned.includes(name))
 				problems.push(`${file}: ${name} names a limited route; not pinned`);
 		}
 		for (const name of pinned) {
-			if (!found.includes(name))
+			if (!named.includes(name)) {
 				problems.push(`${file}: ${name} is pinned but names no limited route`);
+			}
 		}
 	}
-	for (const file of Object.keys(LIB_DISPATCHERS)) {
-		const listed = files.find((entry) => entry.file === file);
-		if (listed === undefined || !reference.test(listed.source)) {
-			problems.push(`${file}: in LIB_DISPATCHERS but names no limited plugin route`);
-		}
-	}
-	return problems;
+	return problems.toSorted();
 }
 
-/** `source`'s `export { a, b as c }` lists: each local name, with the names it
- *  is exported under (`a` → [a], `b` → [c]). */
-function exportListNames(source: string): Map<string, string[]> {
-	const names = new Map<string, string[]>();
-	for (const list of source.matchAll(/^export\s*(?:type\s*)?\{([^}]*)\}/gm)) {
-		for (const item of (list[1] ?? "").split(",")) {
-			const [local, alias] = item.trim().split(/\s+as\s+/);
-			if (local === undefined || local === "") continue;
-			names.set(local, [...(names.get(local) ?? []), alias ?? local]);
-		}
-	}
-	return names;
-}
-
-/** The exported lib declarations that name a limited plugin route, under every
- *  name a page can import them by (an `export` keyword, or an `export { … }`
- *  list, alias included): a page that calls one dispatches that route as
- *  surely as a page that names it. */
-function limitedRouteHelpers(lib = path.join(SRC, "lib")): string[] {
-	const reference = limitedRouteReference();
-	return libFiles(lib).flatMap(({ source }) => {
-		const listed = exportListNames(source);
-		return topLevelDeclarations(source)
-			.filter(({ text }) => reference.test(text))
-			.flatMap(({ name, exported }) => [...(exported ? [name] : []), ...(listed.get(name) ?? [])]);
-	});
+/** The pages (`.ts` or `.astro`) whose code, comments stripped, references a
+ *  limited plugin route: by constant, route literal or lib helper. */
+function pagesDispatchingLimitedRoutes(
+	pages = path.join(SRC, "pages"),
+	lib = path.join(SRC, "lib"),
+): PageFile[] {
+	const reference = limitedRouteReference(limitedRouteHelpers(lib));
+	return pageFiles(pages, PAGE_FILE).filter((page) => reference.test(stripComments(page.source)));
 }
 
 /** Violations of the page-level default-deny, as readable lines: every page
- *  (`.ts` or `.astro`) that references a limited plugin route (constant, quoted
- *  route string or lib helper) is in SITE_ROUTES or exempt, and `anyMethod`
+ *  (`.ts` or `.astro`) whose code (comments stripped) references a limited plugin
+ *  route (constant, route literal or lib helper) is in SITE_ROUTES or exempt, and `anyMethod`
  *  when it answers GET. */
 function pageCoverageViolations(
 	pages = path.join(SRC, "pages"),
 	lib = path.join(SRC, "lib"),
 ): string[] {
-	const reference = limitedRouteReference(limitedRouteHelpers(lib));
 	const problems: string[] = [];
-	for (const page of pageFiles(pages, PAGE_FILE)) {
-		if (!reference.test(page.source)) continue;
+	for (const page of pagesDispatchingLimitedRoutes(pages, lib)) {
 		const site = SITE_ROUTES.get(page.route);
 		if (site === undefined && !RATE_LIMIT_EXEMPT_SITE_ROUTES.has(page.route)) {
 			problems.push(`${page.route}: dispatches a limited plugin route; in neither map`);
@@ -503,7 +601,12 @@ describe("every write route is limited or explicitly exempt (default-deny)", () 
 
 	test("lib code that names a limited route is pinned per declaration (guard for the page scan, #669)", () => {
 		expect(libDispatchViolations()).toEqual([]);
-		expect(limitedRouteHelpers()).toContain("ensureCartId");
+		expect(limitedRouteHelpers()).toEqual(["ensureCartId"]);
+	});
+
+	test("the page scan is not blind: it sees exactly the pages SITE_ROUTES limits (#669)", () => {
+		const seen = pagesDispatchingLimitedRoutes().map(({ route }) => route);
+		expect(seen.toSorted()).toEqual([...SITE_ROUTES.keys()].toSorted());
 	});
 
 	test("a new helper in an already-listed lib file is flagged, and a page calling it is scanned (#669)", () => {
@@ -558,10 +661,112 @@ export async function quickAdd(handler: never, url: URL) {
 				path.join(pages, "create.astro"),
 				"---\nimport { fastCreate } from '../lib/quick-cart.js';\nawait fastCreate(undefined as never);\n---\n",
 			);
-			expect(limitedRouteHelpers(lib).toSorted()).toEqual(["fastCreate", "quickAdd"]);
+			expect(limitedRouteHelpers(lib)).toEqual(["fastCreate", "quickAdd", "quickCreate"]);
 			expect(pageCoverageViolations(pages, lib).toSorted()).toEqual([
 				"/add: dispatches a limited plugin route; in neither map",
 				"/create: dispatches a limited plugin route; in neither map",
+			]);
+		});
+	});
+
+	test("a wrapper around a dispatcher is one too, in the same file or another, however many hops (#669)", () => {
+		withTempDir((dir) => {
+			const lib = path.join(dir, "lib");
+			const pages = path.join(dir, "pages");
+			mkdirSync(lib);
+			mkdirSync(pages);
+			writeFileSync(
+				path.join(lib, "quick-cart.ts"),
+				"function doAdd(h: never) {\n\treturn dispatchOttaRoute(h, STOREFRONT_CART_LINE_ADD_ROUTE, {});\n}\n" +
+					"export function quickAdd(h: never) {\n\treturn doAdd(h);\n}\n",
+			);
+			writeFileSync(
+				path.join(lib, "cart-shortcuts.ts"),
+				"import { quickAdd } from './quick-cart.js';\nexport const addOne = (h: never) => quickAdd(h);\n",
+			);
+			writeFileSync(path.join(pages, "quick.ts"), "export const GET = (c) => quickAdd(c);\n");
+			writeFileSync(path.join(pages, "one.ts"), "export const GET = (c) => addOne(c);\n");
+			expect(limitedRouteHelpers(lib)).toEqual(["addOne", "doAdd", "quickAdd"]);
+			// Only the unexported dispatcher is pinned: both wrappers are flagged.
+			expect(libDispatchViolations(lib, { "quick-cart.ts": ["doAdd"] }, {})).toEqual([
+				"cart-shortcuts.ts: addOne names a limited route; not pinned",
+				"quick-cart.ts: quickAdd names a limited route; not pinned",
+			]);
+			expect(
+				libDispatchViolations(
+					lib,
+					{ "cart-shortcuts.ts": ["addOne"], "quick-cart.ts": ["doAdd", "quickAdd"] },
+					{},
+				),
+			).toEqual([]);
+			expect(pageCoverageViolations(pages, lib).toSorted()).toEqual([
+				"/one: dispatches a limited plugin route; in neither map",
+				"/quick: dispatches a limited plugin route; in neither map",
+			]);
+		});
+	});
+
+	test("a route table is pinned but not followed: reading it is not dispatching (#669)", () => {
+		withTempDir((lib) => {
+			writeFileSync(
+				path.join(lib, "routes.ts"),
+				"const KEYED = new Set([STOREFRONT_CART_CREATE_ROUTE]);\nexport const isKeyed = (r: string) => KEYED.has(r);\n",
+			);
+			expect(libDispatchViolations(lib, {}, { "routes.ts": ["KEYED"] })).toEqual([]);
+			expect(limitedRouteHelpers(lib, { "routes.ts": ["KEYED"] })).toEqual([]);
+			// Unpinned, it is a dispatcher like any other, and so is its reader.
+			expect(libDispatchViolations(lib, {}, {})).toEqual([
+				"routes.ts: KEYED names a limited route; not pinned",
+				"routes.ts: isKeyed names a limited route; not pinned",
+			]);
+		});
+	});
+
+	test("lib code naming a limited route outside a named declaration is flagged, not dropped (#669)", () => {
+		withTempDir((lib) => {
+			writeFileSync(
+				path.join(lib, "default-fn.ts"),
+				"export default async function (h: never) {\n\treturn dispatchOttaRoute(h, STOREFRONT_CART_CREATE_ROUTE, {});\n}\n",
+			);
+			writeFileSync(
+				path.join(lib, "top-call.ts"),
+				"registerQuick(STOREFRONT_CART_CREATE_ROUTE);\n",
+			);
+			writeFileSync(
+				path.join(lib, "destructured.ts"),
+				"export const { quick } = makeQuick('storefront/cart/create');\n",
+			);
+			writeFileSync(
+				path.join(lib, "harmless.ts"),
+				'/** Unlike `storefront/cart/create`, "storefront/cart/create" here is prose. */\n' +
+					"// STOREFRONT_CART_CREATE_ROUTE, in a line comment\nexport const url = 'https://example.com//x';\n",
+			);
+			expect(libDispatchViolations(lib, {}, {})).toEqual([
+				"default-fn.ts: a default export names a limited route; export it by name",
+				"destructured.ts: names a limited route outside a recognised declaration",
+				"top-call.ts: names a limited route outside a recognised declaration",
+			]);
+		});
+	});
+
+	test("a re-export of a helper under another name is a reference too (#669)", () => {
+		withTempDir((dir) => {
+			const lib = path.join(dir, "lib");
+			const pages = path.join(dir, "pages");
+			mkdirSync(lib);
+			mkdirSync(pages);
+			for (const { file, source } of libFiles(path.join(SRC, "lib"))) {
+				writeFileSync(path.join(lib, file), source);
+			}
+			writeFileSync(
+				path.join(lib, "cart-index.ts"),
+				'export { ensureCartId as mintCart } from "./cart-actions.js";\n',
+			);
+			writeFileSync(path.join(pages, "mint.ts"), "export const POST = (c) => mintCart(c);\n");
+			expect(limitedRouteHelpers(lib)).toContain("mintCart");
+			expect(libDispatchViolations(lib)).toEqual([]);
+			expect(pageCoverageViolations(pages, lib)).toEqual([
+				"/mint: dispatches a limited plugin route; in neither map",
 			]);
 		});
 	});
@@ -576,9 +781,28 @@ export async function quickAdd(handler: never, url: URL) {
 				"export const quickCreate = (h: never) => dispatchOttaRoute(h, 'storefront/cart/create', {});\n",
 			);
 			expect(libDispatchViolations(lib)).toEqual([
-				"quick-cart.ts: names a limited plugin route; not in LIB_DISPATCHERS",
+				"quick-cart.ts: quickCreate names a limited route; not pinned",
 			]);
 		});
+	});
+
+	test("a helper name is matched literally, never as a pattern (#669)", () => {
+		const reference = limitedRouteReference(["quick.Add"]);
+		expect(reference.test("quick.Add(c)")).toBe(true);
+		expect(reference.test("quickXAdd(c)")).toBe(false);
+	});
+
+	test("stripComments drops comments and keeps strings and regex literals whole (#669)", () => {
+		const source =
+			"/** `storefront/cart/create` */\nconst a = 'http://x'; // gone\nconst b = /\\/\\//g; /* gone\n too */ const c = \"//kept\";\n";
+		const stripped = stripComments(source);
+		expect(stripped).not.toContain("storefront/cart/create");
+		expect(stripped).not.toContain("gone");
+		expect(stripped).toContain("'http://x'");
+		expect(stripped).toContain(String.raw`/\/\//g`);
+		expect(stripped).toContain('"//kept"');
+		// Line count kept, so column-0 declarations stay where they were.
+		expect(stripped.split("\n").length).toBe(source.split("\n").length);
 	});
 
 	test("the page scan flags a GET on a non-anyMethod route and a page using a dispatching helper (#661)", () => {
@@ -617,7 +841,7 @@ export async function quickAdd(handler: never, url: URL) {
 		});
 	});
 
-	test("the page scan catches a route string written as a literal, not one named in a comment (#669)", () => {
+	test("the page scan catches a route string written as a literal (quoted or backticked), not one named in a comment (#669)", () => {
 		withTempDir((dir) => {
 			writeFileSync(
 				path.join(dir, "double.ts"),
@@ -628,10 +852,15 @@ export async function quickAdd(handler: never, url: URL) {
 				"---\nawait dispatchOttaRoute(h, 'storefront/cart/lines/add', {}, Astro.url);\n---\n<p>added</p>\n",
 			);
 			writeFileSync(
+				path.join(dir, "backtick.ts"),
+				"export const POST = (c) => dispatchOttaRoute(h, `storefront/cart/create`, {}, c.url);\n",
+			);
+			writeFileSync(
 				path.join(dir, "comment.ts"),
-				"/** Reads, unlike the plugin's `storefront/cart/create`. */\nexport const POST = () => null;\n",
+				"/** Reads, unlike the plugin's `storefront/cart/create`. */\n// STOREFRONT_CART_CREATE_ROUTE, ensureCartId\nexport const POST = () => null;\n",
 			);
 			expect(pageCoverageViolations(dir).toSorted()).toEqual([
+				"/backtick: dispatches a limited plugin route; in neither map",
 				"/double: dispatches a limited plugin route; in neither map",
 				"/single: dispatches a limited plugin route; in neither map",
 			]);
