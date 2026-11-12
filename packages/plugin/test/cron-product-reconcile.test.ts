@@ -1558,10 +1558,42 @@ describe("the daily repair cap: on Workers Free a first-install heal cannot spen
 		expect(errors).toEqual([]);
 	});
 
-	test("the reserve is the deactivations' alone: a day spent by syncs still has it, and it never passes the bound", () => {
-		expect(RECONCILE_DEACTIVATION_RESERVE_UNITS).toBe(30);
-		// About 52 rows a deactivation: the reserve adds under 2,000 rows to the day.
-		expect(RECONCILE_DEACTIVATION_RESERVE_UNITS * 52).toBeLessThan(2_000);
+	test("the reserve is the deactivations' alone: on a day the syncs spent, exactly 30 lost unpublishes are deactivated, and the 31st waits", async () => {
+		const cms = new Cms();
+		const ids = Array.from({ length: 31 }, (_, i) => `u${String(i).padStart(2, "0")}`);
+		for (const [i, id] of ids.entries()) {
+			await syncedRow(id, `Product ${id}`, T1);
+			cms.put({
+				id,
+				title: `Product ${id}`,
+				status: "draft",
+				updatedAt: T2,
+				createdAt: new Date(Date.parse(T3) - i * 1000).toISOString(),
+			});
+		}
+		const cursors = memoryCursors();
+		// Today's 600 units are spent, all of them by syncs.
+		await cursors.write(
+			PRODUCT_RECONCILE_CURSOR,
+			JSON.stringify({
+				day: TODAY,
+				repairsToday: RECONCILE_REPAIRS_PER_DAY_FREE,
+				unitsToday: RECONCILE_REPAIRS_PER_DAY_FREE * RECONCILE_DEACTIVATIONS_PER_REPAIR,
+			}),
+		);
+		for (let t = 0; t < 120; t++) {
+			// The largest budget Workers Free runs (still capped): beside the product-orphans
+			// walk over these 31 rows, a 30-query tick seldom reaches this leg.
+			await tick(cms, cursors, { budget: 50, offsetMs: t * MINUTE_MS });
+		}
+		const deactivated = [];
+		for (const id of ids) if ((await row(id))?.active === false) deactivated.push(id);
+		expect(deactivated).toEqual(ids.slice(0, RECONCILE_DEACTIVATION_RESERVE_UNITS));
+		expect(await row(ids[30] ?? "")).toMatchObject({ active: true });
+		const after = await stored(cursors);
+		expect(after).toMatchObject({ day: TODAY, unitsToday: LIMIT_UNITS });
+		expect(after.pending?.map((entry) => entry.id)).toEqual([ids[30]]);
+		expect(errors).toEqual([]);
 	});
 
 	test("a product the walk nominated as a SYNC that the lap finds unpublished is renominated as the deactivation", async () => {

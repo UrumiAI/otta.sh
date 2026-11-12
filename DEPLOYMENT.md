@@ -1287,9 +1287,9 @@ budget Workers Free can run) counts as Free. So a Workers Paid store left at 50 
 at 300 carts a day too (choose the Paid preset to drain faster). A Free store that abandons more
 than 300 empty carts a day never fully catches up; the rest wait their turn, untouched.
 `product-reconcile` has a daily cap of its own on Free (200 repairs and a reserve of 30
-deactivations, about 33,000 rows written; see "Rows written, and the daily repair cap" below), and
-so does the Reports backfill (#572, below). All three together write about 85,000–90,000 rows a
-day, which leaves about 10,000–15,000 for the store's traffic.
+deactivations, about 32,800 rows written; see "Rows written, and the daily repair cap" below), and
+so does the Reports backfill (#572, below). All three together write about 80,000–85,000 rows a
+day, which leaves about 15,000–20,000 for the store's traffic.
 
 `stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
 nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
@@ -1468,13 +1468,13 @@ The count is kept in thirds of a repair: a sync spends three, a lost unpublish's
 document write against a sync's three) spends one. Syncs stop at 600; deactivations may also spend a
 **reserve of 30** above it that no sync can touch, so a day the syncs spent in full — every day of a
 large first install — still deactivates up to 30 lost unpublishes. The reserve adds at most about
-1,600 rows written, so the leg's daily bound is about **33,000**. A lost unpublish leaves a
-withdrawn product on sale, where a lost publish only leaves one off sale, so a page's deactivations
-also go before its syncs. Only a repair's writes count — not the visit that checks it, not a product
-found in sync, not one its own hook synced first — and the count is kept when the tick's query
-ceiling stops a run part-way through a repair. The cursor document also keeps the count in whole
-repairs, rounded up, which is what a release from before #664 reads: a same-day rollback stops at
-the cap rather than counting the day again.
+1,560 rows written (30 × 52), so the leg's daily bound is about **32,800** (31,200 + 1,560). A lost
+unpublish leaves a withdrawn product on sale, where a lost publish only leaves one off sale, so a
+page's deactivations also go before its syncs. Only a repair's writes count — not the visit that
+checks it, not a product found in sync, not one its own hook synced first — and the count is kept
+when the tick's query ceiling stops a run part-way through a repair. The cursor document also keeps
+the count in whole repairs, rounded up, which is what a release from before #664 reads: a same-day
+rollback stops at the cap rather than counting the day again.
 
 Once no sync fits, the walk holds its page: the pass keeps its start, its page and its nominated
 products and carries on after 00:00 UTC, so nothing is skipped. While it is held and a deactivation
@@ -1498,17 +1498,19 @@ catalogue in five days; "Publish changes" repairs any one product at once), and 
 says so beside the **Background work per minute** choice while it is at 50 or less. On a capped day
 a lost unpublish is found by the lap in progress or, if the lap has already passed its page, by the
 next one, a pass interval later; on a day the cap does not hold the walk, the walk itself finds it.
-On Workers Paid there is no daily cap.
+On a day the syncs spent, what the lap finds is deactivated at most **30 a day** (the reserve); any
+more stay nominated at the lap's place and are deactivated the next day, from the new day's
+allowance. On Workers Paid there is no daily cap.
 
 Together the three capped legs bound the sweep's **daily rows written on Free** at about
-85,000–90,000: `prune-carts` about 31,000 (300 carts), `product-reconcile` about 33,000 (200 syncs
-and the reserve of 30 deactivations) and the Reports backfill about 16,000–21,000 (100 days). That
-leaves about 10,000–15,000 of D1 Free's 100,000 for the store's own traffic (carts, checkouts,
-orders, admin edits) and the sweep's own cursor and tick-state writes. On the deploy day of a new
-index layout all three write nothing (see "Deploying the Reports month cache" above). All three caps
-key off the **Background work per minute** setting the same way — 50 or less counts as Free — and
-all three are derived from the index model, not measured on D1. Overlapping ticks can pass the day's
-repair cap by at most one run's repairs.
+80,000–85,000 (79,600–84,800): `prune-carts` about 31,200 (300 carts), `product-reconcile` about
+32,800 (200 syncs and the reserve of 30 deactivations) and the Reports backfill about 15,600–20,800
+(100 days). That leaves about 15,000–20,000 (15,240–20,440) of D1 Free's 100,000 for the store's own
+traffic (carts, checkouts, orders, admin edits) and the sweep's own cursor and tick-state writes. On
+the deploy day of a new index layout all three write nothing (see "Deploying the Reports month
+cache" above). All three caps key off the **Background work per minute** setting the same way — 50
+or less counts as Free — and all three are derived from the index model, not measured on D1.
+Overlapping ticks can pass the day's repair cap by at most one run's repairs.
 
 What it does not repair: a **leaked price** from before PR 1b (the sync carries no commercial
 field and the published content holds no price to compare against — re-price it in Pricing &

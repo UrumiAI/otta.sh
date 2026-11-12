@@ -253,11 +253,13 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
  * host's list index and Otta's 49 declared expression indexes, none of them
  * partial), and a sync is about three document writes (the upsert, the activate,
  * the variant write) plus its sku claims — about 156 rows a product. 200 repairs is
- * then about 31,000 rows written a day, and the deactivations' reserve
- * (`RECONCILE_DEACTIVATION_RESERVE_UNITS`) about 1,600 more. Beside `prune-carts`' own
- * cap (`ABANDONED_CARTS_PER_DAY_FREE`, about 31,000) and the reporting backfill's
- * (`REPORTING_BACKFILL_DAYS_PER_DAY_FREE`, about 16,000–21,000), all three at once
- * write about 85,000–90,000, which leaves the store's traffic about 10,000–15,000. On
+ * then about 31,200 rows written a day, and the deactivations' reserve
+ * (`RECONCILE_DEACTIVATION_RESERVE_UNITS`) at most 1,560 more: about 32,800. Beside
+ * `prune-carts`' own cap (`ABANDONED_CARTS_PER_DAY_FREE`, about 31,200) and the
+ * reporting backfill's (`REPORTING_BACKFILL_DAYS_PER_DAY_FREE`, about 15,600–20,800),
+ * all three at once write about 80,000–85,000 (79,600–84,800), which leaves the
+ * store's traffic and the sweep's own cursor and tick-state writes about
+ * 15,000–20,000. On
  * the deploy day of a new index layout all three spend nothing (`indexBuildHold`).
  * Without it a first install over an existing catalogue — every product
  * without a row — heals at the leg's pace, about 460 repairs a day measured, about
