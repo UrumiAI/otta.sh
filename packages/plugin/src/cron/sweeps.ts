@@ -2390,12 +2390,7 @@ export async function runCommerceSweeps(
 			try {
 				lateRefundsEscalated = await budget.charge("late-refunds", () =>
 					escalateStaleLateRefunds(
-						{
-							orderStore: stores.orderStore,
-							paymentEventStore: stores.paymentEventStore,
-							clock: { now: () => now },
-							logger: CONSOLE_LOGGER,
-						},
+						{ orderStore: stores.orderStore, clock: { now: () => now } },
 						{ shouldContinue: escalation.gate(0, LATE_REFUND_ESCALATION_UNIT) },
 					),
 				);

@@ -428,7 +428,7 @@ async function afterFailure(
  * who finds it refunded resolves the flag.
  */
 async function giveUp(
-	deps: LatePaymentDeps,
+	deps: Pick<LatePaymentDeps, "orderStore">,
 	orderId: OrderId,
 	capture: LateCapture,
 	state: OrderState,
@@ -616,7 +616,7 @@ function isStale(retry: RefundRetry, now: string): boolean {
  * escalation. Returns the number escalated.
  */
 export async function escalateStaleLateRefunds(
-	deps: LatePaymentDeps,
+	deps: Pick<LatePaymentDeps, "orderStore" | "clock">,
 	options: RetryLatePaymentRefundsOptions = {},
 ): Promise<number> {
 	const now = deps.clock.now().toISOString();
