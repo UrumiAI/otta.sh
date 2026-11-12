@@ -54,6 +54,7 @@ import {
 	rateLimitClassFor as rateLimitClassForRequest,
 	resetRateLimitLogForTests,
 } from "../src/lib/rate-limit.js";
+import { resumeFormAction } from "../src/lib/checkout-resume.js";
 import { onRequest } from "../src/middleware.js";
 import { env } from "./helpers/virtual-emdash-env.js";
 import { SRC } from "./theme-views.js";
@@ -734,6 +735,14 @@ describe("the middleware", () => {
 		);
 		expect(post.status).toBe(429);
 		expect(await post.text()).toContain('href="/cart"');
+	});
+
+	test("the email form's 429 goes back to the order page: its action carries the order (#669)", async () => {
+		env[RATE_LIMIT_BINDINGS.auth] = binding(false);
+		const action = resumeFormAction("ord/1");
+		const post = await runMiddleware(context("POST", action, "/checkout/resume"), endpoint());
+		expect(post.status).toBe(429);
+		expect(await post.text()).toContain('href="/orders/ord%2F1"');
 	});
 
 	test("rateLimitedResponse escapes backTo in the href", async () => {

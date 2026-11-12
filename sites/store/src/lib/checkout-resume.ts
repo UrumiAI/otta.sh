@@ -86,6 +86,13 @@ export function resumeEmailPath(orderId: string, error?: string): string {
 	return `${RESUME_EMAIL_PATH}?${query.toString()}`;
 }
 
+/** The email form's action. It names the order in the query as well as the
+ *  body, so the rate limiter's 429, which never reads a body, can send the
+ *  shopper back to that order's page (#669). The handler reads the body's. */
+export function resumeFormAction(orderId: string): string {
+	return `/checkout/resume?${new URLSearchParams({ order: orderId }).toString()}`;
+}
+
 export function orderPathFor(orderId: string): string {
 	return `/orders/${encodeURIComponent(orderId)}`;
 }
