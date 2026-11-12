@@ -1287,7 +1287,7 @@ describe("Background work per minute (the sweep's query budget)", () => {
 
 	test("at the Free preset, says how fast a first install's products become buyable; at Paid, says nothing (#664)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
-		const line = `At Workers Free (30) (or any setting of 50 or less), products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day`;
+		const line = `With Background work at 50 or less (the Workers Free preset), products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day`;
 		const contexts = async (): Promise<string[]> =>
 			findBlocks(await settingsPage(), "context").map((b) => String(b.text));
 		expect(await contexts()).toContainEqual(expect.stringContaining(line));

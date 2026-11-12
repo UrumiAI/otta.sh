@@ -1960,10 +1960,12 @@ const backgroundWorkContext: Block = {
 	text: "Background work: how much the every-minute sweep (hold expiry, order emails) may do. Free allows 50 database queries a run, Paid 1000 — stores with sale spikes should be on Paid.",
 };
 
-/** The preset the daily repair cap applies to, by the radio's own label. */
-const CAPPED_PRESET_LABEL =
+/** The preset the daily repair cap applies to, named as the radio names it, without
+ *  its number ("Workers Free (30)" → "Workers Free"). */
+const CAPPED_PRESET_NAME = (
 	BACKGROUND_WORK_PRESETS.find((preset) => reconcileRepairsDailyCap(preset.value) !== null)
-		?.label ?? "Workers Free";
+		?.label ?? "Workers Free"
+).replace(/\s*\(\d+\)$/, "");
 
 /** What a capped setting means for a first install over an existing catalogue
  *  (#664): every product without a commerce row waits for the `product-reconcile`
@@ -1976,7 +1978,7 @@ function firstInstallContext(backgroundWork: number): Block[] {
 	return [
 		{
 			type: "context",
-			text: `At ${CAPPED_PRESET_LABEL} (or any setting of ${String(WORKERS_FREE_MAX_QUERY_BUDGET)} or less), products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day. "Publish changes" on a product makes it buyable at once.`,
+			text: `With Background work at ${String(WORKERS_FREE_MAX_QUERY_BUDGET)} or less (the ${CAPPED_PRESET_NAME} preset), products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day. "Publish changes" on a product makes it buyable at once.`,
 		},
 	];
 }
