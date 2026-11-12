@@ -154,9 +154,10 @@ describe("createOrderFromCart — an offline (cash-on-delivery) checkout", () =>
 			{ sku: "SKU-1", productId: "p1", qty: 11, kind: "physical" },
 			{ sku: "DIG-1", productId: "d1", qty: 5, kind: "digital" },
 		]);
+		// Its own reason (#678), so the buyer is told to order fewer items.
 		expect(await place(big, { offline: { ...ON, maxUnitsPerOrder: 10 } })).toEqual({
 			ok: false,
-			reason: "OFFLINE_ORDER_LIMIT",
+			reason: "OFFLINE_ORDER_TOO_LARGE",
 		});
 		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${big}`))).toBeNull();
 		// At the cap (digital lines hold no stock and are not counted): placed.
@@ -169,6 +170,35 @@ describe("createOrderFromCart — an offline (cash-on-delivery) checkout", () =>
 			{ sku: "SKU-1", productId: "p1", qty: 25, kind: "physical" },
 		]);
 		expect((await place(uncapped, { offline: { ...ON, maxUnitsPerOrder: 0 } })).ok).toBe(true);
+	});
+
+	/**
+	 * #678: the unit cap is checked BEFORE the open-order caps, from the cart
+	 * alone. An oversized order is refused the same way whatever the buyer's or
+	 * network's open orders, so it can never be used, placing nothing, to learn
+	 * whether an email or a network is at its cap (`OFFLINE_ORDER_LIMIT` stays
+	 * neutral: it never says orders are open). Nor does it read the store.
+	 */
+	test("an order over the unit cap is OFFLINE_ORDER_TOO_LARGE whether or not the buyer is at a cap, and counts nothing", async () => {
+		const capped = { ...ON, maxOpenPerBuyer: 1, maxUnitsPerOrder: 10 };
+		const big = () => h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 11, kind: "physical" }]);
+		const tooLarge = { ok: false, reason: "OFFLINE_ORDER_TOO_LARGE" };
+		let counted = 0;
+		const count = h.orderStore.countOpenOfflineOrders.bind(h.orderStore);
+		h.orderStore.countOpenOfflineOrders = (input) => {
+			counted++;
+			return count(input);
+		};
+		expect(await place(await big(), { offline: capped })).toEqual(tooLarge);
+		expect(counted).toBe(0);
+		expect((await place(await physicalCart(), { offline: capped })).ok).toBe(true);
+		// Now at the buyer cap: the oversized order's answer does not change.
+		expect(await place(await big(), { offline: capped })).toEqual(tooLarge);
+		// A normal-sized one gets the neutral refusal.
+		expect(await place(await physicalCart(), { offline: capped })).toEqual({
+			ok: false,
+			reason: "OFFLINE_ORDER_LIMIT",
+		});
 	});
 
 	/**
