@@ -542,6 +542,54 @@ describe("the backfill's write volume", () => {
 	}, 300_000);
 });
 
+describe("a run that passes a short day over (#668)", () => {
+	test("logs the days it built, and its deferral warning does not blame the tick's budget", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		const skipped = await orderDaysAgo("short-skipped", 20);
+		const built = await orderDaysAgo("short-behind", 30);
+		// A day no run here has room for (more than the six units a Free tick gives one
+		// build): every run passes it over and reports the leg deferred.
+		const raw = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		await cursors.write(
+			"reporting-refresh",
+			JSON.stringify({ ...raw, short: [{ day: skipped.day, need: 7 }] }),
+		);
+		const logs: string[] = [];
+		const warns: string[] = [];
+		vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+			logs.push(a.map(String).join(" "));
+		});
+		vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+			warns.push(a.map(String).join(" "));
+		});
+		const outcomes: ReturnType<typeof heal>[] = [];
+		// Eight runs: the refresh's three turns in four and the walk's, before the verifier's
+		// turn (which re-checks, and so builds, the skipped day too).
+		for (let run = 0; run < 8; run++) outcomes.push(heal(await sweep(cursors, 30, QUIET)));
+
+		expect(await productsDirtyOf(built.day)).toEqual([0]);
+		expect(await productsDirtyOf(skipped.day)).toEqual([undefined]);
+		// The run that built the day behind it was a deferred one, and it still says so.
+		const building = outcomes.filter((o) => o.deferred === true && o.count > 0);
+		expect(building.length).toBeGreaterThan(0);
+		for (const o of building) {
+			expect(logs).toContain(
+				`[otta] cron sweep reporting-heal ${String(o.count)} (more next tick)`,
+			);
+		}
+		// A deferred run that built nothing says nothing.
+		expect(logs.filter((l) => l.startsWith("[otta] cron sweep reporting-heal 0"))).toEqual([]);
+		// It ran every time, so the streak's warning is about the day, not the budget.
+		const streak = warns.filter((l) => l.includes("cron sweep reporting-heal"));
+		expect(streak.length).toBeGreaterThan(0);
+		for (const line of streak) {
+			expect(line).not.toContain("the tick's budget is not reaching it");
+			expect(line).toContain("passed over");
+		}
+	}, 300_000);
+});
+
 describe("a month held by a claim", () => {
 	async function claim(id: string, date: string, claimedAt: string): Promise<void> {
 		await collectionOf<ReportingAppliedDoc>(storage, REPORTING_APPLIED_COLLECTION).put(id, {

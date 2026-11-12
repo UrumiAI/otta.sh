@@ -1401,15 +1401,20 @@ export async function runCommerceSweeps(
 	const reached = new Set<SweepLeg>();
 	const waited = new Set<SweepLeg>();
 
-	const noteDeferral = (leg: SweepLeg): void => {
+	/** `ran`: the leg's own body ran and passed work over (a day it had no room for),
+	 *  so the budget did reach it and the warning says what did happen (#668). */
+	const noteDeferral = (leg: SweepLeg, ran = false): void => {
 		waited.add(leg);
 		const streak = (state.deferrals[leg] ?? 0) + 1;
 		state.deferrals[leg] = streak;
 		stateChanged = true;
 		if (streak % DEFERRAL_WARN_EVERY === 0) {
 			console.warn(
-				`[otta] cron sweep ${leg} has been deferred ${String(streak)} ticks in a row` +
-					" — the tick's budget is not reaching it; see DEPLOYMENT.md §5 (Cron)",
+				ran
+					? `[otta] cron sweep ${leg} has passed over work ${String(streak)} ticks in a row` +
+							" — it ran, but the tick left too little room for its next unit; see DEPLOYMENT.md §5 (Cron)"
+					: `[otta] cron sweep ${leg} has been deferred ${String(streak)} ticks in a row` +
+							" — the tick's budget is not reaching it; see DEPLOYMENT.md §5 (Cron)",
 			);
 		}
 	};
@@ -1562,8 +1567,10 @@ export async function runCommerceSweeps(
 			};
 			record(outcome);
 			if (outcome.deferred === true) {
-				// Deferred by its own body, which logged why.
-				noteDeferral(leg);
+				// Deferred by its own body, which passed work over: what it did do is still
+				// logged (#668), and the streak ages it to the head of a later tick.
+				if (outcome.count > 0) logOutcome(outcome);
+				noteDeferral(leg, true);
 				return;
 			}
 			clearDeferral(leg);
