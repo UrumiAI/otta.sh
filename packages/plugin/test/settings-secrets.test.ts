@@ -418,7 +418,7 @@ describe("Settings: how a key field renders", () => {
 		});
 		const idleText = contextTexts(idle.blocks).join("\n");
 		expect(idleText).toContain(
-			'Email: provider not confirmed since setup or a "no provider" answer. A failed try uses 1 of an order email\'s 5 attempts; with none, mail waits up to 72 h, then is skipped. See docs/email-providers.md.',
+			'Email: provider not confirmed since setup or a "no provider" answer. A failed try uses 1 of an order email\'s 5 attempts; with none, mail is skipped after 72 h. See docs/email-providers.md.',
 		);
 		expect(idleText).not.toContain("Without one, order emails wait");
 		// Confirmed, then failing (a daily quota): the failure is on the screen,

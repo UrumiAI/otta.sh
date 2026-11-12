@@ -239,8 +239,11 @@ export class CtxEmailSender implements EmailSender {
 		// rethrows next: an error whose `message` getter throws, or a record that
 		// fails, is dropped.
 		try {
+			const pending = this.#onFailed(sendFailureReason(err, to));
+			// Only once it was handed over: a reporter that throws at once leaves
+			// the next failure free to try again.
 			this.#recorded = "failed";
-			void this.#onFailed(sendFailureReason(err, to)).catch(() => undefined);
+			void pending.catch(() => undefined);
 		} catch {
 			// Fail-soft: the next failed send records it.
 		}
@@ -274,16 +277,55 @@ const URL_WITHOUT_SCHEME = /\b[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63}){1,8}\/\S{0,20
 const QUOTED_ADDRESS = /"[^"\r\n]{1,64}"@[^\s"'<>()[\],;:@]{1,255}/g;
 /** Anything address-shaped. */
 const ADDRESS = /[^\s"'<>()[\],;:@]{1,64}@[^\s"'<>()[\],;:@]{1,255}/g;
-/** A token-like run: 24+ characters, or 16+ mixing letters and digits. */
+/** A run that may be a token: 16+ characters of the base64/identifier set. */
 const TOKEN_RUN = /[A-Za-z0-9_\-+/=]{16,}/g;
+/** A provider's error code: words joined by `_`, `.` or `-`, no digits. */
+const ERROR_CODE = /^[A-Za-z]+(?:[_.-][A-Za-z]+)+$/;
 
-/** Every common spelling of `@` a provider or mail header may use. */
+/** Whether a {@link TOKEN_RUN} match is redacted: any run mixing letters and
+ *  digits (a key, a hex request id), any run of digits, and a digit-free run of
+ *  32+ that is not an error code (`E_SENDER_DOMAIN_NOT_VERIFIED` stays). */
+function isSecretRun(run: string): boolean {
+	const digits = /[0-9]/.test(run);
+	if (digits) return true;
+	if (ERROR_CODE.test(run)) return false;
+	return run.length >= 32;
+}
+
+/** One RFC 2047 encoded word, matched whole (`=?utf-8?q?…?=`): its text is kept,
+ *  its wrapper dropped. A lone `?=` (a URL's query) is left alone. */
+const ENCODED_WORD = /=\?[^?\s]{1,40}\?[qb]\?([^?\s]{0,200})\?=/gi;
+/** `%40` / `=40` between an address's local part and a domain. */
+const ENCODED_AT = /(?<=[A-Za-z0-9._%+-])(?:%40|=40)(?=[A-Za-z0-9-]{1,63}\.[A-Za-z])/gi;
+/** `(at)`, `[at]`, `{at}` between an address's local part and a domain. */
+const SPELLED_AT =
+	/(?<=[A-Za-z0-9._%+-])\s{0,3}[([{]\s{0,3}at\s{0,3}[)\]}]\s{0,3}(?=[A-Za-z0-9-]{1,63}\.[A-Za-z])/gi;
+
+/** Every common spelling of `@` a provider or mail header may use. The ones
+ *  that are also ordinary text (`=40`, `%40`, `(at)`) only between address-like
+ *  text, so "limit=400" and "failed (at) 10:00" stay as they are. */
 function normalizeAt(text: string): string {
 	return text
-		.replace(/=\?[a-z0-9_-]{1,40}\?[qb]\?/gi, " ")
-		.replace(/\?=/g, " ")
-		.replace(/%40|=40|&#0*64;|&#x0*40;|&commat;|[\uFF20\uFE6B]/gi, "@")
-		.replace(/\s{0,3}[([{]\s{0,3}at\s{0,3}[)\]}]\s{0,3}/gi, "@");
+		.replace(ENCODED_WORD, " $1 ")
+		.replace(/&#0*64;|&#x0*40;|&commat;|[\uFF20\uFE6B]/gi, "@")
+		.replace(ENCODED_AT, "@")
+		.replace(SPELLED_AT, "@");
+}
+
+/** Characters that may sit inside an address's local part. */
+const LOCAL_PART_CHAR = "A-Za-z0-9._%+-";
+
+/** The recipient's local part as a whole token, when it looks like an
+ *  identifier rather than a word (a `.`, `_`, `+`, `-` or digit, or 6+
+ *  characters): `jane.doe` is redacted, but `not`, `info` or `user` never turn
+ *  "domain not verified" into nonsense (#677 review). */
+function redactLocalPart(text: string, local: string): string {
+	if (!/[._+\-0-9]/.test(local) && local.length < 6) return text;
+	const escaped = local.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return text.replace(
+		new RegExp(`(?<![${LOCAL_PART_CHAR}])${escaped}(?![${LOCAL_PART_CHAR}])`, "gi"),
+		"[address]",
+	);
 }
 
 /** `needle` replaced in `text` regardless of case, as a literal. */
@@ -312,14 +354,16 @@ function messageOf(err: unknown): string {
  * (issue #677). A provider's error may quote the recipient, a URL or a key, so
  * only its first {@link SEND_FAILURE_INPUT_MAX} characters are read (cut back to
  * a space), and then:
- *  - every spelling of `@` (`%40`, `=40`, `&#64;`, `&commat;`, fullwidth,
- *    `(at)`) becomes `@`;
- *  - the recipient (any case) and its local part become `[address]`, and so
- *    does anything address-shaped, a quoted local part included;
+ *  - every spelling of `@` (`&#64;`, `&commat;`, fullwidth; and `%40`, `=40`,
+ *    `(at)` between address-like text) becomes `@`, and a whole RFC 2047
+ *    encoded word is unwrapped;
+ *  - the recipient (any case) becomes `[address]`, and so does its local part
+ *    as a whole token when it looks like an identifier; so does anything
+ *    address-shaped, a quoted local part included;
  *  - the value after a credential word (`key=`, `Authorization:`, `Bearer`)
  *    becomes `[redacted]`, URLs with or without a scheme become `[url]`, and
- *    token-like runs (24+ characters, or 16+ mixing letters and digits) become
- *    `[redacted]`;
+ *    token-like runs ({@link isSecretRun}: 16+ with a digit, or 32+ that is not
+ *    an error code) become `[redacted]` — so a long hex request id is too;
  *  - control characters and runs of spaces collapse, trailing punctuation goes,
  *    and the result is cut to {@link SEND_FAILURE_REASON_MAX}.
  * Every pattern is bounded, so the work is linear in that capped input. A
@@ -343,7 +387,7 @@ export function sendFailureReason(err: unknown, to: string): string {
 	reason = replaceLiteral(reason, recipient, "[address]");
 	const at = recipient.lastIndexOf("@");
 	const local = at > 0 ? recipient.slice(0, at) : "";
-	if (local.length >= 3) reason = replaceLiteral(reason, local, "[address]");
+	if (local.length >= 3) reason = redactLocalPart(reason, local);
 	reason = reason
 		.replace(SECRET_AFTER_SCHEME, "$1 [redacted]")
 		.replace(SECRET_AFTER_NAME, "$1$2[redacted]")
@@ -351,9 +395,7 @@ export function sendFailureReason(err: unknown, to: string): string {
 		.replace(QUOTED_ADDRESS, "[address]")
 		.replace(ADDRESS, "[address]")
 		.replace(URL_WITHOUT_SCHEME, "[url]")
-		.replace(TOKEN_RUN, (run) =>
-			run.length >= 24 || (/[A-Za-z]/.test(run) && /[0-9]/.test(run)) ? "[redacted]" : run,
-		)
+		.replace(TOKEN_RUN, (run) => (isSecretRun(run) ? "[redacted]" : run))
 		.replace(/\s+/g, " ")
 		.trim()
 		.replace(/[\s.,;:!]+$/, "");

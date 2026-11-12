@@ -135,7 +135,9 @@ are write-only in the admin and are never echoed back.
    sign-in email is not shown: it spends no order-email attempt. A timeout shows as "timed
    out (may have been delivered)". The line clearing does **not** mean the emails that failed
    were sent: an email parked `failed` after its five attempts stays parked, and there is no
-   re-queue action yet (a follow-up).
+   re-queue action yet (a follow-up). Long codes in the reason (hex request ids, keys,
+   numbers of 16+ digits) show as `[redacted]`; to ask the provider's support about one,
+   quote the failure time instead.
 
    Email API keys that older otta builds stored are **not** deleted automatically; remove them
    by hand ([`DEPLOYMENT.md`](../DEPLOYMENT.md), "Leftover email and x402 keys").

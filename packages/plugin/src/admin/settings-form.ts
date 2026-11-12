@@ -2252,7 +2252,7 @@ export function emailStatusLine(status: EmailSendingStatus): string {
 		case "confirmed":
 			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM come from that provider's setup (the Cloudflare default: the OTTA_EMAIL_FROM build variable).";
 		case "unconfirmed":
-			return `Email: provider not confirmed since setup or a "no provider" answer. A failed try uses 1 of an order email's ${String(ORDER_EMAIL_MAX_ATTEMPTS)} attempts; with none, mail waits up to 72 h, then is skipped. See docs/email-providers.md.`;
+			return `Email: provider not confirmed since setup or a "no provider" answer. A failed try uses 1 of an order email's ${String(ORDER_EMAIL_MAX_ATTEMPTS)} attempts; with none, mail is skipped after 72 h. See docs/email-providers.md.`;
 		case "unavailable":
 			return "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 	}

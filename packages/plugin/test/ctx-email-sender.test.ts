@@ -477,6 +477,90 @@ describe("issue #677: a failed send is recorded for Settings, without the recipi
 		).toBe('[cloudflare-email] send_email binding "EMAIL" not found');
 	});
 
+	// #677 review round 2: redaction must not eat the operator's own words.
+	test("a short or plain recipient local part never redacts ordinary words", () => {
+		const cases: [string, string, string][] = [
+			["not@shop.test", "sender domain not verified", "sender domain not verified"],
+			["info@shop.test", "insufficient information", "insufficient information"],
+			["max@shop.test", "max sends per day reached", "max sends per day reached"],
+			["user@shop.test", "username rejected for user", "username rejected for user"],
+			["the@shop.test", "the binding is missing", "the binding is missing"],
+			["email@shop.test", "Email sending disabled", "Email sending disabled"],
+		];
+		for (const [to, message, expected] of cases) {
+			expect(sendFailureReason(new Error(message), to), to).toBe(expected);
+		}
+		// An identifier-like local part is still redacted, as a whole token only.
+		expect(sendFailureReason(new Error("no mailbox jane.doe here"), "jane.doe@x.test")).toBe(
+			"no mailbox [address] here",
+		);
+		expect(sendFailureReason(new Error("no mailbox jane.doex"), "jane.doe@x.test")).toBe(
+			"no mailbox jane.doex",
+		);
+		expect(sendFailureReason(new Error("rejected buyer42"), "buyer42@x.test")).toBe(
+			"rejected [address]",
+		);
+	});
+
+	test("=40, %40 and (at) become @ only between address-like text", () => {
+		for (const message of [
+			"rate limit=400 per day",
+			"code=403 forbidden",
+			"failed (at) 10:00 UTC",
+			"retry [at] noon",
+			"usage 100%40 of quota",
+		]) {
+			expect(sendFailureReason(new Error(message), "b@x.test")).toBe(message);
+		}
+	});
+
+	test("only a whole RFC 2047 encoded word is unwrapped; a URL's ?= stays in the URL", () => {
+		expect(sendFailureReason(new Error("see https://x.test/a?=SECRETVALUE now"), "b@x.test")).toBe(
+			"see [url] now",
+		);
+		expect(sendFailureReason(new Error("to =?utf-8?q?al=40mail.test?= failed"), "b@x.test")).toBe(
+			"to [address] failed",
+		);
+	});
+
+	test("provider error codes survive; long hex, digit and blob runs do not", () => {
+		for (const code of [
+			"E_SENDER_DOMAIN_NOT_VERIFIED",
+			"daily_sending_quota_exceeded",
+			"destination_address_not_verified",
+			"insufficient_permissions",
+			"cloudflare-email-sending-is-not-enabled",
+		]) {
+			expect(sendFailureReason(new Error(`failed: ${code}`), "b@x.test")).toBe(`failed: ${code}`);
+		}
+		for (const [message, leak] of [
+			["req 9f8e7d6c5b4a39281706f5e4d3c2b1a0", /9f8e7d/],
+			["ref 12345678901234567890", /1234567890/],
+			["blob abcdefghijklmnopqrstuvwxyzABCDEFGH", /abcdefghij/],
+			["blob ab+cdefghij/klmnopqrstuvwxyzABCDEF==", /cdefghij/],
+		] as const) {
+			expect(sendFailureReason(new Error(message), "b@x.test")).not.toMatch(leak);
+		}
+	});
+
+	test("a reporter that throws at once leaves the sender able to record the next failure", async () => {
+		const reasons: string[] = [];
+		let calls = 0;
+		const sender = new CtxEmailSender({
+			email: { send: () => Promise.reject(new Error("quota")) },
+			onFailed: (reason) => {
+				calls++;
+				if (calls === 1) throw new Error("sync boom");
+				reasons.push(reason);
+				return Promise.resolve();
+			},
+		});
+		await rejectionOf(sender.send(INPUT));
+		await rejectionOf(sender.send(INPUT));
+		expect(calls).toBe(2);
+		expect(reasons).toEqual(["quota"]);
+	});
+
 	test("an error whose message cannot be read never replaces the send's own error", async () => {
 		const odd = {
 			get message(): string {
