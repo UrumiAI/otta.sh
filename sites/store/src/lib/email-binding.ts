@@ -104,16 +104,17 @@ function assertScopeBinding(entries: unknown, fileName: string, sender?: EmailSe
 }
 
 /**
- * The build's whole select + read + guard step, pure so both outcomes are tested
- * with fixtures instead of the machine's gitignored `wrangler.local.jsonc`.
- * No-op when no sender is configured. Returns the file name it checked.
+ * The build's guard step: no-op when no sender is configured, else
+ * {@link assertEmailBindingDeclared} on the wrangler config the build uses.
+ * It takes that file's text and name as the caller already chose and read them
+ * (issue #677), so it can never check a different file than the downloads
+ * guard. Returns the file name it checked.
  */
 export function assertEmailBindingForBuild(
 	sender: EmailSender | undefined,
-	files: { localText?: string; templateText: string },
+	wrangler: { text: string; name: string },
 ): string | undefined {
 	if (sender === undefined) return undefined;
-	const fileName = files.localText !== undefined ? "wrangler.local.jsonc" : "wrangler.jsonc";
-	assertEmailBindingDeclared(files.localText ?? files.templateText, fileName, sender);
-	return fileName;
+	assertEmailBindingDeclared(wrangler.text, wrangler.name, sender);
+	return wrangler.name;
 }

@@ -80,8 +80,7 @@ export interface OttaOptions {
 	/**
 	 * The wrangler config this build uses, relative to the project root. It must
 	 * be the file the Cloudflare adapter reads (`configPath`). Default
-	 * `wrangler.jsonc`. Any other file is treated as a local copy of
-	 * `wrangler.jsonc`, which then only serves as the tracked template.
+	 * `wrangler.jsonc`. Every build guard reads this one file.
 	 */
 	wranglerConfig?: string;
 	/** The disposable playground build (try.otta.sh). Never for a store. */
@@ -684,19 +683,16 @@ export default function otta(options: OttaOptions): AstroIntegration {
 				 * bucket (issue #376): EmDash serves every MEDIA key without auth
 				 * (`src/lib/downloads-bucket.ts`).
 				 */
-				assertDownloadsBucketPrivate(read(wranglerConfig), wranglerConfig);
+				const wranglerText = read(wranglerConfig);
+				assertDownloadsBucketPrivate(wranglerText, wranglerConfig);
 
 				/**
 				 * A configured sender needs the `EMAIL` send_email binding in the config
 				 * this build uses (ADR-0043): selected-but-unbound burns order-email
-				 * attempts.
+				 * attempts. The SAME text and name as the guard above (issue #677): the
+				 * site chose the file; nothing here chooses again.
 				 */
-				assertEmailBindingForBuild(emailFrom, {
-					...(wranglerConfig !== "wrangler.jsonc" ? { localText: read(wranglerConfig) } : {}),
-					templateText: read(
-						wranglerConfig === "wrangler.jsonc" ? wranglerConfig : "wrangler.jsonc",
-					),
-				});
+				assertEmailBindingForBuild(emailFrom, { text: wranglerText, name: wranglerConfig });
 
 				assertNoPublicCollisions(fileURLToPath(config.publicDir));
 				if (!playground) assertSeedFound(root);

@@ -95,32 +95,39 @@ describe("assertEmailBindingDeclared", () => {
 	});
 });
 
-describe("assertEmailBindingForBuild (select + read + guard, fixture-driven)", () => {
+describe("assertEmailBindingForBuild (the guard on the file the build chose)", () => {
 	const SENDER = "store@example.com";
 	const template = readFileSync(path.resolve(HERE, "../wrangler.jsonc"), "utf8");
 	const withBinding = template.replace(/^(\s*)\/\/\s*("send_email")/m, "$1$2");
 
 	test("no sender: nothing is checked", () => {
-		expect(assertEmailBindingForBuild(undefined, { templateText: template })).toBeUndefined();
+		expect(
+			assertEmailBindingForBuild(undefined, { text: template, name: "wrangler.jsonc" }),
+		).toBeUndefined();
 	});
 
 	test("sender + template without the binding: refused, naming wrangler.jsonc", () => {
-		expect(() => assertEmailBindingForBuild(SENDER, { templateText: template })).toThrow(
-			/wrangler\.jsonc declares no send_email/,
-		);
+		expect(() =>
+			assertEmailBindingForBuild(SENDER, { text: template, name: "wrangler.jsonc" }),
+		).toThrow(/wrangler\.jsonc declares no send_email/);
 	});
 
-	test("a local file wins over the template, in both directions", () => {
+	// Issue #677: the caller's choice of file is the only one. The guard checks
+	// the text it is handed under the name it is handed, never another file.
+	test("checks the text it is handed, under that file's name", () => {
 		expect(() =>
-			assertEmailBindingForBuild(SENDER, { templateText: withBinding, localText: "{}" }),
+			assertEmailBindingForBuild(SENDER, { text: "{}", name: "wrangler.local.jsonc" }),
 		).toThrow(/wrangler\.local\.jsonc declares no send_email/);
+		expect(() =>
+			assertEmailBindingForBuild(SENDER, { text: "{}", name: "wrangler.e2e.jsonc" }),
+		).toThrow(/wrangler\.e2e\.jsonc declares no send_email/);
 		expect(
-			assertEmailBindingForBuild(SENDER, { templateText: template, localText: withBinding }),
+			assertEmailBindingForBuild(SENDER, { text: withBinding, name: "wrangler.local.jsonc" }),
 		).toBe("wrangler.local.jsonc");
 	});
 
 	test("happy path: valid sender + binding passes and the provider is registered", () => {
-		expect(assertEmailBindingForBuild(SENDER, { templateText: withBinding })).toBe(
+		expect(assertEmailBindingForBuild(SENDER, { text: withBinding, name: "wrangler.jsonc" })).toBe(
 			"wrangler.jsonc",
 		);
 		expect(buildEmdashOptions({}, SENDER).plugins.map((p) => p.id)).toContain("cloudflare-email");
