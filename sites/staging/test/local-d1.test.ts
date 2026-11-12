@@ -178,4 +178,21 @@ describe("openContentDbForSpec: what the spec skips on (or, under a gate, fails 
 		expect(opened.ok).toBe(false);
 		if (!opened.ok) expect(opened.why).toContain(junk);
 	});
+
+	it("names EVERY unreadable file, not just the first", () => {
+		const first = join(dir, "junk-a.sqlite");
+		const second = join(dir, "junk-b.sqlite");
+		for (const junk of [first, second]) {
+			writeFileSync(junk, "not a database, just bytes ".repeat(200));
+		}
+		d1File("live", [CONTENT_TABLE]);
+		expect(() => findContentDbFile(dir)).toThrow(first);
+		expect(() => findContentDbFile(dir)).toThrow(second);
+		const opened = openContentDbForSpec(dir);
+		expect(opened.ok).toBe(false);
+		if (!opened.ok) {
+			expect(opened.why).toContain(first);
+			expect(opened.why).toContain(second);
+		}
+	});
 });

@@ -84,7 +84,14 @@ function candidates(dir: string): { paths: string[]; errors: unknown[] } {
  */
 export function findContentDbFile(dir: string = D1_DIR): string | undefined {
 	const { paths: matches, errors } = candidates(dir);
-	if (errors.length > 0) throw errors[0];
+	if (errors.length === 1) throw errors[0];
+	if (errors.length > 1) {
+		// Every one named, so a single cleanup pass moves them all aside.
+		throw new AggregateError(
+			errors,
+			errors.map((err) => (err instanceof Error ? err.message : String(err))).join("; "),
+		);
+	}
 	if (matches.length > 1) {
 		throw new Error(
 			`more than one local D1 file under ${dir} has a "${CONTENT_TABLE}" table ` +
