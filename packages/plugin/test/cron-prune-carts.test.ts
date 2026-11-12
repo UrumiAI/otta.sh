@@ -452,15 +452,19 @@ describe("prune-carts (#39)", () => {
 		// Within one cadence: the cap's worth, then stamped and not due.
 		expect(pruned).toBe(ABANDONED_CARTS_PER_RUN);
 		expect(waited).toBeDefined();
-		// The next cadence starts afresh.
+		// The stamped run started the count again.
+		expect(JSON.parse((await cursors.read("prune-carts"))!)).toMatchObject({
+			deletedSinceStamp: 0,
+		});
+		// The next cadence starts afresh: 120 carts is more than two cadences' worth,
+		// so it deletes the cap's worth again, exactly.
 		const next = new Date(NOW.getTime() + (waited! + 16) * MINUTE_MS);
 		await othersRunAt(cursors, next);
 		const after = pruneLeg(await tick(cursors, { now: next, queryBudget: 600 }));
-		expect(after.count).toBeGreaterThan(0);
-		expect(after.count).toBeLessThanOrEqual(ABANDONED_CARTS_PER_RUN);
+		expect(after.count).toBe(ABANDONED_CARTS_PER_RUN);
 	});
 
-	test("above the Free preset the deletes since the last stamp are counted in the cursor, and a spent cadence waits (#663)", async () => {
+	test("above a budget of 50 (Workers Paid) the deletes since the last stamp are counted in the cursor, and a spent cadence waits (#663)", async () => {
 		const ids: string[] = [];
 		for (let i = 0; i < 5; i++) ids.push(await emptyCart(OLD));
 		const cursors = await onlyPruneCartsDue();

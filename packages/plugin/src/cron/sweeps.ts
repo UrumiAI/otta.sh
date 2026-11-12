@@ -5798,8 +5798,10 @@ interface PruneCartsCursor {
 /** The carts deleted on one UTC day (`YYYY-MM-DD`), for the Free daily cap. Kept
  *  beside the place and never reset by a pass ending or a cursor refused. Also, where
  *  there is no daily cap, the carts deleted since the leg was last stamped, for the
- *  per-cadence cap (`ABANDONED_CARTS_PER_RUN`): back to 0 by a run that is stamped,
- *  and always 0 under a daily cap. */
+ *  per-cadence cap (`ABANDONED_CARTS_PER_RUN`): back to 0 by a run stamped for its
+ *  cap or its pass's end, and always 0 under a daily cap. A FAILED run is stamped
+ *  too (by the runner), but its deletes carry into the next cadence's count: that
+ *  cadence deletes fewer, never more. */
 interface PruneCartsDay {
 	readonly day: string | null;
 	readonly deletedToday: number;
@@ -6035,8 +6037,9 @@ async function pruneAbandonedCarts(
 	// may still record its place, and the day's count its deletes. No write when
 	// nothing moved: the place read back, or a fresh start where nothing was stored.
 	const savePlace = async (): Promise<void> => {
-		// Kept only where there is no daily cap. A run that is stamped (capped, or its
-		// pass done) starts it again.
+		// Kept only where there is no daily cap. A run stamped for its cap or its pass's
+		// end starts it again; a failed run (stamped by the runner) carries its deletes
+		// into the next cadence, which errs low.
 		const deletedSinceStamp =
 			dailyCap !== null || capped || !incomplete ? 0 : saved.deletedSinceStamp + pruned;
 		const day: PruneCartsDay =
