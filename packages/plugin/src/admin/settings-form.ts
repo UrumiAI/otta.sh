@@ -4,6 +4,7 @@ import {
 	readBackgroundWork,
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
+import { RECONCILE_REPAIRS_PER_DAY_FREE } from "../cron/product-reconcile.js";
 import { currencyChoiceLabel, currencyChoicesWith } from "@urumi.ai/otta-admin-presentation";
 import {
 	effectiveStoreCurrency,
@@ -1955,6 +1956,14 @@ const backgroundWorkContext: Block = {
 	text: "Background work: how much the every-minute sweep (hold expiry, order emails) may do. Free allows 50 database queries a run, Paid 1000 — stores with sale spikes should be on Paid.",
 };
 
+/** What Free means for a first install over an existing catalogue (#664): every
+ *  product without a commerce row waits for the `product-reconcile` sweep, which
+ *  repairs at most `RECONCILE_REPAIRS_PER_DAY_FREE` a day on Free. */
+const firstInstallContext: Block = {
+	type: "context",
+	text: `On Workers Free, products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day. "Publish changes" on a product makes it buyable at once.`,
+};
+
 /**
  * "Background work per minute" — a radio of the two plan presets, beside the
  * hold TTL because it decides how fast expired holds come back on sale.
@@ -2007,6 +2016,7 @@ function checkoutGroup(
 					},
 					// Stored in plugin kv, not the settings store, so it stays usable.
 					backgroundWorkContext,
+					firstInstallContext,
 					backgroundWorkForm(backgroundWork),
 				]
 			: [
@@ -2043,6 +2053,7 @@ function checkoutGroup(
 						},
 					}),
 					backgroundWorkContext,
+					firstInstallContext,
 					backgroundWorkForm(backgroundWork),
 				];
 	return section({

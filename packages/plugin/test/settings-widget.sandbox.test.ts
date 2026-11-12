@@ -28,6 +28,7 @@ import {
 import { afterEach, describe, expect, test } from "vitest";
 import { SETTINGS_ACTION_IDS } from "../src/admin/settings-form.js";
 import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
+import { RECONCILE_REPAIRS_PER_DAY_FREE } from "../src/cron/product-reconcile.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
@@ -1282,6 +1283,16 @@ describe("Background work per minute (the sweep's query budget)", () => {
 			{ value: "30", label: "Workers Free (30)" },
 			{ value: "600", label: "Workers Paid (600)" },
 		]);
+	});
+
+	test("says how fast a first install's products become buyable on Free (#664)", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const texts = findBlocks(await settingsPage(), "context").map((b) => String(b.text));
+		expect(texts).toContainEqual(
+			expect.stringContaining(
+				`On Workers Free, products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day`,
+			),
+		);
 	});
 
 	test("choosing Workers Paid persists it, and the next page load agrees", async () => {
