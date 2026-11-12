@@ -416,6 +416,35 @@ describe("the backfill does not wedge on the Free preset (#660 review)", () => {
 		expect(errors.filter((l) => l.includes(edge.day))).toEqual([]);
 	}, 300_000);
 
+	test("a day that runs short behind a full set of kept entries still gets one: an unlisted day's makes room (#668)", async () => {
+		const cursors = memoryCursors();
+		const edge = await orderDaysAgo("full-short", 20);
+		await cloneOrder(edge.id, 499);
+		await sweep(cursors);
+		const id = `USD:${edge.day}`;
+		await daily().put(id, { ...(await daily().get(id))!, productsDirty: 1 });
+		// The allowance is spent, so only the dirty day is listed, and the entries a
+		// cut-short listing keeps fill every slot: days it does not list.
+		await seedBuiltToday(cursors, REPORTING_BACKFILL_DAYS_PER_DAY_FREE);
+		const raw = JSON.parse((await cursors.read("reporting-refresh"))!) as Record<string, unknown>;
+		const kept = Array.from({ length: 10 }, (_, i) => ({
+			day: `2001-01-${String(i + 1).padStart(2, "0")}`,
+			need: 7,
+		}));
+		await cursors.write("reporting-refresh", JSON.stringify({ ...raw, short: kept }));
+		// Not QUIET: other legs keep the ticks busy, so the day runs short of its six units.
+		let recorded = false;
+		for (let run = 0; run < 12 && !recorded; run++) {
+			await sweep(cursors, 30);
+			const state = JSON.parse((await cursors.read("reporting-refresh"))!) as {
+				short: { day: string; need: number }[];
+			};
+			expect(state.short.length).toBeLessThanOrEqual(10);
+			recorded = state.short.some(({ day }) => day === edge.day);
+		}
+		expect(recorded).toBe(true);
+	}, 300_000);
+
 	test("a legacy day still absorbing its claims a few a run is built, not struck out", async () => {
 		const cursors = memoryCursors();
 		await sweep(cursors);
@@ -585,8 +614,25 @@ describe("a run that passes a short day over (#668)", () => {
 		expect(streak.length).toBeGreaterThan(0);
 		for (const line of streak) {
 			expect(line).not.toContain("the tick's budget is not reaching it");
-			expect(line).toContain("passed over");
+			expect(line).toContain("the last because it ran and passed work over");
 		}
+	}, 300_000);
+
+	test("a leg the budget never reaches still warns that the budget is not reaching it", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors);
+		await orderDaysAgo("budget-deferred", 20);
+		const warns: string[] = [];
+		vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+			warns.push(a.map(String).join(" "));
+		});
+		// Too small a tick for the leg to start at all: deferred by the budget, every tick.
+		for (let run = 0; run < 5; run++)
+			expect(heal(await sweep(cursors, 3, QUIET)).deferred).toBe(true);
+		expect(warns).toContain(
+			"[otta] cron sweep reporting-heal has been deferred 5 ticks in a row" +
+				" — the tick's budget is not reaching it; see DEPLOYMENT.md §5 (Cron)",
+		);
 	}, 300_000);
 });
 

@@ -1402,7 +1402,8 @@ export async function runCommerceSweeps(
 	const waited = new Set<SweepLeg>();
 
 	/** `ran`: the leg's own body ran and passed work over (a day it had no room for),
-	 *  so the budget did reach it and the warning says what did happen (#668). */
+	 *  so the budget did reach it THIS tick. Budget and body deferrals share one streak,
+	 *  so the warning names only what the last tick did (#668). */
 	const noteDeferral = (leg: SweepLeg, ran = false): void => {
 		waited.add(leg);
 		const streak = (state.deferrals[leg] ?? 0) + 1;
@@ -1410,11 +1411,11 @@ export async function runCommerceSweeps(
 		stateChanged = true;
 		if (streak % DEFERRAL_WARN_EVERY === 0) {
 			console.warn(
-				ran
-					? `[otta] cron sweep ${leg} has passed over work ${String(streak)} ticks in a row` +
-							" — it ran, but the tick left too little room for its next unit; see DEPLOYMENT.md §5 (Cron)"
-					: `[otta] cron sweep ${leg} has been deferred ${String(streak)} ticks in a row` +
-							" — the tick's budget is not reaching it; see DEPLOYMENT.md §5 (Cron)",
+				`[otta] cron sweep ${leg} has been deferred ${String(streak)} ticks in a row` +
+					(ran
+						? ", the last because it ran and passed work over (too little room left for its next unit)"
+						: " — the tick's budget is not reaching it") +
+					"; see DEPLOYMENT.md §5 (Cron)",
 			);
 		}
 	};
@@ -4134,17 +4135,31 @@ async function refreshReportingRollups(
 	});
 	let incomplete = days.length >= listLimit;
 	// A listed day is either built, marked, or still stale: `short` and `strikes` keep
-	// only the last. Only a full listing drops the days it did not list: one cut short by
-	// the daily allowance (or, spent, listing only the dirty days) leaves them as they
-	// were, so their strikes and needs carry over to the run that lists them again (#668).
+	// only the last. Only a full listing — dirty and unbuilt days, a whole batch of them —
+	// drops the days it did not list. One cut short by the daily allowance (or, spent,
+	// listing only the dirty days) leaves them as they were, so their strikes and needs
+	// carry over to the run that lists them again (#668). A full listing that is itself
+	// truncated (more stale days than a batch) still forgets the entries of the days
+	// ranked past it, as it always has: they are re-learned when listed again.
 	const listed = new Set(days);
-	if (allowance !== 0 && listLimit === REPORTING_REFRESH_BATCH) {
+	const fullListing = allowance === null || allowance >= REPORTING_REFRESH_BATCH;
+	if (fullListing) {
 		state.short = state.short.filter(({ day }) => listed.has(day));
 		state.strikes = state.strikes.filter(({ day }) => listed.has(day));
 	}
 	const settle = (day: string): void => {
 		state.short = state.short.filter((entry) => entry.day !== day);
 		state.strikes = state.strikes.filter((entry) => entry.day !== day);
+	};
+	/** Record a listed day's entry. At most a batch of entries: when the ones a cut-short
+	 *  listing kept fill it, an unlisted day's entry makes room for this listed one. */
+	const keep = <T extends { day: string }>(entries: T[], entry: T): void => {
+		if (entries.length >= REPORTING_REFRESH_BATCH) {
+			const stale = entries.findIndex(({ day }) => !listed.has(day));
+			if (stale === -1) return;
+			entries.splice(stale, 1);
+		}
+		entries.push(entry);
 	};
 	const markUnbuildable = async (day: string, why: string): Promise<void> => {
 		// It would head every batch forever: skip it, loudly. A report scans its orders,
@@ -4192,7 +4207,7 @@ async function refreshReportingRollups(
 			if (units < buildUnits) {
 				// Short of budget this tick (another leg or the walk spent it).
 				if (known !== undefined) known.need = need;
-				else if (state.short.length < REPORTING_REFRESH_BATCH) state.short.push({ day, need });
+				else keep(state.short, { day, need });
 				continue;
 			}
 			// It had the whole build and still ran out. Absorbing a legacy day's claims, that
@@ -4212,7 +4227,7 @@ async function refreshReportingRollups(
 				continue;
 			}
 			if (strike !== undefined) strike.n = n;
-			else if (state.strikes.length < REPORTING_REFRESH_BATCH) state.strikes.push({ day, n });
+			else keep(state.strikes, { day, n });
 		}
 	}
 

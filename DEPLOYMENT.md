@@ -1355,9 +1355,10 @@ room though given the most a tick can is marked the same way after three runs in
 day still absorbing its claims gets as many more runs as that takes). A day that only runs short
 because other legs used the tick is passed over until a tick has room for it, and the leg reports
 itself deferred, so it moves to the head of a later tick. A run that passes a day over still logs
-the days it built behind it (`[otta] cron sweep reporting-heal 2 (more next tick)`). Passed over
-long enough, the leg warns `has passed over work N ticks in a row — it ran, but the tick left too
-little room for its next unit`, not the warning of a leg the budget never reached.
+the days it built behind it (`[otta] cron sweep reporting-heal 2 (more next tick)`). Deferred long
+enough, the leg warns `has been deferred N ticks in a row, the last because it ran and passed work
+over (too little room left for its next unit)`, not `— the tick's budget is not reaching it`, the
+warning of a leg the budget never reached.
 
 `product-orphans` soft-deletes a
 commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
