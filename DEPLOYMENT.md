@@ -280,7 +280,7 @@ expired holds and queued emails drain at the Free pace (§5).
    product's Pricing & stock card says "Product not found" until it has a commerce row.
    Publishing the product from the admin ("Publish changes" after any small edit) creates the
    row at once. The every-minute sweep's `product-reconcile` leg also creates it, but it walks
-   the catalogue once per pass interval (24 hours on Workers Free, 6 on Paid), so that can take
+   the catalogue once per pass interval (24 hours, or 6 with the Paid background-work preset), so that can take
    up to a day. Then either price them in each product's Pricing & stock cards or run `sites/store/scripts/seed-demo-commerce.ts`
    against the SITE. It drives the site's own admin API — the route the Pricing & stock
    cards use — so it needs only the site URL and a token that can read the CMS

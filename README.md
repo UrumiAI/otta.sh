@@ -45,7 +45,8 @@ recovery, updates, email). In short:
 2. **Claim the store, promptly.** It is locked until claimed. Visit `/_emdash/admin` once, then
    find the `[otta-setup]` line in the Worker's logs: it holds the setup link. Until you use it,
    anyone who can read those logs can, and it does not expire. To keep the link out of the logs,
-   set a secret `OTTA_SETUP_TOKEN` (32 or more random characters) before the first visit and open
+   set a secret `OTTA_SETUP_TOKEN` (32 or more random `A-Z a-z 0-9 - _` characters;
+   `openssl rand -hex 32` makes one) before the first visit and open
    `/_emdash/admin/setup?setup_token=<token>`. In the wizard, choose **Sample content** for three
    demo products, then create your account and its passkey
    ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)).
@@ -180,13 +181,15 @@ someone who can add `try.otta.sh` to the Cloudflare account that owns the
 
 Eight packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.2.0`, which needs
 EmDash `1.3.1` (the plugin accepts `^1.3.1`; `@urumi.ai/otta-store` pins it exactly).
-`@urumi.ai/otta-plugin@0.1.0` is deprecated (its bundle included build environment values): use
-`0.2.0`. The other packages' `0.1.0` releases are not affected.
+`@urumi.ai/otta-plugin@0.1.0` is deprecated: a site that bundled it shipped its own build
+environment variables (such as `HOME`, `PATH` and `npm_*`) inside its Worker. Upgrade to `0.2.0`
+and redeploy; if a sensitive value was in that build environment, rotate it. The other packages'
+`0.1.0` releases are not affected.
 
 The simplest way to use them is a whole store: `@urumi.ai/otta-store` is the storefront and admin as
 one Astro integration (`otta({ template: 1 })`), and is what the one-click template depends on. It
-has exact peer pins (EmDash, Astro, React, the Cloudflare adapter and the other Otta packages), so
-start from the template's `package.json` (see [its README](./sites/store/README.md)). To add Otta to an EmDash site you already have, install what
+pins its peers (EmDash and the other Otta packages exactly; Astro, React and the adapters to the
+minor), so start from the template's `package.json` (see [its README](./sites/store/README.md)). To add Otta to an EmDash site you already have, install what
 the site registers:
 
 ```bash

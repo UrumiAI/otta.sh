@@ -3,8 +3,9 @@
 ## Supported versions
 
 Otta is pre-1.0. Only `main` and the latest `0.x` release on npm are supported; there are no LTS
-branches yet. `@urumi.ai/otta-plugin@0.1.0` is deprecated on npm (its bundle included build
-environment values); use `0.2.0` or later. The other packages' `0.1.0` releases are not affected.
+branches yet. `@urumi.ai/otta-plugin@0.1.0` is deprecated on npm: a site that bundled it shipped
+its own build environment variables inside its Worker. Upgrade to `0.2.0` or later and redeploy;
+if a sensitive value was in that build environment, rotate it. The other packages' `0.1.0` releases are not affected.
 
 ## Reporting a vulnerability
 
