@@ -21,6 +21,16 @@
  * Needs the registry (emdash, astro, ... at the template's pins), unlike
  * `pack-consume-types.mjs`.
  *
+ * PEERS. On a branch that moves the host train (EmDash, Astro, React), the
+ * template still pins the last release's versions, which the packed
+ * `@urumi.ai/otta-store` refuses as peers (npm ERESOLVE), and the template can
+ * only move once this release is published. So each template pin the packed
+ * store's peer range refuses is moved to that peer's version (the range's floor
+ * for `~`/`^`) before installing (`pack-build-peers.mjs`), logged, and flagged as
+ * a GitHub Actions warning: the template needs the same bump after the release.
+ * The template's package-lock.json locks the old train, so it is then set aside
+ * and npm resolves the whole tree.
+ *
  *   node scripts/pack-build.mjs [--keep] [--template <dir>]
  *
  * `OTTA_TEMPLATE_DIR` also sets the template (default ~/otta-store-template);
@@ -41,6 +51,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { alignPeerPins } from "./pack-build-peers.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -185,7 +196,29 @@ try {
 	for (const name of Object.keys(byName)) {
 		pkg.overrides[name] = direct.has(name) ? `$${name}` : byName[name];
 	}
+	// The host train: align pins the packed store's peers refuse (see PEERS above).
+	const storeTarball = byName["@urumi.ai/otta-store"].slice("file:".length);
+	const storeManifest = JSON.parse(
+		run("tar", ["-xzOf", storeTarball, "package/package.json"], work),
+	);
+	const aligned = alignPeerPins(pkg, storeManifest.peerDependencies ?? {});
+	for (const { name, section, from, to, peer } of aligned) {
+		const message = `template pins ${name} ${from}; building with the packed store's peer ${peer === to ? peer : `${peer} (${to})`}, so the template needs this bump once this release is published`;
+		step(`${section}: ${message}`);
+		if (process.env.GITHUB_ACTIONS === "true")
+			console.log(`::warning title=pack-build::${message}`);
+	}
 	writeFileSync(pkgPath, `${JSON.stringify(pkg, null, "\t")}\n`);
+	// The template's lock pins the OLD host train all the way down (emdash's own
+	// exact dependencies, kumo, ...), and npm also trusts a locked package's recorded
+	// peers while its version matches, which the packed store's (unchanged) version
+	// does. Re-resolving a few entries is not enough, so when peers moved the lock
+	// is set aside and the install takes the no-lock mode below.
+	const lockPath = path.join(site, "package-lock.json");
+	if (aligned.length > 0 && existsSync(lockPath)) {
+		rmSync(lockPath);
+		step("package-lock.json set aside: it locks the template's host train, not the packed peers");
+	}
 
 	// 3. npm install and astro build.
 	const npmEnv = {
