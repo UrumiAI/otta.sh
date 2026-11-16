@@ -139,6 +139,9 @@ const CHECKED_PEERS = [
 	"react-dom",
 ] as const;
 
+// TWIN: `scripts/pack-build-peers.mjs` (`satisfiesPeer`) restates this check for
+// the pack-build test, which cannot import this file; keep their rules identical.
+
 /** `[major, minor, patch, hasPrerelease]` of a plain version, or undefined. */
 function parseVersion(version: string): [number, number, number, boolean] | undefined {
 	const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version.trim());
