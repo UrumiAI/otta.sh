@@ -90,8 +90,9 @@ decision rather than a mechanical change — gets its own PR and, if it's a deci
 
 - Tests pass, lint is clean, code is formatted.
 - CI runs `unit` (lint, format check, typecheck, build, pack-and-consume type test, tests) and
-  `integration` (`pnpm test:pg`) on every PR. A PR into `main` also runs `d1` and `e2e`
-  (Playwright), the release gates.
+  `integration` (`pnpm test:pg`) on every PR that changes code (a PR that only touches Markdown,
+  `adr/` or `docs/` runs neither). A PR into `main` also runs `d1` and `e2e` (Playwright), the
+  release gates.
 
 ## Reporting issues
 

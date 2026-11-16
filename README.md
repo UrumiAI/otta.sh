@@ -29,25 +29,36 @@ media, private downloads), the KV namespace for admin sessions, the image bindin
 and an every-minute cron, and asks for one secret, `EMDASH_ENCRYPTION_KEY` (make one with
 `npx emdash secrets generate` and keep a copy: it encrypts the payment keys you save in the admin).
 
-The template holds no store code: it depends on `@urumi.ai/otta-store`, so updating a store is a
-version bump that Dependabot opens as a pull request. Its build applies the database migrations
-before the Worker goes live, so a new store never starts on an unmigrated database.
+The template holds no store code: it depends on `@urumi.ai/otta-store`. Its deploy step
+(`npm run deploy`) applies any pending database migrations before the Worker goes live, so a new
+store never starts on an unmigrated database. Updates arrive as Dependabot pull requests, and
+**merging one deploys it to production**; a release that moves EmDash, Astro or React needs a
+manual step instead ([`UPGRADING.md`](./UPGRADING.md)).
 
-After the deploy:
+The template's README, section "After deploying", is the full checklist (plan limits, failure
+recovery, updates, email). In short:
 
-1. **Claim the store.** It is locked until claimed. Visit `/_emdash/admin` once, then find the
-   `[otta-setup]` line in the Worker's logs: it holds a one-time setup link. Open it, choose
-   **Sample content** if you want three demo products, and create your account and its passkey
+1. **Turn off preview builds first.** Workers Builds also builds other branches, such as the
+   weekly update branch, and a version it uploads could run against your live database. In the
+   Cloudflare dashboard: your Worker → **Settings** → **Build** → **Branch control** → clear
+   **Enable Preview Builds**.
+2. **Claim the store, promptly.** It is locked until claimed. Visit `/_emdash/admin` once, then
+   find the `[otta-setup]` line in the Worker's logs: it holds the setup link. Until you use it,
+   anyone who can read those logs can, and it does not expire. To keep the link out of the logs,
+   set a secret `OTTA_SETUP_TOKEN` (32 or more random characters) before the first visit and open
+   `/_emdash/admin/setup?setup_token=<token>`. In the wizard, choose **Sample content** for three
+   demo products, then create your account and its passkey
    ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)).
-2. **Price the products.** In the admin, open each product and fill in its **Pricing & stock**
-   cards. The setup wizard's sample products get their commerce records from the every-minute
-   background sweep, one product a minute on Workers Free, so for roughly the first ten minutes
-   a sample product's card can say "Product not found". Wait, or change any field of the
-   product and click **Publish changes**, which creates the record at once.
-3. **Take payments.** In **Store settings**, add your Stripe keys and webhook signing secret, or
-   turn on cash on delivery.
+3. **Price the products.** Open each product in the admin and fill in its **Pricing & stock**
+   cards. A sample product's card says "Product not found" until the product has a commerce
+   record: make any small edit and click **Publish changes**, which creates it at once. (A
+   background sweep also creates it, but on Workers Free that can take up to a day.)
+4. **Take payments.** For cards, first add a webhook endpoint in the Stripe Dashboard for
+   `https://<your-site>/webhooks/stripe`, subscribed to exactly `payment_intent.succeeded` and
+   `payment_intent.payment_failed`; then, in **Store settings**, enter the publishable key, the
+   secret key and that endpoint's signing secret. Or turn on cash on delivery, which needs no
+   provider.
 
-The template's README is the full guide (plan limits, failure recovery, updates, email);
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.6 describes how the template is built.
 
 ## What this is
@@ -170,11 +181,12 @@ someone who can add `try.otta.sh` to the Cloudflare account that owns the
 Eight packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.2.0`, which needs
 EmDash `1.3.1` (the plugin accepts `^1.3.1`; `@urumi.ai/otta-store` pins it exactly).
 `@urumi.ai/otta-plugin@0.1.0` is deprecated (its bundle included build environment values): use
-`0.2.0`.
+`0.2.0`. The other packages' `0.1.0` releases are not affected.
 
 The simplest way to use them is a whole store: `@urumi.ai/otta-store` is the storefront and admin as
-one Astro integration (`otta({ template: 1 })`), and is what the one-click template depends on (see
-[its README](./sites/store/README.md)). To add Otta to an EmDash site you already have, install what
+one Astro integration (`otta({ template: 1 })`), and is what the one-click template depends on. It
+has exact peer pins (EmDash, Astro, React, the Cloudflare adapter and the other Otta packages), so
+start from the template's `package.json` (see [its README](./sites/store/README.md)). To add Otta to an EmDash site you already have, install what
 the site registers:
 
 ```bash
@@ -231,8 +243,8 @@ the tree).
   that needs no provider ([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md)).
 - **Deployment.** One Worker and one D1 database: the EmDash site with the plugin
   registered trusted (in-process), on the Cloudflare Workers **free** plan, with an
-  every-minute cron sweep (hold and order expiry, order email, cart pruning, product
-  reconcile, cash-on-delivery auto-cancel). The plugin still passes the full workerd sandbox
+  every-minute cron sweep (expiries, order email and housekeeping, within a per-tick query
+  budget; [`DEPLOYMENT.md`](./DEPLOYMENT.md) §5). The plugin still passes the full workerd sandbox
   suite on every CI run, which is the binding contract (ADR-0006).
   Step-by-step bootstrap guide: [`DEPLOYMENT.md`](./DEPLOYMENT.md).
 
@@ -266,9 +278,11 @@ pnpm test         # vitest (better-sqlite3 by default)
 pnpm format       # oxfmt, tabs (CI runs pnpm format:check)
 ```
 
-Heavier tiers, all run in CI: `pnpm test:pg` (Postgres), `pnpm test:d1` (real D1 in workerd),
-`pnpm test:e2e` and `pnpm test:e2e:claim` (Playwright against the staging site), and
-`pnpm test:pack-build` (builds the one-click template from the packed packages).
+Heavier tiers: `pnpm test:pg` (Postgres; CI runs it on every PR that changes code),
+`pnpm test:d1` (real D1 in workerd), `pnpm test:e2e` and `pnpm test:e2e:claim` (Playwright against
+the staging site; CI runs these and `test:d1` on PRs into `main`), and `pnpm test:pack-build`
+(builds the one-click template from the packed packages; CI runs it on PRs that touch the
+packages).
 
 The **concurrency tests are Postgres-required** — better-sqlite3 serializes writes in one
 process, so it verifies the SQL is correct, not that it's race-safe under contention. See
@@ -280,27 +294,20 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 before 1.0. How a store made from the template takes updates, and what a release that moves
 EmDash, Astro or React needs, is in [`UPGRADING.md`](./UPGRADING.md).
 
-**Deploying:** the one-click template is live and has been deployed end to end on Workers Free
-(deploy, storefront, claim). Self-deploying the reference site is [`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.
+**Deploying:** the one-click template is live; a deploy with the button on Workers Free was run
+end to end on 2026-11-10 (deploy, storefront, claim). Self-deploying the reference site is [`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.
 
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
 cart, checkout, orders, customers with magic-link auth, Stripe payments, cash on delivery, tax,
-shipping, discounts, entitlements, reporting, and settings. Since `0.1.0`:
-
-- **Setup token** — a fresh store is locked until claimed with a one-time link
-  ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)).
-- **Cash on delivery** — physical orders with an address and phone; unpaid orders are cancelled
-  after a merchant-set period, and open orders are capped per buyer email and network
-  ([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md)).
-- **Default email** — Cloudflare Email Sending registers when a sender is set (needs Workers
-  Paid and a sender domain on Cloudflare;
-  [ADR-0043](./adr/0043-site-default-cloudflare-email-provider.md)). Without an email provider,
-  order emails wait up to 72 hours and are then skipped, and sign-in links are not sent.
-- **Per-IP rate limits** on anonymous writes and sign-in requests
-  ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.5).
-- **The store as one package** — `@urumi.ai/otta-store`, the base of the one-click template
-  ([ADR-0045](./adr/0045-the-store-ships-as-an-astro-integration-for-one-click-deploy.md)).
-- **Reports** over a 365-day range within the Free plan's query budget.
+shipping, discounts, entitlements, reporting, and settings. `0.2.0` added the setup token
+([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)), cash on delivery
+([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md)), Cloudflare Email
+Sending as the default email provider when a sender is set (Workers Paid;
+[ADR-0043](./adr/0043-site-default-cloudflare-email-provider.md)), per-IP rate limits
+([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.5) and the store as one package
+([ADR-0045](./adr/0045-the-store-ships-as-an-astro-integration-for-one-click-deploy.md)).
+Without an email provider, order emails wait up to 72 hours and are then skipped, and sign-in
+links are not sent.
 
 The magic-link email is sent once an EmDash email provider is selected
 ([`docs/email-providers.md`](./docs/email-providers.md)) and the Settings "Sign-in page address"
@@ -320,8 +327,9 @@ closed by a full refund ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.1).
 
 - Payment methods that confirm days later (SEPA Direct Debit, ACH, Bacs, bank transfer) end in an
   expired order and an automatic refund ([#606](https://github.com/UrumiAI/otta.sh/issues/606)).
+  Until that is fixed, turn those methods off in the Stripe Dashboard's payment method settings.
 - Dropping or re-adding many sized variants that have SKUs in one save costs two to three database
-  queries per variant, so on Workers Free it fails past about 20 variants
+  queries per variant, so on Workers Free it fails past about 16 to 20 variants
   ([#637](https://github.com/UrumiAI/otta.sh/issues/637)).
 
 ## License

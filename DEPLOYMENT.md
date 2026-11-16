@@ -26,23 +26,24 @@ The store itself is the package `@urumi.ai/otta-store` (`sites/store`): an Astro
   clones into your GitHub account. Updates arrive as a dependency bump.
 - **By hand** (§2.1 to §2.5): this repository's `sites/staging`, deployed with Wrangler.
 
-> **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
+> **In active development — pre-1.0.** The core buy flow — catalog, cart, card checkout and cash on delivery —
 > works today, but APIs, storage document shapes, settings and admin screens may still change
 > between releases. This guide covers both the self-deploy path and the one-click template
 > (§2.6), whose Deploy to Cloudflare button is live (all `@urumi.ai/otta-*` packages are on npm
 > at `0.2.0`).
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
-> checkout, orders, customers with magic-link auth, Stripe payments, tax,
+> checkout, orders, customers with magic-link auth, Stripe payments, cash on delivery, tax,
 > shipping, discounts, entitlements, reporting, and settings (the magic-link email needs an
 > EmDash email provider and a sign-in page URL, §3 Email). The reference **storefront** covers
-> catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
+> catalog, cart, **card checkout** and **cash on delivery**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
 > customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
 > digital downloads are built too (issue #376): the merchant attaches a file to a digital
 > product in the admin, and a buyer downloads it from the order page. Deploying today gives you a browsable
 > catalog, carts with real inventory holds, magic-link customer accounts, digital downloads,
-> and a Stripe card purchase end-to-end once Stripe is configured (§3).
+> a Stripe card purchase end-to-end once Stripe is configured (§3), and cash-on-delivery orders
+> once it is turned on (§3, Cash on delivery).
 
 ## 1. Universal contracts
 
@@ -275,11 +276,12 @@ expired holds and queued emails drain at the Free pace (§5).
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
    it in that product's **Pricing & stock** cards (the CMS holds no commercial data);
    add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
-   are content-only until you price them — the seed fires no content hooks. The every-minute
-   sweep's `product-reconcile` leg creates their commerce rows (one product a tick on Workers
-   Free, after any backlog of other legs), and until then a sample product's Pricing & stock
-   card says "Product not found"; publishing the product from the admin creates its row at once.
-   Then either price them in each product's Pricing & stock cards or run `sites/store/scripts/seed-demo-commerce.ts`
+   are content-only until you price them — the seed fires no content hooks, so a sample
+   product's Pricing & stock card says "Product not found" until it has a commerce row.
+   Publishing the product from the admin ("Publish changes" after any small edit) creates the
+   row at once. The every-minute sweep's `product-reconcile` leg also creates it, but it walks
+   the catalogue once per pass interval (24 hours on Workers Free, 6 on Paid), so that can take
+   up to a day. Then either price them in each product's Pricing & stock cards or run `sites/store/scripts/seed-demo-commerce.ts`
    against the SITE. It drives the site's own admin API — the route the Pricing & stock
    cards use — so it needs only the site URL and a token that can read the CMS
    and call that route:
@@ -519,7 +521,7 @@ with the code and cover every route listed above.
 The template is a small repository: `astro.config.mjs` (the adapter plus
 `otta({ template: 1 })`), `wrangler.jsonc`, `.dev.vars.example`, `src/worker.ts` and
 `src/live.config.ts` (a few lines each), `package.json` with exact pins, its
-`package-lock.json`, `scripts/deploy.mjs`, `.github/dependabot.yml`, `README.md`, `LICENSE`, `.gitignore`,
+`package-lock.json`, `scripts/deploy.mjs` (and its `scripts/deploy.test.mjs`), `.github/dependabot.yml`, `README.md`, `LICENSE`, `.gitignore`,
 `.node-version` and `tsconfig.json`. No store code: that is the `@urumi.ai/otta-store`
 dependency.
 
@@ -528,8 +530,8 @@ fork), creates the D1 database (`DB`), the two R2 buckets (`MEDIA`, and the priv
 `DOWNLOADS`) and the KV namespace (`SESSION`) the template's `wrangler.jsonc` declares, asks
 for the one secret (`EMDASH_ENCRYPTION_KEY`, from `.dev.vars.example`), and connects Workers
 Builds, which runs `npm run build` (`astro build`) and `npm run deploy` on every push to your
-production branch. `npm run deploy` runs `scripts/deploy.mjs`: it applies the database's 90
-migrations from the build, checks that none is pending and the database has none this build does not know, then runs
+production branch. `npm run deploy` runs `scripts/deploy.mjs`: it applies any pending database
+migrations from the build (90 on a new store at EmDash `1.3.1`), checks that none is pending and the database has none this build does not know, then runs
 `wrangler deploy`, so a new store is never live on an unmigrated database. The Worker is not
 left to migrate itself on its first boot: on Workers Free that was cut off after 34 of 90
 migrations and left the migration lock held (503 on every request). Do not deploy a new store
@@ -587,7 +589,8 @@ their meaning (§3, §4). In the template, set them as options in `astro.config.
 template too: the downloads bucket must not be the media bucket, and a sender needs the `EMAIL`
 binding.
 
-**Not yet confirmed:** whether Workers Builds provides `CLOUDFLARE_ACCOUNT_ID` to the deploy
+**Not yet confirmed:** how the button's secret prompt treats an empty value (the admin then
+refuses to save payment keys), and whether Workers Builds provides `CLOUDFLARE_ACCOUNT_ID` to the deploy
 script (it reads `account_id` in `wrangler.jsonc`, then that variable, then the only account the
 API token can see; the first lines of the build log say whether it was present). If the build
 stops because it cannot find the account id, add `CLOUDFLARE_ACCOUNT_ID` as a build variable. If the build's token cannot change D1, the deploy
