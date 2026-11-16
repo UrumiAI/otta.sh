@@ -161,16 +161,21 @@ async function warmConsole(deadline: number): Promise<void> {
 const CMS_SEED_ATTEMPTS = 4;
 const CMS_SEED_RETRY_DELAY_MS = 3_000;
 
-/** Apply the CMS seed (signs in as the dev admin too). `onConflict: "skip"` on
- *  em-dash's side makes it a no-op for anything already there, so a retry is safe. */
-async function applyCmsSeed(): Promise<void> {
+/** Apply the CMS seed and complete EmDash's setup (signs in as the dev admin
+ *  too). `onConflict: "skip"` on em-dash's side makes it a no-op for anything
+ *  already there, so a retry is safe. Without `withContent` it applies only the
+ *  seed's schema and structure (`?content=0`): the sample entries are left out,
+ *  but setup is still completed, which EmDash 1.5 requires before any dev
+ *  sign-in (emdash #4711). */
+async function applyCmsSeed(withContent = true): Promise<void> {
+	const query = withContent ? "" : "?content=0";
 	await retryBounded(
 		async () => {
 			let res: Response;
 			try {
 				// The claim cookie (ADR-0042): on a fresh stack this call is what claims
 				// it, and an unclaimed store refuses it without the setup token.
-				res = await fetch(`${E2E_BASE_URL}/_emdash/api/setup/dev-bypass`, {
+				res = await fetch(`${E2E_BASE_URL}/_emdash/api/setup/dev-bypass${query}`, {
 					redirect: "manual",
 					headers: setupClaimHeaders(),
 				});
@@ -282,6 +287,10 @@ export default async function globalSetup(): Promise<void> {
 		// `reuseExistingServer` that flag can adopt a developer's own dev store.
 		if (provisionsE2ePlaceholders({ seeds: E2E_SEEDS, serverStartedByThisRun })) {
 			assertLoopbackSite(E2E_BASE_URL);
+			// EmDash 1.5 refuses the dev sign-in below (409 SETUP_REQUIRED) until
+			// setup is complete (emdash #4711), so set the store up first: with the
+			// sample content when seeding, its schema alone otherwise.
+			await applyCmsSeed(E2E_SEEDS);
 			const deps = {
 				siteUrl: E2E_BASE_URL,
 				authHeaders: await cmsAuthHeaders(E2E_BASE_URL),
@@ -296,6 +305,8 @@ export default async function globalSetup(): Promise<void> {
 			// The order seed signs payment webhooks: refuse a non-loopback site here, as
 			// the script's own entry point does, whatever the base URL came from.
 			assertLoopbackSite(E2E_BASE_URL);
+			// Already applied above (a seeding run always provisions); a no-op re-run
+			// that keeps this branch whole on its own.
 			await applyCmsSeed();
 			await priceCatalog();
 			const placed = await seedPaidOrders(

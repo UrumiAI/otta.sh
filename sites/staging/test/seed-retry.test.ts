@@ -74,6 +74,23 @@ describe("the e2e global setup's seed path (source pin; the setup itself needs a
 		expect(guard).toBeLessThan(seedBranch.indexOf("await applyCmsSeed()"));
 	});
 
+	// EmDash 1.5 (emdash #4711): `/_emdash/api/auth/dev-bypass` answers 409
+	// SETUP_REQUIRED until setup is complete, so a fresh stack has to be set up
+	// (the setup dev-bypass) before the first dev sign-in, seeded or not.
+	test("completes the setup before the first dev sign-in", () => {
+		const body = source.slice(source.indexOf("export default async function globalSetup"));
+		const setup = body.indexOf("await applyCmsSeed(");
+		expect(setup).toBeGreaterThan(-1);
+		expect(setup).toBeLessThan(body.indexOf("cmsAuthHeaders(E2E_BASE_URL)"));
+		expect(body.indexOf("assertLoopbackSite(E2E_BASE_URL)")).toBeLessThan(setup);
+	});
+
+	test("an unseeded run sets the store up without the sample content", () => {
+		const fn = source.slice(source.indexOf("async function applyCmsSeed"));
+		expect(fn.slice(0, fn.indexOf("\n}\n"))).toContain('"?content=0"');
+		expect(source).toContain("await applyCmsSeed(E2E_SEEDS)");
+	});
+
 	test("runs the dev-bypass seed through the bounded retry", () => {
 		const fn = source.slice(source.indexOf("async function applyCmsSeed"));
 		expect(fn.slice(0, fn.indexOf("\n}\n"))).toContain("retryBounded(");
