@@ -152,17 +152,20 @@ not rolling, upgrade for `092` when sandboxed `ctx.kv` values exist
 
 ### Going back
 
-- **Migrating failed, before traffic resumed:** restore the bookmark from step 1,
+- **Migrating failed:** restore the bookmark from step 1,
   `npx wrangler d1 time-travel restore <your-database-name> --bookmark=<id>`. A restore
   discards **everything** written since the bookmark, every order, cart and customer included,
-  so never use it once the store has taken traffic on the new version.
+  and that includes orders the running store took while you migrated (the old version keeps
+  serving throughout). Check Orders for anything newer than the bookmark before restoring, and
+  never restore once the store has taken traffic on the new version.
 - **The new version misbehaves after the deploy:** roll the Worker back to the 1.3.1 version in
   the dashboard (**Workers & Pages** → your Worker → **Deployments**) and leave the database
   as it is. That is safe: the 1.3.1 runtime sees at least as many applied migrations as it knows
   and skips migrating, the `096` columns are nullable, the `097` tables are never read, and `092` copied nothing
   on a store whose check 2 came back empty (it never removes the old `__kv` rows either).
-- **Not** a `git revert` of the bump and a push: the template's `npm run deploy` refuses a
-  database that has migrations its build does not know, and stops without deploying.
+- **Not** a `git revert` of the bump and a push: the template's `npm run deploy` (template
+  commit `3807e1d` on) refuses a database that has migrations its build does not know, and stops
+  without deploying.
 
 ### What else changes
 

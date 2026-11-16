@@ -174,8 +174,7 @@ export const E2E_SEEDS = process.env["OTTA_E2E_SEED"] === "1";
  * `OTTA_E2E_SEED_ON_AUTH=1` still re-applies the CMS seed on every sign-in, but
  * that seed holds no prices and no orders, so on its own it never produced the
  * rows these specs need.
- */
-/*
+ *
  * EMDASH 1.5.0 (emdash #4711): the sign-in-only route answers 409 SETUP_REQUIRED
  * until setup is complete. The global setup completes it on a stack this run
  * starts or seeds (the setup bypass, `?content=0` when not seeding); on a fresh
