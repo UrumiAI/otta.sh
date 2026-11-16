@@ -52,8 +52,9 @@ recovery, updates, email). In short:
    ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)).
 3. **Price the products.** Open each product in the admin and fill in its **Pricing & stock**
    cards. A sample product's card says "Product not found" until the product has a commerce
-   record: make any small edit and click **Publish changes**, which creates it at once. (A
-   background sweep also creates it, but on Workers Free that can take up to a day.)
+   record: edit the product (its description, for instance; you can change it back) and click
+   **Publish changes**, which creates it at once. (A background sweep also creates it, but with
+   the default "Background work per minute" setting that can take up to a day.)
 4. **Take payments.** For cards, first add a webhook endpoint in the Stripe Dashboard for
    `https://<your-site>/webhooks/stripe`, subscribed to exactly `payment_intent.succeeded` and
    `payment_intent.payment_failed`; then, in **Store settings**, enter the publishable key, the
