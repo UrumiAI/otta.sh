@@ -1932,6 +1932,14 @@ smaller site still migrates on its first request, but running it from the CLI fi
 either way. See EmDash's
 [core-migrations guide](https://docs.emdashcms.com/deployment/core-migrations/).
 
+**Upgrading the EmDash host (1.3.1 → 1.5.0).** Six more host migrations, `092` to `097`, none of
+which changes Otta's commerce documents. Two need a look first: `095_plugin_storage_unique_scope`
+is a maintenance-window migration on a site with plugin storage `uniqueIndexes` (Otta declares
+none), and `092_plugin_kv_options` copies sandboxed `ctx.kv` rows into `options`. In the default
+`auto` mode the Worker applies them on its first request, so run the two checks and the CLI
+migration in [`UPGRADING.md`](./UPGRADING.md) ("EmDash 1.3.1 to 1.5.0") before deploying, with the
+`--wrangler-config wrangler.local.jsonc` form above in place of `--d1`.
+
 ## 6. Troubleshooting
 
 | Symptom | Cause → fix |

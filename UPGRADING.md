@@ -64,3 +64,89 @@ The first contract, `@urumi.ai/otta-store` 0.2.0. A store on it has:
   `nodejs_compat`, and Workers Logs on with invocation logs off.
 
 There is nothing to upgrade from: it is the first.
+
+## EmDash 1.3.1 to 1.5.0
+
+The Otta release after `0.2.0` that moves EmDash (its release notes say so) needs `emdash` and
+`@emdash-cms/cloudflare` at exactly `1.5.0`, together. Since 1.5.0, `@emdash-cms/cloudflare`
+declares `emdash` as an exact peer, so npm refuses (`ERESOLVE`) a `package.json` where the two
+differ. Astro, `@astrojs/cloudflare`, `@astrojs/react`, React and wrangler do not move: 1.5.0
+asks for `astro >=6`, `@astrojs/cloudflare >=12`, `wrangler >=4.99.0` and React 18 or 19.
+`@emdash-cms/auth-atproto`, a new peer of `emdash`, is optional; a store does not need it. No
+repository file changes, so the template contract stays at 1.
+
+### The database migrations
+
+EmDash 1.4.0 added no core migrations. 1.5.0 adds six, `092` to `097`. None of them changes
+Otta's commerce documents (the `_plugin_storage` rows of collections other than `__kv`).
+
+| Migration | What it does | On an Otta store |
+|---|---|---|
+| `092_plugin_kv_options` | Copies sandboxed plugins' `ctx.kv` values (`_plugin_storage` rows in collection `__kv`, keys not starting `settings:`) into `options` as `plugin:<id>:<key>`. Never overwrites a value already there; keeps the old rows. | Otta runs trusted, so its `ctx.kv` already lives in `options`. Nothing to copy, unless the store once ran Otta sandboxed (check 2 below). |
+| `093_menu_item_orphans` | Moves menu items whose parent is gone to the top level. | CMS menus only. |
+| `094_media_usage_file_url_reindex` | Marks the media "Used in" index for rebuilding. | CMS media only. |
+| `095_plugin_storage_unique_scope` | Makes each plugin storage `uniqueIndexes` entry unique only within its own plugin and collection, rebuilding the tracked unique indexes. | Otta declares no `uniqueIndexes` (its once-only rules are create-if-absent documents), so with no other storage plugin there is nothing to rebuild (check 1 below). |
+| `096_revision_kind_and_editors` | Adds two nullable columns, `kind` and `edited_by`, to `revisions`. | CMS revisions only. |
+| `097_room_storage` | Creates `_emdash_rooms` and `_emdash_room_updates` for co-editing (off unless `coEditing: true`). | New empty tables. |
+
+Like every migration, these are forward-only: rolling the Worker back afterwards restores the old
+code, not the old database.
+
+EmDash treats `095` as a **maintenance-window** migration for sites that have plugin unique
+indexes: an older build still serving can recreate the old table-wide indexes, so it must not run
+from a pre-deploy job beside live old code
+([EmDash: updating](https://docs.emdashcms.com/deployment/updating/#fixed-plugin-storage-uniqueness)).
+The template's `npm run deploy` therefore stops on an existing store whenever `095` is pending,
+before it migrates or deploys anything, and points here. EmDash also asks for a coordinated,
+not rolling, upgrade for `092` when sandboxed `ctx.kv` values exist
+([EmDash: plugin KV storage](https://docs.emdashcms.com/plugins/upgrading-sites/#plugin-kv-storage-when-changing-execution-mode)).
+
+### Upgrading a store
+
+1. **Take a recovery point.** Note a D1 Time Travel bookmark:
+   `npx wrangler d1 time-travel info <your-database-name>`.
+2. **Check what the two migrations would touch.** In the dashboard, open **Storage & Databases >
+   D1**, your store's database, **Console**, and run:
+
+   ```sql
+   SELECT plugin_id, collection, index_name FROM _plugin_indexes WHERE index_name LIKE 'uidx_plugin_%';
+   SELECT plugin_id, id FROM _plugin_storage WHERE collection = '__kv' AND substr(id, 1, 9) <> 'settings:';
+   ```
+
+   A store made from the template, with only Otta's plugins, returns no rows from either.
+3. **If both are empty**, `092` and `095` have nothing to do, and no maintenance window is
+   needed. Apply the migrations from your machine, then deploy:
+
+   ```bash
+   # in your store's repository, after bumping the versions in package.json
+   npm install
+   npm run build                       # writes .emdash/migrations.json
+   export CLOUDFLARE_API_TOKEN=...     # D1 Edit on the account
+   export CLOUDFLARE_ACCOUNT_ID=...
+   npx emdash migrate --status --d1 <your-database-name>   # lists 092-097 as pending
+   npx emdash migrate --d1 <your-database-name>            # asks you to confirm the target
+   npx emdash migrate --check --d1 <your-database-name>    # exits 0: nothing pending
+   ```
+
+   Then commit and push. The build finds nothing pending and deploys. Until then the running
+   1.3.1 Worker keeps serving: it sees at least as many applied migrations as it knows and does
+   not migrate, and the new columns and tables are ones it never reads.
+4. **If either returns rows**, another plugin has unique indexes or Otta once ran sandboxed. Follow
+   EmDash's maintenance-window steps in the two pages linked above (route traffic to a
+   maintenance page and pause the cron, deploy in `check` mode, migrate, verify, reopen) and, for
+   `__kv` rows, review any value the migration log reports as conflicting before plugins write
+   again.
+5. **After the deploy**, open the admin, load the shop and a product page, and run one test
+   order. The first write after the deploy may sync plugin storage indexes; a plugin admin
+   action can answer `503 STORAGE_INDEXES_NOT_READY` until it has, and succeeds when retried.
+
+### What else changes
+
+- **A new store starts in "staging".** Since 1.5.0, EmDash's setup marks a new site as staging:
+  the admin shows a **Staging** badge until an administrator selects **Go live** under
+  **Settings > General > Site Status**. Its `noindex` tag is added only to pages that render
+  EmDash's `<EmDashHead>`, which Otta's storefront does not, so search engines are not affected;
+  select **Go live** to clear the badge. Existing stores are not changed.
+- **A failed `plugin:activate` now leaves a plugin off.** Re-enabling a plugin whose activate
+  hook fails reports the error and keeps it inactive (1.5.0). Otta has no `plugin:install` hook,
+  and its `plugin:activate` only (re)registers its cron task and never fails.
