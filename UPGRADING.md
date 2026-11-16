@@ -90,14 +90,18 @@ Otta's commerce documents (the `_plugin_storage` rows of collections other than 
 | `097_room_storage` | Creates `_emdash_rooms` and `_emdash_room_updates` for co-editing (off unless `coEditing: true`). | New empty tables. |
 
 Like every migration, these are forward-only: rolling the Worker back afterwards restores the old
-code, not the old database.
+code, not the old database (see "Going back" below).
 
 EmDash treats `095` as a **maintenance-window** migration for sites that have plugin unique
 indexes: an older build still serving can recreate the old table-wide indexes, so it must not run
 from a pre-deploy job beside live old code
 ([EmDash: updating](https://docs.emdashcms.com/deployment/updating/#fixed-plugin-storage-uniqueness)).
-The template's `npm run deploy` therefore stops on an existing store whenever `095` is pending,
-before it migrates or deploys anything, and points here. EmDash also asks for a coordinated,
+A store made from the current template (its `scripts/deploy.mjs` from template commit `6354edd`
+on) therefore stops in `npm run deploy` on an existing store whenever `095` is pending, before it
+migrates or deploys anything, and points here. Older stores do not stop: one made between
+template commits `3807e1d` and `6354edd` applies every pending migration in the build, and one
+made before `3807e1d` (whose `deploy` is plain `wrangler deploy`) leaves them to the new Worker's
+first request. On those, run the checks below **before** pushing the version bump. EmDash also asks for a coordinated,
 not rolling, upgrade for `092` when sandboxed `ctx.kv` values exist
 ([EmDash: plugin KV storage](https://docs.emdashcms.com/plugins/upgrading-sites/#plugin-kv-storage-when-changing-execution-mode)).
 
@@ -113,7 +117,9 @@ not rolling, upgrade for `092` when sandboxed `ctx.kv` values exist
    SELECT plugin_id, id FROM _plugin_storage WHERE collection = '__kv' AND substr(id, 1, 9) <> 'settings:';
    ```
 
-   A store made from the template, with only Otta's plugins, returns no rows from either.
+   Rows from the first mean a plugin declares `uniqueIndexes`; rows from the second mean a
+   plugin (Otta or another) once ran sandboxed with `ctx.kv` values. A store made from the
+   template, with only Otta's plugins, returns no rows from either.
 3. **If both are empty**, `092` and `095` have nothing to do, and no maintenance window is
    needed. Apply the migrations from your machine, then deploy:
 
@@ -131,14 +137,32 @@ not rolling, upgrade for `092` when sandboxed `ctx.kv` values exist
    Then commit and push. The build finds nothing pending and deploys. Until then the running
    1.3.1 Worker keeps serving: it sees at least as many applied migrations as it knows and does
    not migrate, and the new columns and tables are ones it never reads.
-4. **If either returns rows**, another plugin has unique indexes or Otta once ran sandboxed. Follow
+4. **If either returns rows**, follow
    EmDash's maintenance-window steps in the two pages linked above (route traffic to a
    maintenance page and pause the cron, deploy in `check` mode, migrate, verify, reopen) and, for
    `__kv` rows, review any value the migration log reports as conflicting before plugins write
    again.
 5. **After the deploy**, open the admin, load the shop and a product page, and run one test
-   order. The first write after the deploy may sync plugin storage indexes; a plugin admin
-   action can answer `503 STORAGE_INDEXES_NOT_READY` until it has, and succeeds when retried.
+   order. Since 1.5.0, on each new Worker isolate, the first state-changing Otta request (a cart
+   change, a checkout, a payment webhook, an admin action) first checks that the plugin's storage
+   indexes are in place and builds any that are missing. If that fails, the request answers
+   `503 STORAGE_INDEXES_NOT_READY` and the next write or cron tick tries again. A shopper sees
+   the error and can retry; Stripe retries a webhook that failed (the route answers 500), so no
+   payment is lost.
+
+### Going back
+
+- **Migrating failed, before traffic resumed:** restore the bookmark from step 1,
+  `npx wrangler d1 time-travel restore <your-database-name> --bookmark=<id>`. A restore
+  discards **everything** written since the bookmark, every order, cart and customer included,
+  so never use it once the store has taken traffic on the new version.
+- **The new version misbehaves after the deploy:** roll the Worker back to the 1.3.1 version in
+  the dashboard (**Workers & Pages** → your Worker → **Deployments**) and leave the database
+  as it is. That is safe: the 1.3.1 runtime sees at least as many applied migrations as it knows
+  and skips migrating, the `096` columns are nullable, the `097` tables are never read, and `092` copied nothing
+  on a store whose check 2 came back empty (it never removes the old `__kv` rows either).
+- **Not** a `git revert` of the bump and a push: the template's `npm run deploy` refuses a
+  database that has migrations its build does not know, and stops without deploying.
 
 ### What else changes
 

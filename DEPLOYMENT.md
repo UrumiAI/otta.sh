@@ -270,6 +270,11 @@ expired holds and queued emails drain at the Free pace (§5).
    admin exists the gate switches itself off and the token is never asked for again; from
    then on the admin signs in with the passkey made in the wizard. workers.dev is HTTPS, so
    the passkey step's secure-context requirement (§1) is already met.
+
+   Since EmDash 1.5.0 a store set up through the wizard starts in **staging**: the admin shows
+   a **Staging** badge until you select **Go live** in **Settings** → **General** → **Site
+   Status**. Otta's storefront pages do not carry staging's `noindex` tag, so this changes
+   only the badge, but select **Go live** once the store is ready.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
    it in that product's **Pricing & stock** cards (the CMS holds no commercial data);
@@ -1316,7 +1321,10 @@ index above: about three rows written per plugin-storage row, every plugin's row
 with 30,000 rows writes about 90,000 on that tick. **Past about 33,000 plugin-storage rows the
 index build alone exceeds D1 Free's 100,000 rows written a day.** Once it does, every write fails
 until 00:00 UTC, and the build does not finish. EmDash retries the build once per new Worker
-process, so a store of 100,000 rows can hit the limit several days running. A Free store that size
+process, so a store of 100,000 rows can hit the limit several days running. Since EmDash 1.5.0
+the first state-changing plugin request of a new Worker process (a cart change, a checkout, a
+payment webhook, an admin action) also starts the build if the tick has not, and answers 503
+`STORAGE_INDEXES_NOT_READY` while it fails. A Free store that size
 should move to Workers Paid before this deploy. Every later plugin-row write then costs three
 index rows more (about 52 rows in all).
 
