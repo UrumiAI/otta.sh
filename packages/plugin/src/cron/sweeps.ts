@@ -2917,8 +2917,9 @@ interface SweepState {
 
 /**
  * A fingerprint of every index Otta declares (`COMMERCE_STORAGE_COLLECTIONS`): EmDash
- * builds a newly declared index on the first scheduled tick after the deploy, so a tick
- * that finds a different one stored is on that deploy's day.
+ * builds a newly declared index on the first scheduled tick after the deploy (since
+ * 1.5.0, or on the first state-changing plugin request of a new isolate, if sooner),
+ * so a tick that finds a different one stored is on that deploy's day.
  */
 export const INDEX_LAYOUT: string = (() => {
 	const text = JSON.stringify(
