@@ -767,7 +767,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 							// discovers them mid-session, re-bundles and reloads the admin SPA under
 							// a running e2e test. Listing them pre-bundles both at startup. Bare
 							// specifiers resolve from the site, which depends on emdash directly
-							// (same 1.3.1 instance admin-react gets). Merged with the emdash
+							// (same 1.5.0 instance admin-react gets). Merged with the emdash
 							// integration's own `include`; a production build does not use it.
 							include: ["emdash/internal/routes/PluginRegistry", "emdash/plugin-utils"],
 						},

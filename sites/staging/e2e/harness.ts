@@ -175,6 +175,14 @@ export const E2E_SEEDS = process.env["OTTA_E2E_SEED"] === "1";
  * that seed holds no prices and no orders, so on its own it never produced the
  * rows these specs need.
  */
+/*
+ * EMDASH 1.5.0 (emdash #4711): the sign-in-only route answers 409 SETUP_REQUIRED
+ * until setup is complete. The global setup completes it on a stack this run
+ * starts or seeds (the setup bypass, `?content=0` when not seeding); on a fresh
+ * stack you started yourself, open `/_emdash/api/setup/dev-bypass` (or
+ * `?content=0`) once first. `devBypassRefusal` (seed-demo-commerce.ts) says so
+ * when a helper's sign-in is refused.
+ */
 export const DEV_BYPASS_SIGNIN_PATH = "/_emdash/api/auth/dev-bypass";
 
 /** The setup token the suite presents (ADR-0042): the dev server's own, as

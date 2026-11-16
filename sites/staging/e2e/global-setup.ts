@@ -285,7 +285,8 @@ export default async function globalSetup(): Promise<void> {
 		// seeds, gets the placeholder saved (never over a key already there).
 		// #531: STARTED, not merely "OTTA_E2E_START_STACK=1": with
 		// `reuseExistingServer` that flag can adopt a developer's own dev store.
-		if (provisionsE2ePlaceholders({ seeds: E2E_SEEDS, serverStartedByThisRun })) {
+		const provisioned = provisionsE2ePlaceholders({ seeds: E2E_SEEDS, serverStartedByThisRun });
+		if (provisioned) {
 			assertLoopbackSite(E2E_BASE_URL);
 			// EmDash 1.5 refuses the dev sign-in below (409 SETUP_REQUIRED) until
 			// setup is complete (emdash #4711), so set the store up first: with the
@@ -305,9 +306,9 @@ export default async function globalSetup(): Promise<void> {
 			// The order seed signs payment webhooks: refuse a non-loopback site here, as
 			// the script's own entry point does, whatever the base URL came from.
 			assertLoopbackSite(E2E_BASE_URL);
-			// Already applied above (a seeding run always provisions); a no-op re-run
-			// that keeps this branch whole on its own.
-			await applyCmsSeed();
+			// A seeding run always provisions, which applied the seed above; this
+			// keeps the branch whole should that ever change.
+			if (!provisioned) await applyCmsSeed();
 			await priceCatalog();
 			const placed = await seedPaidOrders(
 				{
