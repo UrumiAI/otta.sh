@@ -25,7 +25,7 @@ Run these after every edit, and again before opening a PR:
 pnpm lint         # oxlint + the domain-purity dependency check
 pnpm typecheck
 pnpm test         # vitest
-pnpm format       # oxfmt, tabs
+pnpm format       # oxfmt, tabs (CI runs `pnpm format:check`)
 ```
 
 Two heavier tiers need a backing store and stay out of that loop:
@@ -73,9 +73,9 @@ Pick the tag for the area your change touches:
 | Area changed | Tag |
 |---|---|
 | `@urumi.ai/otta-domain` (ports, use-cases, invariants) | `[Domain]` |
-| Store/client/payment **adapters** (store-emdash, stripe) | `[Adapters]` |
+| Store/client/payment **adapters** (store-emdash, payments-stripe, payments-cod) | `[Adapters]` |
 | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
-| `sites/*` (the reference storefront site/theme) | `[Site]` |
+| `sites/*` (`@urumi.ai/otta-store`, the storefront integration, and the reference site `staging`) | `[Site]` |
 | Shared test/contract packages | `[Test]` |
 | CI / tooling / build | `[CI]` |
 | `adr/`, `*.md`, docs | `[Docs]` |
@@ -89,6 +89,9 @@ decision rather than a mechanical change — gets its own PR and, if it's a deci
 ## Before opening a PR
 
 - Tests pass, lint is clean, code is formatted.
+- CI runs `unit` (lint, format check, typecheck, build, pack-and-consume type test, tests) and
+  `integration` (`pnpm test:pg`) on every PR. A PR into `main` also runs `d1` and `e2e`
+  (Playwright), the release gates.
 
 ## Reporting issues
 
