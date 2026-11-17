@@ -26,22 +26,24 @@ The store itself is the package `@urumi.ai/otta-store` (`sites/store`): an Astro
   clones into your GitHub account. Updates arrive as a dependency bump.
 - **By hand** (§2.1 to §2.5): this repository's `sites/staging`, deployed with Wrangler.
 
-> **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
+> **In active development — pre-1.0.** The core buy flow — catalog, cart, card checkout and cash on delivery —
 > works today, but APIs, storage document shapes, settings and admin screens may still change
 > between releases. This guide covers both the self-deploy path and the one-click template
-> (§2.6), whose Deploy to Cloudflare button goes live once `0.2.0` is published.
+> (§2.6), whose Deploy to Cloudflare button is live (all `@urumi.ai/otta-*` packages are on npm
+> at `0.2.0`).
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
-> checkout, orders, customers with magic-link auth, Stripe payments, tax,
+> checkout, orders, customers with magic-link auth, Stripe payments, cash on delivery, tax,
 > shipping, discounts, entitlements, reporting, and settings (the magic-link email needs an
 > EmDash email provider and a sign-in page URL, §3 Email). The reference **storefront** covers
-> catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
+> catalog, cart, **card checkout** and **cash on delivery**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
 > customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
 > digital downloads are built too (issue #376): the merchant attaches a file to a digital
 > product in the admin, and a buyer downloads it from the order page. Deploying today gives you a browsable
 > catalog, carts with real inventory holds, magic-link customer accounts, digital downloads,
-> and a Stripe card purchase end-to-end once Stripe is configured (§3).
+> a Stripe card purchase end-to-end once Stripe is configured (§3), and cash-on-delivery orders
+> once it is turned on (§3, Cash on delivery).
 
 ## 1. Universal contracts
 
@@ -270,12 +272,21 @@ expired holds and queued emails drain at the Free pace (§5).
    admin exists the gate switches itself off and the token is never asked for again; from
    then on the admin signs in with the passkey made in the wizard. workers.dev is HTTPS, so
    the passkey step's secure-context requirement (§1) is already met.
+
+   Since EmDash 1.5.0 a store set up through the wizard starts in **staging**: the admin shows
+   a **Staging** badge until you select **Go live** in **Settings** → **General** → **Site
+   Status**. Otta's storefront pages do not carry staging's `noindex` tag, so this changes
+   only the badge, but select **Go live** once the store is ready.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
    it in that product's **Pricing & stock** cards (the CMS holds no commercial data);
    add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
-   are content-only until you price them — the seed fires no content hooks, so either
-   price them in each product's Pricing & stock cards or run `sites/store/scripts/seed-demo-commerce.ts`
+   are content-only until you price them — the seed fires no content hooks, so a sample
+   product's Pricing & stock card says "Product not found" until it has a commerce row.
+   Publishing the product from the admin ("Publish changes" after any small edit) creates the
+   row at once. The every-minute sweep's `product-reconcile` leg also creates it, but it walks
+   the catalogue once per pass interval (24 hours, or 6 with the Paid background-work preset), so that can take
+   up to a day. Then either price them in each product's Pricing & stock cards or run `sites/store/scripts/seed-demo-commerce.ts`
    against the SITE. It drives the site's own admin API — the route the Pricing & stock
    cards use — so it needs only the site URL and a token that can read the CMS
    and call that route:
@@ -506,16 +517,16 @@ with the code and cover every route listed above.
 
 ### 2.6 One-click: the store template and the Deploy to Cloudflare button
 
-> **Status.** The template is built and verified locally from packed `0.2.0` tarballs
-> (build, `wrangler deploy --dry-run`, `wrangler dev`, claim, a cash-on-delivery order).
-> The button goes live once `0.2.0` is on npm and the template repository is public; the
-> Cloudflare-side behaviour listed under "Not yet verified" below needs a real account.
+> **Status.** Live. The template is public at
+> [UrumiAI/otta-store-template](https://github.com/UrumiAI/otta-store-template) and installs
+> `0.2.0` from npm. A real button run on Workers Free (deploy, storefront, claim through the
+> `[otta-setup]` log link and a passkey) passed on 2026-11-10. What is still unconfirmed is
+> listed under "Not yet confirmed" below.
 
 The template is a small repository: `astro.config.mjs` (the adapter plus
 `otta({ template: 1 })`), `wrangler.jsonc`, `.dev.vars.example`, `src/worker.ts` and
 `src/live.config.ts` (a few lines each), `package.json` with exact pins, its
-`package-lock.json` (generated once the pinned versions are on npm; npm cannot lock versions
-the registry does not have yet), `.github/dependabot.yml`, `README.md`, `LICENSE`, `.gitignore`,
+`package-lock.json`, `scripts/deploy.mjs` (and its `scripts/deploy.test.mjs`), `.github/dependabot.yml`, `README.md`, `LICENSE`, `.gitignore`,
 `.node-version` and `tsconfig.json`. No store code: that is the `@urumi.ai/otta-store`
 dependency.
 
@@ -523,8 +534,13 @@ dependency.
 fork), creates the D1 database (`DB`), the two R2 buckets (`MEDIA`, and the private
 `DOWNLOADS`) and the KV namespace (`SESSION`) the template's `wrangler.jsonc` declares, asks
 for the one secret (`EMDASH_ENCRYPTION_KEY`, from `.dev.vars.example`), and connects Workers
-Builds, which runs `npm run build` (`astro build`) and `npm run deploy` (`wrangler deploy`) on
-every push to your production branch. The template also turns on `IMAGES`, both rate limits
+Builds, which runs `npm run build` (`astro build`) and `npm run deploy` on every push to your
+production branch. `npm run deploy` runs `scripts/deploy.mjs`: it applies any pending database
+migrations from the build (90 on a new store at EmDash `1.3.1`, 96 at `1.5.0`), checks that none is pending and the database has none this build does not know, then runs
+`wrangler deploy`, so a new store is never live on an unmigrated database. The Worker is not
+left to migrate itself on its first boot: on Workers Free that was cut off after 34 of 90
+migrations and left the migration lock held (503 on every request). Do not deploy a new store
+from the template with plain `wrangler deploy`. The template also turns on `IMAGES`, both rate limits
 (`RATE_LIMIT_AUTH`, `RATE_LIMIT_WRITES`, so cash on delivery can be offered, ADR-0044), the
 every-minute cron and Workers Logs. `send_email` stays commented out (ADR-0043).
 
@@ -578,11 +594,13 @@ their meaning (§3, §4). In the template, set them as options in `astro.config.
 template too: the downloads bucket must not be the media bucket, and a sender needs the `EMAIL`
 binding.
 
-**Not yet verified (needs a real Cloudflare account):** that the button writes the created IDs
-into the cloned `wrangler.jsonc`; how its secret prompt treats an empty value; whether the
-`IMAGES` and rate-limit bindings deploy on Workers Free; whether a fresh store's first boot (all
-migrations plus the seed) fits Workers Free's CPU limit (`wrangler dev` does not enforce it);
-and how Workers Builds runs npm and Node 22 for this project.
+**Not yet confirmed:** how the button's secret prompt treats an empty value (the admin then
+refuses to save payment keys), and whether Workers Builds provides `CLOUDFLARE_ACCOUNT_ID` to the deploy
+script (it reads `account_id` in `wrangler.jsonc`, then that variable, then the only account the
+API token can see; the first lines of the build log say whether it was present). If the build
+stops because it cannot find the account id, add `CLOUDFLARE_ACCOUNT_ID` as a build variable. If the build's token cannot change D1, the deploy
+stops and says to add **Account → D1 → Edit** to it. The template's README lists the failure
+messages and recovery steps.
 
 ## 3. Secrets & tokens checklist
 
@@ -1320,7 +1338,10 @@ index above: about three rows written per plugin-storage row, every plugin's row
 with 30,000 rows writes about 90,000 on that tick. **Past about 33,000 plugin-storage rows the
 index build alone exceeds D1 Free's 100,000 rows written a day.** Once it does, every write fails
 until 00:00 UTC, and the build does not finish. EmDash retries the build once per new Worker
-process, so a store of 100,000 rows can hit the limit several days running. A Free store that size
+process, so a store of 100,000 rows can hit the limit several days running. Since EmDash 1.5.0
+the first state-changing plugin request of a new Worker process (a cart change, a checkout, a
+payment webhook, an admin action) also starts the build if the tick has not, and answers 503
+`STORAGE_INDEXES_NOT_READY` while it fails. A Free store that size
 should move to Workers Paid before this deploy. Every later plugin-row write then costs three
 index rows more (about 52 rows in all).
 
@@ -1935,6 +1956,14 @@ on a request once it would touch more than 5,000 rows, and answers 503 until it 
 smaller site still migrates on its first request, but running it from the CLI first is safe
 either way. See EmDash's
 [core-migrations guide](https://docs.emdashcms.com/deployment/core-migrations/).
+
+**Upgrading the EmDash host (1.3.1 → 1.5.0).** Six more host migrations, `092` to `097`, none of
+which changes Otta's commerce documents. Two need a look first: `095_plugin_storage_unique_scope`
+is a maintenance-window migration on a site with plugin storage `uniqueIndexes` (Otta declares
+none), and `092_plugin_kv_options` copies sandboxed `ctx.kv` rows into `options`. In the default
+`auto` mode the Worker applies them on its first request, so run the two checks and the CLI
+migration in [`UPGRADING.md`](./UPGRADING.md) ("EmDash 1.3.1 to 1.5.0") before deploying, with the
+`--wrangler-config wrangler.local.jsonc` form above in place of `--d1`.
 
 ## 6. Troubleshooting
 

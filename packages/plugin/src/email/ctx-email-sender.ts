@@ -214,14 +214,16 @@ export class CtxEmailSender implements EmailSender {
 }
 
 /** EmDash's sandbox bridge's refusal when no provider is wired (emdash 0.38
- *  `@emdash-cms/cloudflare` `bridge.ts` `emailSend`; unchanged in 1.0.1). Pinned
+ *  `@emdash-cms/cloudflare` `bridge.ts` `emailSend`; unchanged through 1.5.0,
+ *  which first starts the host runtime in the bridge's isolate and refuses with
+ *  this text only when that runtime has no provider either). Pinned
  *  against EmDash's REAL bridge, over the real RPC, by
  *  `emdash-sandbox-rpc.sandbox.test.ts`. */
 export const EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE =
 	"Email is not configured. No email provider is available.";
 
 /** EmDash's pipeline `EmailNotConfiguredError` message (emdash 0.38
- *  `src/plugins/email.ts`; unchanged in 1.0.1). Pinned against the installed
+ *  `src/plugins/email.ts`; unchanged through 1.5.0). Pinned against the installed
  *  package's source by `ctx-email-sender.test.ts`. */
 export const EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE =
 	"No email provider is configured. Install and activate an email provider plugin, then select it in Settings > Email.";

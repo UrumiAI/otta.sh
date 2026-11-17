@@ -1,7 +1,7 @@
 # @urumi.ai/otta-payments-cod
 
 Cash on delivery for [Otta](https://github.com/UrumiAI/otta.sh): a `PaymentGateway` adapter for an
-**offline** payment method ([ADR-0044](../../adr/0044-cash-on-delivery-is-an-offline-payment-method.md)).
+**offline** payment method ([ADR-0044](https://github.com/UrumiAI/otta.sh/blob/main/adr/0044-cash-on-delivery-is-an-offline-payment-method.md)).
 
 The buyer places the order at checkout and pays in cash when it arrives. There is no online
 payment, no webhook and no secret to configure.
@@ -12,7 +12,7 @@ In the EmDash admin, open **Otta → Store settings → General → Cash on deli
 **Offer cash on delivery at checkout**. You can also add instructions for buyers, such as "Please
 have the exact amount ready." The checkout shows them under the method. Stripe and cash on
 delivery are independent: enable either or both. With only cash on delivery enabled, checkout
-works with no Stripe keys at all. See [DEPLOYMENT.md](../../DEPLOYMENT.md).
+works with no Stripe keys at all. See [DEPLOYMENT.md](https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md).
 
 The Otta plugin wires this package itself. A site does not import it.
 
