@@ -92,6 +92,15 @@ export {
 	type RevokeDownloadAccessInput,
 	type TransitionInput,
 	type TransitionOutcome,
+	deriveEditIdempotencyKey,
+	editProduct,
+	NONCE_PATTERN,
+	removeStock,
+	restock,
+	stockMovementKey,
+	type ProductEditOutcome,
+	type StockMovementInput,
+	type StockOutcome,
 } from "./admin/operations/index.js";
 export type { AdminOrdersSurface, InlineEmailStatus } from "./admin/admin-orders-surface.js";
 // `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
@@ -134,9 +143,14 @@ export {
 	// because a parameter type a consumer cannot name is not a usable signature.
 	type AdminProductsSurface,
 	type ProductDetailWire,
+	// The product operations' parameter and result types (admin operations, MCP).
+	type ProductEditResult,
+	type ProductEditWire,
 	type ProductsListFilter,
 	type ProductsListResult,
 	type ProductSummaryWire,
+	type RestockResult,
+	type StockRemovalResult,
 } from "./admin/admin-products-surface.js";
 export {
 	createTaxPageHandler,

@@ -25,3 +25,14 @@ export {
 	type TransitionInput,
 	type TransitionOutcome,
 } from "./orders.js";
+export {
+	deriveEditIdempotencyKey,
+	editProduct,
+	NONCE_PATTERN,
+	removeStock,
+	restock,
+	stockMovementKey,
+	type ProductEditOutcome,
+	type StockMovementInput,
+	type StockOutcome,
+} from "./products.js";

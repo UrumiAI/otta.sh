@@ -1396,3 +1396,98 @@ describe("products:attach-download — saving an uploaded file's descriptor (iss
 		expect(row.updatedAt.toISOString()).toBe(seeded.updatedAt);
 	});
 });
+
+// -- pin: every stock-movement and edit outcome's notice (admin operations) ---
+//
+// Characterization cases for the stock-movement and edit decisions moving out of
+// the actions into `admin/operations/products.ts`. Each asserts the exact title
+// AND variant the operator reads, so a move that changed either is caught here.
+describe("pin: products admin outcomes (workerd sandbox)", () => {
+	test("pin: a restock reads `Stock added`, default variant, and moves the count", async () => {
+		const seeded = await seedProduct({ onHand: 10 });
+		const result = await act("products:restock", {
+			productId: seeded.productId,
+			onHand: "10",
+			qty: "3",
+			nonce: nonce(),
+		});
+		expect(result.ok).toBe(true);
+		expect(result.notice?.title).toBe("Stock added");
+		expect(result.notice?.variant).toBe("default");
+		expect(result.notice?.description).toBe("Added 3 units. Available is now 13.");
+		expect((result as { replayed?: true }).replayed).toBeUndefined();
+		expect(await inventory.findOnHand(seeded.sku)).toBe(13);
+	});
+
+	test("pin: a replayed restock (same nonce) reads `Already applied`, default variant, flagged `replayed`", async () => {
+		const seeded = await seedProduct({ onHand: 10 });
+		const payload = { productId: seeded.productId, onHand: "10", qty: "3", nonce: nonce() };
+		expect((await act("products:restock", payload)).notice?.title).toBe("Stock added");
+		const again = await act("products:restock", payload);
+		expect(again.notice?.title).toBe("Already applied");
+		expect(again.notice?.variant).toBe("default");
+		expect(again.notice?.description).toBe("This change was already applied — stock is now 13.");
+		expect((again as { replayed?: true }).replayed).toBe(true);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(13);
+	});
+
+	test("pin: a removal against a MOVED on-hand reads the stock-changed notice, error variant", async () => {
+		const seeded = await seedProduct({ onHand: 10 });
+		const result = await act("products:remove-stock", {
+			productId: seeded.productId,
+			onHand: "12",
+			qty: "2",
+			nonce: nonce(),
+		});
+		expect(result.notice?.title).toBe("Stock changed — nothing was removed");
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.description).toBe(
+			"Stock changed to 10 (orders or another change) — nothing was removed; check and try again.",
+		);
+		expect(await inventory.findOnHand(seeded.sku)).toBe(10);
+	});
+
+	test("pin: a removal over stock reads `Not enough stock to remove`, error variant", async () => {
+		const seeded = await seedProduct({ onHand: 10 });
+		const result = await act("products:remove-stock", {
+			productId: seeded.productId,
+			onHand: "10",
+			qty: "11",
+			nonce: nonce(),
+		});
+		expect(result.notice?.title).toBe("Not enough stock to remove");
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.description).toBe("Only 10 units on hand — you cannot remove 11.");
+		expect(await inventory.findOnHand(seeded.sku)).toBe(10);
+	});
+
+	test("pin: an edit to an unsupported NEW currency is refused, error variant, nothing written", async () => {
+		const seeded = await seedProduct({ price: null });
+		const result = await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "24.50",
+			currency: "XYZ",
+			compareAt: "",
+			unitCost: "",
+		});
+		expect(result.notice?.title).toBe("Check the highlighted value");
+		expect(result.notice?.variant).toBe("error");
+		expect(String(result.notice?.description)).toContain("XYZ isn't a supported currency");
+		expect((await readProduct(seeded.productId)).updatedAt.toISOString()).toBe(seeded.updatedAt);
+	});
+
+	test("pin: an edit's happy path reads `Saved`, default variant, and writes the price", async () => {
+		const seeded = await seedProduct();
+		const result = await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "24.50",
+			currency: "USD",
+			compareAt: "",
+			unitCost: "",
+		});
+		expect(result.notice?.title).toBe("Saved");
+		expect(result.notice?.variant).toBe("default");
+		expect(result.notice?.description).toBe("The product's commerce fields were updated.");
+		expect((await readProduct(seeded.productId)).price).toEqual({ amount: 2450, currency: "USD" });
+	});
+});
