@@ -1075,12 +1075,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		const stale = new Date(Date.now() + 4 * DAY_MS);
 		const used = await cost(() =>
 			escalateStaleLateRefunds(
-				{
-					orderStore: s.orderStore,
-					paymentEventStore: s.paymentEventStore,
-					clock: { now: () => stale },
-					logger: NOOP_LOGGER,
-				},
+				{ orderStore: s.orderStore, clock: { now: () => stale } },
 				{ limit: 1 },
 			),
 		);
