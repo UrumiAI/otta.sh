@@ -8,6 +8,10 @@ import { OTTA_MCP_TOOLS, withMcp, type McpRouteEntry } from "../src/index.js";
 import { makeAdminHarness, type AdminHarness } from "./helpers/admin-harness.js";
 import { SEED, seedStore } from "./helpers/seed.js";
 
+/** The order write tools (Task 6c); their own file pins them. */
+const WRITE_TOOL =
+	/^orders_(transition|record_fulfillment|cancel|refund|resolve_unverified_refund|resolve_reconciliation|add_note|revoke_download_access)$/;
+
 let harness: AdminHarness;
 const plugin = withMcp(createOttaPlugin());
 
@@ -39,7 +43,9 @@ async function failure(name: string, input: unknown = {}): Promise<{ code: strin
 }
 
 test("the read tools are all in the table", () => {
-	const names = OTTA_MCP_TOOLS.map((t) => t.name);
+	// The write tools share the table; the read ones are every tool not named for a write.
+	const reads = OTTA_MCP_TOOLS.filter((t) => !WRITE_TOOL.test(t.name));
+	const names = reads.map((t) => t.name);
 	expect(names).toEqual([
 		"products_list",
 		"products_get",
@@ -59,7 +65,7 @@ test("the read tools are all in the table", () => {
 		"reports_top_products",
 		"settings_get",
 	]);
-	for (const tool of OTTA_MCP_TOOLS) {
+	for (const tool of reads) {
 		expect(tool.destructive ?? false).toBe(false);
 		expect(tool.description.length).toBeGreaterThan(40);
 	}
