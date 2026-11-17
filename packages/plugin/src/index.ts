@@ -101,6 +101,14 @@ export {
 	type ProductEditOutcome,
 	type StockMovementInput,
 	type StockOutcome,
+	COUPON_CURRENCY_MOVED,
+	createCoupon,
+	deleteCoupon,
+	patchCoupon,
+	retireCoupon,
+	updateCoupon,
+	type CouponCollision,
+	type CouponWriteOutcome,
 } from "./admin/operations/index.js";
 export type { AdminOrdersSurface, InlineEmailStatus } from "./admin/admin-orders-surface.js";
 // `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
@@ -188,6 +196,8 @@ export {
 	type AdminRulesSurface,
 	type CouponEdit,
 	type CouponInput,
+	// The coupon operations' result type (admin operations, MCP).
+	type CouponRetireResult,
 	type CouponWire,
 	type RulesCasUpdateResult,
 	type RulesCreateResult,

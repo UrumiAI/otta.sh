@@ -26,6 +26,16 @@ export {
 	type TransitionOutcome,
 } from "./orders.js";
 export {
+	COUPON_CURRENCY_MOVED,
+	createCoupon,
+	deleteCoupon,
+	patchCoupon,
+	retireCoupon,
+	updateCoupon,
+	type CouponCollision,
+	type CouponWriteOutcome,
+} from "./coupons.js";
+export {
 	deriveEditIdempotencyKey,
 	editProduct,
 	NONCE_PATTERN,
