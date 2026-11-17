@@ -260,7 +260,7 @@ export function reconcilePassIntervalMs(queryBudget: number): number {
  * all three at once write about 80,000–85,000 (79,600–84,800), which leaves the
  * store's traffic and the sweep's own cursor and tick-state writes about
  * 15,000–20,000. On
- * the deploy day of a new index layout all three spend nothing (`indexBuildHold`).
+ * the deploy day of a new index layout none of the three spends its cap (`indexBuildHold`).
  * Without it a first install over an existing catalogue — every product
  * without a row — heals at the leg's pace, about 460 repairs a day measured, about
  * 70,000 rows written a day, for as many days as that takes. With it a catalogue of
