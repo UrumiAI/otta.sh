@@ -3,26 +3,67 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![npm](https://img.shields.io/npm/v/@urumi.ai/otta-plugin.svg)](https://www.npmjs.com/package/@urumi.ai/otta-plugin)
 
-Open source (MIT). Latest published release: 0.1.0 (`main` is 0.2.0, unreleased). The WooCommerce-equivalent for
-[EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
+Open source (MIT). Latest release: `0.2.0` (npm, 2026-11-09), on EmDash `1.3.1`. The
+WooCommerce-equivalent for [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's
+TypeScript CMS.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/UrumiAI/otta-store-template)
 
 > [!WARNING]
-> **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
-> works today, but APIs, storage document shapes, settings and admin screens may still change
-> between releases. The `@urumi.ai/otta-*` packages are published to npm at `0.1.0`; pin an exact version
-> (`pnpm add -E`) if you build on it.
->
-> **Coming soon: one-click Cloudflare Workers deployment.** The store now ships as one npm
-> package, `@urumi.ai/otta-store`, and a small template repository built on it is ready
-> for Cloudflare's Deploy button ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.6). The button goes
-> live once `0.2.0` is published. Until then you can self-deploy the reference site by
-> following [`DEPLOYMENT.md`](./DEPLOYMENT.md) — see [Status](#status) for what is and isn't
-> built yet.
+> **In active development — pre-1.0.** The buy flow — catalog, cart, card checkout and cash on
+> delivery — works today, but APIs, storage document shapes, settings and admin screens may still
+> change between releases. Pin exact versions (`pnpm add -E`) if you build on the packages.
 
 ![The Otta storefront: a product listing with three sample products, each showing generated coil artwork, a title, a description, a price, and whether it is in stock — the first is sold out, its price struck through](./docs/storefront.png)
 
 <sub>The reference storefront running locally, with prices and stock served in-process by the
 Otta plugin — this is what the [quick start](#quick-start-local-2-minutes) below gives you.</sub>
+
+## Deploy your own store (one click)
+
+The button above copies the public
+[store template](https://github.com/UrumiAI/otta-store-template) into your GitHub account and
+deploys it to your Cloudflare account as one Worker. It works on **Workers Free** (R2 still needs
+a payment method on the Cloudflare account). It creates the D1 database, the two R2 buckets (public
+media, private downloads), the KV namespace for admin sessions, the image binding, two rate limits
+and an every-minute cron, and asks for one secret, `EMDASH_ENCRYPTION_KEY` (make one with
+`npx emdash secrets generate` and keep a copy: it encrypts the payment keys you save in the admin).
+
+The template holds no store code: it depends on `@urumi.ai/otta-store`. Its deploy step
+(`npm run deploy`) applies any pending database migrations before the Worker goes live, so a new
+store never starts on an unmigrated database. Updates arrive as Dependabot pull requests, and
+**merging one deploys it to production**; a release that moves EmDash, Astro or React needs a
+manual step instead ([`UPGRADING.md`](./UPGRADING.md)).
+
+The template's README, section "After deploying", is the full checklist (plan limits, failure
+recovery, updates, email). In short:
+
+1. **Turn off preview builds first.** Workers Builds also builds other branches, such as the
+   weekly update branch, and a version it uploads could run against your live database. In the
+   Cloudflare dashboard: your Worker → **Settings** → **Build** → **Branch control** → clear
+   **Enable Preview Builds**.
+2. **Claim the store, promptly.** It is locked until claimed. Visit `/_emdash/admin` once, then
+   find the `[otta-setup]` line in the Worker's logs: it holds the setup link. Until you use it,
+   anyone who can read those logs can, and it does not expire. To keep the link out of the logs,
+   set a secret `OTTA_SETUP_TOKEN` (32 or more random `A-Z a-z 0-9 - _` characters;
+   `openssl rand -hex 32` makes one; Worker → **Settings** → **Variables and Secrets**) before
+   the first visit and open
+   `/_emdash/admin/setup?setup_token=<token>`. Set later, it replaces the generated token, so a
+   link already in the logs stops working. In the wizard, choose **Sample content** for three
+   demo products, then create your account and its passkey
+   ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)).
+3. **Price the products.** Open each product in the admin and fill in its **Pricing & stock**
+   cards. A sample product's card says "Product not found" until the product has a commerce
+   record: edit the product (its description, for instance; you can change it back) and click
+   **Publish changes**, which creates it at once. (A background sweep also creates it, but with
+   the default "Background work per minute" setting that can take up to a day.)
+4. **Take payments.** For cards, first add a webhook endpoint in the Stripe Dashboard for
+   `https://<your-site>/webhooks/stripe`, subscribed to exactly `payment_intent.succeeded` and
+   `payment_intent.payment_failed`; then, in **Store settings**, enter the publishable key, the
+   secret key and that endpoint's signing secret. Or turn on cash on delivery, which needs no
+   provider.
+
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.6 describes how the template is built.
 
 ## What this is
 
@@ -111,8 +152,8 @@ and publishable key, all in admin Settings. Locally, Stripe's webhooks reach the
 (the **Download file** card) and needs a private `DOWNLOADS` bucket, which local dev
 simulates — see [Status](#status).
 
-To self-deploy this for free on Cloudflare Workers today, follow
-[`DEPLOYMENT.md`](./DEPLOYMENT.md) §2 (one-click deployment: see [Status](#status)).
+To deploy your own store, use the [Deploy button](#deploy-your-own-store-one-click); to
+self-deploy this repository's reference site instead, follow [`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.
 
 ## Try it in the playground
 
@@ -125,8 +166,8 @@ including Otta's pricing, inventory and orders screens, stays at
 
 Card payments are not connected there, so checkout will not charge a card.
 Sign-in email is not sent. Pay-per-crawl, MCP and x402 are not part of this
-sandbox. It is not a deploy of your own store — that is the self-deploy guide
-above, and a one-click deploy of your own store is still coming.
+sandbox. It is not a deploy of your own store — for that, use the
+[Deploy button](#deploy-your-own-store-one-click).
 
 Run the same playground locally:
 
@@ -141,16 +182,26 @@ someone who can add `try.otta.sh` to the Cloudflare account that owns the
 
 ## Install from npm
 
-The six packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.1.0`, which accepts
-EmDash `^1.0.1`. `main` now needs EmDash `^1.3.1`; that floor ships with the next release
-(`0.2.0`). A site installs what it registers:
+Eight packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.2.0`, which needs
+EmDash `1.3.1` (the plugin accepts `^1.3.1`; `@urumi.ai/otta-store` pins it exactly).
+`@urumi.ai/otta-plugin@0.1.0` is deprecated: a site that bundled it shipped its own build
+environment variables (such as `HOME`, `PATH` and `npm_*`) inside its Worker. Upgrade to `0.2.0`
+(which needs EmDash `^1.3.1`, so an older EmDash moves too) and redeploy; if a sensitive value was in that build environment, rotate it. The other packages'
+`0.1.0` releases are not affected.
+
+The simplest way to use them is a whole store: `@urumi.ai/otta-store` is the storefront and admin as
+one Astro integration (`otta({ template: 1 })`), and is what the one-click template depends on. It
+pins its peers (EmDash, `@emdash-cms/cloudflare` and the other Otta packages exactly; Astro, React,
+`@astrojs/react` and `@astrojs/cloudflare` to the minor), so start from the template's
+`package.json` (see [the store package's README](./sites/store/README.md)). To add Otta to an EmDash site you already have, install what
+the site registers:
 
 ```bash
 pnpm add @urumi.ai/otta-plugin @urumi.ai/otta-admin-react
 ```
 
-`@urumi.ai/otta-plugin` brings `@urumi.ai/otta-domain`, `@urumi.ai/otta-store-emdash`, `@urumi.ai/otta-payments-stripe`
-and `@urumi.ai/otta-admin-presentation` with it. The packages export no ready-made plugin descriptor: each
+`@urumi.ai/otta-plugin` brings `@urumi.ai/otta-domain`, `@urumi.ai/otta-store-emdash`, `@urumi.ai/otta-payments-stripe`,
+`@urumi.ai/otta-payments-cod` and `@urumi.ai/otta-admin-presentation` with it. The packages export no ready-made plugin descriptor: each
 site writes its own. The reference site's are the worked example:
 [`otta-plugin-descriptor.ts`](./sites/store/src/otta-plugin-descriptor.ts) and
 [`otta-console-descriptor.ts`](./sites/store/src/otta-console-descriptor.ts). Your `otta`
@@ -163,8 +214,8 @@ itself.
 
 Every EmDash release from `1.0.1` through `1.3.1` (`emdash`, `@emdash-cms/auth` and
 `@emdash-cms/plugin-types`) pins `zod` at exactly `4.5.4`, which has a known advisory
-([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)), so this applies on
-0.1.0 as well as 0.2.0. The Otta packages don't pull in `zod` themselves, but until EmDash pins
+([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)), so this applies to
+every Otta release so far. The Otta packages don't pull in `zod` themselves, but until EmDash pins
 `zod` at `4.6.6` or later, a site on pnpm can override it the way this repo does (in
 `pnpm-workspace.yaml`; pnpm 11 ignores `pnpm.overrides` in `package.json`):
 
@@ -195,10 +246,12 @@ the tree).
   Postgres in CI. The plugin composes those stores in-process, and the domain's contract
   suites are the spec they are held to ([ADR-0019](./adr/0019-commerce-aggregates-are-one-document-each.md)).
 - **Pluggable payments.** Stripe (async webhook) behind one `PaymentGateway` interface,
-  the seam a further gateway slots into.
+  the seam a further gateway slots into, and cash on delivery as an offline payment method
+  that needs no provider ([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md)).
 - **Deployment.** One Worker and one D1 database: the EmDash site with the plugin
-  registered trusted (in-process), on the Cloudflare Workers **free** plan, with cron
-  sweeps for cart/reservation expiry. The plugin still passes the full workerd sandbox
+  registered trusted (in-process), on the Cloudflare Workers **free** plan, with an
+  every-minute cron sweep (expiries, order email and housekeeping, within a per-tick query
+  budget; [`DEPLOYMENT.md`](./DEPLOYMENT.md) §5). The plugin still passes the full workerd sandbox
   suite on every CI run, which is the binding contract (ADR-0006).
   Step-by-step bootstrap guide: [`DEPLOYMENT.md`](./DEPLOYMENT.md).
 
@@ -209,11 +262,12 @@ the tree).
 | `@urumi.ai/otta-domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
 | `@urumi.ai/otta-store-emdash` | Store adapters over the host's per-plugin document store — one document per aggregate, compare-and-set writes. |
 | `@urumi.ai/otta-payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
+| `@urumi.ai/otta-payments-cod` | Cash on delivery: the offline payment method, no provider ([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md)). |
 | `@urumi.ai/otta-plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
 | `@urumi.ai/otta-admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
 | `@urumi.ai/otta-admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — the Orders page, plus the product editor's Pricing & stock cards (and the Download file card for a digital product) and the products list's Price / Stock columns. |
 | `@urumi.ai/otta-store` (`sites/store`) | The storefront and admin as one Astro integration, `otta()`: routes, middleware, theme, fonts and build guards (ADR-0045). What the one-click template depends on. |
-| `sites/staging` | The reference site built from `otta()` — EmDash on Cloudflare Workers, plugin registered trusted — plus the e2e suite and the playground config. |
+| `sites/staging` | Not published. The reference site built from `otta()` — EmDash on Cloudflare Workers, plugin registered trusted — plus the e2e suite and the playground config. |
 | `examples/email-provider` | Template for an EmDash email-transport plugin (not published); see [`docs/email-providers.md`](./docs/email-providers.md). |
 
 Design decisions live in [`adr/`](./adr/); development practices in
@@ -228,8 +282,14 @@ strict TypeScript.
 pnpm lint         # oxlint + domain-purity dependency check
 pnpm typecheck    # tsc -b + e2e + each package's typecheck (site: astro check)
 pnpm test         # vitest (better-sqlite3 by default)
-pnpm format       # oxfmt, tabs
+pnpm format       # oxfmt, tabs (CI runs pnpm format:check)
 ```
+
+Heavier tiers: `pnpm test:pg` (Postgres; CI runs it on every PR that changes code),
+`pnpm test:d1` (real D1 in workerd), `pnpm test:e2e` and `pnpm test:e2e:claim` (Playwright against
+the staging site; CI runs these and `test:d1` on PRs into `main`), and `pnpm test:pack-build`
+(builds the one-click template from the packed packages; CI runs it on PRs that touch the
+packages).
 
 The **concurrency tests are Postgres-required** — better-sqlite3 serializes writes in one
 process, so it verifies the SQL is correct, not that it's race-safe under contention. See
@@ -237,25 +297,31 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 
 ## Status
 
-**In active development.** The latest published release is `0.1.0`; `main` is `0.2.0`
-(unreleased). The `@urumi.ai/otta-*` packages are on npm (`pnpm add @urumi.ai/otta-plugin`; see
-[Install from npm](#install-from-npm)); work on Otta itself from the workspace. Expect
-breaking changes before 1.0.
+**In active development, pre-1.0.** The latest release is `0.2.0` on npm; expect breaking changes
+before 1.0. How a store made from the template takes updates, and what a release that moves
+EmDash, Astro or React needs, is in [`UPGRADING.md`](./UPGRADING.md).
 
-**Cloudflare Workers:** self-deploying the reference site to Workers works today
-([`DEPLOYMENT.md`](./DEPLOYMENT.md)). One-click: the store template for Cloudflare's Deploy
-button is built and verified locally, and goes live once `0.2.0` is on npm
-([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.6).
+**Deploying:** the one-click template is live; a deploy with the button on Workers Free was run
+end to end on 2026-11-10 (deploy, storefront, claim). Self-deploying the reference site is [`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.
 
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
-cart, checkout, orders, customers with magic-link auth, Stripe payments, tax,
-shipping, discounts, entitlements, reporting, and settings. The magic-link email is sent once
-an EmDash email provider is selected ([`docs/email-providers.md`](./docs/email-providers.md))
-and the Settings "Sign-in page address" (`settings:loginLinkUrl`) points at the storefront's
-`/account/verify` page.
+cart, checkout, orders, customers with magic-link auth, Stripe payments, cash on delivery, tax,
+shipping, discounts, entitlements, reporting, and settings. `0.2.0` added the setup token
+([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)), cash on delivery
+([ADR-0044](./adr/0044-cash-on-delivery-is-an-offline-payment-method.md)), Cloudflare Email
+Sending as the default email provider when a sender is set (Workers Paid;
+[ADR-0043](./adr/0043-site-default-cloudflare-email-provider.md)), per-IP rate limits
+([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.5) and the store as one package
+([ADR-0045](./adr/0045-the-store-ships-as-an-astro-integration-for-one-click-deploy.md)).
+Without an email provider, order emails wait up to 72 hours and are then skipped, and sign-in
+links are not sent.
 
-The reference **storefront** (`sites/staging`) covers catalog, cart, **card checkout** and
-**customer accounts** (`/account/login`, `/account/verify`, `/account/orders`):
+The magic-link email is sent once an EmDash email provider is selected
+([`docs/email-providers.md`](./docs/email-providers.md)) and the Settings "Sign-in page address"
+(`settings:loginLinkUrl`) points at the storefront's `/account/verify` page.
+
+The reference **storefront** (`sites/staging`) covers catalog, cart, **card checkout**, **cash on
+delivery** and **customer accounts** (`/account/login`, `/account/verify`, `/account/orders`):
 `/checkout`, the Stripe pay page and the order confirmation page are built
 ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md)), so a
 Stripe-configured deployment completes a card purchase end-to-end
@@ -263,6 +329,15 @@ Stripe-configured deployment completes a card purchase end-to-end
 merchant attaches a file to a Digital product in the product editor, it is stored in a private
 R2 bucket, and a buyer downloads it from the order page, re-authorized on every request and
 closed by a full refund ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.1).
+
+**Known limitations** (open issues):
+
+- Payment methods that confirm days later (SEPA Direct Debit, ACH, Bacs, bank transfer) end in an
+  expired order and an automatic refund ([#606](https://github.com/UrumiAI/otta.sh/issues/606)).
+  Until that is fixed, turn those methods off in the Stripe Dashboard's payment method settings.
+- Dropping or re-adding many sized variants that have SKUs in one save costs two to three database
+  queries per variant, so on Workers Free it fails past about 16 to 20 variants
+  ([#637](https://github.com/UrumiAI/otta.sh/issues/637)).
 
 ## License
 

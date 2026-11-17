@@ -22,7 +22,9 @@ Vite settings, ships `public/` at the same URLs, and runs the build guards (the 
 downloads bucket, the `EMAIL` binding for a sender, the seed and live-collections checks,
 secrets and build paths kept out of the bundle).
 
-The easiest way to use it is the one-click store template: see the repository's
+The easiest way to use it is the one-click store template,
+[UrumiAI/otta-store-template](https://github.com/UrumiAI/otta-store-template), which installs this
+package from npm and has a Deploy to Cloudflare button. See the repository's
 [`DEPLOYMENT.md`](https://github.com/UrumiAI/otta.sh/blob/main/DEPLOYMENT.md) §2.6 for what a site needs besides this file
 (`wrangler.jsonc`, `src/worker.ts`, `src/live.config.ts`, the pinned dependencies), and
 [`UPGRADING.md`](https://github.com/UrumiAI/otta.sh/blob/main/UPGRADING.md) for the template contract.
