@@ -17,6 +17,12 @@ export interface McpToolDef<I extends z.ZodTypeAny> {
 	/** Clients ask before running it (MCP `destructiveHint`). */
 	destructive?: boolean;
 	/**
+	 * The input carries a secret (a payment key). An input refusal then names
+	 * each problem's path and kind only: no zod message (an unknown key's NAME,
+	 * an option list) is passed on, so nothing the caller sent comes back.
+	 */
+	sensitiveInput?: boolean;
+	/**
 	 * The work. Writes go through the plugin's admin operations, never straight to a
 	 * surface write method. A refusal throws a `ToolError` (`toolFailure`); the
 	 * return value is the tool's JSON result.

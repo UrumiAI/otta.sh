@@ -8,9 +8,9 @@ import { OTTA_MCP_TOOLS, withMcp, type McpRouteEntry } from "../src/index.js";
 import { makeAdminHarness, type AdminHarness } from "./helpers/admin-harness.js";
 import { SEED, seedStore } from "./helpers/seed.js";
 
-/** The write tools (Tasks 6c, 6d); their own files pin them. */
+/** The write tools (Tasks 6c-6f); their own files pin them. */
 const WRITE_TOOL =
-	/^(orders_(transition|record_fulfillment|cancel|refund|resolve_unverified_refund|resolve_reconciliation|add_note|revoke_download_access)|products_(update|restock|remove_stock)|coupons_(create|update|retire|delete)|shipping_(zone|method)_(create|update|delete)|shipping_rate_(set|delete)|tax_settings_update|tax_(class|rate)_(create|update|delete))$/;
+	/^(orders_(transition|record_fulfillment|cancel|refund|resolve_unverified_refund|resolve_reconciliation|add_note|revoke_download_access)|products_(update|restock|remove_stock)|coupons_(create|update|retire|delete)|shipping_(zone|method)_(create|update|delete)|shipping_rate_(set|delete)|tax_settings_update|tax_(class|rate)_(create|update|delete)|settings_update(_store_name|_currency)?|payments_(cod_set_enabled|set_secret|clear_secret))$/;
 
 let harness: AdminHarness;
 const plugin = withMcp(createOttaPlugin());

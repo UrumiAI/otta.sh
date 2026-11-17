@@ -51,13 +51,36 @@ export interface McpPlugin extends SandboxedPlugin {
 	mcp: { tools: Record<string, McpToolEntry> };
 }
 
-function describeIssues(error: z.ZodError): {
+/**
+ * An issue's message with nothing the caller sent in it: its kind, said
+ * generically. For a {@link McpToolDef.sensitiveInput} tool, whose zod messages
+ * could carry part of the input (an unknown key is named in its message).
+ */
+function redactedMessage(issue: z.ZodError["issues"][number]): string {
+	switch (issue.code) {
+		case "invalid_type":
+			return `expected ${issue.expected}`;
+		case "unrecognized_keys":
+			return "unknown key (not echoed); send only the documented fields";
+		case "invalid_value":
+			return "not one of the allowed values";
+		default:
+			return `invalid (${issue.code})`;
+	}
+}
+
+function describeIssues(
+	error: z.ZodError,
+	sensitive: boolean,
+): {
 	message: string;
 	issues: { path: string; message: string }[];
 } {
 	const issues = error.issues.map((issue) => ({
+		// A path is made of the schema's own keys (a strict object reports an
+		// unknown key at its parent's path, never its own name).
 		path: issue.path.map(String).join("."),
-		message: issue.message,
+		message: sensitive ? redactedMessage(issue) : issue.message,
 	}));
 	const message = issues
 		.map((issue) => (issue.path === "" ? issue.message : `${issue.path}: ${issue.message}`))
@@ -74,7 +97,7 @@ function toolRoute(def: McpToolDef<z.ZodTypeAny>): McpRouteEntry {
 		async handler(routeCtx, ctx) {
 			const parsed = def.input.safeParse(routeCtx.input);
 			if (!parsed.success) {
-				const { message, issues } = describeIssues(parsed.error);
+				const { message, issues } = describeIssues(parsed.error, def.sensitiveInput === true);
 				toolFailure("INVALID_INPUT", message, { issues });
 			}
 			const clients = await makeAdminClients(ctx);

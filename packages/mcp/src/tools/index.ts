@@ -7,6 +7,7 @@ import { ORDER_TOOLS } from "./orders.js";
 import { PRODUCT_WRITE_TOOLS } from "./product-writes.js";
 import { PRODUCT_TOOLS } from "./products.js";
 import { REPORT_TOOLS } from "./reports.js";
+import { SETTINGS_WRITE_TOOLS } from "./settings-writes.js";
 import { SETTINGS_TOOLS } from "./settings.js";
 import { SHIPPING_WRITE_TOOLS } from "./shipping-writes.js";
 import { SHIPPING_TOOLS } from "./shipping.js";
@@ -31,4 +32,5 @@ export const OTTA_MCP_TOOLS: readonly McpToolDef<z.ZodTypeAny>[] = [
 	...TAX_WRITE_TOOLS,
 	...REPORT_TOOLS,
 	...SETTINGS_TOOLS,
+	...SETTINGS_WRITE_TOOLS,
 ] as readonly McpToolDef<z.ZodTypeAny>[];
