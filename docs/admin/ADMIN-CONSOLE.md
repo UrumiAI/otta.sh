@@ -3467,7 +3467,7 @@ and these are not fork items. The item numbering below is load-bearing — this 
 "§14 item N" in a dozen places — and is unchanged.)*
 
 **Fork work is not pursued.** Under D1, the EmDash fork is out of scope entirely: Otta runs
-stock `emdash@0.31.1` / `@emdash-cms/blocks@0.31.1` from public npm, pinned exact — no fork
+stock `emdash` (and its `@emdash-cms/blocks`) from public npm, at the version the workspace pins — no fork
 branches, no fork builds, no upstream PRs, no `patchedDependencies`. Block Kit is frozen. A
 capability it lacks is reachable **only** by migrating that screen to the React admin console
 (`format: "native"` + `adminEntry`), per ADR-0014 — see that file for current status. The five
