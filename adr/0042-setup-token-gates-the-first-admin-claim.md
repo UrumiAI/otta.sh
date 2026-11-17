@@ -124,7 +124,8 @@ Options considered:
    (`scripts/setup-claim-cookie.ts`). Both look the token up the same way the dev Worker
    gets it: `OTTA_SETUP_TOKEN` in `sites/staging/.dev.vars` when that file exists, else the
    process env, so a seed script run on its own against a fresh dev store sends the right
-   cookie too. A script reads `.dev.vars` only for a `SITE_URL` on `localhost`,
+   cookie too. On EmDash 1.5 that alone does not sign it in: the dev sign-in answers `409`
+   until setup is finished, and the script's error says to open the setup link first. A script reads `.dev.vars` only for a `SITE_URL` on `localhost`,
    `127.0.0.1` or `[::1]` (not `*.localhost`, which Node may resolve through DNS); any
    other site gets only an `OTTA_SETUP_TOKEN` set explicitly in the env. That throwaway token,
    `PUBLIC_E2E_SETUP_TOKEN` in `src/lib/setup-claim-contract.ts`, is public, so the gate
