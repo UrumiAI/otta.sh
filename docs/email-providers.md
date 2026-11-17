@@ -17,8 +17,8 @@ covers it.
 
 ## Default on the reference site (ADR-0043)
 
-`sites/staging` can register EmDash's first-party Cloudflare Email Sending provider: set
-`OTTA_EMAIL_FROM` at build time. Full steps, ordering and requirements are in
+The reference site (`sites/staging`, built on `@urumi.ai/otta-store`) can register EmDash's first-party Cloudflare Email Sending provider: set
+`OTTA_EMAIL_FROM` at build time (or the `emailFrom` option of `otta()`). Full steps, ordering and requirements are in
 [`DEPLOYMENT.md`](../DEPLOYMENT.md) §3, Email. It needs Workers Paid and a sender domain on
 Cloudflare. Workers Free merchants must leave it unset.
 

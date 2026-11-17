@@ -138,6 +138,9 @@ const CHECKED_PEERS = [
 	"react-dom",
 ] as const;
 
+// TWIN: `scripts/pack-build-peers.mjs` (`satisfiesPeer`) restates this check for
+// the pack-build test, which cannot import this file; keep their rules identical.
+
 /** `[major, minor, patch, hasPrerelease]` of a plain version, or undefined. */
 function parseVersion(version: string): [number, number, number, boolean] | undefined {
 	const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(version.trim());
@@ -763,7 +766,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 							// discovers them mid-session, re-bundles and reloads the admin SPA under
 							// a running e2e test. Listing them pre-bundles both at startup. Bare
 							// specifiers resolve from the site, which depends on emdash directly
-							// (same 1.3.1 instance admin-react gets). Merged with the emdash
+							// (same 1.5.0 instance admin-react gets). Merged with the emdash
 							// integration's own `include`; a production build does not use it.
 							include: ["emdash/internal/routes/PluginRegistry", "emdash/plugin-utils"],
 						},
