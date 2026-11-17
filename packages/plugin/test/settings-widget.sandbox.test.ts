@@ -2152,3 +2152,241 @@ describe("Settings: the last failed send (issue #677)", () => {
 		expect(JSON.stringify(after)).not.toContain(buyer);
 	}, 180_000);
 });
+
+// ── Pins: the settings admin outcomes, before the decisions move out ───────────
+//
+// The exact notice (variant, title, copy) and toast for each outcome of the
+// currency, cash-on-delivery, operational and display-name saves, so that moving
+// their decisions into `admin/operations/settings.ts` (shared with the MCP tools)
+// cannot change a word the operator reads.
+
+/** The one notice banner on a settings response. */
+function noticeOf(outcome: unknown): { variant: unknown; title: unknown; description: unknown } {
+	const banner = findBlocks(blocksOf(outcome), "banner")[0];
+	return { variant: banner?.variant, title: banner?.title, description: banner?.description };
+}
+
+describe("pin: settings admin outcomes", () => {
+	const seededOrders: string[] = [];
+	const seededProducts = ["pin-usd-a", "pin-usd-b"];
+	afterEach(async () => {
+		await dropOrders(seededOrders.splice(0));
+		const { storage } = await storageBridge();
+		for (const id of seededProducts) {
+			await collectionOf(storage, PRODUCT_COMMERCE_COLLECTION).delete(id);
+		}
+		await resetOperationalSettings();
+	});
+
+	test("store currency: a switch with priced products asks; the confirm saves; the same currency is a no-op; a stale confirm is refused", async () => {
+		await resetOperationalSettings();
+		const { storage } = await storageBridge();
+		const products = new EmdashProductCommerceStore({ storage, clock: systemClock });
+		for (const id of seededProducts) {
+			await products.upsert(
+				{ productId: toProductId(id), price: money(cents(1200), toCurrency("USD")) },
+				idempotencyKey(`pin-seed-${id}`),
+			);
+		}
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+
+		const asked = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "EUR" },
+			idempotencyKey: "k-pin-sc-ask",
+		});
+		expect(noticeOf(asked)).toEqual({
+			variant: "default",
+			title: "Confirm the currency switch",
+			description:
+				"2 products are priced in USD. After switching to EUR — Euro, they can't be bought in new carts or repriced in it. Coupons and shipping rates in USD stop working too. Nothing was changed yet.",
+		});
+		expect(toastOf(asked)).toEqual({ message: "Confirm the currency switch", type: "info" });
+		expect(valueOf(confirmButton(blocksOf(asked)))).toEqual({ currency: "EUR", from: "USD" });
+		expect(await storedDoc()).toBeNull();
+
+		const stale = await sandbox.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "confirm-store-currency",
+			value: { currency: "EUR", from: "GBP" },
+			idempotencyKey: "k-pin-sc-stale",
+		});
+		expect(noticeOf(stale)).toEqual({
+			variant: "error",
+			title: "Store currency not saved",
+			description:
+				"The store currency changed since you were asked. Nothing was changed — reload and try again.",
+		});
+		expect(toastOf(stale)).toEqual({ message: "Store currency not saved", type: "error" });
+		expect(await storedDoc()).toBeNull();
+
+		const confirmed = await sandbox.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "confirm-store-currency",
+			value: { currency: "EUR", from: "USD" },
+			idempotencyKey: "k-pin-sc-confirm",
+		});
+		expect(noticeOf(confirmed)).toEqual({
+			variant: "default",
+			title: "Store currency saved",
+			description: "New carts are created in EUR — Euro. Carts already open keep their currency.",
+		});
+		expect(toastOf(confirmed)).toEqual({ message: "Store currency saved", type: "success" });
+		expect((await storedDoc())?.["currency"]).toBe("EUR");
+
+		const same = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "EUR" },
+			idempotencyKey: "k-pin-sc-same",
+		});
+		expect(noticeOf(same)).toEqual({
+			variant: "default",
+			title: "Nothing changed",
+			description: "The store currency is already EUR — Euro.",
+		});
+		expect(toastOf(same)).toEqual({ message: "Nothing changed", type: "success" });
+
+		const unsupported = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "XYZ" },
+			idempotencyKey: "k-pin-sc-bad",
+		});
+		expect(noticeOf(unsupported)).toEqual({
+			variant: "error",
+			title: "Store currency not saved",
+			description:
+				"XYZ isn't a supported currency — choose one from the list. Nothing was changed.",
+		});
+	});
+
+	test("cash on delivery: a lower window with affected orders asks; a raised window saves at once; a stale confirm and a bad number are refused", async () => {
+		seededOrders.push(...(await seedUnpaidCod("pin-old", 1, 10)));
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+
+		const asked = await codSave(boot, { codAutoCancelDays: "7" });
+		expect(noticeOf(asked)).toEqual({
+			variant: "default",
+			title: "Confirm the shorter auto-cancel window",
+			description:
+				"Lowering the window to 7 days cancels 1 unpaid cash-on-delivery order on the next sweep (their stock goes back on sale and the buyers are emailed). Save anyway? Nothing was changed yet.",
+		});
+		expect(toastOf(asked)).toEqual({
+			message: "Confirm the shorter auto-cancel window",
+			type: "info",
+		});
+		const button = buttons(blocksOf(asked)).find((b) => b.action_id === COD_CONFIRM);
+		expect(button?.value).toEqual({
+			values: { codEnabled: true, codInstructions: "Exact change.", codAutoCancelDays: "7" },
+			from: 14,
+		});
+
+		const stale = await boot.invokeRoute("admin", {
+			type: "block_action",
+			action_id: COD_CONFIRM,
+			value: { values: { codEnabled: true, codAutoCancelDays: "7" }, from: 30 },
+		});
+		expect(noticeOf(stale)).toEqual({
+			variant: "error",
+			title: "Cash on delivery not saved",
+			description:
+				"The auto-cancel window changed since you were asked. Nothing was changed — reload and try again.",
+		});
+		expect(toastOf(stale)).toEqual({ message: "Cash on delivery not saved", type: "error" });
+
+		const raised = await codSave(boot, { codAutoCancelDays: "30" });
+		expect(noticeOf(raised)).toEqual({
+			variant: "default",
+			title: "Cash on delivery saved",
+			description: "Cash on delivery is on: checkout offers it from now on.",
+		});
+		expect(toastOf(raised)).toEqual({ message: "Cash on delivery saved", type: "success" });
+		expect(codFieldValues(blocksOf(raised))).toMatchObject({ codAutoCancelDays: "30" });
+
+		const off = await codSave(boot, { codEnabled: false });
+		expect(noticeOf(off)).toEqual({
+			variant: "default",
+			title: "Cash on delivery saved",
+			description:
+				"Cash on delivery is off: checkout no longer offers it. Orders already placed with it are unchanged.",
+		});
+
+		const bad = await codSave(boot, { codAutoCancelDays: "abc" });
+		expect(noticeOf(bad)).toEqual({
+			variant: "error",
+			title: "Cash on delivery not saved",
+			description: expect.stringMatching(/ — got "abc"\. Nothing was changed\.$/) as unknown,
+		});
+		const noToggle = await boot.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-cash-on-delivery",
+			values: { codInstructions: "x" },
+		});
+		expect(noticeOf(noToggle)).toEqual({
+			variant: "error",
+			title: "Cash on delivery not saved",
+			description: "The on/off choice didn't come through. Nothing was changed.",
+		});
+	});
+
+	test("operational settings: a value out of range is refused by name; a valid one saves", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const refused = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-operational",
+			values: { holdTtlMinutes: "0", lowStockThreshold: "5" },
+			idempotencyKey: "k-pin-op-bad",
+		});
+		expect(noticeOf(refused)).toEqual({
+			variant: "error",
+			title: "Settings not saved",
+			description: expect.stringMatching(
+				/^Cart hold time must be a whole number of minutes from 1 to \d+\. Nothing was saved\.$/,
+			) as unknown,
+		});
+		expect(toastOf(refused)).toEqual({ message: "Settings not saved", type: "error" });
+
+		const saved = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-operational",
+			values: { holdTtlMinutes: "20", lowStockThreshold: "4", showHoldTimer: true },
+			idempotencyKey: "k-pin-op-ok",
+		});
+		expect(noticeOf(saved)).toEqual({
+			variant: "default",
+			title: "Settings saved",
+			description:
+				"Cart hold time is 20 minutes and the low-stock threshold is 4. Shoppers see the hold timer.",
+		});
+		expect(toastOf(saved)).toEqual({ message: "Settings saved", type: "success" });
+	});
+
+	test("store display name: blank is refused; a name is saved trimmed", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const refused = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-display",
+			values: { storeDisplayName: "   " },
+		});
+		expect(noticeOf(refused)).toEqual({
+			variant: "error",
+			title: "Display name not saved",
+			description: "Store display name must be 1–200 characters — it was not changed.",
+		});
+		const saved = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-display",
+			values: { storeDisplayName: "  Pinned Goods " },
+		});
+		expect(noticeOf(saved)).toEqual({
+			variant: "default",
+			title: "Display name saved",
+			description: "Store display name saved: Pinned Goods.",
+		});
+		expect(toastOf(saved)).toEqual({ message: "Display name saved", type: "success" });
+	});
+});
