@@ -51,7 +51,8 @@ recovery, updates, email). In short:
    `/_emdash/admin/setup?setup_token=<token>`. Set later, it replaces the generated token, so a
    link already in the logs stops working. In the wizard, choose **Sample content** for three
    demo products, then create your account and its passkey
-   ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)).
+   ([ADR-0042](./adr/0042-setup-token-gates-the-first-admin-claim.md)). A new store starts in
+   staging: select **Go live** in **Settings** → **General** once it is ready.
 3. **Price the products.** Open each product in the admin and fill in its **Pricing & stock**
    cards. A sample product's card says "Product not found" until the product has a commerce
    record: edit the product (its description, for instance; you can change it back) and click
@@ -183,7 +184,8 @@ someone who can add `try.otta.sh` to the Cloudflare account that owns the
 ## Install from npm
 
 Eight packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.2.0`, which needs
-EmDash `1.3.1` (the plugin accepts `^1.3.1`; `@urumi.ai/otta-store` pins it exactly).
+EmDash `1.3.1` (the plugin accepts `^1.3.1`; `@urumi.ai/otta-store` pins it exactly). `main`
+now needs EmDash `^1.5.0`; that floor ships with the next release.
 `@urumi.ai/otta-plugin@0.1.0` is deprecated: a site that bundled it shipped its own build
 environment variables (such as `HOME`, `PATH` and `npm_*`) inside its Worker. Upgrade to `0.2.0`
 (which needs EmDash `^1.3.1`, so an older EmDash moves too) and redeploy; if a sensitive value was in that build environment, rotate it. The other packages'
@@ -212,12 +214,13 @@ keys are stored as plain text and the plugin cannot tell ([ADR-0037](./adr/0037-
 its own README under [`packages/`](./packages/). The workspace, not npm, is how you develop Otta
 itself.
 
-Every EmDash release from `1.0.1` through `1.3.1` (`emdash`, `@emdash-cms/auth` and
+Every EmDash release from `1.0.1` through `1.4.0` (`emdash`, `@emdash-cms/auth` and
 `@emdash-cms/plugin-types`) pins `zod` at exactly `4.5.4`, which has a known advisory
-([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)), so this applies to
-every Otta release so far. The Otta packages don't pull in `zod` themselves, but until EmDash pins
-`zod` at `4.6.6` or later, a site on pnpm can override it the way this repo does (in
-`pnpm-workspace.yaml`; pnpm 11 ignores `pnpm.overrides` in `package.json`):
+([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)), so this applies on
+0.1.0 as well as 0.2.0. EmDash `1.5.0` pins `4.6.7`, so a site on it needs no override. The Otta
+packages don't pull in `zod` themselves; a site on an earlier EmDash on pnpm can override it the
+way this repo does (in `pnpm-workspace.yaml`; pnpm 11 ignores `pnpm.overrides` in
+`package.json`):
 
 ```yaml
 overrides:

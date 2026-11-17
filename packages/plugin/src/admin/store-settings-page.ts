@@ -44,7 +44,7 @@ import { noticeBanner } from "./scaffold/banner.js";
  * for bookmarks; only an interaction that names THIS page is wrapped. Those
  * bookmarks work in TRUSTED placement only: for a sandboxed plugin EmDash's
  * `resolvePluginUiContext` answers 400 "Plugin admin page is not declared" to a
- * page missing from the entry's `adminPages` (emdash 1.3.1), and only this page
+ * page missing from the entry's `adminPages` (emdash 1.3.1, still so in 1.5.0), and only this page
  * is declared. A trusted plugin is not held to its declarations.
  *
  * WHEN AN ACTION RUNS, the other panels re-render from cache: General's Stripe

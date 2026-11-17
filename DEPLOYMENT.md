@@ -272,6 +272,11 @@ expired holds and queued emails drain at the Free pace (§5).
    admin exists the gate switches itself off and the token is never asked for again; from
    then on the admin signs in with the passkey made in the wizard. workers.dev is HTTPS, so
    the passkey step's secure-context requirement (§1) is already met.
+
+   Since EmDash 1.5.0 a store set up through the wizard starts in **staging**: the admin shows
+   a **Staging** badge until you select **Go live** in **Settings** → **General** → **Site
+   Status**. Otta's storefront pages do not carry staging's `noindex` tag, so this changes
+   only the badge, but select **Go live** once the store is ready.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
    it in that product's **Pricing & stock** cards (the CMS holds no commercial data);
@@ -531,7 +536,7 @@ fork), creates the D1 database (`DB`), the two R2 buckets (`MEDIA`, and the priv
 for the one secret (`EMDASH_ENCRYPTION_KEY`, from `.dev.vars.example`), and connects Workers
 Builds, which runs `npm run build` (`astro build`) and `npm run deploy` on every push to your
 production branch. `npm run deploy` runs `scripts/deploy.mjs`: it applies any pending database
-migrations from the build (90 on a new store at EmDash `1.3.1`), checks that none is pending and the database has none this build does not know, then runs
+migrations from the build (90 on a new store at EmDash `1.3.1`, 96 at `1.5.0`), checks that none is pending and the database has none this build does not know, then runs
 `wrangler deploy`, so a new store is never live on an unmigrated database. The Worker is not
 left to migrate itself on its first boot: on Workers Free that was cut off after 34 of 90
 migrations and left the migration lock held (503 on every request). Do not deploy a new store
@@ -1329,7 +1334,10 @@ index above: about three rows written per plugin-storage row, every plugin's row
 with 30,000 rows writes about 90,000 on that tick. **Past about 33,000 plugin-storage rows the
 index build alone exceeds D1 Free's 100,000 rows written a day.** Once it does, every write fails
 until 00:00 UTC, and the build does not finish. EmDash retries the build once per new Worker
-process, so a store of 100,000 rows can hit the limit several days running. A Free store that size
+process, so a store of 100,000 rows can hit the limit several days running. Since EmDash 1.5.0
+the first state-changing plugin request of a new Worker process (a cart change, a checkout, a
+payment webhook, an admin action) also starts the build if the tick has not, and answers 503
+`STORAGE_INDEXES_NOT_READY` while it fails. A Free store that size
 should move to Workers Paid before this deploy. Every later plugin-row write then costs three
 index rows more (about 52 rows in all).
 
@@ -1944,6 +1952,14 @@ on a request once it would touch more than 5,000 rows, and answers 503 until it 
 smaller site still migrates on its first request, but running it from the CLI first is safe
 either way. See EmDash's
 [core-migrations guide](https://docs.emdashcms.com/deployment/core-migrations/).
+
+**Upgrading the EmDash host (1.3.1 → 1.5.0).** Six more host migrations, `092` to `097`, none of
+which changes Otta's commerce documents. Two need a look first: `095_plugin_storage_unique_scope`
+is a maintenance-window migration on a site with plugin storage `uniqueIndexes` (Otta declares
+none), and `092_plugin_kv_options` copies sandboxed `ctx.kv` rows into `options`. In the default
+`auto` mode the Worker applies them on its first request, so run the two checks and the CLI
+migration in [`UPGRADING.md`](./UPGRADING.md) ("EmDash 1.3.1 to 1.5.0") before deploying, with the
+`--wrangler-config wrangler.local.jsonc` form above in place of `--d1`.
 
 ## 6. Troubleshooting
 

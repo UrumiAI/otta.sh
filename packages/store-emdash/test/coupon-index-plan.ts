@@ -4,10 +4,13 @@
  *
  * The dialect harnesses deliberately build no physical index (the host's
  * `syncDeclaredStorageIndexes` is internal to its build), so a plan cannot be
- * inspected there. These two suites build them the way EmDash 1.3.1's
- * `generateCreateIndexSql` does on the SQLite branch — one expression index per
- * declaration, `(plugin_id, collection, json_extract(data, '$.<field>')...)`, named
- * `idx_plugin_<plugin>_<collection>_<fields joined by _>`, created in DECLARATION
+ * inspected there. These two suites build them the way EmDash's
+ * `generateCreateIndexSql` does on the SQLite branch (1.3.1, unchanged in shape in
+ * 1.5.0) — one expression index per declaration,
+ * `(plugin_id, collection, json_extract(data, '$.<field>')...)`, named
+ * `idx_plugin_<plugin>_<collection>_<fields joined by _>` (1.5.0's
+ * `generateIndexName` keeps that name up to 63 characters and hashes a longer one;
+ * Otta's names all fit, which `storage-index-names.test.ts` pins), created in DECLARATION
  * order (`createStorageIndexes` walks the list in order). Creation order is the
  * point: with no statistics, SQLite breaks a tie between equally good indexes by
  * taking the one created last.
@@ -21,7 +24,10 @@ export const PLAN_PLUGIN_ID = "otta";
 
 /** The name the host gives a declared, non-unique index. */
 export function hostIndexName(collection: string, fields: readonly string[]): string {
-	return `idx_plugin_${PLAN_PLUGIN_ID}_${collection}_${fields.join("_")}`.substring(0, 128);
+	const name = `idx_plugin_${PLAN_PLUGIN_ID}_${collection}_${fields.join("_")}`;
+	// EmDash 1.5.0 hashes a name longer than 63 characters; not modelled here.
+	if (name.length > 63) throw new Error(`index name over 63 characters: ${name}`);
+	return name;
 }
 
 /** Build each declared index as the host would, in declaration order (SQLite/D1). */
