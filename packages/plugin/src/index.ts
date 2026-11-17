@@ -143,8 +143,8 @@ export {
 export type { AdminOrdersSurface, InlineEmailStatus } from "./admin/admin-orders-surface.js";
 // The closed sets an MCP tool's input schema restates, TYPE-ONLY: `@urumi.ai/otta-mcp`
 // pins its copies to these at compile time, so a new state, cancel reason,
-// reconciliation outcome, coupon type, product kind or tax status fails its
-// typecheck instead of being silently refused.
+// reconciliation outcome, coupon type, product kind, tax status or shipping
+// method type fails its typecheck instead of being silently refused.
 export type { OrderState } from "@urumi.ai/otta-admin-presentation";
 export type {
 	CancellationReason,
@@ -152,6 +152,7 @@ export type {
 	ProductKind,
 	ProductTaxStatus,
 	ReconciliationOutcome,
+	ShippingMethodType,
 } from "@urumi.ai/otta-domain";
 // The admin composition root and the operator rule, for `@urumi.ai/otta-mcp`: its
 // tool routes build the SAME clients the console routes do and record the SAME
