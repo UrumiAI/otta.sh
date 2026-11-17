@@ -10,12 +10,7 @@ import {
 	reconcileRepairsDailyCap,
 } from "../cron/product-reconcile.js";
 import { currencyChoiceLabel, currencyChoicesWith } from "@urumi.ai/otta-admin-presentation";
-import {
-	effectiveStoreCurrency,
-	isSupportedCurrency,
-	MAX_HOLD_TTL_MINUTES,
-	ORDER_EMAIL_MAX_ATTEMPTS,
-} from "@urumi.ai/otta-domain";
+import { effectiveStoreCurrency, ORDER_EMAIL_MAX_ATTEMPTS } from "@urumi.ai/otta-domain";
 import {
 	emailSendingReport,
 	type EmailSendFailure,
@@ -26,15 +21,10 @@ import {
 	countryRequiresBuyerAddress,
 	peekStripeAccountCountry,
 	readStripeAccountCountry,
-	refreshStripeAccountCountry,
 	type StripeAccountCountryStatus,
 } from "../payments/stripe-account-country.js";
 import {
-	checkOpaqueToken,
 	checkStripePublishableKey,
-	checkStripeSecretKey,
-	checkStripeWebhookSecret,
-	type SecretShapeCheck,
 	stripeKeyMode,
 	stripePublishableKeyMode,
 } from "../payment-secret-shapes.js";
@@ -47,7 +37,6 @@ import {
 	readSecret,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
-	WEBHOOK_EDGE_TOKEN_KEY,
 } from "../payment-secrets.js";
 import {
 	cardPaymentReadiness,
@@ -56,19 +45,13 @@ import {
 } from "../payments/card-payment-readiness.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
 import {
-	COD_AUTO_CANCEL_DAYS,
-	COD_AUTO_CANCEL_DAYS_KEY,
-	COD_ENABLED_KEY,
-	COD_INSTRUCTIONS_KEY,
 	COD_INSTRUCTIONS_MAX,
 	COD_NUMBER_SETTINGS,
 	readCodEnabled,
 	readCodInstructions,
 	readCodNumber,
-	validateCodNumber,
 } from "../payments/cash-on-delivery.js";
 import {
-	clearStripeWebhookLastVerified,
 	readStripeWebhookLastVerified,
 	stripeWebhookLastVerifiedLine,
 	type StripeWebhookLastVerified,
@@ -85,10 +68,22 @@ import type {
 	SandboxedRouteContext,
 	SettingsFieldSpec,
 } from "../types.js";
-import type { ProductCommerceStore } from "@urumi.ai/otta-domain";
-import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
-import { MAX_LOW_STOCK_THRESHOLD } from "./in-process-reporting-settings-client.js";
 import { makeAdminClients } from "./make-admin-clients.js";
+import {
+	checkOperationalValues,
+	clearPaymentSecret,
+	codLoweringText,
+	DISPLAY_NAME_MAX,
+	OPERATIONAL_FIELDS,
+	PAYMENT_SECRET_STORAGE,
+	pricedProductsText,
+	readSaveGen,
+	saveCashOnDelivery,
+	saveOperationalSettings,
+	saveStoreCurrency,
+	saveStoreDisplayName,
+	setPaymentSecret,
+} from "./operations/settings.js";
 import type {
 	OperationalSettingsWire,
 	ReportingSettingsSurface,
@@ -176,11 +171,6 @@ const COD_FORM_FIELDS: readonly string[] = [
 	...COD_NUMBER_SETTINGS.map((spec) => spec.field),
 ];
 
-/** The affected-orders count stops here, and reads "100+" from it on: the
- *  listing asks for one more, but the host clamps a query page at 100, so 100
- *  back may mean more. */
-const COD_LOWERING_COUNT_CAP = 100;
-
 /** The "Store currency" form's submit — a settings-store save. */
 const SAVE_STORE_CURRENCY_ACTION = "save-store-currency";
 
@@ -188,19 +178,6 @@ const SAVE_STORE_CURRENCY_ACTION = "save-store-currency";
  *  leave products priced in the old currency. Carries `{ currency, from }`;
  *  clicking it runs the same save the form would have. */
 const CONFIRM_STORE_CURRENCY_ACTION = "confirm-store-currency";
-
-/** Current save generation for a token key, defaulting to 0 when never saved.
- *  FAIL-SOFT (INC-C3): a kv read that REJECTS degrades to 0 rather than taking
- *  the whole render down — the generation only forces a field to remount blank,
- *  so getting it wrong costs a stale-looking input, while throwing would lock an
- *  operator out of the one screen they would use to re-provision. */
-async function readSaveGen(ctx: PluginContext, key: string): Promise<number> {
-	try {
-		return (await ctx.kv.get<number>(key)) ?? 0;
-	} catch {
-		return 0;
-	}
-}
 
 /**
  * INC-C3 — the payment/email secrets, as ONE table driving everything: the save
@@ -231,9 +208,6 @@ interface SecretFieldSpec {
 	noun: string;
 	/** The placeholder while nothing is stored: the shape to paste. */
 	hint: string;
-	/** U-8: trim, then check the shape the provider issues. The trimmed value is
-	 *  what is stored; the reason names the shape, never the value. */
-	check: (raw: string) => SecretShapeCheck;
 	/** What stops working when this key is removed — the confirm dialog's text. */
 	removeEffect: string;
 	/** The shape, as visible help text above the field (a set key's placeholder
@@ -247,12 +221,10 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 	{
 		actionId: "save-stripe-secret-key",
 		fieldId: "stripeSecretKey",
-		kvKey: STRIPE_SECRET_KEY_KEY,
-		genKey: "settings:stripeSecretKeyGen",
+		...PAYMENT_SECRET_STORAGE.stripeSecretKey,
 		label: "Stripe secret key",
 		noun: "Stripe secret key",
 		hint: "sk_live_… or sk_test_…",
-		check: checkStripeSecretKey,
 		removeEffect: "Card payments and refunds stop working until a new key is saved.",
 		shapeHelp:
 			"Starts with sk_live_ or sk_test_ (rk_live_ / rk_test_ for a restricted key). Not the publishable pk_ key.",
@@ -261,12 +233,10 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 	{
 		actionId: "save-stripe-webhook-secret",
 		fieldId: "stripeWebhookSecret",
-		kvKey: STRIPE_WEBHOOK_SECRET_KEY,
-		genKey: "settings:stripeWebhookSecretGen",
+		...PAYMENT_SECRET_STORAGE.stripeWebhookSecret,
 		label: "Stripe webhook signing secret",
 		noun: "Stripe webhook signing secret",
 		hint: "whsec_…",
-		check: checkStripeWebhookSecret,
 		shapeHelp: "Starts with whsec_ — the signing secret of your webhook endpoint.",
 		whereToFind:
 			"your webhook endpoint in the Stripe Dashboard (Developers or Workbench → Webhooks) → Signing secret",
@@ -284,12 +254,10 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		// label leaves it out.
 		actionId: "save-webhook-edge-token",
 		fieldId: "webhookEdgeToken",
-		kvKey: WEBHOOK_EDGE_TOKEN_KEY,
-		genKey: "settings:otta-wh-tokenGen",
+		...PAYMENT_SECRET_STORAGE.webhookEdgeToken,
 		label: "Stripe webhook edge token (optional)",
 		noun: "Webhook edge token",
 		hint: "The token your storefront sends with Stripe webhooks",
-		check: checkOpaqueToken,
 		removeEffect:
 			"Stripe webhooks are then checked by their Stripe signature alone, which still refuses forgeries.",
 		shapeHelp:
@@ -595,13 +563,6 @@ function lowerFirst(noun: string): string {
 	return /^(Email|Webhook)\b/.test(noun) ? noun.charAt(0).toLowerCase() + noun.slice(1) : noun;
 }
 
-/** Bump a token's save generation. Call ONLY on an actual (non-empty) persist —
- *  never on a blank submit, which already leaves the field's stated content
- *  correct (still empty), so there is nothing to force a remount for. */
-async function bumpSaveGen(ctx: PluginContext, key: string): Promise<void> {
-	await ctx.kv.set(key, (await readSaveGen(ctx, key)) + 1);
-}
-
 /** The action ids the admin-route dispatcher recognizes as belonging to the
  *  Settings form (so a `block_action`/`form_submit` carrying one of these — and
  *  NO `page` — is routed here, not to Reports). */
@@ -653,8 +614,6 @@ export const SETTINGS_SCHEMA: SettingsSchema = {
 		tier: "service",
 	},
 };
-
-const DISPLAY_NAME_MAX = 200;
 
 export interface SettingsFormInput {
 	/** em-dash BlockInteraction discriminant: `"page_load"` | `"block_action"` |
@@ -723,8 +682,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// -- kv save path: display name, S-5/S-5a ------------------------------
 		if (action === "save-display") {
 			const raw = input.values?.storeDisplayName;
-			const name = typeof raw === "string" ? raw.trim() : "";
-			if (name.length === 0 || name.length > DISPLAY_NAME_MAX) {
+			const outcome = await saveStoreDisplayName(ctx, typeof raw === "string" ? raw : "");
+			if (outcome.kind === "invalid") {
 				// BUG FIX: this branch used to return `[header, banner]` — two
 				// blocks, no form — so a merchant who typed a 201-char name was
 				// stranded with no field to correct it. Re-render the full page.
@@ -734,7 +693,6 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					description: `Store display name must be 1–${DISPLAY_NAME_MAX} characters — it was not changed.`,
 				});
 			}
-			await ctx.kv.set(STORE_DISPLAY_NAME_KEY, name);
 			// BUG FIX + S-5a: this branch used to return `[header, section]` — the
 			// other three forms vanished, and because the host's `page_load`
 			// effect is keyed on `[sendInteraction, page]` and never re-fires on
@@ -752,7 +710,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Display name saved",
-				description: `Store display name saved: ${name}.`,
+				description: `Store display name saved: ${outcome.name}.`,
 			});
 			return {
 				...page,
@@ -793,102 +751,74 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				} satisfies BlockResponse;
 			};
 			const enabled = values?.codEnabled;
+			// The toggle is saved only as a real boolean: an absent or malformed value
+			// refuses the save, never reads as "off" — checked first, as it always was.
+			if (typeof enabled !== "boolean") {
+				return refuseCod("The on/off choice didn't come through. Nothing was changed.");
+			}
 			const rawInstructions = values?.codInstructions;
-			const instructions = typeof rawInstructions === "string" ? rawInstructions.trim() : "";
-			// The window and the two caps: whole numbers within bounds. One that is
-			// absent from the submit is kept as stored; one present and unusable
-			// refuses the WHOLE save, so nothing is half-written.
-			const numbers: { key: string; value: number }[] = [];
-			let numberRefusal: string | undefined;
-			for (const spec of COD_NUMBER_SETTINGS) {
-				const raw = values?.[spec.field];
-				if (raw === undefined) continue;
-				const checked = validateCodNumber(spec, raw);
-				if (!checked.ok) {
-					numberRefusal ??= checked.message;
-					continue;
-				}
-				numbers.push({ key: spec.key, value: checked.value });
-			}
-			const refusal =
-				typeof enabled !== "boolean"
-					? "The on/off choice didn't come through."
-					: instructions.length > COD_INSTRUCTIONS_MAX
-						? `Instructions must be at most ${String(COD_INSTRUCTIONS_MAX)} characters.`
-						: numberRefusal;
-			if (refusal !== undefined || typeof enabled !== "boolean") {
-				return refuseCod(`${refusal ?? ""} Nothing was changed.`);
-			}
-			const newWindow = numbers.find((n) => n.key === COD_AUTO_CANCEL_DAYS_KEY)?.value;
-			if (newWindow !== undefined) {
-				let stored: number;
-				try {
-					stored = await readCodNumber(ctx, COD_AUTO_CANCEL_DAYS);
-				} catch (err) {
-					console.error("[otta] admin settings: the COD auto-cancel window read failed:", err);
+			const outcome = await saveCashOnDelivery(ctx, {
+				enabled,
+				// The form always sends the instructions; a blank (or missing) one clears them.
+				instructions: typeof rawInstructions === "string" ? rawInstructions : "",
+				numbers: Object.fromEntries(
+					COD_NUMBER_SETTINGS.map((spec) => [spec.field, values?.[spec.field]]),
+				),
+				...(confirming ? { confirm: { from: carried?.["from"] } } : {}),
+			});
+			switch (outcome.kind) {
+				case "invalid":
+					return refuseCod(`${outcome.message} Nothing was changed.`);
+				case "window_unreadable":
 					return refuseCod(
 						"Couldn't read the current auto-cancel window. Nothing was changed — try again.",
 					);
+				case "stale":
+					return refuseCod(
+						"The auto-cancel window changed since you were asked. Nothing was changed — reload and try again.",
+					);
+				case "count_failed":
+					return refuseCod(
+						"Couldn't check which unpaid orders the new window would cancel. Nothing was changed — try again.",
+					);
+				case "needs_confirmation": {
+					const ask: CodLoweringAsk = {
+						days: outcome.days,
+						from: outcome.from,
+						affected: outcome.affected,
+						values: Object.fromEntries(
+							COD_FORM_FIELDS.filter((field) => values?.[field] !== undefined).map((field) => [
+								field,
+								values?.[field],
+							]),
+						),
+					};
+					const page = await renderPage(
+						ctx,
+						client,
+						{
+							variant: "default",
+							title: "Confirm the shorter auto-cancel window",
+							description: `${outcome.message} Nothing was changed yet.`,
+						},
+						undefined,
+						undefined,
+						undefined,
+						undefined,
+						ask,
+					);
+					return {
+						...page,
+						toast: { message: "Confirm the shorter auto-cancel window", type: "info" },
+					} satisfies BlockResponse;
 				}
-				if (confirming) {
-					// The count the operator confirmed was against `from`. A window that
-					// moved since is not overwritten on it.
-					if (stored !== carried?.["from"]) {
-						return refuseCod(
-							"The auto-cancel window changed since you were asked. Nothing was changed — reload and try again.",
-						);
-					}
-				} else if (newWindow > 0 && newWindow < stored) {
-					let affected: number;
-					try {
-						affected = await countCodOrdersPastWindow(ctx, newWindow);
-					} catch (err) {
-						console.error("[otta] admin settings: the COD auto-cancel count failed:", err);
-						return refuseCod(
-							"Couldn't check which unpaid orders the new window would cancel. Nothing was changed — try again.",
-						);
-					}
-					if (affected > 0) {
-						const ask: CodLoweringAsk = {
-							days: newWindow,
-							from: stored,
-							affected,
-							values: Object.fromEntries(
-								COD_FORM_FIELDS.filter((field) => values?.[field] !== undefined).map((field) => [
-									field,
-									values?.[field],
-								]),
-							),
-						};
-						const page = await renderPage(
-							ctx,
-							client,
-							{
-								variant: "default",
-								title: "Confirm the shorter auto-cancel window",
-								description: `${codLoweringText(ask)} Nothing was changed yet.`,
-							},
-							undefined,
-							undefined,
-							undefined,
-							undefined,
-							ask,
-						);
-						return {
-							...page,
-							toast: { message: "Confirm the shorter auto-cancel window", type: "info" },
-						} satisfies BlockResponse;
-					}
-				}
+				case "saved":
+					break;
 			}
-			for (const { key, value } of numbers) await ctx.kv.set(key, value);
-			await ctx.kv.set(COD_INSTRUCTIONS_KEY, instructions);
-			// The toggle last: switching COD on is the write that makes the rest live.
-			await ctx.kv.set(COD_ENABLED_KEY, enabled);
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Cash on delivery saved",
-				description: enabled
+				description: outcome.enabled
 					? "Cash on delivery is on: checkout offers it from now on."
 					: "Cash on delivery is off: checkout no longer offers it. Orders already placed with it are unchanged.",
 			});
@@ -942,61 +872,45 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const raw = input.values?.[secretSpec.fieldId];
 			// U-8: TRIMMED, so a key copied with a trailing newline is stored as the
 			// key — and a whitespace-only submit is the blank submit it looks like.
-			const entered = typeof raw === "string" && raw.trim() !== "";
-			if (entered) {
-				const checked = secretSpec.check(raw);
-				if (!checked.ok) {
-					// U-8: a wrong paste is REFUSED, naming the field and the shape it
-					// needs — never the value — and the key already stored stays.
-					const page = await renderPage(ctx, client, {
-						variant: "error",
-						title: `${secretSpec.noun} not saved`,
-						description: `The ${lowerFirst(secretSpec.noun)} ${checked.problem}. Nothing was saved.`,
-					});
-					return {
-						...page,
-						toast: { message: `${secretSpec.noun} not saved`, type: "error" },
-					} satisfies BlockResponse;
-				}
+			const outcome = await setPaymentSecret(
+				ctx,
+				secretSpec.fieldId,
+				typeof raw === "string" ? raw : "",
+			);
+			if (outcome.kind === "invalid") {
+				// U-8: a wrong paste is REFUSED, naming the field and the shape it
+				// needs — never the value — and the key already stored stays.
+				const page = await renderPage(ctx, client, {
+					variant: "error",
+					title: `${secretSpec.noun} not saved`,
+					description: `The ${lowerFirst(secretSpec.noun)} ${outcome.problem}. Nothing was saved.`,
+				});
+				return {
+					...page,
+					toast: { message: `${secretSpec.noun} not saved`, type: "error" },
+				} satisfies BlockResponse;
+			}
+			if (outcome.kind === "encryption_unavailable" || outcome.kind === "write_failed") {
 				// ADR-0037: the host encrypts this write, and refuses it BEFORE storing
 				// anything when it has no usable EMDASH_ENCRYPTION_KEY. Say so; the key
 				// already stored (if any) stays. The error itself is never shown. With
 				// a key known to be present (#497) the failure is something else, so
 				// the operator is not sent to the deployer for it.
-				// #531: a DIFFERENT webhook signing secret (possibly a wrong one) must
-				// not inherit the old secret's "last verified" time. Read before the
-				// write; anything but the same stored value counts as a change.
-				const webhookSecretChanged =
-					secretSpec.kvKey === STRIPE_WEBHOOK_SECRET_KEY &&
-					(await storedSecretDiffers(ctx, STRIPE_WEBHOOK_SECRET_KEY, checked.value));
-				try {
-					await ctx.kv.set(secretSpec.kvKey, checked.value);
-				} catch {
-					const page = await renderPage(ctx, client, {
-						variant: "error",
-						title: `${secretSpec.noun} not saved`,
-						description:
-							encryptionKeyStatus() === "present"
-								? `The ${lowerFirst(secretSpec.noun)} could not be saved right now. Try again. Nothing was saved.`
-								: `The ${lowerFirst(secretSpec.noun)} could not be stored encrypted. ${ENCRYPTION_KEY_FIX} Then save it again. Nothing was saved.`,
-					});
-					return {
-						...page,
-						toast: { message: `${secretSpec.noun} not saved`, type: "error" },
-					} satisfies BlockResponse;
-				}
-				await bumpSaveGen(ctx, secretSpec.genKey);
-				if (webhookSecretChanged) await clearStripeWebhookLastVerified(ctx);
-				// Issue #382: a new Stripe key may be another account — read its
-				// country NOW, so the answer is cached before the first checkout
-				// needs it and the screen below can state it. Never throws; a
-				// failure is recorded as unknown and asked again by the next
-				// Settings page load once its back-off runs out — checkout only
-				// reads the cache, it never asks Stripe.
-				if (secretSpec.kvKey === STRIPE_SECRET_KEY_KEY) {
-					await refreshStripeAccountCountry(ctx, { timeoutMs: STRIPE_ACCOUNT_READ_ON_SAVE_MS });
-				}
+				const page = await renderPage(ctx, client, {
+					variant: "error",
+					title: `${secretSpec.noun} not saved`,
+					description:
+						outcome.kind === "write_failed"
+							? `The ${lowerFirst(secretSpec.noun)} could not be saved right now. Try again. Nothing was saved.`
+							: `The ${lowerFirst(secretSpec.noun)} could not be stored encrypted. ${ENCRYPTION_KEY_FIX} Then save it again. Nothing was saved.`,
+				});
+				return {
+					...page,
+					toast: { message: `${secretSpec.noun} not saved`, type: "error" },
+				} satisfies BlockResponse;
 			}
+			// `unknown_field` cannot happen: the spec came from the same table.
+			const entered = outcome.kind === "saved";
 			const page = await renderPage(ctx, client, secretNotice(secretSpec, entered));
 			return {
 				...page,
@@ -1017,7 +931,11 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					? (input.value as { secret: unknown }).secret
 					: undefined;
 			const spec = secretSpecByField(named);
-			if (spec === undefined) {
+			const outcome =
+				spec === undefined
+					? ({ kind: "unknown_field" } as const)
+					: await clearPaymentSecret(ctx, spec.fieldId);
+			if (outcome.kind === "unknown_field" || spec === undefined) {
 				const page = await renderPage(ctx, client, {
 					variant: "error",
 					title: "Key not removed",
@@ -1028,14 +946,13 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// Nothing stored: say so rather than claim a removal (a second click, or
 			// a page left open while someone else removed it). A stored value this
 			// site cannot read (ADR-0037) IS stored, and removing it is the way out.
-			if ((await readSecret(ctx, spec.kvKey)).state === "unset") {
+			if (outcome.kind === "not_stored") {
 				const page = await renderPage(ctx, client, {
 					variant: "default",
 					title: `No ${lowerFirst(spec.noun)} was stored — nothing was removed.`,
 				});
 				return { ...page, toast: { message: "Nothing removed", type: "info" } };
 			}
-			await ctx.kv.delete(spec.kvKey);
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: `${spec.noun} removed`,
@@ -1196,74 +1113,67 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				const page = await renderPage(ctx, client, { variant: "error", title, description });
 				return { ...page, toast: { message: title, type: "error" } } satisfies BlockResponse;
 			};
-			// Saving the select UNCHANGED writes nothing — checked FIRST, so a stored
-			// code the table (or checkout) no longer accepts can still be "saved" as
-			// is. A store that never saved one stays never-saved (USD by the upgrade
-			// rule, not by a stored "USD"). A failed read cannot tell, and cannot
-			// say which products the switch would strand (#447), so it saves
-			// nothing — refused below, after an unsupported code is named.
-			const current = await client.getSettings().catch(() => undefined);
-			if (current !== undefined && effectiveStoreCurrency(current) === code) {
-				const page = await renderPage(
-					ctx,
-					client,
-					{
-						variant: "default",
-						title: "Nothing changed",
-						description: `The store currency is already ${currencyChoiceLabel(code)}.`,
-					},
-					undefined,
-					current,
-				);
-				return {
-					...page,
-					toast: { message: "Nothing changed", type: "success" },
-				} satisfies BlockResponse;
-			}
+			const outcome = await saveStoreCurrency(ctx, client, {
+				currency: code,
+				...(confirming ? { confirm: { from: carried?.from } } : {}),
+				...(typeof input.idempotencyKey === "string"
+					? { idempotencyKey: input.idempotencyKey }
+					: {}),
+			});
 			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
-			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
-			if (current === undefined) {
-				return refuse(
-					"Store currency not saved",
-					"Couldn't read the store settings. Nothing was changed — try again.",
-				);
-			}
-			if (confirming) {
-				// The count the operator confirmed was for `from`. A store whose
-				// currency moved since is not switched on it.
-				if (effectiveStoreCurrency(current) !== carried?.from) {
+			switch (outcome.kind) {
+				case "unchanged": {
+					const page = await renderPage(
+						ctx,
+						client,
+						{
+							variant: "default",
+							title: "Nothing changed",
+							description: `The store currency is already ${currencyChoiceLabel(code)}.`,
+						},
+						undefined,
+						outcome.settings,
+					);
+					return {
+						...page,
+						toast: { message: "Nothing changed", type: "success" },
+					} satisfies BlockResponse;
+				}
+				case "unsupported":
+					return refuse("Store currency not saved", unsupported);
+				case "settings_unreadable":
+					return refuse(
+						"Store currency not saved",
+						"Couldn't read the store settings. Nothing was changed — try again.",
+					);
+				case "stale":
+					// The count the operator confirmed was for `from`. A store whose
+					// currency moved since is not switched on it.
 					return refuse(
 						"Store currency not saved",
 						"The store currency changed since you were asked. Nothing was changed — reload and try again.",
 					);
-				}
-			} else {
-				const from = effectiveStoreCurrency(current);
-				let count: number;
-				try {
-					count = await countProductsPricedIn(
-						createInProcessCommerceStores(ctx).productCommerce,
-						from,
-					);
-				} catch (err) {
-					console.error("[otta] admin settings priced-product count failed:", err);
+				case "count_failed":
 					return refuse(
 						"Store currency not saved",
-						`Couldn't check which products are priced in ${from}. Nothing was changed — try again.`,
+						`Couldn't check which products are priced in ${outcome.from}. Nothing was changed — try again.`,
 					);
-				}
-				if (count > 0) {
-					const ask: CurrencySwitchAsk = { from, to: code, count };
+				case "needs_confirmation": {
+					const ask: CurrencySwitchAsk = {
+						from: outcome.from,
+						to: outcome.to,
+						count: outcome.affected,
+					};
 					const page = await renderPage(
 						ctx,
 						client,
 						{
 							variant: "default",
 							title: "Confirm the currency switch",
-							description: `${pricedProductsText(ask)} After switching to ${currencyChoiceLabel(code)}, they can't be bought in new carts or repriced in it. Coupons and shipping rates in ${ask.from} stop working too. Nothing was changed yet.`,
+							description: `${outcome.message} After switching to ${currencyChoiceLabel(code)}, they can't be bought in new carts or repriced in it. Coupons and shipping rates in ${ask.from} stop working too. Nothing was changed yet.`,
 						},
 						undefined,
-						current,
+						outcome.settings,
 						ask,
 					);
 					return {
@@ -1271,26 +1181,20 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						toast: { message: "Confirm the currency switch", type: "info" },
 					} satisfies BlockResponse;
 				}
-			}
-			const key =
-				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
-					? input.idempotencyKey
-					: `settings-currency-${Date.now()}`;
-			const result = await client.updateSettings({ currency: code }, { idempotencyKey: key });
-			if (!result.ok) {
-				if (result.reason === "superseded") {
+				case "superseded":
 					return refuse(
 						"Settings changed by someone else",
-						`${asSentence(result.message)} Nothing was saved.`,
+						`${asSentence(outcome.message)} Nothing was saved.`,
 					);
-				}
-				if (result.reason === "validation") return refuse("Store currency not saved", unsupported);
-				// UNAVAILABLE: nothing is known about whether it applied, so the copy
-				// never claims it was not saved.
-				return refuse(
-					"Store currency couldn't be confirmed",
-					"The save couldn't be confirmed — reload to check the store currency.",
-				);
+				case "unconfirmed":
+					// UNAVAILABLE: nothing is known about whether it applied, so the copy
+					// never claims it was not saved.
+					return refuse(
+						"Store currency couldn't be confirmed",
+						"The save couldn't be confirmed — reload to check the store currency.",
+					);
+				case "saved":
+					break;
 			}
 			const page = await renderPage(ctx, client, {
 				variant: "default",
@@ -1310,7 +1214,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// to be dropped from the patch instead, so "abc" or "-1" saved nothing and
 		// the screen still said "Settings saved".
 		if (action === "save-operational") {
-			const checked = checkOperationalValues(input.values ?? {});
+			// What was typed, for the form to keep on a refusal (J6). The check itself
+			// runs again inside the operation, which is what decides.
+			const { typed } = checkOperationalValues(input.values ?? {});
 			// This branch writes no display name, so a fresh read here is current.
 			const state = await readPageState(ctx);
 			const refuse = async (title: string, description: string): Promise<BlockResponse> => {
@@ -1326,10 +1232,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						// J6: the form keeps what was typed — exactly as typed, so "abc"
 						// can be corrected — over the stored value for an untouched field.
 						settings: {
-							holdTtlMinutes: checked.typed.holdTtlMinutes ?? String(stored?.holdTtlMinutes ?? ""),
-							lowStockThreshold:
-								checked.typed.lowStockThreshold ?? String(stored?.lowStockThreshold ?? ""),
-							showHoldTimer: checked.typed.showHoldTimer ?? stored?.showHoldTimer === true,
+							holdTtlMinutes: typed.holdTtlMinutes ?? String(stored?.holdTtlMinutes ?? ""),
+							lowStockThreshold: typed.lowStockThreshold ?? String(stored?.lowStockThreshold ?? ""),
+							showHoldTimer: typed.showHoldTimer ?? stored?.showHoldTimer === true,
 						},
 						// INC-15: the LABEL reads as persisted state, so on a refusal it
 						// keeps stating what is stored ("not loaded" when that re-read
@@ -1340,44 +1245,46 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					toast: { message: title, type: "error" },
 				};
 			};
-			if (checked.problems.length > 0) {
-				return refuse("Settings not saved", `${checked.problems.join(" ")} Nothing was saved.`);
-			}
-			const key =
-				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
-					? input.idempotencyKey
-					: `settings-${Date.now()}`;
-			// There is nothing to authenticate any more (INC-D3a): `updateSettings`
-			// runs in-process against this plugin's own store, not a separate
-			// service call that would need a token attached.
-			const result = await client.updateSettings(checked.patch, { idempotencyKey: key });
-			if (!result.ok) {
-				// WHY THE SAVE FAILED, from the STRUCTURAL field first. `reason` is
-				// stated by every tier that can say why; `status` is the HTTP tier's
-				// legacy fallback and is read ONLY when `reason` is absent, because the
-				// in-process tier refuses to synthesize an HTTP status it does not have
-				// (INC-B10a). A lost compare-and-set is the one outcome worth its own
-				// words: re-submitting the same patch under the same key cannot win it,
-				// so the banner says reload rather than "try again".
-				const superseded =
-					result.reason === "superseded" || (result.reason === undefined && result.status === 409);
+			// There is nothing to authenticate any more (INC-D3a): the save runs
+			// in-process against this plugin's own store, not a separate service call
+			// that would need a token attached.
+			const outcome = await saveOperationalSettings(
+				client,
+				input.values ?? {},
+				typeof input.idempotencyKey === "string" ? { idempotencyKey: input.idempotencyKey } : {},
+			);
+			switch (outcome.kind) {
+				case "invalid":
+					return refuse(
+						"Settings not saved",
+						`${outcome.problems.map((p) => p.message).join(" ")} Nothing was saved.`,
+					);
+				// A lost compare-and-set is the one outcome worth its own words:
+				// re-submitting the same patch under the same key cannot win it, so the
+				// banner says reload rather than "try again".
+				case "superseded":
+					return refuse(
+						"Settings changed by someone else",
+						`${asSentence(outcome.message)} Nothing was saved.`,
+					);
+				// UNAVAILABLE: whether it applied is unknown — never claim "not saved".
+				case "unconfirmed":
+					return refuse(
+						"Settings couldn't be confirmed",
+						"The save couldn't be confirmed — reload to check the current values.",
+					);
 				// The domain checks the same bounds as `checkOperationalValues`, so a
 				// refusal here is a backstop — still worded with the field's name, not
 				// the domain's identifier.
-				if (superseded) {
+				case "rejected":
 					return refuse(
-						"Settings changed by someone else",
-						`${asSentence(result.message)} Nothing was saved.`,
+						"Settings not saved",
+						`${namedForOperator(outcome.message)} Nothing was saved.`,
 					);
-				}
-				// UNAVAILABLE: whether it applied is unknown — never claim "not saved".
-				return result.reason === "unavailable"
-					? refuse(
-							"Settings couldn't be confirmed",
-							"The save couldn't be confirmed — reload to check the current values.",
-						)
-					: refuse("Settings not saved", `${namedForOperator(result.message)} Nothing was saved.`);
+				case "saved":
+					break;
 			}
+			const result = outcome;
 			return {
 				blocks: buildSettingsBlocks({
 					...state,
@@ -1491,74 +1398,6 @@ function formValuesOf(settings: OperationalSettingsWire): OperationalFormValues 
 		lowStockThreshold: String(settings.lowStockThreshold),
 		showHoldTimer: settings.showHoldTimer === true,
 	};
-}
-
-/** Non-money integer fields (minutes, thresholds) route through `text_input`
- *  with ONE parsing discipline (F-6): digits only, no sign, no decimal point.
- *  Accepts a raw `number` too — defensive only, since the real host's
- *  `text_input` always submits a string. */
-const DIGITS_ONLY = /^\d+$/;
-
-/** Each operational field: its name as the operator reads it, its bounds, and
- *  the rule a refusal states. The bounds are the domain's own
- *  (`MAX_HOLD_TTL_MINUTES`) and the settings client's (`MAX_LOW_STOCK_THRESHOLD`),
- *  checked here so the refusal can name the field and cover every field at once. */
-const OPERATIONAL_FIELDS = [
-	{
-		id: "holdTtlMinutes",
-		name: "Cart hold time",
-		min: 1,
-		max: MAX_HOLD_TTL_MINUTES,
-		rule: `must be a whole number of minutes from 1 to ${String(MAX_HOLD_TTL_MINUTES)}.`,
-	},
-	{
-		id: "lowStockThreshold",
-		name: "Low-stock threshold",
-		min: 0,
-		max: MAX_LOW_STOCK_THRESHOLD,
-		rule: `must be a whole number from 0 to ${String(MAX_LOW_STOCK_THRESHOLD)}.`,
-	},
-] as const satisfies ReadonlyArray<{
-	id: keyof OperationalSettingsWire;
-	name: string;
-	min: number;
-	max: number;
-	rule: string;
-}>;
-
-/**
- * U-8: check every PRESENT operational value. A field absent from the submit is
- * left alone (absent is not empty — the INC-C5 rule); a field present but blank,
- * signed, fractional, non-numeric or out of range is a PROBLEM, named. The patch
- * is only meant to be sent when there are no problems.
- */
-function checkOperationalValues(values: Record<string, unknown>): {
-	patch: Partial<OperationalSettingsWire>;
-	typed: Partial<OperationalFormValues>;
-	problems: string[];
-} {
-	const patch: Partial<OperationalSettingsWire> = {};
-	const typed: Partial<OperationalFormValues> = {};
-	const problems: string[] = [];
-	for (const spec of OPERATIONAL_FIELDS) {
-		const raw = values[spec.id];
-		if (typeof raw !== "string" && typeof raw !== "number") continue;
-		const text = String(raw).trim();
-		typed[spec.id] = typeof raw === "string" ? raw : text;
-		const value = DIGITS_ONLY.test(text) ? Number(text) : Number.NaN;
-		if (!Number.isSafeInteger(value) || value < spec.min || value > spec.max) {
-			problems.push(`${spec.name} ${spec.rule}`);
-			continue;
-		}
-		patch[spec.id] = value;
-	}
-	// A toggle submits a boolean (its `initial_value` is always set, so the host
-	// sends it on every submit); anything else is absent — left alone.
-	if (typeof values.showHoldTimer === "boolean") {
-		patch.showHoldTimer = values.showHoldTimer;
-		typed.showHoldTimer = values.showHoldTimer;
-	}
-	return { patch, typed, problems };
 }
 
 /** A settings-store message names fields by identifier ("holdTtlMinutes must
@@ -1760,32 +1599,6 @@ interface CodLoweringAsk {
 	values: Record<string, unknown>;
 }
 
-/**
- * How many open `awaiting_payment` orders a window of `days` puts past due — the
- * sweep's own listing (`listAwaitingPaymentBefore`, the `["state", "createdAt"]`
- * index), asked for one past {@link COD_LOWERING_COUNT_CAP} (a host may clamp the
- * page to the cap itself). Throws when the list cannot be read.
- */
-async function countCodOrdersPastWindow(ctx: PluginContext, days: number): Promise<number> {
-	const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-	const due = await createInProcessCommerceStores(ctx).orderStore.listAwaitingPaymentBefore(
-		cutoff,
-		COD_LOWERING_COUNT_CAP + 1,
-	);
-	return due.length;
-}
-
-function codLoweringText(ask: CodLoweringAsk): string {
-	const count =
-		ask.affected >= COD_LOWERING_COUNT_CAP
-			? `${String(COD_LOWERING_COUNT_CAP)}+ unpaid cash-on-delivery orders`
-			: ask.affected === 1
-				? "1 unpaid cash-on-delivery order"
-				: `${String(ask.affected)} unpaid cash-on-delivery orders`;
-	const days = ask.days === 1 ? "1 day" : `${String(ask.days)} days`;
-	return `Lowering the window to ${days} cancels ${count} on the next sweep (their stock goes back on sale and the buyers are emailed). Save anyway?`;
-}
-
 /** The confirm step's one button, behind the confirm dialog, like the currency
  *  switch's. */
 function codLoweringActions(ask: CodLoweringAsk): Block {
@@ -1917,29 +1730,6 @@ interface CurrencySwitchAsk {
 	from: string;
 	to: string;
 	count: number;
-}
-
-/** Live (not deleted) products priced in `code`, counted by walking the store's
- *  product list a page at a time — the store directly, not the admin client,
- *  whose pages each also run a full `countProducts`. Throws when the list cannot
- *  be read through. */
-async function countProductsPricedIn(
-	products: Pick<ProductCommerceStore, "listProducts">,
-	code: string,
-): Promise<number> {
-	let count = 0;
-	let page = await products.listProducts({}, { limit: 100 });
-	for (;;) {
-		count += page.products.filter((p) => p.price?.currency === code).length;
-		if (page.nextCursor === null) return count;
-		page = await products.listProducts({}, { cursor: page.nextCursor, limit: 100 });
-	}
-}
-
-function pricedProductsText(ask: CurrencySwitchAsk): string {
-	return ask.count === 1
-		? `1 product is priced in ${ask.from}.`
-		: `${String(ask.count)} products are priced in ${ask.from}.`;
 }
 
 /** The confirm step's one button, behind the same confirm dialog every other
@@ -2211,20 +2001,6 @@ function settingsCardReadiness(
 		webhookSecretSet: state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true,
 	});
 }
-
-/** #531: is `value` anything but what is stored under `key`? Unset, invalid and
- *  unreadable all count as different. */
-async function storedSecretDiffers(
-	ctx: PluginContext,
-	key: string,
-	value: string,
-): Promise<boolean> {
-	const before = await readSecret(ctx, key);
-	return before.state !== "set" || before.value !== value;
-}
-
-/** How long the Settings save waits on Stripe for the account's country. */
-const STRIPE_ACCOUNT_READ_ON_SAVE_MS = 5_000;
 
 /** `IN` → `India`, in the admin's language (English); the code if the runtime
  *  cannot name it. */
