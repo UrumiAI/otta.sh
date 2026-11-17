@@ -75,6 +75,10 @@ export default defineConfig({
 			// `.env` (Astro does not load it into process.env for the config).
 			envDir: new URL(".", import.meta.url),
 			wranglerConfig: selectedWranglerConfig,
+			// ADR-0046: the admin MCP tools (`@urumi.ai/otta-mcp`) on EmDash's
+			// `/_emdash/api/mcp`. Opted in here so e2e/mcp.spec.ts can drive them
+			// through the real endpoint; a template site leaves it off.
+			mcp: true,
 		}),
 		devStripeOfflineIntegration(),
 		e2eWranglerIntegration(),

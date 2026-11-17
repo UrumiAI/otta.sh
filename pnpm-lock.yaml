@@ -331,6 +331,9 @@ importers:
       '@urumi.ai/otta-admin-react':
         specifier: workspace:*
         version: link:../../packages/admin-react
+      '@urumi.ai/otta-mcp':
+        specifier: workspace:*
+        version: link:../../packages/mcp
       '@urumi.ai/otta-plugin':
         specifier: workspace:*
         version: link:../../packages/plugin
