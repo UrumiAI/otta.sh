@@ -68,7 +68,8 @@ export type SetupClaimDb = ConstructorParameters<typeof OptionsRepository>[0];
 /** The option row a generated token is kept in. */
 export const SETUP_TOKEN_OPTION = "otta:setup_token";
 
-/** EmDash's own completion flag (`setup-complete` in emdash@1.3.1). */
+/** EmDash's own completion flag (`api/setup-complete.ts` in emdash@1.3.1, unchanged in
+ *  1.5.0). */
 const SETUP_COMPLETE_OPTION = "emdash:setup_complete";
 
 /** The prefix every EmDash route lives under. */

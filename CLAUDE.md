@@ -7,9 +7,11 @@ conventions, and the guardrails that must not be crossed.
 
 > **Status: shipped, pre-1.0.** Phases 0–7 are merged and the full toolchain below is wired —
 > `@urumi.ai/otta-domain`, the EmDash plugin (which now runs commerce in-process on `ctx.storage`),
-> `@urumi.ai/otta-store-emdash`, the payment adapters and the React admin all exist under
-> `packages/`. Treat the commands below as live, not aspirational; if one genuinely doesn't
-> exist, say so rather than inventing output.
+> `@urumi.ai/otta-store-emdash`, the payment adapters (`payments-stripe`, `payments-cod`) and the
+> React admin all exist under `packages/`, and the storefront ships as `@urumi.ai/otta-store`
+> (`sites/store`). All eight `@urumi.ai/otta-*` packages are on npm at `0.2.0`, and the one-click
+> Cloudflare template (`UrumiAI/otta-store-template`) is live. Treat the commands below as live,
+> not aspirational; if one genuinely doesn't exist, say so rather than inventing output.
 
 ---
 
@@ -47,7 +49,7 @@ strict TypeScript (`noUncheckedIndexedAccess`, `verbatimModuleSyntax`; internal 
 pnpm lint         # quick — run after every edit (includes the domain-purity dep check)
 pnpm typecheck    # tsc -b + e2e + every package's own typecheck (site: astro check); after each round of edits
 pnpm test         # vitest; run frequently while implementing
-pnpm format       # oxfmt, tabs — run regularly
+pnpm format       # oxfmt, tabs — run regularly (CI runs `pnpm format:check`)
 ```
 
 Two tiers sit outside that loop because they need a backing service, and both are CI jobs:
@@ -73,9 +75,9 @@ Before a PR: **tests pass, lint clean, formatted.** Migrations are forward-only.
   | Area changed | Tag |
   |---|---|
   | `@urumi.ai/otta-domain` (ports, use-cases, invariants) | `[Domain]` |
-  | Store/client/payment **adapters** (store-emdash, stripe) | `[Adapters]` |
+  | Store/client/payment **adapters** (store-emdash, payments-stripe, payments-cod) | `[Adapters]` |
   | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
-  | `sites/*` (the reference storefront site/theme) | `[Site]` |
+  | `sites/*` (`@urumi.ai/otta-store`, the storefront integration, and the reference site `staging`) | `[Site]` |
   | Shared test/contract packages | `[Test]` |
   | CI / tooling / build | `[CI]` |
   | `adr/`, `*.md`, docs | `[Docs]` |
@@ -99,9 +101,14 @@ Every task is verified end-to-end before the PR is handed over (default, not opt
   trusted in-process mode), drive the storefront with Playwright (`pnpm test:e2e`), and
   attach a screenshot to the PR.
 - **Releases (a merge into `main`)** — the full battery, green on the build being released:
-  `pnpm lint`, `pnpm typecheck`, `pnpm -r build`, `pnpm test`, `pnpm test:pg`, **`pnpm test:d1`**,
-  `pnpm test:e2e`. T3 (`test:d1`) is the release gate and runs automatically on the PR into `main`;
-  `test:e2e` needs a running target and is still a local step.
+  `pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm -r build`, `pnpm test:pack-types`,
+  `pnpm test`, `pnpm test:pg`, **`pnpm test:d1`**, `pnpm test:e2e` and `pnpm test:e2e:claim`.
+  CI runs them as the `unit` job (lint through `test`), `integration` (`test:pg`), `d1` and `e2e`.
+  `d1` and `e2e` are the release gates: they run on any PR into `main` and on the `main` push.
+  Locally `test:e2e` skips its per-screen specs unless a stack is running; set
+  `OTTA_E2E_START_STACK=1` to have Playwright boot one (as CI does), plus `OTTA_E2E_REQUIRE_SITE=1`
+  to turn skips into failures. A separate `pack-build` workflow (`pnpm test:pack-build`) builds the
+  one-click template from the packed packages on PRs that touch `packages/` or `sites/store`.
 
 ## Worktrees & multi-agent work
 

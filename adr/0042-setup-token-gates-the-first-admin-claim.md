@@ -162,6 +162,12 @@ Options considered:
 | `/_emdash/api/health` | No | exempt |
 | `/.well-known/oauth-*`, `/sitemap*.xml`, `/robots.txt` | No (read-only, outside `/_emdash`) | not gated |
 
+Re-checked on emdash@1.5.0: the injected route patterns are the 1.3.1 set plus
+`/_emdash/api/content/[collection]/[id]/room` and `…/revisions/editors`, both under the
+default-deny `/_emdash/api/*` (gated). The setup middleware is unchanged, the only code that
+clears `emdash:setup_complete` or deletes every user is still `setup/dev-reset`, and
+`POST /_emdash/api/setup` now also sets `site:staging` (`setIfAbsent`), which creates no user.
+
 ## Consequences
 
 - A deployed store can only be claimed by someone who can read the Worker's secrets or logs,
