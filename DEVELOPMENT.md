@@ -136,7 +136,8 @@ in-process leniency.
 
 - **pnpm** workspace + `catalog:` for shared version pins.
 - **tsdown** builds (ESM + DTS).
-- **vitest** for tests; **Playwright** for storefront e2e (`pnpm test:e2e`).
+- **vitest** for tests; **Playwright** for storefront e2e (`pnpm test:e2e`, plus `pnpm test:e2e:claim`
+  for the setup-claim link; both are the CI `e2e` job, a release gate on PRs into `main`).
   - **Node:** CI runs the major in `.nvmrc` (22). On Node 26 or later four tests are skipped
     (a URL-parser change, and better-sqlite3's handling of lone surrogates; both test-only,
     see #478); they run on 22 and 24.
@@ -172,7 +173,7 @@ Same cadence as EmDash:
 
 - `lint` (quick) after every edit.
 - `typecheck` after each round of edits (runs `tsc -b`, the e2e project, and each workspace package's own `typecheck`, including the site's `astro check`).
-- `format` regularly.
+- `format` regularly (CI runs `pnpm format:check`).
 - Before a PR: **tests pass, lint clean, formatted.**
 
 ## 8. Scope discipline
