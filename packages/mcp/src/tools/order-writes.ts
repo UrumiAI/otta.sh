@@ -24,7 +24,8 @@ import {
 import { z } from "zod";
 import { toolFailure } from "../errors.js";
 import { defineTool } from "../tool.js";
-import { MONEY_NOTE } from "./common.js";
+import { MONEY_NOTE, operate } from "./common.js";
+import { type Complete, unhandled } from "./unhandled.js";
 
 /**
  * The order states, restated from `@urumi.ai/otta-admin-presentation`'s
@@ -63,14 +64,6 @@ const RECONCILIATION_OUTCOMES = [
 	"restocked",
 ] as const satisfies readonly ReconciliationOutcome[];
 
-/*
- * The reverse checks: `satisfies` refuses a value the type lacks; these refuse a
- * type member the list lacks. Each is `true` only while the list is complete, so a
- * new member upstream fails this file's typecheck.
- */
-type Complete<Type, List extends readonly unknown[]> = [Exclude<Type, List[number]>] extends [never]
-	? true
-	: never;
 const orderStatesComplete: Complete<OrderState, typeof ORDER_STATES> = true;
 const cancellationReasonsComplete: Complete<CancellationReason, typeof CANCELLATION_REASONS> = true;
 const reconciliationOutcomesComplete: Complete<
@@ -86,20 +79,6 @@ const observedStateInput = z
 		"The order's `state` exactly as orders_get returned it. If the order has moved since, nothing is changed and the call fails with STATE_CHANGED (details.liveState): read the order again and decide again.",
 	);
 const minorUnits = z.number().int().nonnegative();
-
-/**
- * Run an operation. Its input assertions throw `RangeError` (a value the schema
- * let through, such as a whitespace-only string); that is the caller's input, so
- * it becomes `INVALID_INPUT` rather than an internal error.
- */
-async function operate<T>(run: () => Promise<T>): Promise<T> {
-	try {
-		return await run();
-	} catch (error) {
-		if (error instanceof RangeError) toolFailure("INVALID_INPUT", error.message);
-		throw error;
-	}
-}
 
 /** A surface write's refusal → its typed reason, else a code from its status. */
 function refuse(
@@ -125,16 +104,6 @@ const stateChanged = (liveState: string): never =>
 		`The order is now ${liveState}, not the state you passed. Nothing was changed; read it again with orders_get.`,
 		{ liveState },
 	);
-
-/**
- * The `default` of every outcome switch: `outcome` is `never` while the switch
- * covers its union, so a new outcome kind fails the typecheck. At runtime (a
- * plugin newer than this build) it is refused, never returned as success.
- */
-function unhandled(outcome: never): never {
-	const kind = (outcome as { kind?: unknown }).kind;
-	return toolFailure("INTERNAL_ERROR", `Unhandled operation outcome: ${String(kind)}.`);
-}
 
 /** Strip `undefined`s so the JSON result carries only what the write answered. */
 function defined<T extends Record<string, unknown>>(value: T): Partial<T> {

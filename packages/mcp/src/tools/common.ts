@@ -53,3 +53,17 @@ export async function readOrRefuse<T>(read: () => Promise<T>): Promise<T> {
 		throw error;
 	}
 }
+
+/**
+ * Run an admin operation. Its input assertions throw `RangeError` (a value the
+ * schema let through, such as a whitespace-only string); that is the caller's
+ * input, so it becomes `INVALID_INPUT` rather than an internal error.
+ */
+export async function operate<T>(run: () => Promise<T>): Promise<T> {
+	try {
+		return await run();
+	} catch (error) {
+		if (error instanceof RangeError) toolFailure("INVALID_INPUT", error.message);
+		throw error;
+	}
+}
