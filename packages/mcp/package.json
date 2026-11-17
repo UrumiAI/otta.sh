@@ -39,21 +39,21 @@
 		"build": "tsdown",
 		"prepack": "tsdown"
 	},
-	"dependencies": {
-		"zod": "^4.6.7"
-	},
 	"devDependencies": {
 		"@emdash-cms/auth": "1.5.0",
 		"@emdash-cms/plugin-types": "0.6.1",
+		"@urumi.ai/otta-domain": "workspace:*",
 		"@urumi.ai/otta-plugin": "workspace:*",
 		"@urumi.ai/otta-store-emdash": "workspace:*",
 		"emdash": "1.5.0",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
-		"vitest": "catalog:"
+		"vitest": "catalog:",
+		"zod": "4.6.7"
 	},
 	"peerDependencies": {
 		"@urumi.ai/otta-plugin": "workspace:*",
-		"emdash": "^1.5.0"
+		"emdash": "^1.5.0",
+		"zod": "4.6.7"
 	}
 }
