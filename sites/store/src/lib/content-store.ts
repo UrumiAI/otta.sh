@@ -1,7 +1,7 @@
 /**
  * Are the tables behind a collection's content read actually THERE? (issue #140)
  *
- * em-dash's live loader (`emdash@1.3.1`, `dist/loader-*.mjs`) catches a
+ * em-dash's live loader (`emdash@1.5.0`, `dist/loader-*.mjs`) catches a
  * missing-table fault and folds it into a valid-looking negative answer:
  * `loadEntry` does `if (isMissingTableError(error)) return;` and
  * `loadCollection` does `if (isMissingTableError(error)) return { entries: [] };`.
@@ -39,7 +39,8 @@ import type { Kysely } from "kysely";
 
 /**
  * The system tables em-dash's entry/collection read cannot work without, read
- * from `loader-*.mjs` (emdash@1.3.1): the field schema (`_emdash_fields` joined
+ * from `loader-*.mjs` (emdash@1.3.1; re-audited on 1.5.0, which reads the same
+ * tables and still swallows a missing one): the field schema (`_emdash_fields` joined
  * to `_emdash_collections`), the folded taxonomy and byline hydration
  * (`content_taxonomies`, `taxonomies`, `_emdash_content_bylines`,
  * `_emdash_bylines`), the folded SEO select every entry read makes
@@ -68,7 +69,7 @@ const COLLECTION_SLUG = /^[a-z][a-z0-9_]*$/;
 
 /**
  * Does `cause` read as a missing table? Mirrors emdash's own
- * `isMissingTableError` (`src/utils/db-errors.ts` in emdash@1.3.1, the helper
+ * `isMissingTableError` (`src/utils/db-errors.ts` in emdash@1.5.0, the helper
  * its loader uses to swallow the fault): SQLite/D1 "no such table", Postgres
  * `relation "x" does not exist` / `table "x" does not exist`, MySQL-style
  * "doesn't exist". emdash does not export it, so it is restated here. It only

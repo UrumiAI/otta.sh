@@ -3305,10 +3305,13 @@ section     block_id settings:payments
                      ← a removal notice names where to find the key again; a Remove on
                        a key not stored answers "No <key> was stored — nothing was removed."
                context "Email: sent via EmDash's email provider. …" | "Email: provider not
-                        confirmed — …" | "Email: no EmDash
+                        confirmed since setup or a "no provider" answer. …" | "Email: no EmDash
                         email provider. Order emails wait up to 72 h, then are skipped;
                         sign-in links are not sent. See docs/email-providers.md."
                                                           ← ADR-0031: `ctx.email` present?
+               context (cond, #677) the provider's last failed send, while none has gone
+                     through since: "Email: last send failed <date> <time> UTC — <reason>. …"
+                     (the reason has no recipient address)
                context (cond, #498) a stored publishable key that is not a pk_ key: "…so card
                      payment is off. Enter it again below." | the two keys' modes differ:
                      "The publishable key is a test key but the Stripe secret key is live. …"
@@ -3467,7 +3470,7 @@ and these are not fork items. The item numbering below is load-bearing — this 
 "§14 item N" in a dozen places — and is unchanged.)*
 
 **Fork work is not pursued.** Under D1, the EmDash fork is out of scope entirely: Otta runs
-stock `emdash@0.31.1` / `@emdash-cms/blocks@0.31.1` from public npm, pinned exact — no fork
+stock `emdash` (and its `@emdash-cms/blocks`) from public npm, at the version the workspace pins — no fork
 branches, no fork builds, no upstream PRs, no `patchedDependencies`. Block Kit is frozen. A
 capability it lacks is reachable **only** by migrating that screen to the React admin console
 (`format: "native"` + `adminEntry`), per ADR-0014 — see that file for current status. The five

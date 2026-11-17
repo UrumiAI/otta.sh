@@ -25,6 +25,14 @@ import {
 
 const LIST_URL = `${ADMIN_BASE_PATH}/content/products`;
 
+/** The list's product rows. An empty collection renders one message row instead
+ *  (EmDash's `DataTableMessage`: a single cell spanning the table, "No products
+ *  yet. Create your first one", whose link is not an entry), so a row counts only
+ *  when it has no spanning cell. */
+function productRows(page: Page) {
+	return page.locator("tbody tr").filter({ hasNot: page.locator("td[colspan]") });
+}
+
 async function openList(page: Page): Promise<void> {
 	await page.goto(LIST_URL);
 	// On a fresh database EmDash greets the first admin with a modal that opens
@@ -47,7 +55,7 @@ test.describe("pricing and stock live in the products collection", () => {
 	test("the products list shows each product's price and stock", async ({ adminPage }, info) => {
 		await openList(adminPage);
 		await expect(adminPage.getByRole("columnheader", { name: "Stock" })).toBeVisible();
-		const rows = adminPage.locator("tbody tr");
+		const rows = productRows(adminPage);
 		await skipWithoutProducts(info, await rows.count());
 		// Every cell settles to a value — a price or "Not priced", a count or a
 		// reason — never stays on the loading mark.
@@ -65,7 +73,7 @@ test.describe("pricing and stock live in the products collection", () => {
 		adminPage,
 	}, info) => {
 		await openList(adminPage);
-		const rows = adminPage.locator("tbody tr");
+		const rows = productRows(adminPage);
 		await skipWithoutProducts(info, await rows.count());
 		await rows.first().getByRole("link").first().click();
 
