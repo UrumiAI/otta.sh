@@ -137,9 +137,18 @@ module.exports = {
 				"`from` rather than on `to` because dependency-cruiser cannot express one " +
 				"rule whose forbidden list varies by source, and a type-only carve-out " +
 				"here would have loosened the ban for admin-react and every other " +
-				"package too.",
+				"package too. " +
+				"THIRD EXEMPTION, test code only: `packages/mcp/test/` asserts its tool " +
+				"routes against EmDash's OWN registration checks (`adaptSandboxEntry`, " +
+				"`isJsonPostRouteContract`, `Permissions`) so no tool is silently dropped " +
+				"by the host; a restated copy of those checks would be the drift the test " +
+				"exists to catch. `packages/mcp/src` stays bound: it names no `emdash` " +
+				"module and mirrors the error shape EmDash matches instead.",
 			severity: "error",
-			from: { path: "^packages/", pathNot: "^packages/(admin-react|store-emdash)/" },
+			from: {
+				path: "^packages/",
+				pathNot: "^packages/(admin-react|store-emdash)/|^packages/mcp/test/",
+			},
 			to: {
 				// Same both-forms shape as the rules above: a resolved node_modules
 				// path (direct or pnpm-store) or a bare specifier left unresolved by
@@ -241,6 +250,22 @@ module.exports = {
 				// structural port can be written against the host's own types instead
 				// of a hand-mirrored copy left to drift.
 				dependencyTypesNot: ["type-only"],
+			},
+		},
+		{
+			name: "plugin-does-not-import-mcp",
+			comment:
+				"@urumi.ai/otta-mcp is an add-on LAYERED ON the plugin: it wraps the plugin " +
+				"object (`withMcp`) and imports the plugin's admin operations and clients. " +
+				"The edge runs one way only. A plugin import of otta-mcp would be a cycle, " +
+				"and would ship the MCP layer to every site, including the ones that never " +
+				"opted in. Whole package, test code included, in all three spellings " +
+				"(resolved into node_modules, a bare specifier pnpm's strict isolation " +
+				"left unresolved, or a workspace path).",
+			severity: "error",
+			from: { path: "^packages/plugin/" },
+			to: {
+				path: "(node_modules/@urumi\\.ai/otta-mcp(/|$)|^@urumi\\.ai/otta-mcp(/|$)|^packages/mcp/)",
 			},
 		},
 		{

@@ -8,6 +8,7 @@
 		{ "path": "packages/payments-cod" },
 		{ "path": "packages/plugin" },
 		{ "path": "packages/admin-react" },
+		{ "path": "packages/mcp" },
 		{ "path": "examples/email-provider" }
 	]
 }

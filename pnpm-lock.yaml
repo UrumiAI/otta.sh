@@ -172,6 +172,37 @@ importers:
         specifier: 'catalog:'
         version: 4.1.12(@types/node@22.20.1)(happy-dom@21.0.4)(vite@8.3.3(@types/node@22.20.1)(esbuild@0.28.1)(yaml@2.9.1))
 
+  packages/mcp:
+    dependencies:
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@emdash-cms/auth':
+        specifier: 1.5.0
+        version: 1.5.0(astro@7.3.6(@types/node@26.1.1)(yaml@2.9.1))(kysely@0.29.3)
+      '@emdash-cms/plugin-types':
+        specifier: 0.6.1
+        version: 0.6.1
+      '@urumi.ai/otta-plugin':
+        specifier: workspace:*
+        version: link:../plugin
+      '@urumi.ai/otta-store-emdash':
+        specifier: workspace:*
+        version: link:../store-emdash
+      emdash:
+        specifier: 1.5.0
+        version: 1.5.0(@astrojs/react@6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yaml@2.9.1))(@atcute/cbor@2.3.7(@atcute/cid@2.4.2))(@atcute/cid@2.4.2)(@atcute/identity@2.0.1(@atcute/lexicons@2.0.2)(typescript@5.9.3))(@date-fns/tz@1.5.0)(@floating-ui/dom@1.8.0)(@tiptap/extensions@3.32.0(@tiptap/core@3.32.0(@tiptap/pm@3.32.0))(@tiptap/pm@3.32.0))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(astro@7.3.6(@types/node@26.1.1)(yaml@2.9.1))(date-fns@4.4.0)(echarts@6.1.0)(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.6)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)
+      tsdown:
+        specifier: 'catalog:'
+        version: 0.22.4(typescript@5.9.3)
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.12(@types/node@26.1.1)(happy-dom@21.0.4)(vite@8.3.3(@types/node@26.1.1)(esbuild@0.28.1)(yaml@2.9.1))
+
   packages/payments-cod:
     dependencies:
       '@urumi.ai/otta-domain':

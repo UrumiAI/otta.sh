@@ -1,0 +1,59 @@
+{
+	"name": "@urumi.ai/otta-mcp",
+	"version": "0.2.0",
+	"description": "Admin MCP tools for Otta: wraps the Otta EmDash plugin so an AI agent can run the store over EmDash's own MCP endpoint (/_emdash/api/mcp). Opt-in per site; every tool is admin-only and goes through the same guarded admin operations as the Otta admin.",
+	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
+	"bugs": {
+		"url": "https://github.com/UrumiAI/otta.sh/issues"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/UrumiAI/otta.sh.git",
+		"directory": "packages/mcp"
+	},
+	"files": [
+		"dist",
+		"!dist/tsc",
+		"!dist/**/*.d.mts.map"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./trusted": "./src/trusted.ts"
+	},
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.mjs"
+			},
+			"./trusted": {
+				"types": "./dist/trusted.d.mts",
+				"default": "./dist/trusted.mjs"
+			}
+		},
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"prepack": "tsdown"
+	},
+	"dependencies": {
+		"zod": "^4.6.7"
+	},
+	"devDependencies": {
+		"@emdash-cms/auth": "1.5.0",
+		"@emdash-cms/plugin-types": "0.6.1",
+		"@urumi.ai/otta-plugin": "workspace:*",
+		"@urumi.ai/otta-store-emdash": "workspace:*",
+		"emdash": "1.5.0",
+		"tsdown": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	},
+	"peerDependencies": {
+		"@urumi.ai/otta-plugin": "workspace:*",
+		"emdash": "^1.5.0"
+	}
+}

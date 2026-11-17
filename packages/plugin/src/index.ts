@@ -141,6 +141,11 @@ export {
 	type StoreCurrencyOutcome,
 } from "./admin/operations/index.js";
 export type { AdminOrdersSurface, InlineEmailStatus } from "./admin/admin-orders-surface.js";
+// The admin composition root and the operator rule, for `@urumi.ai/otta-mcp`: its
+// tool routes build the SAME clients the console routes do and record the SAME
+// operator name, so an MCP write and a console write cannot disagree on either.
+export { makeAdminClients, type AdminClients } from "./admin/make-admin-clients.js";
+export { operatorName } from "./admin/orders-console-route.js";
 // `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
 // export are gone (INC-R3, ADR-0015): that Block Kit screen was retired once the
 // React console's writes moved off it, so `/products` is served by the
@@ -665,7 +670,12 @@ export type {
 	HttpResponse,
 	KvAccess,
 	PluginContext,
+	RouteCaller,
+	RouteEntry,
+	RouteHandler,
 	SandboxedPlugin,
+	SandboxedRequest,
+	SandboxedRouteContext,
 	SettingsFieldSpec,
 } from "./types.js";
 export { default as plugin } from "./plugin.js";
