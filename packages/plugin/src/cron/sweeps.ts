@@ -435,8 +435,10 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  *    the first send, and the tax options' settings read, issue #422, on the first
  *    send of the sender that needs it — an order that recorded no display, #502),
  *    the send (one), its
- *    "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one kv write, also on the first
- *    send), and marking it sent (three: the read, the write, the locator) — ten.
+ *    "last sent" or "last failure" record (`EMAIL_SENT_RECORD_WRITES`, one kv write
+ *    when the send's outcome differs from the sender's last recorded one, issue #677:
+ *    at most one record write per unit, not per tick), and marking it sent (three:
+ *    the read, the write, the locator) — ten.
  *    `cron-leg-costs.test.ts` measures it with the REAL sender construction.
  *  - A withdrawal: the cancel and, when Stripe refuses it, the read-back (two
  *    subrequests), the intent's resolution (two) and, on a last attempt, the
@@ -3943,9 +3945,9 @@ export const REPORTING_LINES_HISTORY_DAYS = 2 * MAX_REPORT_RANGE_DAYS;
  * index — about 52 rows. A day in one currency is three writes (the month touch before,
  * its day document, the touch after), in two currencies four: about 210 rows. 100 builds
  * is then about 21,000 rows written a day (16,000 in one currency). Not more: the
- * abandoned-cart prune (about 31,000) and the product reconcile (about 31,000) have
+ * abandoned-cart prune (about 31,200) and the product reconcile (about 32,800) have
  * daily caps of their own on Free, and with all three running at once (about
- * 78,000–83,000) the store's own traffic still keeps about 17,000–22,000 of D1 Free's
+ * 80,000–85,000) the store's own traffic still keeps about 15,000–20,000 of D1 Free's
  * 100,000. It builds newest first and starts the UTC day after the deploy
  * (`indexBuildHold`). Day documents exist only from the release that introduced them
  * (about 2026-09-07), so a store upgrading now has about 55 of them — one capped day. Only a store with a year of them would take about four days for the
@@ -5755,8 +5757,11 @@ export const ABANDONED_CART_PASS_INTERVAL_MS = DAY_MS;
  * deletes. A run
  * stopped by this cap is not run again in the same tick — the second pass takes only
  * a leg its SHARE stopped — while a run its share stopped (on Free, after a cart or
- * two) is `incomplete` and goes again on the second pass or the next tick, under
- * the same cap counted afresh. So one tick deletes fewer than twice this.
+ * two) is `incomplete` and goes again on the second pass or the next tick. With a
+ * daily cap (Free) that run's cap is counted afresh, so one tick deletes fewer than
+ * twice this. Without one (Paid) it is counted since the leg was last stamped
+ * (`deletedSinceStamp`), so a cadence deletes at most this many, however many runs
+ * their share stops (#663).
  */
 export const ABANDONED_CARTS_PER_RUN = 50;
 
@@ -5780,18 +5785,17 @@ export const ABANDONED_CARTS_PER_RUN = 50;
  * by at most one run's deletes, `ABANDONED_CARTS_PER_RUN`.
  *
  * Paid has no daily rows-written limit (writes are billed per million), so a larger
- * budget has no daily cap. Its drain is bounded only by the leg's share and
- * `ABANDONED_CARTS_PER_RUN`: about 70 carts a cadence on an idle store, and up to
- * about that a minute under load, when the second pass is cut short and the run is
- * never stamped (DEPLOYMENT.md has the figures).
+ * budget has no daily cap. Its drain is bounded by `ABANDONED_CARTS_PER_RUN` a
+ * cadence instead, counted across the runs since the leg was last stamped: at most
+ * 50 carts a fifteen minutes, idle or under load (DEPLOYMENT.md has the figures).
  */
 export const ABANDONED_CARTS_PER_DAY_FREE = 300;
 
 /**
  * The largest query budget the daily cap applies to: Workers Free's limit of 50 D1
  * queries per invocation, so a Free store keeps the cap at a custom 31–50 too (above
- * the Free preset, a share-stopped run is never stamped and would otherwise drain a
- * couple of carts every minute, past D1 Free's rows-written allowance). A budget above
+ * the Free preset, a share-stopped run goes again every minute and would otherwise
+ * drain a couple of carts each time, past D1 Free's rows-written allowance). A budget above
  * it can only run on Workers Paid. The same threshold as `product-reconcile`'s daily
  * repair cap (`WORKERS_FREE_MAX_QUERY_BUDGET`).
  */
@@ -5824,14 +5828,20 @@ interface PruneCartsCursor {
 }
 
 /** The carts deleted on one UTC day (`YYYY-MM-DD`), for the Free daily cap. Kept
- *  beside the place and never reset by a pass ending or a cursor refused. */
+ *  beside the place and never reset by a pass ending or a cursor refused. Also, where
+ *  there is no daily cap, the carts deleted since the leg was last stamped, for the
+ *  per-cadence cap (`ABANDONED_CARTS_PER_RUN`): back to 0 by a run stamped for its
+ *  cap or its pass's end, and always 0 under a daily cap. A FAILED run is stamped
+ *  too (by the runner), but its deletes carry into the next cadence's count: that
+ *  cadence deletes fewer, never more. */
 interface PruneCartsDay {
 	readonly day: string | null;
 	readonly deletedToday: number;
+	readonly deletedSinceStamp: number;
 }
 
 const PRUNE_CARTS_START: PruneCartsCursor = { cursor: null, after: null, passDoneAt: null };
-const PRUNE_CARTS_NO_DAY: PruneCartsDay = { day: null, deletedToday: 0 };
+const PRUNE_CARTS_NO_DAY: PruneCartsDay = { day: null, deletedToday: 0, deletedSinceStamp: 0 };
 const PRUNE_CARTS_START_SERIALIZED = serializePruneCarts(PRUNE_CARTS_START, PRUNE_CARTS_NO_DAY);
 
 function serializePruneCarts(place: PruneCartsCursor, day: PruneCartsDay): string {
@@ -5841,6 +5851,7 @@ function serializePruneCarts(place: PruneCartsCursor, day: PruneCartsDay): strin
 		passDoneAt: place.passDoneAt,
 		day: day.day,
 		deletedToday: day.deletedToday,
+		deletedSinceStamp: day.deletedSinceStamp,
 	});
 }
 
@@ -5857,6 +5868,7 @@ function parsePruneCartsCursor(raw: string | null): PruneCartsCursor & PruneCart
 			passDoneAt: cursorText(p.passDoneAt),
 			day: cursorText(p.day),
 			deletedToday: cursorCount(p.deletedToday),
+			deletedSinceStamp: cursorCount(p.deletedSinceStamp),
 		};
 	} catch {
 		return empty;
@@ -6016,13 +6028,29 @@ async function pruneAbandonedCarts(
 	// the stored one only when it is today's.
 	const today = now.toISOString().slice(0, 10);
 	const deletedBefore = saved.day === today ? saved.deletedToday : 0;
+	// Without a daily cap, the per-run cap counts every run since the last stamp: a
+	// run its share stopped is not stamped, and would otherwise go again each minute
+	// under a fresh cap (#663).
 	const runLimit =
 		dailyCap === null
-			? ABANDONED_CARTS_PER_RUN
+			? Math.max(0, ABANDONED_CARTS_PER_RUN - saved.deletedSinceStamp)
 			: Math.min(ABANDONED_CARTS_PER_RUN, Math.max(0, dailyCap - deletedBefore));
-	// Today's allowance is spent: one kv read, and the leg waits its cadence.
-	// Logged once, by the run that reached the cap (below), not at every cadence after.
-	if (runLimit === 0) return { count: 0, incomplete: true, waitsCadence: true };
+	if (runLimit === 0) {
+		// The allowance is spent, and the leg waits its cadence. With a daily cap
+		// (Free) that is one kv read until the UTC day turns, logged once, by the run
+		// that reached the cap (below), not at every cadence after. Without one, the
+		// cadence's was spent by runs that were not stamped (their share or the
+		// tick's ceiling stopped them, or an overlapping tick's run); this run is
+		// stamped, so it writes the count back to 0.
+		if (dailyCap === null) {
+			allowCursorWrite();
+			await cursors.write(
+				PRUNE_CARTS_CURSOR,
+				serializePruneCarts(saved, { ...saved, deletedSinceStamp: 0 }),
+			);
+		}
+		return { count: 0, incomplete: true, waitsCadence: true };
+	}
 	const collections = {
 		carts: collectionOf<CartDoc>(storage, CARTS_COLLECTION),
 		createKeys: collectionOf<CartCreateKeyDoc>(storage, CART_CREATE_KEYS_COLLECTION),
@@ -6041,10 +6069,15 @@ async function pruneAbandonedCarts(
 	// may still record its place, and the day's count its deletes. No write when
 	// nothing moved: the place read back, or a fresh start where nothing was stored.
 	const savePlace = async (): Promise<void> => {
+		// Kept only where there is no daily cap. A run stamped for its cap or its pass's
+		// end starts it again; a failed run (stamped by the runner) carries its deletes
+		// into the next cadence, which errs low.
+		const deletedSinceStamp =
+			dailyCap !== null || capped || !incomplete ? 0 : saved.deletedSinceStamp + pruned;
 		const day: PruneCartsDay =
 			pruned > 0
-				? { day: today, deletedToday: deletedBefore + pruned }
-				: { day: saved.day, deletedToday: saved.deletedToday };
+				? { day: today, deletedToday: deletedBefore + pruned, deletedSinceStamp }
+				: { day: saved.day, deletedToday: saved.deletedToday, deletedSinceStamp };
 		const serialized = serializePruneCarts(place, day);
 		if (serialized === (raw ?? PRUNE_CARTS_START_SERIALIZED)) return;
 		allowCursorWrite();
