@@ -827,26 +827,33 @@ describe("#531: a NEW webhook signing secret starts the last-verified time from 
  * declared `secret` in `PAYMENT_SECRET_SETTINGS_SCHEMA` is stored as an
  * envelope, never as the value, and decrypted on read. `raw` is the stored rows.
  */
+/** Whether `k` is a payment key the host encrypts (declared `secret`). */
+function isDeclaredSecret(k: string): boolean {
+	return k.startsWith("settings:") && Object.hasOwn(PAYMENT_SECRET_SETTINGS_SCHEMA, k.slice(9));
+}
+
+/** A stand-in cipher: reversed, then base64. Only what leaves the store matters. */
+function seal(v: unknown): { $emdash: string; v: number; ciphertext: string } {
+	const reversed = [...JSON.stringify(v)].toReversed().join("");
+	return { $emdash: "plugin-setting", v: 1, ciphertext: Buffer.from(reversed).toString("base64") };
+}
+
+function unseal(stored: { ciphertext: string }): unknown {
+	const reversed = Buffer.from(stored.ciphertext, "base64").toString();
+	return JSON.parse([...reversed].toReversed().join(""));
+}
+
 function makeEncryptingCtx(): { ctx: PluginContext; raw: Map<string, unknown> } {
 	const raw = new Map<string, unknown>();
-	const secret = (k: string) =>
-		k.startsWith("settings:") && Object.hasOwn(PAYMENT_SECRET_SETTINGS_SCHEMA, k.slice(9));
-	const seal = (v: unknown) => ({
-		$emdash: "plugin-setting",
-		v: 1,
-		ciphertext: Buffer.from(JSON.stringify(v)).reverse().toString("base64"),
-	});
-	const open = (stored: { ciphertext: string }): unknown =>
-		JSON.parse(Buffer.from(stored.ciphertext, "base64").reverse().toString());
 	const { ctx } = makeCtx();
 	ctx.kv = {
 		async get<T>(k: string): Promise<T | null> {
 			if (!raw.has(k)) return null;
 			const stored = raw.get(k);
-			return (secret(k) ? open(stored as { ciphertext: string }) : stored) as T;
+			return (isDeclaredSecret(k) ? unseal(stored as { ciphertext: string }) : stored) as T;
 		},
 		async set(k: string, v: unknown): Promise<void> {
-			raw.set(k, secret(k) ? seal(v) : v);
+			raw.set(k, isDeclaredSecret(k) ? seal(v) : v);
 		},
 		async delete(k: string): Promise<boolean> {
 			return raw.delete(k);
