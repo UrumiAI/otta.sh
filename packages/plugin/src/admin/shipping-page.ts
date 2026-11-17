@@ -4,7 +4,6 @@ import {
 	DEFAULT_STORE_CURRENCY,
 	isSupportedCurrency,
 	parseZoneRegions,
-	validateZoneRegionsInput,
 	type ShippingMethodType,
 } from "@urumi.ai/otta-domain";
 import { formatMoney } from "../presentation/format-money.js";
@@ -34,6 +33,13 @@ import {
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
 import { idInputProblem } from "./id-input.js";
+import {
+	createRate,
+	createZone,
+	updateRate,
+	updateZone,
+	type ZoneRegionsRefusal,
+} from "./operations/shipping.js";
 import {
 	formatMinorUnitsInput,
 	moneyInputExample,
@@ -1574,24 +1580,27 @@ function createZoneAction() {
 					{ kind: "new-zone", draft },
 				);
 			}
-			const checked = await checkZoneRegions(client, readString(values.regions) ?? "", null);
-			if (!checked.ok) {
-				return showList(undefined, checked.notice("Zone not created"), { kind: "new-zone", draft });
+			// The regions check, then a FRESH first-zone read (not the screen's: see
+			// FIRST_ZONE_WARNING), then the write — admin/operations/shipping.ts.
+			const outcome = await createZone(client, {
+				id,
+				name,
+				regions: readString(values.regions) ?? "",
+				acknowledgeFirstZone: acknowledged,
+			});
+			if (!outcome.ok) {
+				const refused: Notice =
+					outcome.reason === "first_zone_unacknowledged"
+						? {
+								variant: "error",
+								title: "Zone not created",
+								description:
+									"This is your first zone — confirm you understand that addresses outside your zones can't check out, then create it.",
+							}
+						: regionsRefusalNotice(outcome, "Zone not created");
+				return showList(undefined, refused, { kind: "new-zone", draft });
 			}
-			// A FRESH read, not the screen's: see FIRST_ZONE_WARNING.
-			if (!acknowledged && (await client.listZones()).length === 0) {
-				return showList(
-					undefined,
-					{
-						variant: "error",
-						title: "Zone not created",
-						description:
-							"This is your first zone — confirm you understand that addresses outside your zones can't check out, then create it.",
-					},
-					{ kind: "new-zone", draft },
-				);
-			}
-			const result = await client.createZone({ id, name, regions: checked.codes });
+			const { result } = outcome;
 			const notice = createZoneNotice(result, id, name);
 			// A SERVICE refusal keeps the draft too (a duplicate id is one edit
 			// away); success drops it, which is what returns the operator to the
@@ -1640,10 +1649,12 @@ function saveZoneAction() {
 				description: "Name cannot be blank.",
 			});
 		}
-		const checked = await checkZoneRegions(client, readString(values.regions) ?? "", zoneId);
-		if (!checked.ok) return showList(undefined, checked.notice("Zone not saved"));
-		const result = await client.updateZone(zoneId, { name, regions: checked.codes });
-		return showList(undefined, saveZoneNotice(result));
+		const outcome = await updateZone(client, zoneId, {
+			name,
+			regions: readString(values.regions) ?? "",
+		});
+		if (!outcome.ok) return showList(undefined, regionsRefusalNotice(outcome, "Zone not saved"));
+		return showList(undefined, saveZoneNotice(outcome.result));
 	});
 }
 
@@ -1924,15 +1935,6 @@ function openCreateMethodAction() {
 const FLAT_RATE_THRESHOLD_REFUSAL =
 	"A flat-rate method always charges its rate, so a free-shipping threshold would never apply. Leave it blank, or change the method's type to Free shipping.";
 
-async function isFlatRateMethod(
-	client: AdminRulesSurface,
-	zoneId: string,
-	methodId: string,
-): Promise<boolean> {
-	const methods = await client.listMethods(zoneId);
-	return methods.find((m) => m.id === methodId)?.type === "flat_rate";
-}
-
 function createRateAction() {
 	return customAction<AdminRulesSurface>(async ({ input, carried, client, showList }) => {
 		const zoneId = carried?.zoneId;
@@ -1973,16 +1975,21 @@ function createRateAction() {
 					description: thresholdRefusal(currency),
 				});
 			}
-			if (await isFlatRateMethod(client, zoneId, methodId)) {
-				return showList([zoneId, methodId], {
-					variant: "error",
-					title: "Rate not created",
-					description: FLAT_RATE_THRESHOLD_REFUSAL,
-				});
-			}
 		}
-		const result = await client.createRate(methodId, { currency, amountCents, minSubtotalCents });
-		return showList([zoneId, methodId], createRateNotice(result, currency));
+		// The flat-rate threshold guard, then the write — admin/operations/shipping.ts.
+		const outcome = await createRate(client, zoneId, methodId, {
+			currency,
+			amountCents,
+			minSubtotalCents,
+		});
+		if (!outcome.ok) {
+			return showList([zoneId, methodId], {
+				variant: "error",
+				title: "Rate not created",
+				description: FLAT_RATE_THRESHOLD_REFUSAL,
+			});
+		}
+		return showList([zoneId, methodId], createRateNotice(outcome.result, currency));
 	});
 }
 
@@ -2041,20 +2048,20 @@ function saveRateAction() {
 					description: thresholdRefusal(currency),
 				});
 			}
-			if (await isFlatRateMethod(client, zoneId, methodId)) {
-				return showList([zoneId, methodId], {
-					variant: "error",
-					title: "Rate not saved",
-					description: FLAT_RATE_THRESHOLD_REFUSAL,
-				});
-			}
 		}
-		const result = await client.updateRate(methodId, currency, {
+		const outcome = await updateRate(client, zoneId, methodId, currency, {
 			amountCents,
 			minSubtotalCents,
 			expectedAmountCents,
 		});
-		return showList([zoneId, methodId], saveRateNotice(result));
+		if (!outcome.ok) {
+			return showList([zoneId, methodId], {
+				variant: "error",
+				title: "Rate not saved",
+				description: FLAT_RATE_THRESHOLD_REFUSAL,
+			});
+		}
+		return showList([zoneId, methodId], saveRateNotice(outcome.result));
 	});
 }
 
@@ -2127,51 +2134,26 @@ function deleteRateNotice(result: RulesDeleteResult): Notice {
 // -- regions (opaque, string[]-or-null) helpers ---------------------------------
 
 /**
- * The regions input → the ISO codes to store (ADR-0021), or a refusal the
- * screen shows as-is. Two checks, both before any write:
- *  - every token is a country or a real `CC-SUB` code (the domain's
- *    `validateZoneRegionsInput`) — each bad token is named, with a hint;
- *  - no code is already listed by ANOTHER zone: an overlap would make an
- *    address match two zones (checkout would take the lowest id and log it).
- * Blank ⇒ `null` (no regions — a zone that matches no address).
+ * A zone write refused by its regions (ADR-0021; the check itself is
+ * `checkZoneRegions` in admin/operations/shipping.ts), as the screen says it:
+ *  - each token that is not a country or a real `CC-SUB` code, with a hint;
+ *  - a code another zone already lists — an overlap would make an address
+ *    match two zones (checkout would take the lowest id and log it).
  */
-async function checkZoneRegions(
-	client: AdminRulesSurface,
-	raw: string,
-	selfId: string | null,
-): Promise<
-	{ ok: true; codes: string[] | null } | { ok: false; notice: (title: string) => Notice }
-> {
-	const validated = validateZoneRegionsInput(raw);
-	if (!validated.ok) {
-		const bad = validated.invalid.map(regionHint).join("; ");
+function regionsRefusalNotice(refusal: ZoneRegionsRefusal, title: string): Notice {
+	if (refusal.reason === "invalid_codes") {
+		const bad = refusal.invalid.map(regionHint).join("; ");
 		return {
-			ok: false,
-			notice: (title) => ({
-				variant: "error",
-				title,
-				description: `Not ISO region codes: ${bad}. Use a country code (US) or a state/province code (US-CA).`,
-			}),
+			variant: "error",
+			title,
+			description: `Not ISO region codes: ${bad}. Use a country code (US) or a state/province code (US-CA).`,
 		};
 	}
-	if (validated.codes === null) return { ok: true, codes: null };
-	const zones = await client.listZones();
-	for (const other of zones) {
-		if (other.id === selfId) continue;
-		const theirs = parseZoneRegions(other.regions).codes;
-		const shared = validated.codes.find((code) => theirs.includes(code));
-		if (shared !== undefined) {
-			return {
-				ok: false,
-				notice: (title) => ({
-					variant: "error",
-					title,
-					description: `${shared} is already in the zone "${other.name}" (${other.id}). A code can belong to one zone only — remove it there first.`,
-				}),
-			};
-		}
-	}
-	return { ok: true, codes: validated.codes };
+	return {
+		variant: "error",
+		title,
+		description: `${refusal.code} is already in the zone "${refusal.zoneName}" (${refusal.zoneId}). A code can belong to one zone only — remove it there first.`,
+	};
 }
 
 /** One refused token, with the likeliest fix. */

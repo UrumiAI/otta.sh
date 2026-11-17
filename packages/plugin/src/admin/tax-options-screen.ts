@@ -18,6 +18,7 @@ import {
 	type TaxSettingsWire,
 	taxSettingsDigest,
 } from "./admin-rules-surface.js";
+import { updateTaxSettings } from "./operations/tax.js";
 import {
 	backButton,
 	carriedForm,
@@ -130,11 +131,9 @@ export function saveOptionsAction(ids: TaxOptionsActions) {
 			totalsDisplay: readString(values.totalsDisplay) ?? "",
 			displayShop: readString(values.displayShop) ?? "entered",
 		};
-		const result = await client.updateTaxSettings(settingsOf(draft), {
-			expected,
-			// One key per save attempt, never shared by two different saves (B5).
-			idempotencyKey: `tax-options-${crypto.randomUUID()}`,
-		});
+		// The CAS against the digest the form loaded with, under a fresh key per
+		// attempt — admin/operations/tax.ts.
+		const result = await updateTaxSettings(client, settingsOf(draft), { expected });
 		if (result.ok) {
 			return showList(undefined, {
 				variant: "default",

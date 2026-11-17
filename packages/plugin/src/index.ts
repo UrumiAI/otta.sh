@@ -109,6 +109,18 @@ export {
 	updateCoupon,
 	type CouponCollision,
 	type CouponWriteOutcome,
+	checkZoneRegions,
+	createRate,
+	createZone,
+	updateRate,
+	updateZone,
+	upsertRate,
+	type RateThresholdRefusal,
+	type ZoneCreateInput,
+	type ZoneCreateRefusal,
+	type ZoneRegionsCheck,
+	type ZoneRegionsRefusal,
+	updateTaxSettings,
 } from "./admin/operations/index.js";
 export type { AdminOrdersSurface, InlineEmailStatus } from "./admin/admin-orders-surface.js";
 // `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
@@ -217,6 +229,9 @@ export {
 	type TaxRateEdit,
 	type TaxRateInput,
 	type TaxRateWire,
+	// The tax operation's parameter and result types (admin operations, MCP).
+	type TaxSettingsUpdateResult,
+	type TaxSettingsWire,
 } from "./admin/admin-rules-surface.js";
 export {
 	ALLOWED_HOSTS,
