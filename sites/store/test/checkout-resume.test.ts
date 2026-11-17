@@ -408,7 +408,8 @@ describe("the email page (/checkout/resume/email)", () => {
 	});
 
 	test("posts the order and the email to the resume endpoint — from our own page", () => {
-		expect(body).toMatch(/<form method="POST" action="\/checkout\/resume"/);
+		// The action is `/checkout/resume?order=…` (`resumeFormAction`, #669).
+		expect(body).toMatch(/<form method="POST" action=\{formAction\}/);
 		expect(body).toMatch(/<input type="hidden" name="order" value=\{orderId\}/);
 		const email = /<input[^>]*name="email"[^>]*>/.exec(body)?.[0] ?? "";
 		expect(email).toContain('type="email"');

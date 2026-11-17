@@ -23,6 +23,7 @@ import {
 	orderPathFor,
 	RESUME_EMAIL_ERRORS,
 	resumeEmailGate,
+	resumeFormAction,
 } from "../../../lib/checkout-resume.js";
 import { cartErrorMessage } from "../../../lib/error-messages.js";
 import { keepPrivate } from "../../../lib/no-store.js";
@@ -42,6 +43,9 @@ if (orderId.length === 0) return Astro.redirect("/cart", 303);
 const error = Astro.url.searchParams.get("error");
 const errorMessage = error !== null && RESUME_EMAIL_ERRORS.has(error) ? cartErrorMessage(error) : null;
 const orderPath = orderPathFor(orderId);
+/* The order rides in the action's query too, so a 429 on the POST can send
+   the shopper back to this order (the limiter never reads the body). */
+const formAction = resumeFormAction(orderId);
 
 /* The order this page would resume, read as the order page reads it (QA2 N7): an
    id that names no order is the order page's 404 — the same sentence, and no
@@ -84,7 +88,7 @@ const notFoundMessage = cartErrorMessage("ORDER_NOT_FOUND");
 				<Notice>{errorMessage}</Notice>
 			</div>
 		)}
-		<form method="POST" action="/checkout/resume" class="resume-form">
+		<form method="POST" action={formAction} class="resume-form">
 			<input type="hidden" name="order" value={orderId} />
 			<label class="u-label" for="resume-email">Email</label>
 			<input
