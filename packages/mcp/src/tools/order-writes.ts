@@ -10,6 +10,7 @@
  * like every other "no such order"; an untyped one falls back on its status
  * (404 → `NOT_FOUND`, 400 → `INVALID_INPUT`), else a per-tool code.
  */
+import type { CancellationReason, OrderState, ReconciliationOutcome } from "@urumi.ai/otta-plugin";
 import {
 	addOrderNote,
 	cancelOrder,
@@ -43,7 +44,7 @@ const ORDER_STATES = [
 	"refunded",
 	"awaiting_payment",
 	"shipped_awaiting_payment",
-] as const;
+] as const satisfies readonly OrderState[];
 
 /** The domain's `CancellationReason`. */
 const CANCELLATION_REASONS = [
@@ -52,10 +53,31 @@ const CANCELLATION_REASONS = [
 	"out_of_stock",
 	"pricing_error",
 	"other",
-] as const;
+] as const satisfies readonly CancellationReason[];
 
 /** The domain's `ReconciliationOutcome`. */
-const RECONCILIATION_OUTCOMES = ["refunded", "fulfilled", "written_off", "restocked"] as const;
+const RECONCILIATION_OUTCOMES = [
+	"refunded",
+	"fulfilled",
+	"written_off",
+	"restocked",
+] as const satisfies readonly ReconciliationOutcome[];
+
+/*
+ * The reverse checks: `satisfies` refuses a value the type lacks; these refuse a
+ * type member the list lacks. Each is `true` only while the list is complete, so a
+ * new member upstream fails this file's typecheck.
+ */
+type Complete<Type, List extends readonly unknown[]> = [Exclude<Type, List[number]>] extends [never]
+	? true
+	: never;
+const orderStatesComplete: Complete<OrderState, typeof ORDER_STATES> = true;
+const cancellationReasonsComplete: Complete<CancellationReason, typeof CANCELLATION_REASONS> = true;
+const reconciliationOutcomesComplete: Complete<
+	ReconciliationOutcome,
+	typeof RECONCILIATION_OUTCOMES
+> = true;
+void [orderStatesComplete, cancellationReasonsComplete, reconciliationOutcomesComplete];
 
 const orderIdInput = z.string().min(1).describe("The order id from orders_list or orders_get.");
 const observedStateInput = z
@@ -104,6 +126,16 @@ const stateChanged = (liveState: string): never =>
 		{ liveState },
 	);
 
+/**
+ * The `default` of every outcome switch: `outcome` is `never` while the switch
+ * covers its union, so a new outcome kind fails the typecheck. At runtime (a
+ * plugin newer than this build) it is refused, never returned as success.
+ */
+function unhandled(outcome: never): never {
+	const kind = (outcome as { kind?: unknown }).kind;
+	return toolFailure("INTERNAL_ERROR", `Unhandled operation outcome: ${String(kind)}.`);
+}
+
 /** Strip `undefined`s so the JSON result carries only what the write answered. */
 function defined<T extends Record<string, unknown>>(value: T): Partial<T> {
 	return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
@@ -141,6 +173,8 @@ export const ORDER_WRITE_TOOLS = [
 						email: result.email,
 					});
 				}
+				default:
+					return unhandled(outcome);
 			}
 		},
 	}),
@@ -241,6 +275,8 @@ export const ORDER_WRITE_TOOLS = [
 					const { ok: _ok, cancelled, ...rest } = result;
 					return defined({ status: cancelled ? "cancelled" : "unchanged", restock, ...rest });
 				}
+				default:
+					return unhandled(outcome);
 			}
 		},
 	}),
@@ -300,6 +336,8 @@ export const ORDER_WRITE_TOOLS = [
 						fullyRefunded: outcome.fullyRefunded,
 						email: outcome.email,
 					});
+				default:
+					return unhandled(outcome);
 			}
 		},
 	}),
