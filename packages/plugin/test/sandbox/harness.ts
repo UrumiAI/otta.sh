@@ -146,8 +146,11 @@ export interface SandboxOptions {
 	 * Like `storage`, the recorder is reached over a loopback bridge the isolate
 	 * calls with `fetch` directly — the HOST's side, not plugin egress — so it is
 	 * opt-in, and a suite that also sets `globalOutbound` must forward to it.
+	 *
+	 * `"failing"` wires a provider that REFUSES every send with an error quoting
+	 * the recipient (a daily quota, issue #677) and records nothing.
 	 */
-	email?: boolean;
+	email?: boolean | "failing";
 	/** Worker entry module, relative to `src/` (default the production
 	 *  `sandbox-entry.ts`). Test fixtures under `src/**\/testing/` (e.g. the
 	 *  scaffold's `admin/scaffold/testing/geo-entry.ts`) can be booted through
@@ -415,8 +418,8 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 
 	// The host's email provider, the same way — only for a boot that asked for one.
 	let mail: EmailBridge | undefined;
-	if (options.email === true) {
-		mail = await emailBridge();
+	if (options.email === true || options.email === "failing") {
+		mail = await emailBridge({ failing: options.email === "failing" });
 		await writeFile(
 			path.join(srcDir, "sandbox-email.ts"),
 			sandboxEmailSource(mail.baseUrl),
