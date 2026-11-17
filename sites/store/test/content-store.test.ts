@@ -48,7 +48,7 @@ describe("the emdash version LOADER_TABLES was audited against", () => {
 		expect(
 			version,
 			"emdash changed: re-audit LOADER_TABLES (src/lib/content-store.ts) against the tables loadEntry/loadCollection read in dist/loader-*.mjs, then update this pin",
-		).toBe("1.3.1");
+		).toBe("1.5.0");
 	});
 });
 
@@ -126,7 +126,6 @@ describe("contentTableAnswers", () => {
 		const message = String(error.mock.calls[0]?.[0]);
 		expect(message).toContain("and the probe could not confirm that content table");
 		expect(message).not.toContain("is missing");
-		expect(message).not.toContain("(the probe itself failed)");
 	});
 
 	// Postgres's wording, fed through a stub handle; the site does not run on

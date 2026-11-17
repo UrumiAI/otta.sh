@@ -26,22 +26,24 @@ The store itself is the package `@urumi.ai/otta-store` (`sites/store`): an Astro
   clones into your GitHub account. Updates arrive as a dependency bump.
 - **By hand** (§2.1 to §2.5): this repository's `sites/staging`, deployed with Wrangler.
 
-> **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
+> **In active development — pre-1.0.** The core buy flow — catalog, cart, card checkout and cash on delivery —
 > works today, but APIs, storage document shapes, settings and admin screens may still change
 > between releases. This guide covers both the self-deploy path and the one-click template
-> (§2.6), whose Deploy to Cloudflare button goes live once `0.2.0` is published.
+> (§2.6), whose Deploy to Cloudflare button is live (all `@urumi.ai/otta-*` packages are on npm
+> at `0.2.0`).
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
-> checkout, orders, customers with magic-link auth, Stripe payments, tax,
+> checkout, orders, customers with magic-link auth, Stripe payments, cash on delivery, tax,
 > shipping, discounts, entitlements, reporting, and settings (the magic-link email needs an
 > EmDash email provider and a sign-in page URL, §3 Email). The reference **storefront** covers
-> catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
+> catalog, cart, **card checkout** and **cash on delivery**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
 > customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
 > digital downloads are built too (issue #376): the merchant attaches a file to a digital
 > product in the admin, and a buyer downloads it from the order page. Deploying today gives you a browsable
 > catalog, carts with real inventory holds, magic-link customer accounts, digital downloads,
-> and a Stripe card purchase end-to-end once Stripe is configured (§3).
+> a Stripe card purchase end-to-end once Stripe is configured (§3), and cash-on-delivery orders
+> once it is turned on (§3, Cash on delivery).
 
 ## 1. Universal contracts
 
@@ -270,12 +272,21 @@ expired holds and queued emails drain at the Free pace (§5).
    admin exists the gate switches itself off and the token is never asked for again; from
    then on the admin signs in with the passkey made in the wizard. workers.dev is HTTPS, so
    the passkey step's secure-context requirement (§1) is already met.
+
+   Since EmDash 1.5.0 a store set up through the wizard starts in **staging**: the admin shows
+   a **Staging** badge until you select **Go live** in **Settings** → **General** → **Site
+   Status**. Otta's storefront pages do not carry staging's `noindex` tag, so this changes
+   only the badge, but select **Go live** once the store is ready.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch `wrangler tail` log the sync upsert; price
    it in that product's **Pricing & stock** cards (the CMS holds no commercial data);
    add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
-   are content-only until you price them — the seed fires no content hooks, so either
-   price them in each product's Pricing & stock cards or run `sites/store/scripts/seed-demo-commerce.ts`
+   are content-only until you price them — the seed fires no content hooks, so a sample
+   product's Pricing & stock card says "Product not found" until it has a commerce row.
+   Publishing the product from the admin ("Publish changes" after any small edit) creates the
+   row at once. The every-minute sweep's `product-reconcile` leg also creates it, but it walks
+   the catalogue once per pass interval (24 hours, or 6 with the Paid background-work preset), so that can take
+   up to a day. Then either price them in each product's Pricing & stock cards or run `sites/store/scripts/seed-demo-commerce.ts`
    against the SITE. It drives the site's own admin API — the route the Pricing & stock
    cards use — so it needs only the site URL and a token that can read the CMS
    and call that route:
@@ -506,16 +517,16 @@ with the code and cover every route listed above.
 
 ### 2.6 One-click: the store template and the Deploy to Cloudflare button
 
-> **Status.** The template is built and verified locally from packed `0.2.0` tarballs
-> (build, `wrangler deploy --dry-run`, `wrangler dev`, claim, a cash-on-delivery order).
-> The button goes live once `0.2.0` is on npm and the template repository is public; the
-> Cloudflare-side behaviour listed under "Not yet verified" below needs a real account.
+> **Status.** Live. The template is public at
+> [UrumiAI/otta-store-template](https://github.com/UrumiAI/otta-store-template) and installs
+> `0.2.0` from npm. A real button run on Workers Free (deploy, storefront, claim through the
+> `[otta-setup]` log link and a passkey) passed on 2026-11-10. What is still unconfirmed is
+> listed under "Not yet confirmed" below.
 
 The template is a small repository: `astro.config.mjs` (the adapter plus
 `otta({ template: 1 })`), `wrangler.jsonc`, `.dev.vars.example`, `src/worker.ts` and
 `src/live.config.ts` (a few lines each), `package.json` with exact pins, its
-`package-lock.json` (generated once the pinned versions are on npm; npm cannot lock versions
-the registry does not have yet), `.github/dependabot.yml`, `README.md`, `LICENSE`, `.gitignore`,
+`package-lock.json`, `scripts/deploy.mjs` (and its `scripts/deploy.test.mjs`), `.github/dependabot.yml`, `README.md`, `LICENSE`, `.gitignore`,
 `.node-version` and `tsconfig.json`. No store code: that is the `@urumi.ai/otta-store`
 dependency.
 
@@ -523,8 +534,13 @@ dependency.
 fork), creates the D1 database (`DB`), the two R2 buckets (`MEDIA`, and the private
 `DOWNLOADS`) and the KV namespace (`SESSION`) the template's `wrangler.jsonc` declares, asks
 for the one secret (`EMDASH_ENCRYPTION_KEY`, from `.dev.vars.example`), and connects Workers
-Builds, which runs `npm run build` (`astro build`) and `npm run deploy` (`wrangler deploy`) on
-every push to your production branch. The template also turns on `IMAGES`, both rate limits
+Builds, which runs `npm run build` (`astro build`) and `npm run deploy` on every push to your
+production branch. `npm run deploy` runs `scripts/deploy.mjs`: it applies any pending database
+migrations from the build (90 on a new store at EmDash `1.3.1`, 96 at `1.5.0`), checks that none is pending and the database has none this build does not know, then runs
+`wrangler deploy`, so a new store is never live on an unmigrated database. The Worker is not
+left to migrate itself on its first boot: on Workers Free that was cut off after 34 of 90
+migrations and left the migration lock held (503 on every request). Do not deploy a new store
+from the template with plain `wrangler deploy`. The template also turns on `IMAGES`, both rate limits
 (`RATE_LIMIT_AUTH`, `RATE_LIMIT_WRITES`, so cash on delivery can be offered, ADR-0044), the
 every-minute cron and Workers Logs. `send_email` stays commented out (ADR-0043).
 
@@ -578,11 +594,13 @@ their meaning (§3, §4). In the template, set them as options in `astro.config.
 template too: the downloads bucket must not be the media bucket, and a sender needs the `EMAIL`
 binding.
 
-**Not yet verified (needs a real Cloudflare account):** that the button writes the created IDs
-into the cloned `wrangler.jsonc`; how its secret prompt treats an empty value; whether the
-`IMAGES` and rate-limit bindings deploy on Workers Free; whether a fresh store's first boot (all
-migrations plus the seed) fits Workers Free's CPU limit (`wrangler dev` does not enforce it);
-and how Workers Builds runs npm and Node 22 for this project.
+**Not yet confirmed:** how the button's secret prompt treats an empty value (the admin then
+refuses to save payment keys), and whether Workers Builds provides `CLOUDFLARE_ACCOUNT_ID` to the deploy
+script (it reads `account_id` in `wrangler.jsonc`, then that variable, then the only account the
+API token can see; the first lines of the build log say whether it was present). If the build
+stops because it cannot find the account id, add `CLOUDFLARE_ACCOUNT_ID` as a build variable. If the build's token cannot change D1, the deploy
+stops and says to add **Account → D1 → Edit** to it. The template's README lists the failure
+messages and recovery steps.
 
 ## 3. Secrets & tokens checklist
 
@@ -1289,10 +1307,10 @@ The cap keys off the **Background work per minute** setting, not the plan: 50 or
 budget Workers Free can run) counts as Free. So a Workers Paid store left at 50 or below is capped
 at 300 carts a day too (choose the Paid preset to drain faster). A Free store that abandons more
 than 300 empty carts a day never fully catches up; the rest wait their turn, untouched.
-`product-reconcile` has a daily cap of its own on Free (200 repairs, about 31,000 rows written; see
-"Rows written, and the daily repair cap" below), and so does the Reports backfill (#572, below).
-All three together write about 83,000–88,000 rows a day, which leaves about 12,000–17,000 for the
-store's traffic.
+`product-reconcile` has a daily cap of its own on Free (200 repairs and a reserve of 30
+deactivations, about 32,800 rows written; see "Rows written, and the daily repair cap" below), and
+so does the Reports backfill (#572, below). All three together write about 80,000–85,000 rows a
+day, which leaves about 15,000–20,000 for the store's traffic.
 
 `stranded-holds` is a one-off repair (#631): it reads the inventory until one whole pass releases
 nothing, then records `done` in its kv cursor (`cron:sweep:cursor:stranded-holds`) and costs one kv
@@ -1319,7 +1337,10 @@ index above: about three rows written per plugin-storage row, every plugin's row
 with 30,000 rows writes about 90,000 on that tick. **Past about 33,000 plugin-storage rows the
 index build alone exceeds D1 Free's 100,000 rows written a day.** Once it does, every write fails
 until 00:00 UTC, and the build does not finish. EmDash retries the build once per new Worker
-process, so a store of 100,000 rows can hit the limit several days running. A Free store that size
+process, so a store of 100,000 rows can hit the limit several days running. Since EmDash 1.5.0
+the first state-changing plugin request of a new Worker process (a cart change, a checkout, a
+payment webhook, an admin action) also starts the build if the tick has not, and answers 503
+`STORAGE_INDEXES_NOT_READY` while it fails. A Free store that size
 should move to Workers Paid before this deploy. Every later plugin-row write then costs three
 index rows more (about 52 rows in all).
 
@@ -1453,36 +1474,67 @@ cursor read, the list, the row reads) plus one repair's eleven, of the roughly t
 tick can spend — so on a busy Free store, where the customer-facing legs take most of each tick,
 repairs run only on the quieter ticks. Measured on Free with the cursor's reads and writes counted,
 107 drifted products healed in 335 ticks — about 460 repairs a day at the leg's own pace — so a
-catalogue-wide outage of 1000 products would take about two and a half days; on the Workers Free
+catalogue-wide outage of 1000 products would take a little over two days; on the Workers Free
 preset the daily cap below holds it to 200 a day, about five days. "Publish changes" repairs a
 product at once.
 
 **Rows written, and the daily repair cap.** By the same index model as "Draining a backlog writes
 rows" above, every `_plugin_storage` document write is about 52 rows written (49 declared indexes
 since #572), and a repair's sync is about three document writes (the upsert, the activate, the
-variant write) plus its SKU claims — about **156 rows written a product**. At the leg's own pace (about 460 repairs a day) a first
-install over an existing catalogue, where every product has no commerce row, would write about
-70,000 rows a day for days on end, which beside `prune-carts` and the store's own traffic passes
-D1 Free's 100,000 a day, after which every write fails until the UTC reset. So on the Workers Free
-preset the leg makes at most **200 repairs a UTC day** (counted in its cursor document): about
-31,000 rows written. Only a repair's writes count — not the visit that checks it, not a product
-found in sync, not one its own hook synced first — and the count is kept when the tick's query
-ceiling stops a run part-way through a repair. Once the cap is reached the leg stops repairing,
-is stamped and runs only at its fifteen-minute cadence (one kv read, and the checks of the day's
-last repairs); the pass keeps its start, its page and its nominated products and carries on after
-00:00 UTC, so nothing is skipped. A first install over N products therefore heals in about
-**N / 200 days** on Free (a 1 000-product catalogue in five days; "Publish changes" repairs any one
-product at once). On Workers Paid there is no daily cap.
+variant write) plus its SKU claims — about **156 rows written a product**. At the leg's own pace
+(about 460 repairs a day) a first install over an existing catalogue, where every product has no
+commerce row, would write about 70,000 rows a day for days on end, which beside `prune-carts` and
+the store's own traffic passes D1 Free's 100,000 a day, after which every write fails until the UTC
+reset. So on the Workers Free preset the leg makes at most **200 syncs a UTC day** (counted in its
+cursor document): about 31,000 rows written.
+
+The count is kept in thirds of a repair: a sync spends three, a lost unpublish's deactivation (one
+document write against a sync's three) spends one. Syncs stop at 600; deactivations may also spend a
+**reserve of 30** above it that no sync can touch, so a day the syncs spent in full — every day of a
+large first install — still deactivates up to 30 lost unpublishes. The reserve adds at most about
+1,560 rows written (30 × 52), so the leg's daily bound is about **32,800** (31,200 + 1,560). A lost
+unpublish leaves a withdrawn product on sale, where a lost publish only leaves one off sale, so a
+page's deactivations also go before its syncs. Only a repair's writes count — not the visit that
+checks it, not a product found in sync, not one its own hook synced first — and the count is kept
+when the tick's query ceiling stops a run part-way through a repair. The cursor document also keeps
+the count in whole repairs, rounded up, which is what a release from before #664 reads: a same-day
+rollback stops at the cap rather than counting the day again.
+
+Once no sync fits, the walk holds its page: the pass keeps its start, its page and its nominated
+products and carries on after 00:00 UTC, so nothing is skipped. While it is held and a deactivation
+still fits, the leg **scans for lost unpublishes** in a separate lap: it lists the catalogue from
+the top, one page at a time, reads each page's commerce rows and deactivates only a product whose
+row is active while its document is not published — on a page ahead of the walk or behind it. A
+scanned page costs what a walked page does (seven queries: the list, two row reads, the cursor
+write) and writes nothing else. A lap runs at most once per pass interval (24 hours on Free), and
+its place persists across ticks and days; a cursor the CMS no longer accepts restarts it from the
+top. When the lap has nothing left to do the leg is stamped and runs only at its fifteen-minute
+cadence (one kv read, and the checks of the day's last repairs).
+
+**The lap's reads.** A capped first install therefore pays **a full pass of reads every day** it is
+capped: about N²/100 + 2N rows read (the rows-read table above), on top of the walk's own few pages.
+That is about 1 million rows a day at 10,000 products (a fifth of D1 Free's 5 million) and nears the
+whole 5 million at about **22,000 products** — the same ceiling as one pass a day, and the same
+advice: above about 15,000 products, move to Workers Paid.
+
+A first install over N products therefore heals in about **N / 200 days** on Free (a 1 000-product
+catalogue in five days; "Publish changes" repairs any one product at once), and the Settings page
+says so beside the **Background work per minute** choice while it is at 50 or less. On a capped day
+a lost unpublish is found by the lap in progress or, if the lap has already passed its page, by the
+next one, a pass interval later; on a day the cap does not hold the walk, the walk itself finds it.
+On a day the syncs spent, what the lap finds is deactivated at most **30 a day** (the reserve); any
+more stay nominated at the lap's place and are deactivated the next day, from the new day's
+allowance. On Workers Paid there is no daily cap.
 
 Together the three capped legs bound the sweep's **daily rows written on Free** at about
-83,000–88,000: `prune-carts` about 31,000 (300 carts), `product-reconcile` about 31,000 (200
-repairs) and the Reports backfill about 16,000–21,000 (100 days). That leaves about 12,000–17,000 of
-D1 Free's 100,000 for the store's own traffic (carts, checkouts, orders, admin edits) and the
-sweep's own cursor and tick-state writes. On the deploy day of a new index layout all three write
-nothing (see "Deploying the Reports month cache" above). All three caps key off the **Background
-work per minute** setting the same way — 50 or less counts as Free — and all three are derived from
-the index model, not measured on D1. Overlapping ticks can pass the day's repair cap by at most one run's
-repairs.
+80,000–85,000 (79,600–84,800): `prune-carts` about 31,200 (300 carts), `product-reconcile` about
+32,800 (200 syncs and the reserve of 30 deactivations) and the Reports backfill about 15,600–20,800
+(100 days). That leaves about 15,000–20,000 (15,240–20,440) of D1 Free's 100,000 for the store's own
+traffic (carts, checkouts, orders, admin edits) and the sweep's own cursor and tick-state writes. On
+the deploy day of a new index layout all three write nothing (see "Deploying the Reports month
+cache" above). All three caps key off the **Background work per minute** setting the same way — 50
+or less counts as Free — and all three are derived from the index model, not measured on D1.
+Overlapping ticks can pass the day's repair cap by at most one run's repairs.
 
 What it does not repair: a **leaked price** from before PR 1b (the sync carries no commercial
 field and the published content holds no price to compare against — re-price it in Pricing &
@@ -1496,7 +1548,7 @@ Logs: a product with no commerce row at all — every product, on a catalogue pu
 plugin was installed — is a first sync, logged at info. Any other repair logs a
 `cron sweep product-reconcile` warning naming the product and why ("a lost publish sync", "a lost
 unpublish"); the leaked-title case above is said once a pass at info; reaching the Free daily
-repair cap is said once a day at info; a failed or no-op repair logs an error.
+repair cap is said once a day at info (by the run that leaves no room for another sync); a failed or no-op repair logs an error.
 
 **A dense block of real orphans is struck out like any rows,** five a minute at most. An example
 is a bulk delete of an import whose hooks were all lost. Measured with every read truthful:
@@ -1585,6 +1637,9 @@ and an email is parked `failed` after five attempts. With **no email provider se
 email is handed back without counting an attempt, due again in 5 minutes. There is no admin
 action to re-queue a parked email yet (a follow-up); until there is, a parked email is a provider
 or configuration problem to fix at the provider, and the customer will not receive that message.
+otta's **Settings → Payments & email** shows the provider's last failed send ("last send
+failed", its time and a short reason with no recipient address) until a send goes through again;
+that clears the line, not the parked emails, which stay `failed`.
 
 **The plan this assumes.** Cloudflare caps one Worker invocation at **50 D1 queries and 50
 subrequests on Workers Free** (1000 queries and 10,000 subrequests on Workers Paid; see
@@ -1934,6 +1989,14 @@ on a request once it would touch more than 5,000 rows, and answers 503 until it 
 smaller site still migrates on its first request, but running it from the CLI first is safe
 either way. See EmDash's
 [core-migrations guide](https://docs.emdashcms.com/deployment/core-migrations/).
+
+**Upgrading the EmDash host (1.3.1 → 1.5.0).** Six more host migrations, `092` to `097`, none of
+which changes Otta's commerce documents. Two need a look first: `095_plugin_storage_unique_scope`
+is a maintenance-window migration on a site with plugin storage `uniqueIndexes` (Otta declares
+none), and `092_plugin_kv_options` copies sandboxed `ctx.kv` rows into `options`. In the default
+`auto` mode the Worker applies them on its first request, so run the two checks and the CLI
+migration in [`UPGRADING.md`](./UPGRADING.md) ("EmDash 1.3.1 to 1.5.0") before deploying, with the
+`--wrangler-config wrangler.local.jsonc` form above in place of `--d1`.
 
 ## 6. Troubleshooting
 

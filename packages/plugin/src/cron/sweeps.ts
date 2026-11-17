@@ -435,8 +435,10 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  *    the first send, and the tax options' settings read, issue #422, on the first
  *    send of the sender that needs it — an order that recorded no display, #502),
  *    the send (one), its
- *    "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one kv write, also on the first
- *    send), and marking it sent (three: the read, the write, the locator) — ten.
+ *    "last sent" or "last failure" record (`EMAIL_SENT_RECORD_WRITES`, one kv write
+ *    when the send's outcome differs from the sender's last recorded one, issue #677:
+ *    at most one record write per unit, not per tick), and marking it sent (three:
+ *    the read, the write, the locator) — ten.
  *    `cron-leg-costs.test.ts` measures it with the REAL sender construction.
  *  - A withdrawal: the cancel and, when Stripe refuses it, the read-back (two
  *    subrequests), the intent's resolution (two) and, on a last attempt, the
@@ -2917,8 +2919,10 @@ interface SweepState {
 
 /**
  * A fingerprint of every index Otta declares (`COMMERCE_STORAGE_COLLECTIONS`): EmDash
- * builds a newly declared index on the first scheduled tick after the deploy, so a tick
- * that finds a different one stored is on that deploy's day.
+ * builds a newly declared index on the first scheduled tick after the deploy (since
+ * 1.5.0, or on the first non-GET plugin request of a new isolate, if sooner: every
+ * storefront Otta call is a POST, reads included),
+ * so a tick that finds a different one stored is on that deploy's day.
  */
 export const INDEX_LAYOUT: string = (() => {
 	const text = JSON.stringify(
@@ -3931,9 +3935,9 @@ export const REPORTING_LINES_HISTORY_DAYS = 2 * MAX_REPORT_RANGE_DAYS;
  * index — about 52 rows. A day in one currency is three writes (the month touch before,
  * its day document, the touch after), in two currencies four: about 210 rows. 100 builds
  * is then about 21,000 rows written a day (16,000 in one currency). Not more: the
- * abandoned-cart prune (about 31,000) and the product reconcile (about 31,000) have
+ * abandoned-cart prune (about 31,200) and the product reconcile (about 32,800) have
  * daily caps of their own on Free, and with all three running at once (about
- * 83,000–88,000) the store's own traffic still keeps about 12,000–17,000 of D1 Free's
+ * 80,000–85,000) the store's own traffic still keeps about 15,000–20,000 of D1 Free's
  * 100,000. It builds newest first and starts the UTC day after the deploy
  * (`indexBuildHold`). Day documents exist only from the release that introduced them
  * (about 2026-09-07), so a store upgrading now has about 55 of them — one capped day. Only a store with a year of them would take about four days for the
