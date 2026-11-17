@@ -323,3 +323,69 @@ describe("the plugin's public entry exports the operations (MCP reuses them)", (
 		expect((pluginIndex as Record<string, unknown>)["NONCE_PATTERN"]).toBeInstanceOf(RegExp);
 	});
 });
+
+describe("deriveEditIdempotencyKey: an absent field is not an explicit null", () => {
+	const t = "2026-10-07T12:00:00.000Z";
+
+	test("the console's page-shaped wires keep the keys they had before the distinction", () => {
+		// Keys recorded from the formula as it stood before absent and null were told
+		// apart. These are the shapes `products:save` builds: compare-at, cost and tax
+		// class always ride (null = clear); sku, price, weight and size are omitted
+		// when blank and never null. An in-flight console retry must keep its key.
+		const full = {
+			expectedUpdatedAt: t,
+			sku: "SKU-1",
+			price: { amount: 1999, currency: "USD" },
+			compareAtPrice: { amount: 2999, currency: "USD" },
+			unitCost: { amount: 800, currency: "USD" },
+			productKind: "physical",
+			taxClass: "reduced",
+			taxStatus: "taxable",
+			weightGrams: 250,
+			lengthMm: 100,
+			widthMm: 50,
+			heightMm: 20,
+		};
+		const clears = {
+			expectedUpdatedAt: t,
+			sku: "SKU-1",
+			price: { amount: 1999, currency: "USD" },
+			compareAtPrice: null,
+			unitCost: null,
+			productKind: "physical",
+			taxClass: null,
+			taxStatus: "shipping_only",
+		};
+		const digital = {
+			expectedUpdatedAt: t,
+			price: { amount: 500, currency: "EUR" },
+			compareAtPrice: null,
+			unitCost: { amount: 100, currency: "EUR" },
+			productKind: "digital",
+			taxClass: null,
+			taxStatus: "none",
+		};
+		expect(deriveEditIdempotencyKey("p-1", full)).toBe("p-1:edit:bf5ljo1l95fza");
+		expect(deriveEditIdempotencyKey("p-1", clears)).toBe("p-1:edit:1a7qvwx1a3er1r");
+		expect(deriveEditIdempotencyKey("p-1", digital)).toBe("p-1:edit:qc76rhiq0p97");
+	});
+
+	test("two different clears at one watermark get different keys", () => {
+		const compareAt = deriveEditIdempotencyKey("p-1", {
+			expectedUpdatedAt: t,
+			compareAtPrice: null,
+		});
+		const cost = deriveEditIdempotencyKey("p-1", { expectedUpdatedAt: t, unitCost: null });
+		const taxClass = deriveEditIdempotencyKey("p-1", { expectedUpdatedAt: t, taxClass: null });
+		expect(new Set([compareAt, cost, taxClass]).size).toBe(3);
+	});
+
+	test("clearing a measurement is not the same edit as leaving it alone", () => {
+		const base = { expectedUpdatedAt: t, compareAtPrice: null, unitCost: null, taxClass: null };
+		for (const field of ["weightGrams", "lengthMm", "widthMm", "heightMm"] as const) {
+			expect(deriveEditIdempotencyKey("p-1", { ...base, [field]: null }), field).not.toBe(
+				deriveEditIdempotencyKey("p-1", base),
+			);
+		}
+	});
+});

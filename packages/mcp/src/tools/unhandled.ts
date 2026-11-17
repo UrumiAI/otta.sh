@@ -25,3 +25,15 @@ export type Complete<Type, List extends readonly unknown[]> = [
 ] extends [never]
 	? true
 	: never;
+
+/**
+ * `true` only while every key of `Input` is a key of `Wire` (or one of `Except`,
+ * the keys the tool consumes itself). Assigned to a const, it fails the typecheck
+ * when a schema field is renamed or misspelled against the operation's input type,
+ * which a spread into that type would not catch.
+ */
+export type KeysWithin<Input, Wire, Except extends PropertyKey = never> = [
+	Exclude<keyof Input, keyof Wire | Except>,
+] extends [never]
+	? true
+	: never;

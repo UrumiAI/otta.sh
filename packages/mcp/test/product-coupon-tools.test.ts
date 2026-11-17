@@ -62,6 +62,11 @@ async function seedProduct(onHand = 3): Promise<string> {
 
 const nonce = (): string => crypto.randomUUID();
 
+/** Resolve once the wall clock is past `iso`, so the next write gets a new `updatedAt`. */
+async function clockPast(iso: string): Promise<void> {
+	while (Date.now() <= Date.parse(iso)) await new Promise((r) => setTimeout(r, 1));
+}
+
 async function call(name: string, input: unknown, user: unknown = { name: "Ada" }): Promise<any> {
 	const route = plugin.routes[`mcp/${name}`] as McpRouteEntry | undefined;
 	if (route === undefined) throw new Error(`no route mcp/${name}`);
@@ -172,6 +177,17 @@ describe("products_remove_stock", () => {
 		expect(await onHandOf(id)).toBe(3);
 	});
 
+	test("a removal retried with its now-stale onHand is replayed, and stock moved once", async () => {
+		const id = await seedProduct(3);
+		const args = { productId: id, onHand: 3, qty: 1, idempotencyKey: nonce() };
+		expect(await call("products_remove_stock", args)).toEqual({ status: "removed", onHand: 2 });
+		expect(await call("products_remove_stock", args)).toEqual({
+			status: "replayed",
+			liveOnHand: 2,
+		});
+		expect(await onHandOf(id)).toBe(2);
+	});
+
 	test("removing more than is on hand is INSUFFICIENT_STOCK, never a negative", async () => {
 		const id = await seedProduct(3);
 		const err = await failure("products_remove_stock", {
@@ -203,6 +219,7 @@ describe("products_update", () => {
 	test("a stale watermark is PRODUCT_CHANGED and nothing is written", async () => {
 		const id = await seedProduct();
 		const { updatedAt } = await call("products_get", { productId: id });
+		await clockPast(updatedAt);
 		await call("products_update", {
 			productId: id,
 			expectedUpdatedAt: updatedAt,
@@ -241,6 +258,69 @@ describe("products_update", () => {
 		expect(err.code).toBe("INVALID_INPUT");
 	});
 
+	test("two different clears at one watermark: the second is PRODUCT_CHANGED, not a silent replay", async () => {
+		const id = await seedProduct();
+		const read = await call("products_get", { productId: id });
+		const set = await call("products_update", {
+			productId: id,
+			expectedUpdatedAt: read.updatedAt,
+			compareAtPrice: { amount: 2999, currency: "USD" },
+			unitCost: { amount: 800, currency: "USD" },
+		});
+		// The store stamps `updatedAt` at millisecond resolution; a clear landing in
+		// the same millisecond as the write above would leave the watermark as it
+		// was (a store limit, not this case's subject). Let the clock move first.
+		await clockPast(set.updatedAt);
+		// The agent reads once, then applies two small clears against that read.
+		const first = await call("products_update", {
+			productId: id,
+			expectedUpdatedAt: set.updatedAt,
+			compareAtPrice: null,
+		});
+		expect(first.status).toBe("updated");
+		const err = await failure("products_update", {
+			productId: id,
+			expectedUpdatedAt: set.updatedAt,
+			unitCost: null,
+		});
+		expect(err.code).toBe("PRODUCT_CHANGED");
+		const after = await call("products_get", { productId: id });
+		expect(after.compareAtCents).toBeNull();
+		expect(after.unitCostCents).toBe(800);
+	});
+
+	test("a read-shaped key (priceCents) is INVALID_INPUT naming the key, and nothing is written", async () => {
+		const id = await seedProduct();
+		const { updatedAt } = await call("products_get", { productId: id });
+		const err = await failure("products_update", {
+			productId: id,
+			expectedUpdatedAt: updatedAt,
+			priceCents: 2499,
+		});
+		expect(err.code).toBe("INVALID_INPUT");
+		expect(err.message).toContain("priceCents");
+		const after = await call("products_get", { productId: id });
+		expect(after).toMatchObject({ priceCents: 1999, updatedAt });
+	});
+
+	test("an edit with nothing but the watermark is INVALID_INPUT", async () => {
+		const id = await seedProduct();
+		const { updatedAt } = await call("products_get", { productId: id });
+		const err = await failure("products_update", { productId: id, expectedUpdatedAt: updatedAt });
+		expect(err.code).toBe("INVALID_INPUT");
+		expect(err.message).toMatch(/nothing to change/i);
+		expect((await call("products_get", { productId: id })).updatedAt).toBe(updatedAt);
+	});
+
+	test("the money fields' descriptions name the products_get fields they correspond to", () => {
+		const tool = OTTA_MCP_TOOLS.find((t) => t.name === "products_update");
+		if (tool === undefined) throw new Error("products_update is not in the table");
+		const { shape } = tool.input as unknown as { shape: Record<string, { description?: string }> };
+		expect(shape["price"]?.description).toMatch(/priceCents/);
+		expect(shape["compareAtPrice"]?.description).toMatch(/compareAtCents/);
+		expect(shape["unitCost"]?.description).toMatch(/unitCostCents/);
+	});
+
 	test("an unknown product is NOT_FOUND", async () => {
 		const err = await failure("products_update", {
 			productId: "mcp-missing",
@@ -257,6 +337,21 @@ describe("coupons", () => {
 		n += 1;
 		return `MCP${String(n)}`;
 	};
+
+	test("coupons_update refuses an unknown key (e.g. code) by name, and changes nothing", async () => {
+		const c = code();
+		await call("coupons_create", {
+			id: `id-${c}`,
+			code: c,
+			type: "fixed_amount",
+			amountCents: 500,
+			currency: "USD",
+		});
+		const err = await failure("coupons_update", { couponId: `id-${c}`, code: "RENAMED" });
+		expect(err.code).toBe("INVALID_INPUT");
+		expect(err.message).toContain("code");
+		expect(await couponRow(c)).toMatchObject({ code: c, amountCents: 500 });
+	});
 
 	test("a partial update (only maxUses) keeps the dates and the minimum spend", async () => {
 		// Review focus 2.

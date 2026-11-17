@@ -17,8 +17,8 @@ import { editProduct, NONCE_PATTERN, removeStock, restock } from "@urumi.ai/otta
 import { z } from "zod";
 import { toolFailure } from "../errors.js";
 import { defineTool } from "../tool.js";
-import { MONEY_NOTE, operate } from "./common.js";
-import { type Complete, unhandled } from "./unhandled.js";
+import { defined, MONEY_NOTE, operate } from "./common.js";
+import { type Complete, type KeysWithin, unhandled } from "./unhandled.js";
 
 /** The domain's `ProductKind`. */
 const PRODUCT_KINDS = ["physical", "digital"] as const satisfies readonly ProductKind[];
@@ -66,6 +66,59 @@ const movementInput = z.object({
  */
 const inconsistent = (): never => toolFailure("INTERNAL_ERROR", "Inconsistent stock outcome.");
 
+/**
+ * STRICT: a key the edit does not know (say `priceCents`, the READ shape) is
+ * refused by name rather than dropped, which would leave an empty edit reported
+ * as `updated`.
+ */
+const editInput = z
+	.object({
+		productId: productIdInput,
+		expectedUpdatedAt: z
+			.string()
+			.min(1)
+			.describe("The product's `updatedAt` exactly as products_get returned it."),
+		sku: z.string().min(1).optional().describe("A new sku (renames the product's stock)."),
+		price: moneyInput
+			.optional()
+			.describe("The price; products_get reports it as `priceCents` + `currency`."),
+		compareAtPrice: moneyInput
+			.nullable()
+			.optional()
+			.describe(
+				"The was-price shown struck through; null clears it. products_get reports it as `compareAtCents` + `compareAtCurrency`.",
+			),
+		unitCost: moneyInput
+			.nullable()
+			.optional()
+			.describe(
+				"What one unit costs you (admin-only); null clears it. products_get reports it as `unitCostCents` + `unitCostCurrency`.",
+			),
+		taxClass: z
+			.string()
+			.min(1)
+			.nullable()
+			.optional()
+			.describe("A tax class id from tax_classes_list; null for the standard rate."),
+		taxStatus: z.enum(TAX_STATUSES).optional(),
+		productKind: z.enum(PRODUCT_KINDS).optional(),
+		weightGrams: dimension("Weight in grams"),
+		lengthMm: dimension("Length in millimetres"),
+		widthMm: dimension("Width in millimetres"),
+		heightMm: dimension("Height in millimetres"),
+	})
+	.strict();
+
+const editKeysKnown: KeysWithin<z.infer<typeof editInput>, ProductEditWire, "productId"> = true;
+void editKeysKnown;
+
+const stockChanged = (liveOnHand: number | null): never =>
+	toolFailure(
+		"STOCK_CHANGED",
+		"The stock is no longer the count you passed. Nothing moved; read the product again with products_get and decide again.",
+		{ liveOnHand },
+	);
+
 /** A stock movement's refusal (any arm but `ok`) → its code. */
 function stockRefusal(result: Exclude<StockRemovalResult, { ok: true }>, productId: string): never {
 	switch (result.reason) {
@@ -82,11 +135,7 @@ function stockRefusal(result: Exclude<StockRemovalResult, { ok: true }>, product
 				"The product's sku has no inventory record (its onHand is null). Nothing moved.",
 			);
 		case "stale_on_hand":
-			return toolFailure(
-				"STOCK_CHANGED",
-				"The stock is no longer the count you passed. Nothing moved; read the product again with products_get and decide again.",
-				{ liveOnHand: result.onHand },
-			);
+			return stockChanged(result.onHand);
 		case "insufficient_stock":
 			return toolFailure(
 				"INSUFFICIENT_STOCK",
@@ -163,41 +212,18 @@ function editAnswer(outcome: ProductEditOutcome, productId: string): unknown {
 export const PRODUCT_WRITE_TOOLS = [
 	defineTool({
 		name: "products_update",
-		description: `Change a product's commerce fields: sku, price, compare-at price, unit cost, tax class and status, kind, weight and dimensions. Send only the fields to change; null clears a clearable one. Pass the product's \`updatedAt\` from products_get as \`expectedUpdatedAt\`: if it changed since, nothing is written and the call fails PRODUCT_CHANGED. Sending the same edit twice is one write. Every amount must share the product's currency. Returns \`{status: "updated", updatedAt}\`. Refusals: NOT_FOUND, PRODUCT_CHANGED, UNSUPPORTED_CURRENCY, CURRENCY_MISMATCH, SKU_TAKEN, SKU_STOCK_CONFLICT, SKU_HELD_STOCK, INVALID_INPUT (details.field). ${MONEY_NOTE}`,
-		input: z.object({
-			productId: productIdInput,
-			expectedUpdatedAt: z
-				.string()
-				.min(1)
-				.describe("The product's `updatedAt` exactly as products_get returned it."),
-			sku: z.string().min(1).optional().describe("A new sku (renames the product's stock)."),
-			price: moneyInput.optional().describe("The price."),
-			compareAtPrice: moneyInput
-				.nullable()
-				.optional()
-				.describe("The was-price shown struck through; null clears it."),
-			unitCost: moneyInput
-				.nullable()
-				.optional()
-				.describe("What one unit costs you (admin-only); null clears it."),
-			taxClass: z
-				.string()
-				.min(1)
-				.nullable()
-				.optional()
-				.describe("A tax class id from tax_classes_list; null for the standard rate."),
-			taxStatus: z.enum(TAX_STATUSES).optional(),
-			productKind: z.enum(PRODUCT_KINDS).optional(),
-			weightGrams: dimension("Weight in grams"),
-			lengthMm: dimension("Length in millimetres"),
-			widthMm: dimension("Width in millimetres"),
-			heightMm: dimension("Height in millimetres"),
-		}),
+		description: `Change a product's commerce fields: sku, price, compare-at price, unit cost, tax class and status, kind, weight and dimensions. Send only the fields to change, and at least one; null clears a clearable one. An unknown key (such as products_get's \`priceCents\`) is refused INVALID_INPUT, never ignored. Pass the product's \`updatedAt\` from products_get as \`expectedUpdatedAt\`: if it changed since, nothing is written and the call fails PRODUCT_CHANGED. Sending the same edit twice is one write. Every amount must share the product's currency. Returns \`{status: "updated", updatedAt}\`. Refusals: NOT_FOUND, PRODUCT_CHANGED, UNSUPPORTED_CURRENCY, CURRENCY_MISMATCH, SKU_TAKEN, SKU_STOCK_CONFLICT, SKU_HELD_STOCK, INVALID_INPUT (details.field). ${MONEY_NOTE}`,
+		input: editInput,
 		async run({ clients, input }) {
-			const { productId, ...fields } = input;
-			const wire = Object.fromEntries(
-				Object.entries(fields).filter(([, v]) => v !== undefined),
-			) as unknown as ProductEditWire;
+			const { productId, expectedUpdatedAt, ...fields } = input;
+			const changes = defined(fields);
+			if (Object.keys(changes).length === 0) {
+				return toolFailure(
+					"INVALID_INPUT",
+					"nothing to change: send at least one field besides productId and expectedUpdatedAt.",
+				);
+			}
+			const wire: ProductEditWire = { expectedUpdatedAt, ...changes };
 			const outcome = await operate(() => editProduct(clients.products, productId, wire));
 			return editAnswer(outcome, productId);
 		},
@@ -250,11 +276,7 @@ export const PRODUCT_WRITE_TOOLS = [
 				case "replayed":
 					return { status: "replayed", liveOnHand: outcome.liveOnHand };
 				case "stock_changed":
-					return toolFailure(
-						"STOCK_CHANGED",
-						"The stock is no longer the count you passed. Nothing moved; read the product again with products_get and decide again.",
-						{ liveOnHand: outcome.liveOnHand },
-					);
+					return stockChanged(outcome.liveOnHand);
 				case "failed":
 					if (outcome.result.ok) return inconsistent();
 					return stockRefusal(outcome.result, input.productId);

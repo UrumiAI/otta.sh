@@ -8,13 +8,13 @@
  * A refusal's `message` from the operation is internal text: it travels in
  * `details`, and the agent-facing message is written here.
  */
-import type { CouponType, CouponWire, CouponWriteOutcome } from "@urumi.ai/otta-plugin";
+import type { CouponEdit, CouponType, CouponWire, CouponWriteOutcome } from "@urumi.ai/otta-plugin";
 import { createCoupon, deleteCoupon, patchCoupon, retireCoupon } from "@urumi.ai/otta-plugin";
 import { z } from "zod";
 import { toolFailure } from "../errors.js";
 import { defineTool } from "../tool.js";
-import { MONEY_NOTE, readOrRefuse } from "./common.js";
-import { type Complete, unhandled } from "./unhandled.js";
+import { defined, MONEY_NOTE, readOrRefuse } from "./common.js";
+import { type Complete, type KeysWithin, unhandled } from "./unhandled.js";
 
 /** The domain's `CouponType`. */
 const COUPON_TYPES = ["fixed_amount", "percentage"] as const satisfies readonly CouponType[];
@@ -56,6 +56,26 @@ const economics = {
 	maxUsesPerCustomer: count("How many times one customer can use it"),
 };
 
+/**
+ * STRICT: a key the edit does not take (`code`, `type`, a misspelling) is
+ * refused by name rather than dropped, which would report an unchanged coupon
+ * as `updated`.
+ */
+const updateInput = z
+	.object({
+		couponId: couponIdInput,
+		currency: z
+			.string()
+			.length(3)
+			.nullable()
+			.optional()
+			.describe("The coupon's current currency (see coupons_update's description)."),
+		...economics,
+	})
+	.strict();
+const updateKeysKnown: KeysWithin<z.infer<typeof updateInput>, CouponEdit, "couponId"> = true;
+void updateKeysKnown;
+
 /** A create or edit outcome → success data, or its code. */
 function couponAnswer(
 	outcome: CouponWriteOutcome<CouponWire>,
@@ -70,7 +90,7 @@ function couponAnswer(
 				"COUPON_CODE_TAKEN",
 				outcome.taken === "same"
 					? "This coupon already exists (likely an earlier create that went through). Nothing was written."
-					: "That code or id is already taken. Nothing was written; pick another.",
+					: "That code or id is already taken. Nothing was written. If you created this coupon before without passing an id, this may be that coupon: check coupons_list before picking another code.",
 				{ code: outcome.code, taken: outcome.taken },
 			);
 		case "currency_refused":
@@ -125,21 +145,12 @@ export const COUPON_WRITE_TOOLS = [
 	}),
 	defineTool({
 		name: "coupons_update",
-		description: `Change some of a coupon's fields: send only what changes; every field you leave out is kept, and an explicit null clears that field. The code and type cannot change. This tool cannot change a coupon's currency: \`currency\`, when sent, must be the coupon's current one (a different one fails COUPON_CURRENCY_REFUSED with details.reason "currency_moved"); only an unbound percentage coupon gaining a cap or minimum spend may name a currency, which binds it. Returns \`{status: "updated", coupon}\`. Refusals: NOT_FOUND, COUPON_CURRENCY_REFUSED, INVALID_INPUT (details.field), COUPON_WRITE_FAILED (e.g. clearing a fixed coupon's amount or a percentage coupon's rate). ${MONEY_NOTE}`,
-		input: z.object({
-			couponId: couponIdInput,
-			currency: z
-				.string()
-				.length(3)
-				.nullable()
-				.optional()
-				.describe("The coupon's current currency (see above)."),
-			...economics,
-		}),
+		description: `Change some of a coupon's fields: send only what changes; every field you leave out is kept, and an explicit null clears that field. The code and type cannot change (sending either, or any unknown key, is INVALID_INPUT). This tool cannot change a coupon's currency: \`currency\`, when sent, must be the coupon's current one (a different one fails COUPON_CURRENCY_REFUSED with details.reason "currency_moved"); only an unbound percentage coupon gaining a cap or minimum spend may name a currency, which binds it. Returns \`{status: "updated", coupon}\`. Refusals: NOT_FOUND, COUPON_CURRENCY_REFUSED, INVALID_INPUT (details.field), COUPON_WRITE_FAILED (e.g. clearing a fixed coupon's amount or a percentage coupon's rate). ${MONEY_NOTE}`,
+		input: updateInput,
 		async run({ clients, input }) {
 			const { couponId, ...fields } = input;
 			// `undefined` means "not mentioned" to patchCoupon; drop the keys outright.
-			const patch = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+			const patch: Partial<CouponEdit> = defined(fields);
 			const outcome = await patchCoupon(clients.rules, couponId, patch);
 			return couponAnswer(outcome, "updated", couponId);
 		},

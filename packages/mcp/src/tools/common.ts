@@ -67,3 +67,16 @@ export async function operate<T>(run: () => Promise<T>): Promise<T> {
 		throw error;
 	}
 }
+
+/**
+ * Drop the keys whose value is `undefined`. For a write's input, "not sent" must
+ * not reach the operation as a key at all (an operation may read a present key
+ * as "mentioned"); for a result, the JSON carries only what the write answered.
+ */
+export function defined<T extends Record<string, unknown>>(
+	value: T,
+): { [K in keyof T]?: Exclude<T[K], undefined> } {
+	return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as {
+		[K in keyof T]?: Exclude<T[K], undefined>;
+	};
+}

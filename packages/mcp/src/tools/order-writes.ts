@@ -24,7 +24,7 @@ import {
 import { z } from "zod";
 import { toolFailure } from "../errors.js";
 import { defineTool } from "../tool.js";
-import { MONEY_NOTE, operate } from "./common.js";
+import { defined, MONEY_NOTE, operate } from "./common.js";
 import { type Complete, unhandled } from "./unhandled.js";
 
 /**
@@ -104,11 +104,6 @@ const stateChanged = (liveState: string): never =>
 		`The order is now ${liveState}, not the state you passed. Nothing was changed; read it again with orders_get.`,
 		{ liveState },
 	);
-
-/** Strip `undefined`s so the JSON result carries only what the write answered. */
-function defined<T extends Record<string, unknown>>(value: T): Partial<T> {
-	return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
-}
 
 export const ORDER_WRITE_TOOLS = [
 	defineTool({
