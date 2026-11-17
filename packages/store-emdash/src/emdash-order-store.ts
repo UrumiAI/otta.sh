@@ -618,9 +618,21 @@ export class EmdashOrderStore implements OrderStore {
 	/**
 	 * ADR-0044: open offline orders per buyer (the indexed `buyerRefLower`, folded
 	 * as the order was) and `awaiting_payment` orders per client network (the
-	 * indexed `offlineClientKey`; a shipped order is never auto-cancelled, so it
-	 * does not hold a network's slot, #678) — two `count()` calls, each a predicate
-	 * on declared index fields.
+	 * indexed `offlineClientKey`) — two `count()` calls, each a predicate on
+	 * declared index fields.
+	 *
+	 * A shipped order is never auto-cancelled, so it does not hold a network's slot
+	 * (#678). That is enforced by the KEY, not the state filter: `#flip` keeps
+	 * `offlineClientKey` only on an `awaiting_payment` order, so shipping drops it.
+	 * The network count's state filter is the same two-value `IN` as the buyer's on
+	 * purpose. With no `ANALYZE`, `offlineClientKey = ? AND state = ?` (or a
+	 * one-value `IN`) ties two equality-bound indexes and SQLite/D1 takes the one
+	 * created last — `[state, createdAt]` — reading every awaiting order in the store
+	 * (#619's trap); the two-value `IN` keeps the plan on `offlineClientKey`. Pinned
+	 * by `offline-network-count-index-plan.test.ts`. It also leaves out a `pending`
+	 * order still being placed under the key. A shipped order written before the key
+	 * was dropped on shipping still carries it and counts, as every open order did
+	 * before #678, until it is paid or cancelled.
 	 */
 	async countOpenOfflineOrders(input: {
 		buyerRef: string;
@@ -634,10 +646,7 @@ export class EmdashOrderStore implements OrderStore {
 		const byClient =
 			input.clientKey === undefined
 				? 0
-				: await this.#orders.count({
-						offlineClientKey: input.clientKey,
-						state: "awaiting_payment",
-					});
+				: await this.#orders.count({ offlineClientKey: input.clientKey, state: open });
 		return { byBuyer, byClient };
 	}
 
@@ -2344,11 +2353,12 @@ export class EmdashOrderStore implements OrderStore {
 			// the SAME write that recorded one — so an outstanding bracket is findable
 			// the instant it exists, and never a moment after it is closed.
 			next.holdsPendingAt = computeHoldsPendingAt(next);
-			// ADR-0044 §7: an offline order keeps its network key only while it is open;
-			// leaving the open states — paid, delivered, cancelled — drops it in this same
-			// write. The per-network cap counts only `awaiting_payment` keys (#678); a
-			// `shipped_awaiting_payment` order still carries its key, uncounted.
-			if (next.offlineClientKey !== undefined && !OFFLINE_UNPAID_STATES.has(input.toState)) {
+			// ADR-0044 §7: an offline order keeps its network key only while it is
+			// `awaiting_payment`, the one state the per-network cap counts (#678). Any
+			// other move — shipped unpaid, paid, delivered, cancelled — drops it in this
+			// same write, so a shipped or closed order keeps no network trace and the
+			// network count needs no state filter of its own to leave it out.
+			if (next.offlineClientKey !== undefined && input.toState !== "awaiting_payment") {
 				delete next.offlineClientKey;
 			}
 			const written = await this.#orders.compareAndSet(input.orderId, current.revision, next);

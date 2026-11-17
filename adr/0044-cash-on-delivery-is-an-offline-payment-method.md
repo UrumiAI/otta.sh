@@ -227,8 +227,15 @@ orders on the next tick. The Settings copy says so.
      under a per-store secret. The secret is random and kept in plugin kv
      (`settings:codNetworkKeySecret`), created on first use. A bare hash of an IPv4 address could
      be reversed by trying every address; the HMAC cannot without the secret.
-     - The field is cleared when the order leaves the open states, so a paid, delivered or
-       cancelled order keeps no network trace.
+     - The field is cleared when the order leaves `awaiting_payment`, the one state the
+       per-network cap counts (#678). A shipped, paid, delivered or cancelled order keeps no
+       network trace. A shipped order written before that change still carries its key and
+       counts for its network, as every open order did before #678, until it is paid or
+       cancelled. No stored key is rewritten.
+     - The per-network count filters `state IN (awaiting_payment, shipped_awaiting_payment)`,
+       not `state = awaiting_payment`. With no `ANALYZE`, the equality ties with the key and
+       SQLite/D1 take the `[state, createdAt]` index, created last, reading every awaiting
+       order (#619's trap). The two-value `IN` keeps the plan on `offlineClientKey`.
      - Two first uses racing could each create a secret, and the last write wins. Orders placed
        under the losing secret then under-count for their network until they close.
      - Orders placed before the /48 change (#678) keep the key of their /64. They under-count for
