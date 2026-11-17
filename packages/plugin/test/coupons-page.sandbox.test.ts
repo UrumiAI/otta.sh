@@ -2817,3 +2817,273 @@ async function withSettingsUnreadable<T>(body: () => Promise<T>): Promise<T> {
 		storage[SETTINGS_COLLECTION] = real;
 	}
 }
+
+// -- admin outcomes, pinned (Task 1c) --------------------------------------------
+//
+// The exact notice — title, variant and copy — every coupon write answers with,
+// pinned on the page BEFORE the decision half of each write moves into
+// `admin/operations/coupons.ts`. They pass on the unchanged code and must keep
+// passing after the move: the extraction changes where the decision lives, never
+// what the operator reads.
+describe("admin Coupons console — pinned write outcomes (workerd sandbox)", () => {
+	function noticeOf(blocks: Blk[]): { variant?: string; title?: string; description?: string } {
+		const banner = topLevelBanners(blocks)[0] as
+			| { variant?: string; title?: string; description?: string }
+			| undefined;
+		return { variant: banner?.variant, title: banner?.title, description: banner?.description };
+	}
+	async function create(values: Record<string, unknown>): Promise<Blk[]> {
+		return blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values,
+			}),
+		);
+	}
+
+	test("create (happy): 'Coupon created', default, and the coupon is stored", async () => {
+		await boot(makeCouponsState());
+		const outcome = await create({
+			id: "c-pin",
+			code: "PIN10",
+			type: "fixed_amount",
+			amount: "10.00",
+			currency: "USD",
+		});
+		expect(noticeOf(outcome)).toEqual({
+			variant: "default",
+			title: "Coupon created",
+			description: '"PIN10" was added and is live per its validity window.',
+		});
+		expect(await stored("c-pin")).toMatchObject({ code: "PIN10", amountCents: 1000 });
+	});
+
+	test("create with a code another coupon has: 'Coupon not created', error, naming the code", async () => {
+		await boot(makeCouponsState());
+		const outcome = await create({
+			id: "c-other",
+			code: "fiveoff",
+			type: "fixed_amount",
+			amount: "5.00",
+			currency: "USD",
+		});
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Coupon not created",
+			description:
+				'The code "fiveoff" is already used by another coupon (codes match whatever their case). Choose another code.',
+		});
+		expect(headerTexts(outcome)).toEqual(["New coupon"]);
+		expect(await stored("c-other")).toBeNull();
+	});
+
+	test("create with an ID another coupon has: 'Coupon not created', error, naming the ID", async () => {
+		await boot(makeCouponsState());
+		const outcome = await create({
+			id: "c-five",
+			code: "BRANDNEW",
+			type: "fixed_amount",
+			amount: "5.00",
+			currency: "USD",
+		});
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Coupon not created",
+			description:
+				'The coupon ID "c-five" is already used by another coupon. Choose another ID — the code "BRANDNEW" is free.',
+		});
+	});
+
+	test("create with a currency the rules client refuses (a cap with no currency): 'Coupon not created', error", async () => {
+		await boot(makeCouponsState());
+		const outcome = await create({
+			id: "c-pct",
+			code: "PCTPIN",
+			type: "percentage",
+			amount: "",
+			currency: "",
+			ratePercent: "10",
+			cap: "5.00",
+		});
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Coupon not created",
+			description:
+				"A discount cap or minimum spend is an amount — enter the currency it is in (like USD) in the currency field.",
+		});
+		expect(headerTexts(outcome)).toEqual(["New coupon"]);
+		expect(await stored("c-pct")).toBeNull();
+	});
+
+	test("create with a currency but nothing to bind it to: 'Coupon not created', error", async () => {
+		await boot(makeCouponsState());
+		const outcome = await create({
+			id: "c-pct",
+			code: "PCTPIN",
+			type: "percentage",
+			amount: "",
+			currency: "EUR",
+			ratePercent: "10",
+			cap: "",
+		});
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Coupon not created",
+			description:
+				"A percentage coupon needs a currency only with a cap or minimum spend — leave the currency blank, or set one of them.",
+		});
+		expect(await stored("c-pct")).toBeNull();
+	});
+
+	test("edit whose rendered currency no longer matches the stored one: 'Coupon not saved', error, nothing written", async () => {
+		await boot(makeCouponsState());
+		const real = decodeCarrier(
+			formFor(await openCoupon("FIVEOFF"), "coupons:save")!.block_id as string,
+		)!;
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:save",
+				values: { ...FIVEOFF_PREFILL, amount: "6.00" },
+				block_id: encodeCarrier("coupons:edit", { ...real, renderedCurrency: "EUR" }),
+			}),
+		);
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Coupon not saved",
+			description:
+				"This coupon's currency changed since you opened it, so its amounts were not saved. Check the coupon and enter them again.",
+		});
+		expect((await stored("c-five"))?.amountCents).toBe(500);
+	});
+
+	test("edit the rules client refuses on another field (a coupon ID with a space): the scaffold's input-refused notice", async () => {
+		await boot(makeCouponsState());
+		const real = decodeCarrier(
+			formFor(await openCoupon("FIVEOFF"), "coupons:save")!.block_id as string,
+		)!;
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:save",
+				values: { ...FIVEOFF_PREFILL, amount: "6.00" },
+				block_id: encodeCarrier("coupons:edit", { ...real, couponId: "c five" }),
+			}),
+		);
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Not saved — check what you entered",
+			description:
+				"The coupon ID can only use plain letters, digits and punctuation — no spaces or accented characters. Nothing was changed.",
+		});
+		expect((await stored("c-five"))?.amountCents).toBe(500);
+	});
+
+	test("edit (happy): 'Coupon saved', default, and the change is stored", async () => {
+		await boot(makeCouponsState());
+		const outcome = await submitForm(await openCoupon("FIVEOFF"), "coupons:save", {
+			...FIVEOFF_PREFILL,
+			amount: "7.00",
+		});
+		expect(noticeOf(outcome)).toEqual({
+			variant: "default",
+			title: "Coupon saved",
+			description:
+				"Every field was replaced with the submitted values (last write wins). Orders already placed keep their snapshotted discount.",
+		});
+		expect(await stored("c-five")).toMatchObject({ amountCents: 700, minSubtotalCents: 3500 });
+	});
+
+	test("edit of a coupon deleted since it was opened: 'Coupon not found', error, on the list", async () => {
+		await boot(makeCouponsState());
+		const blocks = await openCoupon("FIVEOFF");
+		await couponStore.delete("c-five");
+		const outcome = await submitForm(blocks, "coupons:save", { ...FIVEOFF_PREFILL });
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Coupon not found",
+			description: "This coupon no longer exists — it may have been deleted.",
+		});
+	});
+
+	test("delete of a redeemed coupon is withheld: 'Coupon not deleted', error, and it survives", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "coupons:delete",
+				value: { couponId: "c-summer", code: "SUMMER25" },
+			}),
+		);
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Coupon not deleted",
+			description:
+				"This coupon has been redeemed — deletion is blocked to preserve the redemption audit trail. To stop it at checkout, use Retire coupon instead.",
+		});
+		expect(await stored("c-summer")).not.toBeNull();
+	});
+
+	test("delete (happy) then again: 'Coupon deleted', then 'Already deleted', both default", async () => {
+		await boot(makeCouponsState());
+		const fire = async () =>
+			blocksOf(
+				await sandbox!.invokeRoute("admin", {
+					type: "block_action",
+					action_id: "coupons:delete",
+					value: { couponId: "c-five", code: "FIVEOFF" },
+				}),
+			);
+		expect(noticeOf(await fire())).toEqual({
+			variant: "default",
+			title: "Coupon deleted",
+			description:
+				'"FIVEOFF" was removed. In-flight carts recompute without it; orders already placed keep their snapshotted discount.',
+		});
+		expect(noticeOf(await fire())).toEqual({
+			variant: "default",
+			title: "Already deleted",
+			description: "This coupon was already removed.",
+		});
+	});
+
+	test("retire, then again: 'Coupon retired' (default), then 'Already ended' (default)", async () => {
+		await boot(makeCouponsState());
+		const fire = async () =>
+			blocksOf(
+				await sandbox!.invokeRoute("admin", {
+					type: "block_action",
+					action_id: "coupons:retire",
+					value: { couponId: "c-five", code: "FIVEOFF" },
+				}),
+			);
+		const first = noticeOf(await fire());
+		expect(first.variant).toBe("default");
+		expect(first.title).toBe("Coupon retired");
+		expect(first.description).toBe(
+			'Checkout no longer accepts "FIVEOFF". Was valid from 1 Jul 2026 — set that back in Edit to reopen it. Placed orders keep their discount.',
+		);
+		expect(noticeOf(await fire())).toEqual({
+			variant: "default",
+			title: "Already ended",
+			description: "This coupon's expiry had already passed — nothing was changed.",
+		});
+	});
+
+	test("retire of a coupon that does not exist: 'Coupon not found', error", async () => {
+		await boot(makeCouponsState());
+		const outcome = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "coupons:retire",
+				value: { couponId: "c-ghost", code: "GHOST" },
+			}),
+		);
+		expect(noticeOf(outcome)).toEqual({
+			variant: "error",
+			title: "Coupon not found",
+			description: "This coupon no longer exists — it may have been deleted.",
+		});
+	});
+});
