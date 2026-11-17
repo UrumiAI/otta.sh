@@ -46,3 +46,17 @@ export {
 	type StockMovementInput,
 	type StockOutcome,
 } from "./products.js";
+export {
+	checkZoneRegions,
+	createRate,
+	createZone,
+	updateRate,
+	updateZone,
+	upsertRate,
+	type RateThresholdRefusal,
+	type ZoneCreateInput,
+	type ZoneCreateRefusal,
+	type ZoneRegionsCheck,
+	type ZoneRegionsRefusal,
+} from "./shipping.js";
+export { updateTaxSettings } from "./tax.js";

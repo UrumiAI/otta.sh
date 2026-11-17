@@ -2119,3 +2119,292 @@ describe("admin Shipping console — long names keep section headings inside the
 		assertBlockContract(blocks, { screen: "shipping", level: "list" });
 	});
 });
+
+// Characterization pins (refactor: admin operations, MCP). The exact notice —
+// variant, title and copy — the console renders for every outcome of the zone
+// and rate writes whose decision half moves into `admin/operations/shipping.ts`.
+// Written against the code BEFORE the move, so the move cannot reword a notice.
+describe("admin Shipping console — pinned write outcomes (admin operations)", () => {
+	function noticeOf(blocks: LooseBlock[]) {
+		const banner = bannerOf(blocks);
+		return { variant: banner?.variant, title: banner?.title, description: banner?.description };
+	}
+
+	test("create: invalid codes name each token with a hint; nothing is written", async () => {
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "bad",
+			name: "Bad",
+			regions: "UK, US-XX, eu, Narnia, FR",
+		});
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not created",
+			description:
+				"Not ISO region codes: UK (use GB); US-XX (not a US subdivision); EU (not a country — list its countries); Narnia (not a code). Use a country code (US) or a state/province code (US-CA).",
+		});
+		expect(await shippingRules.getZone("bad")).toBeNull();
+	});
+
+	test("save: invalid codes are refused with the same copy under the save title", async () => {
+		await seedShipping();
+		const form = formFor(sectionBlocks(await loadZones(), "ship:zone:empty"), "shipping:save-zone");
+		const blocks = await submitForm(
+			"shipping:save-zone",
+			{ name: "Empty zone", regions: "UK" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not saved",
+			description:
+				"Not ISO region codes: UK (use GB). Use a country code (US) or a state/province code (US-CA).",
+		});
+		expect((await shippingRules.getZone("empty"))?.regions).toBeNull();
+	});
+
+	test("create: an overlap names the code and the other zone; nothing is written", async () => {
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "us2",
+			name: "US again",
+			regions: "US-CA, us",
+		});
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not created",
+			description:
+				'US is already in the zone "United States" (us). A code can belong to one zone only — remove it there first.',
+		});
+		expect(await shippingRules.getZone("us2")).toBeNull();
+	});
+
+	test("save: an overlap is refused under the save title", async () => {
+		await seedShipping();
+		const form = formFor(sectionBlocks(await loadZones(), "ship:zone:empty"), "shipping:save-zone");
+		const blocks = await submitForm(
+			"shipping:save-zone",
+			{ name: "Empty zone", regions: "US" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not saved",
+			description:
+				'US is already in the zone "United States" (us). A code can belong to one zone only — remove it there first.',
+		});
+	});
+
+	test("create happy: 'Zone created' names the zone", async () => {
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "eu",
+			name: "Europe",
+			regions: "FR, DE",
+		});
+		expect(noticeOf(blocks)).toEqual({
+			variant: "default",
+			title: "Zone created",
+			description: '"Europe" (eu) was added.',
+		});
+		expect(await shippingRules.getZone("eu")).toEqual({
+			id: "eu",
+			name: "Europe",
+			regions: ["FR", "DE"],
+		});
+	});
+
+	test("create: the first zone without the acknowledgement is refused; nothing is written", async () => {
+		await seedShipping({ zones: [], methods: [], rates: [] });
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "jp",
+			name: "Japan",
+			regions: "JP",
+			ackFirstZone: false,
+		});
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not created",
+			description:
+				"This is your first zone — confirm you understand that addresses outside your zones can't check out, then create it.",
+		});
+		expect(await shippingRules.getZone("jp")).toBeNull();
+	});
+
+	test("create: on the first zone, a bad region is reported BEFORE the missing acknowledgement", async () => {
+		await seedShipping({ zones: [], methods: [], rates: [] });
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "uk",
+			name: "Britain",
+			regions: "UK",
+			ackFirstZone: false,
+		});
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not created",
+			description:
+				"Not ISO region codes: UK (use GB). Use a country code (US) or a state/province code (US-CA).",
+		});
+	});
+
+	test("create: a duplicate id is the 409 copy", async () => {
+		await seedShipping();
+		const blocks = await submitForm("shipping:create-zone", {
+			id: "us",
+			name: "Again",
+			regions: "CA",
+		});
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not created",
+			description: 'A zone with the ID "us" already exists — choose another ID.',
+		});
+	});
+
+	test("save happy: 'Zone saved'", async () => {
+		await seedShipping();
+		const form = formFor(sectionBlocks(await loadZones(), "ship:zone:empty"), "shipping:save-zone");
+		const blocks = await submitForm(
+			"shipping:save-zone",
+			{ name: "Canada", regions: "ca" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "default",
+			title: "Zone saved",
+			description: "The zone was updated.",
+		});
+		expect(await shippingRules.getZone("empty")).toEqual({
+			id: "empty",
+			name: "Canada",
+			regions: ["CA"],
+		});
+	});
+
+	test("save: a zone deleted since the form loaded is 'Zone not found'", async () => {
+		await seedShipping();
+		const form = formFor(sectionBlocks(await loadZones(), "ship:zone:empty"), "shipping:save-zone");
+		await shippingRules.deleteZone("empty");
+		const blocks = await submitForm(
+			"shipping:save-zone",
+			{ name: "Gone", regions: "" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not found",
+			description: "This zone no longer exists — it may have already been deleted.",
+		});
+	});
+
+	test("create rate: a threshold on a FLAT-RATE method is refused; nothing is written", async () => {
+		await seedShipping();
+		const form = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "4.99", minSubtotal: "35.00" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Rate not created",
+			description:
+				"A flat-rate method always charges its rate, so a free-shipping threshold would never apply. Leave it blank, or change the method's type to Free shipping.",
+		});
+		expect(await shippingRules.getRate("bare", toCurrency("USD"))).toBeNull();
+	});
+
+	test("save rate: a threshold on a FLAT-RATE method is refused under the save title", async () => {
+		await seedShipping();
+		const form = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
+		const blocks = await submitForm(
+			"shipping:save-rate",
+			{ amount: "5.99", minSubtotal: "35.00" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Rate not saved",
+			description:
+				"A flat-rate method always charges its rate, so a free-shipping threshold would never apply. Leave it blank, or change the method's type to Free shipping.",
+		});
+		expect((await shippingRules.getRate("standard", toCurrency("USD")))?.amountCents).toBe(499);
+	});
+
+	test("create rate happy (with a threshold on a free-shipping method): 'Rate created'", async () => {
+		await seedShipping({
+			methods: [{ id: "free", zoneId: "us", name: "Free over $50", type: "free_shipping" }],
+			rates: [],
+		});
+		const form = formFor(await openPath(["us", "free"]), "shipping:create-rate");
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "0", minSubtotal: "50.00" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "default",
+			title: "Rate created",
+			description: "The USD rate was added.",
+		});
+	});
+
+	test("create rate: a currency that gained a rate since the form loaded is the 409 copy", async () => {
+		await seedShipping();
+		const form = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		await shippingRules.createRate({
+			methodId: "bare",
+			currency: toCurrency("USD"),
+			amountCents: toCents(300),
+			minSubtotalCents: null,
+		});
+		const blocks = await submitForm(
+			"shipping:create-rate",
+			{ currency: "USD", amount: "1.00", minSubtotal: "" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Rate not created",
+			description: "This method already has a USD rate — edit that rate instead.",
+		});
+	});
+
+	test("save rate happy: 'Rate saved'", async () => {
+		await seedShipping();
+		const form = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
+		const blocks = await submitForm(
+			"shipping:save-rate",
+			{ amount: "5.99", minSubtotal: "" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "default",
+			title: "Rate saved",
+			description: "The shipping rate was updated.",
+		});
+	});
+
+	test("save rate: a rate changed since the form loaded is the stale copy", async () => {
+		await seedShipping();
+		const form = formFor(await openPath(["us", "standard"]), "shipping:save-rate");
+		await shippingRules.updateRate(
+			"standard",
+			toCurrency("USD"),
+			{ amountCents: toCents(650), minSubtotalCents: null },
+			toCents(499),
+		);
+		const blocks = await submitForm(
+			"shipping:save-rate",
+			{ amount: "5.99", minSubtotal: "" },
+			form?.block_id,
+		);
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "This rate changed since you loaded it — reload",
+			description:
+				"Your edit was NOT applied — the latest value is shown below. Re-apply your change and save again.",
+		});
+		expect((await shippingRules.getRate("standard", toCurrency("USD")))?.amountCents).toBe(650);
+	});
+});

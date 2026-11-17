@@ -2174,3 +2174,94 @@ describe("admin Tax console — long names keep section headings inside the 60-c
 		expect(contextTexts(body).some((t) => t.includes(LONG))).toBe(true);
 	});
 });
+
+// Characterization pins (refactor: admin operations, MCP). The exact notice the
+// Tax options save renders for each outcome of `updateTaxSettings`, whose
+// decision half moves into `admin/operations/tax.ts`. Written against the code
+// BEFORE the move, so the move cannot reword a notice.
+describe("admin Tax console — pinned tax options outcomes (admin operations)", () => {
+	async function openOptions(): Promise<LooseBlock[]> {
+		const button = createButton(await loadClasses(), "tax:show-options");
+		expect(button, "no Tax options button").toBeDefined();
+		return clickButton("tax:show-options", button!.value);
+	}
+
+	test("save happy: 'Tax options saved', and the block is stored", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		const after = await submitForm(blocks, "tax:save-options", {
+			...formInitialValues(blocks, "tax:save-options"),
+			enabled: true,
+			roundAtSubtotal: true,
+		});
+		expect(bannerOf(after)).toMatchObject({
+			variant: "default",
+			title: "Tax options saved",
+			description:
+				"New quotes and orders use these options. Orders already placed keep the tax they were charged.",
+		});
+		expect((await settingsStore.get()).tax).toMatchObject({ enabled: true, roundAtSubtotal: true });
+	});
+
+	test("save: an invalid base address is 'Tax options not saved' with the address copy", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		const after = await submitForm(blocks, "tax:save-options", {
+			...formInitialValues(blocks, "tax:save-options"),
+			baseCountry: "XX",
+		});
+		expect(bannerOf(after)).toMatchObject({
+			variant: "error",
+			title: "Tax options not saved",
+			description:
+				"The shop address needs a two-letter country code (like GB or US) and, if given, a region code of that country (like NY).",
+		});
+		expect((await settingsStore.get()).tax).toBeUndefined();
+	});
+
+	test("save: a fixed shipping class that does not exist is the generic invalid copy", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		const after = await submitForm(blocks, "tax:save-options", {
+			...formInitialValues(blocks, "tax:save-options"),
+			shippingTaxClass: "fixed:nope",
+		});
+		expect(bannerOf(after)).toMatchObject({
+			variant: "error",
+			title: "Tax options not saved",
+			description: "One of the options is not valid — check it and save again.",
+		});
+		expect((await settingsStore.get()).tax).toBeUndefined();
+	});
+
+	test("save: options changed since the form loaded are the stale copy; nothing is overwritten", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		await settingsStore.update(
+			{
+				tax: {
+					enabled: true,
+					pricesIncludeTax: false,
+					basedOn: "shipping",
+					baseAddress: null,
+					shippingTaxClass: { kind: "inherit" },
+					roundAtSubtotal: false,
+					displayCart: "excl",
+					totalsDisplay: "itemized",
+				},
+			},
+			idempotencyKey("pin-peer-edit"),
+		);
+		const after = await submitForm(blocks, "tax:save-options", {
+			...formInitialValues(blocks, "tax:save-options"),
+			roundAtSubtotal: true,
+		});
+		expect(bannerOf(after)).toMatchObject({
+			variant: "error",
+			title: "Tax options changed since you loaded them — reload",
+			description:
+				"Your change was NOT applied — the current options are shown below. Re-apply your change and save again.",
+		});
+		expect((await settingsStore.get()).tax?.roundAtSubtotal).toBe(false);
+	});
+});
