@@ -49,7 +49,7 @@ describe("codRequestFacts", () => {
 		expect(codRequestFacts(undefined)).toEqual({ attested: false, network: null });
 	});
 
-	test("Cloudflare's pseudo-IPv4 reads the real IPv6, cut to its /64", () => {
+	test("Cloudflare's pseudo-IPv4 reads the real IPv6, cut to its /48", () => {
 		expect(
 			codRequestFacts(
 				request({
@@ -57,15 +57,50 @@ describe("codRequestFacts", () => {
 					"cf-connecting-ipv6": "2001:db8:aaaa:bbbb:1:2:3:4",
 				}),
 			).network,
-		).toBe("2001:db8:aaaa:bbbb::/64");
+		).toBe("2001:db8:aaaa::/48");
 	});
 
-	test("the network rule: IPv4 whole, IPv6 by /64, mapped forms to their IPv4", () => {
+	test("the network rule: IPv4 whole, IPv6 by /48, mapped forms to their IPv4", () => {
 		expect(clientNetwork("198.51.100.9")).toBe("198.51.100.9");
-		expect(clientNetwork("2001:db8::1")).toBe("2001:db8:0:0::/64");
+		expect(clientNetwork("2001:db8::1")).toBe("2001:db8:0::/48");
 		expect(clientNetwork("2001:db8::ffff")).toBe(clientNetwork("2001:db8::1"));
 		expect(clientNetwork("::ffff:192.0.2.1")).toBe("192.0.2.1");
+		expect(clientNetwork("64:ff9b::198.51.100.4")).toBe("198.51.100.4");
 		expect(clientNetwork(null)).toBeNull();
+	});
+
+	/**
+	 * #678: one host often holds a whole /48, so it can move between /64s at will.
+	 * The cap's network is the /48: every /64 inside it is the same network, and
+	 * the next /48 is another.
+	 */
+	test("rotating /64s inside one /48 stays one network; another /48 is another", () => {
+		const home = clientNetwork("2001:db8:aaaa:1::1");
+		expect(home).toBe("2001:db8:aaaa::/48");
+		for (const rotated of ["2001:db8:aaaa:2::1", "2001:db8:aaaa:ffff:9:9:9:9", "2001:DB8:AAAA::"]) {
+			expect(clientNetwork(rotated), rotated).toBe(home);
+		}
+		expect(clientNetwork("2001:db8:aaab:1::1")).not.toBe(home);
+		expect(clientNetwork("2001:db9:aaaa:1::1")).not.toBe(home);
+	});
+
+	test("the /48 key is the same however the address is spelled, and junk never widens to a real network", () => {
+		const home = "2001:db8:aaaa::/48";
+		for (const spelling of [
+			"2001:0db8:aaaa:0001:0000:0000:0000:0001",
+			" 2001:db8:aaaa:1::1 ",
+			"2001:db8:aaaa:1::198.51.100.4", // an IPv4 tail on an ordinary prefix stays IPv6
+		]) {
+			expect(clientNetwork(spelling), spelling).toBe(home);
+		}
+		// An IPv4 address in IPv6 dress is that IPv4 address, not a /48 of ::ffff.
+		expect(clientNetwork("::ffff:198.51.100.4")).toBe(clientNetwork("198.51.100.4"));
+		expect(clientNetwork("::ffff:c633:6404")).toBe("198.51.100.4");
+		// Malformed: bounded and tagged, never parsed into some /48.
+		for (const junk of ["2001:db8:::1", "2001:db8::1::2", "2001:db8:aaaa:zzzz::1", "not-an-ip"]) {
+			expect(clientNetwork(junk), junk).toMatch(/^raw:/);
+		}
+		expect(clientNetwork(`2001:${"a".repeat(500)}`)?.length).toBeLessThanOrEqual(4 + 64);
 	});
 });
 

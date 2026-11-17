@@ -190,6 +190,10 @@ const MESSAGES: Record<string, string> = {
 	// do and never implies the buyer has orders open.
 	OFFLINE_ORDER_LIMIT:
 		"Cash on delivery isn't available for this order right now. Please choose another payment method.",
+	// ADR-0044: the cart holds more items than one cash-on-delivery order may
+	// (#678). Judged from the cart alone, so it says nothing about open orders.
+	OFFLINE_ORDER_TOO_LARGE:
+		"This order has too many items for cash on delivery. Please order fewer items, or choose another payment method.",
 	...SELECTION_MESSAGES,
 	// ── Customer account (issue #306, ADR-0004) ─────────────────────────────
 	// A failed magic link. Each says what to do next, and none says anything

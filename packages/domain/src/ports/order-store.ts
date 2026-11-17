@@ -81,11 +81,14 @@ export interface OrderStore {
 	markPaid(orderId: OrderId, providerRef?: string, options?: MarkPaidOptions): Promise<boolean>;
 	/**
 	 * How many OPEN offline orders (ADR-0044: `awaiting_payment` or
-	 * `shipped_awaiting_payment`) a buyer and a client network already have — the
-	 * caps checkout applies before placing another. `buyerRef` matches
-	 * case-insensitively (as `buyerRefLower` does); `clientKey` is the opaque key the
-	 * order was placed under (`CreateOrderInput.offlineClientKey`). Either count is
-	 * 0 when its key is absent. Read-only.
+	 * `shipped_awaiting_payment`) a buyer already has, and how many
+	 * `awaiting_payment` orders a client network has — the caps checkout applies
+	 * before placing another. The network count leaves out shipped orders: they are
+	 * never auto-cancelled, so on a shared network they would hold its slots with no
+	 * end (#678). `buyerRef` matches case-insensitively (as `buyerRefLower` does);
+	 * `clientKey` is the opaque key the order was placed under
+	 * (`CreateOrderInput.offlineClientKey`). Either count is 0 when its key is
+	 * absent. Read-only.
 	 */
 	countOpenOfflineOrders(input: {
 		buyerRef: string;

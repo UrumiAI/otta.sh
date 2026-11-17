@@ -1580,6 +1580,48 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	});
 
 	/**
+	 * #678: the per-network cap keys an IPv6 client by its /48, so a host that
+	 * holds a /48 cannot dodge the cap by moving to another /64 inside it.
+	 */
+	test("cash on delivery: the per-network cap holds across /64s inside one IPv6 /48", async () => {
+		expect(
+			await saveCod(true, "", { codMaxOpenPerClient: "1", codMaxOpenPerBuyer: "0" }),
+		).toHaveProperty("result");
+		const place = async (buyer: string, ip: string) => {
+			const cartId = await createCart();
+			await addLine(cartId, LINE_SKUS[1]!, LINE_PRODUCT_IDS[1]!, 1);
+			return resultOf(
+				await sandboxHandle.invokeRoute(
+					"storefront/checkout/place",
+					{
+						cartId,
+						buyerRef: buyer,
+						idempotencyKey: `checkout:${cartId}`,
+						paymentMethod: "cod",
+						shippingAddress: COD_ADDRESS,
+					},
+					siteCodRequest(ip),
+				),
+			);
+		};
+		try {
+			expect(await place("v6-a-1@example.com", "2001:db8:678:1::10")).toMatchObject({
+				ok: true,
+				state: "awaiting_payment",
+			});
+			// Another /64 in the same /48: the same network, at its cap.
+			expect(await place("v6-a-2@example.com", "2001:db8:678:2::10")).toEqual({
+				ok: false,
+				reason: "OFFLINE_ORDER_LIMIT",
+			});
+			// Another /48: placed.
+			expect(await place("v6-b-1@example.com", "2001:db8:679:1::10")).toMatchObject({ ok: true });
+		} finally {
+			await saveCod(false, "", { codMaxOpenPerClient: "20", codMaxOpenPerBuyer: "3" });
+		}
+	});
+
+	/**
 	 * ADR-0044 review finding 1: "Start a new cart" and the next add-to-cart never
 	 * touch a placed COD order. The abandon cancels only a `pending` order, and a
 	 * fresh cart is just that — the COD order stays `awaiting_payment`, its stock

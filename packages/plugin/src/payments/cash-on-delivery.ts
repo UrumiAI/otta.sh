@@ -15,7 +15,8 @@
  *  - `settings:codMaxOpenPerBuyer` / `settings:codMaxOpenPerClient` — caps on open
  *    COD orders per buyer email (default 3) and per client network (default 20 —
  *    carrier and office NAT put many honest buyers behind one address, ADR-0044
- *    §7). 0..100; 0 means no cap.
+ *    §7; the network counts only `awaiting_payment` orders, #678). 0..100; 0
+ *    means no cap.
  *  - `settings:codMaxUnitsPerOrder` — the most physical units ONE COD order may
  *    hold (default 10): an unpaid order holds its stock for the whole auto-cancel
  *    window, and one cart line may hold thousands, so without it one anonymous

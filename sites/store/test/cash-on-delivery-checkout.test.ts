@@ -335,6 +335,7 @@ describe("buyer copy for the COD refusals", () => {
 		["PAYMENT_METHOD_UNAVAILABLE", /isn't available for this order/],
 		["OFFLINE_NEEDS_PHYSICAL", /only available for orders with items we deliver/],
 		["OFFLINE_ORDER_LIMIT", /isn't available for this order right now/],
+		["OFFLINE_ORDER_TOO_LARGE", /too many items for cash on delivery\. Please order fewer items/],
 		["SHIPPING_PHONE_REQUIRED", /phone number for cash on delivery/],
 	])("%s says what happened and what to do", (token, copy) => {
 		expect(cartErrorMessage(token)).toMatch(copy);
