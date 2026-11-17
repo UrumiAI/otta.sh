@@ -67,6 +67,33 @@ export {
 	type OrderTotalsWire,
 	type TransitionOrderResult,
 } from "./admin/admin-orders-surface.js";
+// admin operations (MCP) — the decision half of each admin write (the ledger
+// re-read and refund key, the DA-3a order re-read, every derived idempotency
+// key), shared by the console's actions and `@urumi.ai/otta-mcp`'s tools so a
+// guard holds for both.
+export {
+	addOrderNote,
+	cancelOrder,
+	recordFulfillment,
+	refundOrder,
+	resolveReconciliation,
+	resolveUnverifiedRefund,
+	revokeDownloadAccess,
+	transitionOrder,
+	type AddNoteInput,
+	type CancelInput,
+	type CancelOutcome,
+	type OrderSettlement,
+	type RecordFulfillmentInput,
+	type RefundInput,
+	type RefundOutcome,
+	type ResolveReconciliationInput,
+	type ResolveUnverifiedRefundInput,
+	type RevokeDownloadAccessInput,
+	type TransitionInput,
+	type TransitionOutcome,
+} from "./admin/operations/index.js";
+export type { AdminOrdersSurface, InlineEmailStatus } from "./admin/admin-orders-surface.js";
 // `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
 // export are gone (INC-R3, ADR-0015): that Block Kit screen was retired once the
 // React console's writes moved off it, so `/products` is served by the

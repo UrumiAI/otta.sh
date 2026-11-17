@@ -69,7 +69,6 @@ import {
 	BANNER_BUDGET,
 	ORDER_STATES,
 	REFUND_TOO_HIGH_TITLE,
-	UNPAID_ORDER_STATES,
 	fit,
 	formatAmount as formatTotal,
 	refundIncrementText,
@@ -77,10 +76,19 @@ import {
 import type {
 	AdminOrdersSurface,
 	InlineEmailStatus,
-	RefundsSummaryWire,
 	ResolveFollowUpWire,
 	TransitionRefusal,
 } from "./admin-orders-surface.js";
+import {
+	addOrderNote,
+	cancelOrder,
+	recordFulfillment,
+	refundOrder,
+	resolveReconciliation,
+	resolveUnverifiedRefund,
+	revokeDownloadAccess,
+	transitionOrder,
+} from "./operations/index.js";
 import { readString, screenActions, startOfDay, type Notice } from "./scaffold/index.js";
 import type { SelectOption } from "../types.js";
 
@@ -426,8 +434,12 @@ function transitionAction(toState: string): OrdersAction {
 		if (orderId === undefined) return applied(UNREADABLE);
 		const observedState = readWatermark(payload["state"]);
 		if (observedState === undefined) return applied(UNREADABLE);
-		const live = await client.getOrder(orderId).catch(() => null);
-		if (live === null) {
+		// The re-read, the watermark compare and the key are the operation's
+		// (`operations/orders.ts`). Who made the move — the signed-in operator the
+		// host named — is recorded for History, which showed "—" for every
+		// hand-made status move (QA2).
+		const outcome = await transitionOrder(client, { orderId, toState, observedState }, operator);
+		if (outcome.kind === "order_unreadable") {
 			return applied({
 				variant: "error",
 				title: "Nothing was changed",
@@ -435,20 +447,14 @@ function transitionAction(toState: string): OrdersAction {
 					"This order could not be re-checked before the status change, so nothing was applied. Reload and try again.",
 			});
 		}
-		if (live.order.state !== observedState) {
+		if (outcome.kind === "state_changed") {
 			return applied({
 				variant: "error",
 				title: "The order changed — nothing was applied",
-				description: `It was ${observedState} when you started and is now ${live.order.state}. Check the order below before changing its status.`,
+				description: `It was ${observedState} when you started and is now ${outcome.liveState}. Check the order below before changing its status.`,
 			});
 		}
-		const key = `admin-transition:${orderId}:${toState}`;
-		// Who made the move — the signed-in operator the host named — for History,
-		// which showed "—" for every hand-made status move (QA2).
-		const result = await client.transitionOrder(orderId, toState, {
-			idempotencyKey: key,
-			...(operator !== undefined ? { actor: operator } : {}),
-		});
+		const { result } = outcome;
 		if (!result.ok) return applied(transitionRefusalNotice(result.reason, observedState));
 		if (!result.transitioned) {
 			// The guarded flip matched 0 rows — already in that state, or a lost race.
@@ -466,7 +472,7 @@ function transitionAction(toState: string): OrdersAction {
 		// ADR-0044: the cash-on-delivery moves say what they mean, not the state name —
 		// and Mark paid always says the payment was recorded, email or not.
 		const offlinePaid =
-			live.order.settlement === "offline" && (toState === "paid" || toState === "delivered");
+			outcome.settlement === "offline" && (toState === "paid" || toState === "delivered");
 		if (offlinePaid) {
 			return applied({
 				variant: "default",
@@ -482,7 +488,7 @@ function transitionAction(toState: string): OrdersAction {
 
 // -- notes --------------------------------------------------------------------
 
-const addNoteAction: OrdersAction = async (client, payload) => {
+const addNoteAction: OrdersAction = async (client, payload, operator) => {
 	const orderId = readString(payload["orderId"]);
 	if (orderId === undefined) return applied(UNREADABLE);
 	const author = (readString(payload["author"]) ?? "").trim();
@@ -496,10 +502,9 @@ const addNoteAction: OrdersAction = async (client, payload) => {
 			description: "Enter both an author and a note body.",
 		});
 	}
-	// Content-derived key (F-2a): a double-submit of the same note is a no-op,
-	// a genuinely new note still appends.
-	const key = `admin-note:${orderId}:${author}:${body}`;
-	const result = await client.addNote(orderId, { author, body }, { idempotencyKey: key });
+	// Content-derived key (F-2a, in the operation): a double-submit of the same
+	// note is a no-op, a genuinely new note still appends.
+	const result = await addOrderNote(client, { orderId, author, body }, operator);
 	if (!result.ok) {
 		return applied({
 			variant: "error",
@@ -534,11 +539,7 @@ const addNoteAction: OrdersAction = async (client, payload) => {
 const revokeDownloadsAction: OrdersAction = async (client, payload, operator) => {
 	const orderId = readString(payload["orderId"])?.trim();
 	if (orderId === undefined || orderId.length === 0) return applied(UNREADABLE);
-	const result = await client.revokeDownloadAccess(
-		orderId,
-		{ revokedBy: operator ?? "admin" },
-		{ idempotencyKey: `admin-revoke-downloads:${orderId}` },
-	);
+	const result = await revokeDownloadAccess(client, { orderId }, operator);
 	if (!result.ok) {
 		return applied({
 			variant: "error",
@@ -569,7 +570,7 @@ const revokeDownloadsAction: OrdersAction = async (client, payload, operator) =>
 
 // -- reconciliation -----------------------------------------------------------
 
-const resolveReconciliationAction: OrdersAction = async (client, payload) => {
+const resolveReconciliationAction: OrdersAction = async (client, payload, operator) => {
 	const orderId = readString(payload["orderId"]);
 	if (orderId === undefined) return applied(UNREADABLE);
 	// The flag AS DISPLAYED when the form rendered — the compare-and-clear key.
@@ -584,11 +585,10 @@ const resolveReconciliationAction: OrdersAction = async (client, payload) => {
 			description: "Enter both a reason and who is resolving it.",
 		});
 	}
-	const key = `admin-resolve-reconciliation:${orderId}`;
-	const result = await client.resolveReconciliation(
-		orderId,
-		{ expectedFlag, outcome, reason, resolvedBy },
-		{ idempotencyKey: key },
+	const result = await resolveReconciliation(
+		client,
+		{ orderId, expectedFlag, outcome, reason, resolvedBy },
+		operator,
 	);
 	if (!result.ok) {
 		// A stale review gets its own copy: the flag changed under the admin, and a
@@ -625,7 +625,7 @@ const resolveReconciliationAction: OrdersAction = async (client, payload) => {
 
 // -- fulfilment ---------------------------------------------------------------
 
-const recordFulfillmentAction: OrdersAction = async (client, payload) => {
+const recordFulfillmentAction: OrdersAction = async (client, payload, operator) => {
 	const orderId = readString(payload["orderId"]);
 	if (orderId === undefined) return applied(UNREADABLE);
 	const carrier = (readString(payload["carrier"]) ?? "").trim();
@@ -651,17 +651,17 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
 	}
 	// A date field yields YYYY-MM-DD; the service wants a full ISO datetime.
 	const shippedAt = normalizeBound(readString(payload["shippedAt"]));
-	const key = `admin-record-fulfillment:${orderId}`;
-	const result = await client.recordFulfillment(
-		orderId,
+	const result = await recordFulfillment(
+		client,
 		{
+			orderId,
 			carrier,
 			trackingNumber,
 			...(trackingUrl.length > 0 ? { trackingUrl } : {}),
 			...(shippedAt !== undefined ? { shippedAt } : {}),
 			recordedBy,
 		},
-		{ idempotencyKey: key },
+		operator,
 	);
 	if (!result.ok) {
 		return applied(
@@ -728,23 +728,6 @@ const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 	if (!CANCEL_REASON_LABELS.has(reason) || observedState === undefined) {
 		return applied(UNREADABLE);
 	}
-	// DA-3a: re-read before writing.
-	const live = await client.getOrder(orderId).catch(() => null);
-	if (live === null) {
-		return applied({
-			variant: "error",
-			title: "Nothing was cancelled",
-			description:
-				"This order could not be re-checked before cancelling, so nothing was applied. Reload and try again.",
-		});
-	}
-	if (live.order.state !== observedState) {
-		return applied({
-			variant: "error",
-			title: "The order changed — nothing was cancelled",
-			description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you started. Check the order below, then cancel again if you still want to.`,
-		});
-	}
 	// "Return the items to stock" — the operator's explicit choice, sent with every
 	// cancel of a paid order. An UNPAID order's cancel (pending, or either of cash
 	// on delivery's unpaid states — the console's own `UNPAID_ORDER_STATES`)
@@ -752,32 +735,46 @@ const cancelOrderAction: OrdersAction = async (client, payload, operator) => {
 	// (or unreadable) value is not defaulted either way (issue #364): it comes from
 	// a tab rendered before the box existed, whose operator was never asked, and
 	// both guesses are wrong for someone (restocking damaged goods, or keeping
-	// returned ones off sale). Refuse it and ask for a reload.
+	// returned ones off sale). The operation refuses it (`restock_choice_required`)
+	// and this asks for a reload.
 	const restockField = readString(payload["restock"]);
-	if (
-		!UNPAID_ORDER_STATES.has(observedState) &&
-		restockField !== "true" &&
-		restockField !== "false"
-	) {
-		return applied(STALE_CANCEL_PAGE);
-	}
-	const restock = restockField !== "false";
-	// The key is the CANCELLATION's, and the refund and restock legs derive theirs
-	// from it (`<key>:refund`, `<key>:restock:<line>`), so a double-click or a retry
-	// after a failure replays one cancellation rather than refunding twice.
-	const key = `admin-cancel:${orderId}`;
-	const result = await client.cancelOrder(
-		orderId,
+	const restockChoice =
+		restockField === "true" ? true : restockField === "false" ? false : undefined;
+	// DA-3a (re-read before writing, refuse on a mismatch), the restock rule and the
+	// key are the operation's. The key is the CANCELLATION's, and the refund and
+	// restock legs derive theirs from it (`<key>:refund`, `<key>:restock:<line>`),
+	// so a double-click or a retry after a failure replays one cancellation rather
+	// than refunding twice. A blank name is recorded as the signed-in operator (QA2:
+	// a cancel's refund was recorded BY "admin"), else "admin".
+	const outcome = await cancelOrder(
+		client,
 		{
+			orderId,
 			reason,
+			observedState,
 			...(detail.length > 0 ? { detail } : {}),
-			// The typed name, else the signed-in operator (QA2: a cancel's refund was
-			// recorded BY "admin"), else "admin".
-			cancelledBy: cancelledBy.length > 0 ? cancelledBy : (operator ?? "admin"),
-			restock,
+			...(cancelledBy.length > 0 ? { cancelledBy } : {}),
+			...(restockChoice !== undefined ? { restock: restockChoice } : {}),
 		},
-		{ idempotencyKey: key },
+		operator,
 	);
+	if (outcome.kind === "order_unreadable") {
+		return applied({
+			variant: "error",
+			title: "Nothing was cancelled",
+			description:
+				"This order could not be re-checked before cancelling, so nothing was applied. Reload and try again.",
+		});
+	}
+	if (outcome.kind === "state_changed") {
+		return applied({
+			variant: "error",
+			title: "The order changed — nothing was cancelled",
+			description: `It was ${observedState} when you started and is now ${outcome.liveState} — someone else moved it since you started. Check the order below, then cancel again if you still want to.`,
+		});
+	}
+	if (outcome.kind === "restock_choice_required") return applied(STALE_CANCEL_PAGE);
+	const { result, restock } = outcome;
 	// The write was ATTEMPTED past this point, so every branch below is an outcome
 	// to read rather than an input to correct — `NOT_CANCELLABLE` above all, which
 	// means the order cannot be cancelled at all now.
@@ -1057,14 +1054,14 @@ const ALREADY_REFUNDED: Notice = {
 
 function staleLedgerNotice(
 	submittedAmountCents: number,
-	live: RefundsSummaryWire,
+	remainingCents: number,
 	cur: string,
 ): Notice {
 	return {
 		variant: "error",
 		title: "The refund ledger changed — nothing was refunded",
 		description: fit(
-			`${formatTotal(submittedAmountCents, cur)} was not refunded: a refund was recorded since this page loaded — in another tab or by someone else. ${formatTotal(live.remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
+			`${formatTotal(submittedAmountCents, cur)} was not refunded: a refund was recorded since this page loaded — in another tab or by someone else. ${formatTotal(remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
 			BANNER_BUDGET,
 		),
 	};
@@ -1134,114 +1131,67 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 	if (amountCents === null || amountCents <= 0 || observedSoFar === null || currency.length === 0) {
 		return applied(UNREADABLE);
 	}
-	// DA-3a: re-read, then compare against the watermark the operator SAW.
-	const live = await client.getRefunds(orderId).catch(() => null);
-	if (live === null) {
-		return applied({
-			variant: "error",
-			title: "Nothing was refunded",
-			description:
-				"The refund ledger could not be re-checked, so nothing was applied. Reload and try again.",
-		});
-	}
-	const liveCur = live.currency.length > 0 ? live.currency : currency;
-	// The observed watermark is the third key component (F-2a) — NOT a nonce.
-	const baseKey = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
-	if (live.finalizedTotalCents !== observedSoFar) {
-		// THIS submission already recorded (a retry or a resubmitted page after it
-		// went through): the ledger moved because of it. Saying "someone else
-		// refunded this order" blamed a stranger for the operator's own refund (QA
-		// round 2).
-		const ownRecorded = live.refunds.find(
-			(r) =>
-				r.status === "recorded" &&
-				(r.idempotencyKey === baseKey || r.idempotencyKey.startsWith(`${baseKey}:v`)),
-		);
-		if (ownRecorded !== undefined) {
-			// REPLAY IT, under the key it was recorded with (issue #405, item 3). The
-			// refund is recorded before the order's download access is revoked, so a
-			// process that died between the two left a `refunded` order whose grants
-			// are still active — and THIS re-click is the retry that is meant to
-			// finish the job. Answering from the ledger alone never reached the
-			// service, so the revoke never ran. The domain resolves a `recorded` key
-			// as a benign duplicate with NO provider call, and revokes there when the
-			// order is `refunded`; `revokeByOrder` is idempotent, so on the ordinary
-			// double-click this costs a read and changes nothing. The row's own
-			// amount, currency and name are sent, so the domain's same-request check
-			// matches by construction.
-			//
-			// Whatever the replay answers, the notice stays ALREADY_REFUNDED: the
-			// money is on the ledger, and that is the operator's question. A refusal
-			// here (the order's gateway unwired since, say) cannot heal the revoke,
-			// and the residual is the one `refund-order.ts` names — a `refunded`
-			// order, which the download route refuses on. A revoke that THROWS
-			// propagates, so the operator sees a failure and clicks again.
-			const replay = await client.refundOrder(
-				orderId,
-				{
-					amountCents: ownRecorded.amountCents,
-					currency: ownRecorded.currency,
-					refundedBy: ownRecorded.refundedBy,
-				},
-				{ idempotencyKey: ownRecorded.idempotencyKey },
-			);
-			// The operator still sees ALREADY_REFUNDED, but a refused replay is a revoke
-			// that did not finish — leave a trace. Status and the typed reason code only:
-			// no order id, key, name or amount.
-			if (!replay.ok) {
-				console.warn(
-					`[otta] refund replay refused (status ${String(replay.status)}, reason ${replay.reason ?? "none"}); download access may not have been revoked`,
-				);
-			}
-			return applied(ALREADY_REFUNDED);
-		}
-		// The genuinely CONCURRENT case: the ledger moved between the confirm being
-		// drawn and this click. This is the ONLY window now checked server-side, and
-		// the surface's own pre-dialog validation cannot see it.
-		return applied(staleLedgerNotice(amountCents, live, liveCur));
-	}
-	const voidedAttempts = live.refunds.filter(
-		(r) =>
-			r.status === "voided" &&
-			(r.idempotencyKey === baseKey || r.idempotencyKey.startsWith(`${baseKey}:v`)),
-	).length;
-	const key = voidedAttempts > 0 ? `${baseKey}:v${String(voidedAttempts)}` : baseKey;
-	const result = await client.refundOrder(
-		orderId,
+	// The decision — the ledger re-read against the watermark the operator SAW
+	// (DA-3a), the key (F-2a, `:v<n>` after a voided attempt), and the replay of
+	// THIS refund's own recorded row (issue #405, item 3) — is the operation's
+	// (`operations/orders.ts`). This turns its outcome into the notice.
+	const outcome = await refundOrder(
+		client,
 		{
+			orderId,
 			amountCents,
+			refundedSoFarCents: observedSoFar,
 			currency,
 			...(reason.length > 0 ? { reason } : {}),
 			// The typed name, else the signed-in operator — "full remaining" carries no
 			// name, and "a different amount" no longer requires one (QA2) — else "admin".
-			refundedBy: refundedBy.length > 0 ? refundedBy : (operator ?? "admin"),
+			...(refundedBy.length > 0 ? { refundedBy } : {}),
 		},
-		{ idempotencyKey: key },
+		operator,
 	);
-	// The write was ATTEMPTED past this point, so every branch below is an outcome
-	// to read rather than an input to correct — and on `GATEWAY_UNVERIFIED` the
-	// outcome is UNKNOWN, which is why its copy says not to retry.
-	if (!result.ok) return applied(refundFailureNotice(result.reason, liveCur));
-	if (result.duplicate) {
-		// A benign replay: the SAME amount against the SAME watermark, i.e. a
-		// double-click. A different amount would have produced a different key.
-		return applied(ALREADY_REFUNDED);
+	switch (outcome.kind) {
+		case "ledger_unreadable":
+			return applied({
+				variant: "error",
+				title: "Nothing was refunded",
+				description:
+					"The refund ledger could not be re-checked, so nothing was applied. Reload and try again.",
+			});
+		case "already_refunded":
+			// Either THIS submission already recorded (a retry or a resubmitted page
+			// after it went through — saying "someone else refunded this order" blamed
+			// a stranger for the operator's own refund, QA round 2), or a benign replay
+			// of the SAME amount against the SAME watermark. Whatever the replay of the
+			// recorded row answered, the money is on the ledger, and that is the
+			// operator's question.
+			return applied(ALREADY_REFUNDED);
+		case "stale_ledger":
+			// The genuinely CONCURRENT case: the ledger moved between the confirm being
+			// drawn and this click. This is the ONLY window now checked server-side, and
+			// the surface's own pre-dialog validation cannot see it.
+			return applied(staleLedgerNotice(amountCents, outcome.remainingCents, outcome.currency));
+		case "failed":
+			// The write was ATTEMPTED, so this is an outcome to read rather than an
+			// input to correct — and on `GATEWAY_UNVERIFIED` the outcome is UNKNOWN,
+			// which is why its copy says not to retry.
+			return applied(refundFailureNotice(outcome.reason, outcome.currency));
+		case "refunded":
+			if (outcome.fullyRefunded) {
+				return applied({
+					variant: "default",
+					title: "Refund complete",
+					description: `The refund was recorded and the order is now fully refunded.${emailSentence(outcome.email)}`,
+				});
+			}
+			return applied({
+				variant: "default",
+				title: "Refund recorded",
+				description: fit(
+					`The refund was recorded; the order stays in its current status and Money → Refunds shows what remains.${emailSentence(outcome.email)}`,
+					BANNER_BUDGET,
+				),
+			});
 	}
-	if (result.fullyRefunded) {
-		return applied({
-			variant: "default",
-			title: "Refund complete",
-			description: `The refund was recorded and the order is now fully refunded.${emailSentence(result.email)}`,
-		});
-	}
-	return applied({
-		variant: "default",
-		title: "Refund recorded",
-		description: fit(
-			`The refund was recorded; the order stays in its current status and Money → Refunds shows what remains.${emailSentence(result.email)}`,
-			BANNER_BUDGET,
-		),
-	});
 };
 
 /**
@@ -1257,12 +1207,13 @@ function resolveUnverifiedRefundAction(outcome: "confirmed" | "voided"): OrdersA
 		const refundKey = (readString(payload["refundKey"]) ?? "").trim();
 		if (orderId === undefined || refundKey.length === 0) return applied(UNREADABLE);
 		const refundRef = (readString(payload["refundRef"]) ?? "").trim();
-		const result = await client.resolveUnverifiedRefund(orderId, {
-			refundKey,
-			outcome,
-			...(outcome === "confirmed" && refundRef.length > 0 ? { refundRef } : {}),
-			resolvedBy: operator ?? "admin",
-		});
+		// The provider refund id travels only with `confirmed`, and the operator the
+		// host named is recorded on the row — the operation's rules.
+		const result = await resolveUnverifiedRefund(
+			client,
+			{ orderId, refundKey, outcome, ...(refundRef.length > 0 ? { refundRef } : {}) },
+			operator,
+		);
 		if (!result.ok) {
 			return applied({
 				variant: "error",

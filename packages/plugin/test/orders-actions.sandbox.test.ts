@@ -1349,4 +1349,83 @@ describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed
 			]),
 		);
 	});
+
+	// -- pin: every refund outcome's notice (admin operations extraction) -------
+	//
+	// Characterization cases for the refund decision moving out of the action into
+	// `admin/operations/orders.ts`. Each asserts the exact title AND variant the
+	// operator reads, so a move that changed either is caught here.
+
+	/** A refund confirm on the Stripe boot, with the watermark the console shows. */
+	const refundAct = (id: string, amountCents: string, refundedSoFarCents: string) =>
+		actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents,
+			refundedSoFarCents,
+			currency: "USD",
+			refundedBy: "carol",
+		});
+
+	test("pin: a partial refund reads `Refund recorded`, default variant", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		const result = await refundAct(id, "500", "0");
+		expect(result.ok).toBe(true);
+		expect(result.notice?.title).toBe("Refund recorded");
+		expect(result.notice?.variant).toBe("default");
+	});
+
+	test("pin: a refund of the whole remainder reads `Refund complete`, default variant", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		const result = await refundAct(id, String(TOTAL_CENTS), "0");
+		expect(result.notice?.title).toBe("Refund complete");
+		expect(result.notice?.variant).toBe("default");
+		expect((await readOrder(id)).state).toBe("refunded");
+	});
+
+	test("pin: a double-submit at the same watermark reads `Already refunded` and refunds once", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		expect((await refundAct(id, "500", "0")).notice?.title).toBe("Refund recorded");
+		const again = await refundAct(id, "500", "0");
+		expect(again.notice?.title).toBe("Already refunded");
+		expect(again.notice?.variant).toBe("default");
+		expect(refundPosts()).toHaveLength(1);
+		expect(await orderStore.listRefunds(toOrderId(id))).toHaveLength(1);
+	});
+
+	test("pin: a ledger moved by ANOTHER refund refuses with the stale-ledger notice, error variant", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		expect((await refundAct(id, "500", "0")).notice?.title).toBe("Refund recorded");
+		// A different amount drawn against the same (now stale) watermark.
+		const stale = await refundAct(id, "300", "0");
+		expect(stale.notice?.title).toBe("The refund ledger changed — nothing was refunded");
+		expect(stale.notice?.variant).toBe("error");
+		expect(stale.notice?.description).toContain("$10.00 now remains refundable");
+		expect(refundPosts()).toHaveLength(1);
+	});
+
+	test("pin: a retry after a voided attempt is recorded under the `:v1` key", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [400]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		const rejected = await refundAct(id, "500", "0");
+		expect(rejected.notice?.title).toBe("Refund rejected");
+		expect(rejected.notice?.variant).toBe("error");
+		const retry = await refundAct(id, "500", "0");
+		expect(retry.notice?.title).toBe("Refund recorded");
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger.map((r) => [r.status, String(r.idempotencyKey)])).toEqual(
+			expect.arrayContaining([
+				["voided", `admin-refund:${id}:500:0`],
+				["recorded", `admin-refund:${id}:500:0:v1`],
+			]),
+		);
+		expect(ledger).toHaveLength(2);
+	});
+
+	test("pin: a gateway outcome that is UNVERIFIED reads `Refund status unknown`, error variant", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [500]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		const result = await refundAct(id, "500", "0");
+		expect(result.notice?.title).toBe("Refund status unknown");
+		expect(result.notice?.variant).toBe("error");
+	});
 });
