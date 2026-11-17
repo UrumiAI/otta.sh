@@ -89,7 +89,6 @@
  * renders by name. Re-introducing a server-side two-step confirm means WRITING
  * that check against the shape of the new flow, not restoring it.
  */
-import { isSupportedCurrency } from "@urumi.ai/otta-domain";
 import {
 	ADD_STOCK_INVALID_QTY,
 	DIGITAL_WITH_FILE_REASON,
@@ -115,7 +114,19 @@ import {
 	NO_CURRENCY,
 	parseMinorUnitsInput,
 } from "./money-input.js";
+import {
+	editProduct,
+	fnv1a,
+	NONCE_PATTERN,
+	removeStock,
+	restock,
+	type StockOutcome,
+} from "./operations/products.js";
 import { readString, screenActions, type Notice } from "./scaffold/index.js";
+
+// The edit key moved to `./operations/products.js` with the edit decision; it is
+// re-exported here so this module's existing importers keep reading it from here.
+export { deriveEditIdempotencyKey } from "./operations/products.js";
 
 /** This screen's namespaced action ids. */
 const PRODUCTS_ACTIONS = screenActions("products");
@@ -382,80 +393,6 @@ function buildEditWire(
 	return { ok: true, wire };
 }
 
-/** Stable content-derived idempotency key for an edit save (F-2a, `Edit /
- *  save` row: "content hash of the submitted wire + `expectedUpdatedAt`").
- *  FNV-1a twice with independent seeds — dependency-free and sandbox-safe.
- *
- *  KNOWN FOOTGUN, INHERITED VERBATIM AND UNREACHABLE TODAY. `?? null`
- *  canonicalises an ABSENT field and an EXPLICIT `null` identically, so "clear
- *  the compare-at" and "leave the compare-at alone" hash to the same key. That
- *  cannot bite across the three forms this screen ships: each carries its
- *  clearable fields in every submit, so a form that can send `null` never omits
- *  the field, and one that omits it can never send `null`. A FOURTH form that
- *  submits a clearable field only sometimes would collide the two — and, under a
- *  once-only store, silently drop the second write. Whoever adds one must
- *  distinguish the cases here (an absent sentinel, not `null`) rather than
- *  assume this holds. */
-export function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): string {
-	const canonical = JSON.stringify([
-		productId,
-		wire.expectedUpdatedAt,
-		wire.sku ?? null,
-		wire.price ?? null,
-		// No `title` component — the wire cannot carry one (ADR-0013).
-		wire.taxClass ?? null,
-		wire.compareAtPrice ?? null,
-		wire.unitCost ?? null,
-		wire.weightGrams ?? null,
-		wire.lengthMm ?? null,
-		wire.widthMm ?? null,
-		wire.heightMm ?? null,
-		wire.productKind ?? null,
-		// PR 2b: without it, two saves at one watermark that differ only in tax
-		// status share a key, and the second is answered as the first's replay.
-		wire.taxStatus ?? null,
-	]);
-	return `${productId}:edit:${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x01234567)}`;
-}
-
-function fnv1a(input: string, seed: number): string {
-	let hash = seed >>> 0;
-	for (let i = 0; i < input.length; i++) {
-		hash ^= input.charCodeAt(i);
-		hash = Math.imul(hash, 0x01000193) >>> 0;
-	}
-	return hash.toString(36);
-}
-
-/**
- * The currency this edit would AUTHOR when it is not in the currency table
- * (`@urumi.ai/otta-domain`'s `isSupportedCurrency`), or `null` when the edit is fine.
- *
- * MEMBERSHIP IS CHECKED ONLY FOR A NEW CURRENCY. A product priced before the
- * table existed may sit in any shape-valid code, and its form re-submits that
- * code with every save: refusing it would lock the merchant out of editing the
- * product at all. So an unlisted code is allowed exactly when it is the one
- * already stored (the store refuses re-currencying a priced product anyway), and
- * the read that tells is made only in that rare case — a listed code costs
- * nothing.
- */
-async function unsupportedNewCurrency(
-	client: AdminProductsSurface,
-	productId: string,
-	wire: ProductEditWire,
-): Promise<string | null> {
-	const codes = new Set<string>();
-	for (const money of [wire.price, wire.compareAtPrice, wire.unitCost]) {
-		if (money !== undefined && money !== null && !isSupportedCurrency(money.currency)) {
-			codes.add(money.currency);
-		}
-	}
-	if (codes.size === 0) return null;
-	const stored = (await client.getProduct(productId))?.currency ?? null;
-	for (const code of codes) if (code !== stored) return code;
-	return null;
-}
-
 /**
  * The three split forms' Save handler (F-5a — one handler serves all three
  * submits). Reads `productId`/`expectedUpdatedAt` off the payload, validates,
@@ -488,20 +425,18 @@ const saveAction: ProductsAction = async (client, payload) => {
 			description: built.message,
 		});
 	}
-	const unsupported = await unsupportedNewCurrency(client, productId, built.wire);
-	if (unsupported !== null) {
+	const outcome = await editProduct(client, productId, built.wire);
+	if (outcome.kind === "unsupported_currency") {
 		return applied({
 			variant: "error",
 			title: "Check the highlighted value",
-			description: unsupportedCurrencyMessage(unsupported),
+			description: unsupportedCurrencyMessage(outcome.currency),
 		});
 	}
-	const key = deriveEditIdempotencyKey(productId, built.wire);
-	const result = await client.updateProduct(productId, built.wire, key);
 	// The surface re-reads the product after every write, so a stale save leaves
 	// the operator looking at the latest row — and the OTHER two split forms
 	// remount with it, which is the sibling-discard hazard the screen warns about.
-	return editOutcome(result);
+	return editOutcome(outcome.result);
 };
 
 // -- attaching an uploaded download file (issue #376, increment 4) ------------
@@ -736,29 +671,12 @@ function editOutcome(
 
 // -- merchant stock movements -------------------------------------------------
 
-/** A caller-minted nonce: 32 hex characters from `mintMovementNonce` (the
- *  console), or a UUID (the staging demo seed). The shape is checked so a key is
- *  never built from arbitrary operator-round-tripped text, and is loose enough
- *  to admit any opaque id of comparable entropy. */
-const NONCE_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
-
 /** Read the per-click nonce, or `undefined` when it is ABSENT or malformed —
  *  both refuse. The one-release content-derived fallback for a caller that sent
  *  none was removed (#455): every caller (the console, the demo seed) sends one. */
 function readNonce(value: unknown): string | undefined {
 	const raw = readString(value);
 	return raw !== undefined && NONCE_PATTERN.test(raw) ? raw : undefined;
-}
-
-/** The movement's idempotency key: per intent, from the caller's nonce. The
- *  `nonce:` segment keeps it apart from the content-derived keys an earlier
- *  release wrote to the ledger. */
-function stockMovementKey(
-	productId: string,
-	direction: "restock" | "removal",
-	nonce: string,
-): string {
-	return `${productId}:${direction}:nonce:${nonce}`;
 }
 
 /** What one movement needs, read and checked off the payload. */
@@ -813,12 +731,11 @@ function readMovement(
  *
  * The key is per-click, so the replay is this decision's own retry (a lost
  * response, then the console's explicit Retry): "already applied", with the
- * count RE-READ now — the recorded one is the count that earlier call produced,
- * and the shelf may have moved since.
+ * count the operation RE-READ now — the recorded one is the count that earlier
+ * call produced, and the shelf may have moved since.
  */
-async function replayedNotice(client: AdminProductsSurface, productId: string): Promise<Notice> {
-	const live = await client.getProduct(productId).catch(() => null);
-	const liveOnHand = live === null ? null : live.onHand;
+function replayedNotice(outcome: Extract<StockOutcome, { kind: "replayed" }>): Notice {
+	const { liveOnHand } = outcome;
 	return {
 		variant: "default",
 		title: "Already applied",
@@ -841,13 +758,14 @@ async function replayedNotice(client: AdminProductsSurface, productId: string): 
 const restockAction: ProductsAction = async (client, payload) => {
 	const input = readMovement(payload, "restock");
 	if (!input.ok) return applied(input.notice);
-	const { productId, qty, nonce } = input;
-	const key = stockMovementKey(productId, "restock", nonce);
-	const result = await client.restock(productId, qty, key);
-	if (result.ok && result.replayed === true) {
-		return { ...applied(await replayedNotice(client, productId)), replayed: true };
+	const { productId, onHand, qty, nonce } = input;
+	const outcome = await restock(client, { productId, onHand, qty, nonce });
+	if (outcome.kind === "replayed") {
+		return { ...applied(replayedNotice(outcome)), replayed: true };
 	}
-	return applied(restockNotice(result, qty));
+	// `moved` and `failed` both carry the surface's result; a restock is never
+	// judged against a watermark, so it never answers `stock_changed`.
+	return applied(restockNotice(outcome.result, qty));
 };
 
 /** A removal refused on the stock-changed-since-render path (DA-3a).
@@ -897,12 +815,14 @@ const removeStockAction: ProductsAction = async (client, payload) => {
 	const input = readMovement(payload, "removal");
 	if (!input.ok) return applied(input.notice);
 	const { productId, onHand, qty, nonce } = input;
-	const key = stockMovementKey(productId, "removal", nonce);
-	const result = await client.removeStock(productId, qty, key, onHand);
-	if (result.ok && result.replayed === true) {
-		return { ...applied(await replayedNotice(client, productId)), replayed: true };
+	const outcome = await removeStock(client, { productId, onHand, qty, nonce });
+	if (outcome.kind === "replayed") {
+		return { ...applied(replayedNotice(outcome)), replayed: true };
 	}
-	return applied(removeStockNotice(result, qty));
+	// The operator confirmed against a count, so they saw a record: a moved count
+	// and a record that is gone now both keep DA-3a's own sentence.
+	if (outcome.kind === "stock_changed") return applied(stockChangedNotice(outcome.liveOnHand));
+	return applied(removeStockNotice(outcome.result, qty));
 };
 
 /** Map a restock outcome to the notice shown above the reloaded detail. The
