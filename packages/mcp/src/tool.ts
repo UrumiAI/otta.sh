@@ -17,9 +17,14 @@ export interface McpToolDef<I extends z.ZodTypeAny> {
 	/** Clients ask before running it (MCP `destructiveHint`). */
 	destructive?: boolean;
 	/**
-	 * The input carries a secret (a payment key). An input refusal then names
-	 * each problem's path and kind only: no zod message (an unknown key's NAME,
-	 * an option list) is passed on, so nothing the caller sent comes back.
+	 * The input carries a secret (a payment key). A ROUTE input refusal then
+	 * names each problem's path and kind only: no zod message (an unknown key's
+	 * NAME, an option list) is passed on, so nothing the caller sent comes back.
+	 *
+	 * This covers direct callers of the route only. Through EmDash's MCP
+	 * endpoint the MCP SDK validates `input` first and answers zod's own
+	 * messages, so the schema itself must not echo input: see
+	 * `secretToolInput` in tools/settings-writes.ts.
 	 */
 	sensitiveInput?: boolean;
 	/**

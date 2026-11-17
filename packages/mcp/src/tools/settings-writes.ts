@@ -11,18 +11,23 @@
  * as STALE if the value it was counted against has moved since).
  *
  * SECRETS. No result, refusal message or `details` carries a payment secret's
- * value or any part of it: the operations' outcomes never hold one, and
- * `payments_set_secret` is `sensitiveInput`, so an input refusal names paths and
- * kinds only.
+ * value or any part of it: the operations' outcomes never hold one. An input
+ * refusal names nothing the caller sent on either path: the route's (direct
+ * callers) because the tools are `sensitiveInput`, the MCP SDK's (the MCP
+ * endpoint, which validates before the route) because of `secretToolInput`.
  */
 import {
 	clearPaymentSecret,
+	readCashOnDeliverySummary,
 	saveCashOnDelivery,
 	saveOperationalSettings,
 	saveStoreCurrency,
 	saveStoreDisplayName,
 	setPaymentSecret,
+	type CashOnDeliveryInput,
 	type CashOnDeliveryOutcome,
+	type CashOnDeliverySummary,
+	type CodNumberField,
 	type OperationalSettingsWire,
 	type PaymentSecretField,
 	type StoreCurrencyOutcome,
@@ -48,6 +53,28 @@ const secretFieldInput = z
 	.describe(
 		"Which secret: stripeSecretKey (sk_live_… / sk_test_…, or a restricted rk_…), stripeWebhookSecret (whsec_…), or webhookEdgeToken (the edge token, one line, no spaces).",
 	);
+
+/**
+ * A secret tool's input object. On the real MCP path the MCP SDK validates the
+ * input BEFORE the route (so `sensitiveInput`'s redaction never runs there) and
+ * answers zod's own messages. zod's messages never carry a submitted VALUE (an
+ * enum miss names the allowed options, a type miss names the received TYPE),
+ * but an unknown key's NAME is echoed — and a key name is caller text. This
+ * object's own refusal of an unknown key says so without echoing it, so no
+ * part of what the caller sent comes back on either path. Keep every field a
+ * plain `z.string()` / `z.enum` with no refinement whose message would quote
+ * the input.
+ */
+function secretToolInput<Shape extends z.ZodRawShape>(shape: Shape) {
+	return z
+		.object(shape, {
+			error: (issue) =>
+				issue.code === "unrecognized_keys"
+					? "Unrecognized key (not echoed, as this tool carries a secret); send only the documented fields."
+					: undefined,
+		})
+		.strict();
+}
 
 const NOTHING_CHANGED = "Nothing was changed.";
 
@@ -115,10 +142,17 @@ function currencyAnswer(outcome: StoreCurrencyOutcome) {
 	}
 }
 
-function codAnswer(outcome: CashOnDeliveryOutcome) {
+function codAnswer(outcome: CashOnDeliveryOutcome, saved: CashOnDeliverySummary | undefined) {
 	switch (outcome.kind) {
 		case "saved":
-			return { status: "saved" as const, enabled: outcome.enabled };
+			return saved === undefined
+				? {
+						status: "saved" as const,
+						enabled: outcome.enabled,
+						cashOnDelivery: null,
+						note: "Saved, but the settings could not be read back. Call settings_get to see them.",
+					}
+				: { status: "saved" as const, enabled: outcome.enabled, cashOnDelivery: saved };
 		case "needs_confirmation":
 			return {
 				status: "needs_confirmation" as const,
@@ -212,19 +246,36 @@ const codInput = z
 	})
 	.strict();
 
-/** The operation's `numbers`, keyed by form field (`COD_NUMBER_SETTINGS`). */
+/** The tool's whole-number fields: every key of its input but these. */
+type CodNumberKey = Exclude<
+	keyof z.infer<typeof codInput>,
+	"enabled" | "instructions" | "confirmFrom"
+>;
+
+/**
+ * The operation's `numbers` keys (`CodNumberField`, the stored settings' form
+ * field ids) → the tool's field for each. Typed both ways, so a rename on
+ * either side fails the typecheck instead of saving with the value dropped
+ * (`saveCashOnDelivery` skips a field id it does not know): the mapped type
+ * needs every `CodNumberField` exactly once, each value must be one of the
+ * tool's number fields, and `codNumberKeysComplete` needs every one of those
+ * used.
+ */
 const COD_NUMBER_FIELDS = {
-	autoCancelDays: "codAutoCancelDays",
-	maxOpenPerBuyer: "codMaxOpenPerBuyer",
-	maxOpenPerClient: "codMaxOpenPerClient",
-	maxUnitsPerOrder: "codMaxUnitsPerOrder",
-} as const;
+	codAutoCancelDays: "autoCancelDays",
+	codMaxOpenPerBuyer: "maxOpenPerBuyer",
+	codMaxOpenPerClient: "maxOpenPerClient",
+	codMaxUnitsPerOrder: "maxUnitsPerOrder",
+} as const satisfies { readonly [F in CodNumberField]: CodNumberKey };
+const codNumberKeysComplete: Complete<CodNumberKey, (typeof COD_NUMBER_FIELDS)[CodNumberField][]> =
+	true;
+void codNumberKeysComplete;
 
 export const SETTINGS_WRITE_TOOLS = [
 	defineTool({
 		name: "settings_update",
 		description:
-			'Change the store\'s operational settings: cart hold time (minutes), low-stock threshold (units) and whether shoppers see the hold countdown. Send only what changes; a field you leave out is kept. All or nothing: one value out of range refuses the whole save. Returns `{status: "saved", settings}` as now in force. Refusals: INVALID_INPUT (details.problems names each field; also an unknown key, or nothing to change), REJECTED, SUPERSEDED, UNCONFIRMED. The currency has its own tool, settings_update_currency.',
+			'Change the store\'s operational settings: cart hold time (minutes), low-stock threshold (units) and whether shoppers see the hold countdown. Send only what changes; a field you leave out is kept. All or nothing: one value out of range refuses the whole save. Returns `{status: "saved", settings}` as now in force. Refusals: INVALID_INPUT (details.problems names each field; also nothing to change), REJECTED, SUPERSEDED, UNCONFIRMED. An unknown key is refused before the tool runs. The currency has its own tool, settings_update_currency.',
 		input: operationalInput,
 		async run({ clients, input }) {
 			const values = defined(input);
@@ -304,34 +355,40 @@ export const SETTINGS_WRITE_TOOLS = [
 	defineTool({
 		name: "payments_cod_set_enabled",
 		description:
-			'Turn cash on delivery on or off, and optionally change its auto-cancel window (days), caps and buyer instructions; a field you leave out is kept. All or nothing. LOWERING the window cancels the open unpaid orders older than it on the next sweep, so when any would be, the first call answers `{status: "needs_confirmation", message, affected, retryWith: {confirmFrom}}` and changes nothing: tell the merchant, then call again with that confirmFrom. Returns `{status: "saved", enabled}`. Refusals: INVALID_INPUT, STALE (the window moved since you were asked), WINDOW_UNREADABLE, COUNT_FAILED.',
+			'Turn cash on delivery on or off, and optionally change its auto-cancel window (days), caps and buyer instructions; a field you leave out is kept. All or nothing. LOWERING the window cancels the open unpaid orders older than it on the next sweep, so when any would be, the first call answers `{status: "needs_confirmation", message, affected, retryWith: {confirmFrom}}` and changes nothing: tell the merchant, then call again with that confirmFrom. Returns `{status: "saved", enabled, cashOnDelivery}`, where cashOnDelivery is every cash-on-delivery setting now in force (as settings_get reports it). Refusals: INVALID_INPUT, STALE (the window moved since you were asked), WINDOW_UNREADABLE, COUNT_FAILED.',
 		input: codInput,
 		destructive: true,
 		async run({ ctx, input }) {
-			const numbers: Record<string, number> = {};
-			for (const [key, field] of Object.entries(COD_NUMBER_FIELDS)) {
-				const value = input[key as keyof typeof COD_NUMBER_FIELDS];
+			const numbers: Partial<Record<CodNumberField, number>> = {};
+			for (const field of Object.keys(COD_NUMBER_FIELDS) as CodNumberField[]) {
+				const value = input[COD_NUMBER_FIELDS[field]];
 				if (value !== undefined) numbers[field] = value;
 			}
-			const outcome = await saveCashOnDelivery(ctx, {
+			const save: CashOnDeliveryInput = {
 				enabled: input.enabled,
 				numbers,
 				...(input.instructions === undefined ? {} : { instructions: input.instructions }),
 				...(input.confirmFrom === undefined ? {} : { confirm: { from: input.confirmFrom } }),
-			});
-			return codAnswer(outcome);
+			};
+			const outcome = await saveCashOnDelivery(ctx, save);
+			// Answer with what is now in force, read back (the write is done; a
+			// failed read-back is said, not thrown, so a save is never reported
+			// as a failure).
+			const saved =
+				outcome.kind === "saved"
+					? await readCashOnDeliverySummary(ctx).catch(() => undefined)
+					: undefined;
+			return codAnswer(outcome, saved);
 		},
 	}),
 	defineTool({
 		name: "payments_set_secret",
 		description:
 			'Store a payment secret, write-only and encrypted at rest. The value is never returned by any tool: settings_get then reports it as "set". The value is trimmed and must be the shape the provider issues. Returns `{status: "saved", field}`. Refusals: INVALID_INPUT (wrong shape — the message names the shape, never the value; the secret already stored stays), BLANK (nothing stored; to remove one use payments_clear_secret), ENCRYPTION_UNAVAILABLE (the host has no usable encryption key, so nothing was stored), WRITE_FAILED.',
-		input: z
-			.object({
-				field: secretFieldInput,
-				value: z.string().describe("The secret, exactly as the provider issued it."),
-			})
-			.strict(),
+		input: secretToolInput({
+			field: secretFieldInput,
+			value: z.string().describe("The secret, exactly as the provider issued it."),
+		}),
 		destructive: true,
 		sensitiveInput: true,
 		async run({ ctx, input }) {
@@ -377,7 +434,7 @@ export const SETTINGS_WRITE_TOOLS = [
 		name: "payments_clear_secret",
 		description:
 			'Remove a stored payment secret on purpose (also the way out of one this site cannot read). Checkout stops using it at once. Returns `{status: "cleared", field}`. Refusals: NOT_STORED (nothing was stored), INVALID_INPUT.',
-		input: z.object({ field: secretFieldInput }).strict(),
+		input: secretToolInput({ field: secretFieldInput }),
 		destructive: true,
 		sensitiveInput: true,
 		async run({ ctx, input }) {

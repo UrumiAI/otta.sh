@@ -122,6 +122,7 @@ export {
 	type ZoneRegionsRefusal,
 	updateTaxSettings,
 	clearPaymentSecret,
+	readCashOnDeliverySummary,
 	readSettingsSummary,
 	saveCashOnDelivery,
 	saveOperationalSettings,
@@ -137,6 +138,8 @@ export {
 	type PaymentSecretState,
 	type SetPaymentSecretOutcome,
 	type SettingsSummary,
+	type CashOnDeliverySummary,
+	type CodNumberField,
 	type StoreCurrencyInput,
 	type StoreCurrencyOutcome,
 } from "./admin/operations/index.js";

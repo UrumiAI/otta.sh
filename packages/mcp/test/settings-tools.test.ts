@@ -17,6 +17,8 @@ import {
 	uuidIdGen,
 } from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { z } from "zod";
+import * as zm from "zod/mini";
 import { OTTA_MCP_TOOLS, withMcp, type McpRouteEntry } from "../src/index.js";
 import { makeAdminHarness, type AdminHarness } from "./helpers/admin-harness.js";
 import { seedStore } from "./helpers/seed.js";
@@ -73,6 +75,20 @@ async function failure(
 		return e as { name: string; code: string; message: string; details?: any };
 	}
 	throw new Error(`${name} did not fail`);
+}
+
+/**
+ * What the MCP SDK (1.32.1) answers for a schema refusal on the MCP path:
+ * `McpServer.validateToolInput` parses `input` with zod's mini `safeParseAsync`
+ * BEFORE the route runs, and `getParseErrorMessage` joins each issue's message,
+ * plus " at <path>". The route's redaction never runs there.
+ */
+async function sdkMessage(schema: z.ZodType, input: unknown): Promise<string> {
+	const parsed = await zm.safeParseAsync(schema, input);
+	expect(parsed.success).toBe(false);
+	return (parsed.error?.issues ?? [])
+		.map((i) => (i.path.length === 0 ? i.message : `${i.message} at ${i.path.join(".")}`))
+		.join("\n");
 }
 
 async function settings(): Promise<any> {
@@ -230,12 +246,70 @@ describe("settings_update_store_name", () => {
 });
 
 describe("payments_cod_set_enabled", () => {
-	test("enabling saves, and the summary shows it", async () => {
+	const DEFAULT_COD = {
+		enabled: false,
+		autoCancelDays: 14,
+		maxOpenPerBuyer: 3,
+		maxOpenPerClient: 20,
+		maxUnitsPerOrder: 10,
+		instructions: null,
+	};
+
+	test("settings_get reports every cash-on-delivery setting (the defaults when none saved)", async () => {
+		expect((await settings()).cashOnDelivery).toEqual(DEFAULT_COD);
+	});
+
+	test("enabling saves, answers the saved values, and the summary shows them", async () => {
+		const saved = { ...DEFAULT_COD, enabled: true, autoCancelDays: 10 };
 		expect(await call("payments_cod_set_enabled", { enabled: true, autoCancelDays: 10 })).toEqual({
 			status: "saved",
 			enabled: true,
+			cashOnDelivery: saved,
 		});
-		expect((await settings()).cashOnDelivery).toEqual({ enabled: true, autoCancelDays: 10 });
+		expect((await settings()).cashOnDelivery).toEqual(saved);
+	});
+
+	test("all four numbers and the instructions round-trip through MCP", async () => {
+		const out = await call("payments_cod_set_enabled", {
+			enabled: true,
+			autoCancelDays: 21,
+			maxOpenPerBuyer: 4,
+			maxOpenPerClient: 33,
+			maxUnitsPerOrder: 250,
+			instructions: "  Please have the exact amount ready.  ",
+		});
+		const expected = {
+			enabled: true,
+			autoCancelDays: 21,
+			maxOpenPerBuyer: 4,
+			maxOpenPerClient: 33,
+			maxUnitsPerOrder: 250,
+			instructions: "Please have the exact amount ready.",
+		};
+		expect(out).toEqual({ status: "saved", enabled: true, cashOnDelivery: expected });
+		expect((await settings()).cashOnDelivery).toEqual(expected);
+
+		// Each cap alone, the rest kept; a blank instruction clears it.
+		await call("payments_cod_set_enabled", { enabled: true, maxOpenPerClient: 0 });
+		await call("payments_cod_set_enabled", { enabled: true, instructions: "" });
+		expect((await settings()).cashOnDelivery).toEqual({
+			...expected,
+			maxOpenPerClient: 0,
+			instructions: null,
+		});
+	});
+
+	test("each cap out of range is refused naming it; nothing is written", async () => {
+		for (const [field, value, label] of [
+			["maxOpenPerBuyer", 101, /per buyer email/],
+			["maxOpenPerClient", 101, /per network/],
+			["maxUnitsPerOrder", 1001, /items in one order/],
+		] as const) {
+			const err = await failure("payments_cod_set_enabled", { enabled: true, [field]: value });
+			expect(err.code, field).toBe("INVALID_INPUT");
+			expect(err.message, field).toMatch(label);
+		}
+		expect((await settings()).cashOnDelivery).toEqual(DEFAULT_COD);
 	});
 
 	test("`enabled` must be a boolean", async () => {
@@ -267,7 +341,7 @@ describe("payments_cod_set_enabled", () => {
 				autoCancelDays: 5,
 				...ask.retryWith,
 			}),
-		).toEqual({ status: "saved", enabled: true });
+		).toMatchObject({ status: "saved", enabled: true, cashOnDelivery: { autoCancelDays: 5 } });
 		expect((await settings()).cashOnDelivery.autoCancelDays).toBe(5);
 	});
 
@@ -339,6 +413,28 @@ describe("payment secrets", () => {
 	test("an unknown field is refused at the schema", async () => {
 		const err = await failure("payments_set_secret", { field: "nope", value: "abc" });
 		expect(err.code).toBe("INVALID_INPUT");
+	});
+
+	test("on the MCP SDK's path, the secret tools' schema refusals echo nothing sent", async () => {
+		// The route's redaction never runs on the MCP path, so the schema itself
+		// must not echo (see sdkMessage).
+		for (const name of ["payments_set_secret", "payments_clear_secret"]) {
+			const tool = OTTA_MCP_TOOLS.find((t) => t.name === name);
+			if (tool === undefined) throw new Error(`no tool ${name}`);
+			for (const input of [
+				{ field: "stripeSecretKey", value: "x", [PINNED]: PINNED },
+				{ field: PINNED, value: PINNED },
+				{ field: "stripeSecretKey", value: { [PINNED]: PINNED } },
+				{ field: "stripeSecretKey", value: [PINNED] },
+				{ field: [PINNED] },
+				{ [PINNED]: 1 },
+			]) {
+				const message = await sdkMessage(tool.input, input);
+				expect(message.length, name).toBeGreaterThan(0);
+				expect(message, name).not.toContain(PINNED);
+				expect(message, name).not.toContain("PINNED");
+			}
+		}
 	});
 
 	test("payments_clear_secret removes it; clearing again → NOT_STORED", async () => {

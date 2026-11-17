@@ -48,11 +48,20 @@ export const COD_MAX_OPEN_PER_BUYER_KEY = "settings:codMaxOpenPerBuyer";
 export const COD_MAX_OPEN_PER_CLIENT_KEY = "settings:codMaxOpenPerClient";
 export const COD_MAX_UNITS_PER_ORDER_KEY = "settings:codMaxUnitsPerOrder";
 
+/** The four whole-number COD settings' form field ids — what
+ *  `saveCashOnDelivery`'s `numbers` is keyed by. A literal union, so a caller's
+ *  map onto them (the MCP tool's) fails the typecheck on a rename. */
+export type CodNumberField =
+	| "codAutoCancelDays"
+	| "codMaxOpenPerBuyer"
+	| "codMaxOpenPerClient"
+	| "codMaxUnitsPerOrder";
+
 /** One whole-number COD setting: its key, its bounds and its default. */
 export interface CodNumberSetting {
 	readonly key: string;
 	/** The form field's action id. */
-	readonly field: string;
+	readonly field: CodNumberField;
 	readonly label: string;
 	readonly min: number;
 	readonly max: number;

@@ -98,5 +98,16 @@ plugin tool read-only.
 
 ## Errors
 
-A refused call is an MCP tool error whose `_meta.code` is a stable code (for example
-`INVALID_INPUT` or `NOT_FOUND`). Money is always integer minor units plus a currency.
+A call the tool itself refuses is an MCP tool error whose `_meta.code` is a stable code (for
+example `NOT_FOUND`, `STALE`, or `INVALID_INPUT` for a value the store refuses). Money is always
+integer minor units plus a currency.
+
+Every tool's input is a strict schema: a missing or mistyped field, or an unknown key (a typo such
+as `maxUse`), is refused, never ignored. Through `/_emdash/api/mcp` that refusal comes from the MCP
+SDK, which checks the input against the schema before the tool runs: an MCP tool error whose text
+starts `Input validation error`, with **no** `_meta.code`. Only a direct call to the plugin route
+(`/_emdash/api/plugins/otta/mcp/<tool>`) answers a schema refusal as `INVALID_INPUT`.
+
+The two payment-secret tools never echo what was sent. On the route, their schema refusals name
+only each problem's field and kind. On the MCP path, zod's messages name the allowed options or the
+received type, never a submitted value, and their unknown-key refusal does not name the key.

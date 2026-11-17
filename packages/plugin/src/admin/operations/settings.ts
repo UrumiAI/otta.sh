@@ -60,8 +60,13 @@ import {
 	COD_ENABLED_KEY,
 	COD_INSTRUCTIONS_KEY,
 	COD_INSTRUCTIONS_MAX,
+	COD_MAX_OPEN_PER_BUYER,
+	COD_MAX_OPEN_PER_CLIENT,
+	COD_MAX_UNITS_PER_ORDER,
 	COD_NUMBER_SETTINGS,
+	type CodNumberField,
 	readCodEnabled,
+	readCodInstructions,
 	readCodNumber,
 	validateCodNumber,
 } from "../../payments/cash-on-delivery.js";
@@ -283,7 +288,7 @@ export interface CashOnDeliveryInput {
 	/** The auto-cancel window and the caps, by form field (`COD_NUMBER_SETTINGS`:
 	 *  `codAutoCancelDays`, …) — a whole number, or digits as text. One left out
 	 *  is kept as stored; one present and unusable refuses the WHOLE save. */
-	numbers?: Readonly<Record<string, unknown>>;
+	numbers?: Readonly<Partial<Record<CodNumberField, unknown>>>;
 	/** Present ⇒ the caller confirms a shorter window it was asked about: `from`
 	 *  is the window the count was made against. A window that has moved since
 	 *  is not overwritten (`stale`). */
@@ -641,12 +646,53 @@ export async function clearPaymentSecret(
  *  the shape Otta saves. Neither is used, so checkout treats both as not set. */
 export type PaymentSecretState = "set" | "not_set" | "unreadable" | "invalid";
 
+/** Every cash-on-delivery setting as now in force: each number is the stored
+ *  value, or its default when none is stored (what checkout applies);
+ *  `instructions` is `null` when none are saved. */
+export interface CashOnDeliverySummary {
+	enabled: boolean;
+	autoCancelDays: number;
+	maxOpenPerBuyer: number;
+	maxOpenPerClient: number;
+	maxUnitsPerOrder: number;
+	instructions: string | null;
+}
+
+/** Read {@link CashOnDeliverySummary}. A kv failure throws. */
+export async function readCashOnDeliverySummary(
+	ctx: PluginContext,
+): Promise<CashOnDeliverySummary> {
+	const [
+		enabled,
+		autoCancelDays,
+		maxOpenPerBuyer,
+		maxOpenPerClient,
+		maxUnitsPerOrder,
+		instructions,
+	] = await Promise.all([
+		readCodEnabled(ctx),
+		readCodNumber(ctx, COD_AUTO_CANCEL_DAYS),
+		readCodNumber(ctx, COD_MAX_OPEN_PER_BUYER),
+		readCodNumber(ctx, COD_MAX_OPEN_PER_CLIENT),
+		readCodNumber(ctx, COD_MAX_UNITS_PER_ORDER),
+		readCodInstructions(ctx),
+	]);
+	return {
+		enabled,
+		autoCancelDays,
+		maxOpenPerBuyer,
+		maxOpenPerClient,
+		maxUnitsPerOrder,
+		instructions,
+	};
+}
+
 export interface SettingsSummary {
 	storeDisplayName: string;
 	/** The currency new carts are created in (USD when never saved). */
 	currency: string;
 	operational: OperationalSettingsWire;
-	cashOnDelivery: { enabled: boolean; autoCancelDays: number };
+	cashOnDelivery: CashOnDeliverySummary;
 	paymentSecrets: Record<PaymentSecretField, PaymentSecretState>;
 }
 
@@ -661,11 +707,10 @@ export async function readSettingsSummary(
 	client: ReportingSettingsSurface,
 ): Promise<SettingsSummary> {
 	const fields = Object.keys(PAYMENT_SECRET_STORAGE) as PaymentSecretField[];
-	const [operational, displayName, codEnabled, autoCancelDays, secrets] = await Promise.all([
+	const [operational, displayName, cashOnDelivery, secrets] = await Promise.all([
 		client.getSettings(),
 		ctx.kv.get<unknown>(STORE_DISPLAY_NAME_KEY),
-		readCodEnabled(ctx),
-		readCodNumber(ctx, COD_AUTO_CANCEL_DAYS),
+		readCashOnDeliverySummary(ctx),
 		Promise.all(
 			fields.map(async (field) => {
 				const read = await readSecret(ctx, PAYMENT_SECRET_STORAGE[field].kvKey);
@@ -678,7 +723,7 @@ export async function readSettingsSummary(
 		storeDisplayName: typeof displayName === "string" ? displayName : "",
 		currency: effectiveStoreCurrency(operational),
 		operational,
-		cashOnDelivery: { enabled: codEnabled, autoCancelDays },
+		cashOnDelivery,
 		paymentSecrets: Object.fromEntries(secrets) as Record<PaymentSecretField, PaymentSecretState>,
 	};
 }
