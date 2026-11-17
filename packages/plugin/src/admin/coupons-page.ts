@@ -23,10 +23,17 @@ import {
 	type CouponEdit,
 	type CouponsListFilter,
 	type CouponSummaryWire,
-	type RulesCreateResult,
+	type CouponWire,
 	type RulesDeleteResult,
-	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
+import {
+	COUPON_CURRENCY_MOVED,
+	createCoupon,
+	deleteCoupon,
+	retireCoupon,
+	updateCoupon,
+	type CouponWriteOutcome,
+} from "./operations/coupons.js";
 import {
 	formatMinorUnitsInput,
 	moneyInputExample,
@@ -35,8 +42,8 @@ import {
 	parseMinorUnitsInput,
 } from "./money-input.js";
 import {
+	CommerceInputError,
 	CURRENCY_SHAPE_REASON,
-	isCommerceInputError,
 	isIdToken,
 	UNSUPPORTED_CURRENCY_REASON,
 } from "../commerce/commerce-input.js";
@@ -1230,11 +1237,11 @@ function boundsCurrency(
 	return { parse: isSupportedCurrency(raw) ? raw : NO_CURRENCY, send: raw };
 }
 
-/** The screen's copy for a rules-client refusal of a coupon's currency, or
- *  `undefined` for any other error (which is rethrown to the scaffold). */
-function couponCurrencyRefusalCopy(err: unknown, sent: string | null): string | undefined {
-	if (!isCommerceInputError(err) || err.field !== "currency") return undefined;
-	switch (err.reason) {
+/** The screen's copy for a rules-client refusal of a coupon's currency — the
+ *  typed `reason` a `currency_refused` outcome carries. (The edit's
+ *  {@link COUPON_CURRENCY_MOVED} is answered before this, by the save.) */
+function couponCurrencyRefusalCopy(reason: string, sent: string | null): string {
+	switch (reason) {
 		case COUPON_CURRENCY_REFUSAL.boundsNeedCurrency:
 			return BOUNDS_CURRENCY_REQUIRED;
 		case COUPON_CURRENCY_REFUSAL.currencyNeedsBounds:
@@ -2012,37 +2019,34 @@ function createCouponAction() {
 			// Whether a percentage coupon's currency is needed, or allowed, is the
 			// rules client's decision; its refusal comes back as this screen's copy.
 			const couponCurrency = type === "percentage" ? bounds.send : econ.currency;
-			let result: Awaited<ReturnType<AdminRulesSurface["createCoupon"]>>;
-			try {
-				result = await client.createCoupon({
-					id,
-					code,
-					type,
-					amountCents: econ.amountCents,
-					rateBps: econ.rateBps,
-					capCents: econ.capCents,
-					currency: couponCurrency,
-					minSubtotalCents: null,
-					startsAt: null,
-					expiresAt: null,
-					maxUses: null,
-					maxUsesPerCustomer: null,
-				});
-			} catch (e) {
-				const copy = couponCurrencyRefusalCopy(e, couponCurrency);
-				if (copy === undefined) throw e;
-				return err(copy);
+			const outcome = await createCoupon(client, {
+				id,
+				code,
+				type,
+				amountCents: econ.amountCents,
+				rateBps: econ.rateBps,
+				capCents: econ.capCents,
+				currency: couponCurrency,
+				minSubtotalCents: null,
+				startsAt: null,
+				expiresAt: null,
+				maxUses: null,
+				maxUsesPerCustomer: null,
+			});
+			if (outcome.kind === "currency_refused") {
+				return err(couponCurrencyRefusalCopy(outcome.reason, couponCurrency));
 			}
+			// Any other refused input goes to the scaffold's refusal net, as it did
+			// when the client's throw reached it directly.
+			if (outcome.kind === "invalid") throw new CommerceInputError(outcome.field, outcome.reason);
 			// A SERVICE refusal keeps the draft too (a duplicate id is fixed by
 			// editing one field); success drops it, which is what returns the
 			// operator to the list. A collision says WHICH of the two was taken: the
-			// code is looked up (QA round 2 — the copy blamed the code for a taken ID).
-			const collision =
-				!result.ok && result.status === 409 ? await couponCollision(client, id, code) : undefined;
-			const clash = collision === undefined ? undefined : { kind: collision, id };
-			return result.ok
-				? showList(undefined, createCouponNotice(result, code))
-				: showList(undefined, createCouponNotice(result, code, clash), {
+			// operation looks the code up (QA round 2 — the copy blamed the code for
+			// a taken ID).
+			return outcome.kind === "ok"
+				? showList(undefined, createCouponNotice(outcome, code, id))
+				: showList(undefined, createCouponNotice(outcome, code, id), {
 						kind: "new-coupon",
 						draft,
 						storeCurrency: await readStoreCurrencySoft(client, "coupons"),
@@ -2065,29 +2069,18 @@ function couponDraft(values: Record<string, unknown>): CouponDraft {
 	};
 }
 
-/** Which half of a create collided (409): the code (another coupon has it,
- *  whatever its case), the ID (no coupon has the code, so the ID was taken), or
- *  both — this coupon already exists, typically a retried create. `undefined`
- *  when the lookup could not answer. */
-type CouponCollision = "code" | "id" | "same";
-
-async function couponCollision(
-	client: AdminRulesSurface,
-	id: string,
-	code: string,
-): Promise<CouponCollision | undefined> {
-	const byCode = await client.getCoupon(code).catch(() => undefined);
-	if (byCode === undefined) return undefined;
-	if (byCode === null) return "id";
-	return byCode.id === id ? "same" : "code";
-}
-
+/** The create's notice, from the operation's outcome (`currency_refused` and
+ *  `invalid` are answered before this). A collision's `taken` — which half the
+ *  operation's code lookup found taken — picks the copy. */
 function createCouponNotice(
-	result: RulesCreateResult<unknown>,
+	outcome: Exclude<
+		CouponWriteOutcome<CouponWire>,
+		{ kind: "currency_refused" } | { kind: "invalid" }
+	>,
 	code: string,
-	clash?: { kind: CouponCollision; id: string },
+	id: string,
 ): Notice {
-	if (result.ok) {
+	if (outcome.kind === "ok") {
 		return {
 			variant: "default",
 			title: "Coupon created",
@@ -2103,11 +2096,11 @@ function createCouponNotice(
 			// does, and the copy names that one. Unknown or both ⇒ the copy names
 			// both, with the retry hint (a double-submitted create collides with
 			// itself).
-			result.status !== 409
+			outcome.kind !== "code_taken"
 				? `Could not create "${code}" — check the coupon ID and code aren't already in use, then try again.`
-				: clash?.kind === "id"
-					? `The coupon ID "${clash.id}" is already used by another coupon. Choose another ID — the code "${code}" is free.`
-					: clash?.kind === "code"
+				: outcome.taken === "id"
+					? `The coupon ID "${id}" is already used by another coupon. Choose another ID — the code "${code}" is free.`
+					: outcome.taken === "code"
 						? `The code "${code}" is already used by another coupon (codes match whatever their case). Choose another code.`
 						: `The ID or the code "${code}" is already used by another coupon (codes match whatever their case). If you just retried, check the list — the first attempt may have created it.`,
 	};
@@ -2165,25 +2158,22 @@ function saveCouponAction() {
 			...shared.fields,
 			currency: bounds.send,
 		};
-		let result: Awaited<ReturnType<AdminRulesSurface["updateCoupon"]>>;
-		try {
-			result = await client.updateCoupon(couponId, edit);
-		} catch (e) {
-			const copy = couponCurrencyRefusalCopy(e, bounds.send);
-			if (copy === undefined) throw e;
-			return err(copy);
+		const outcome = await updateCoupon(client, couponId, edit);
+		if (outcome.kind === "invalid") throw new CommerceInputError(outcome.field, outcome.reason);
+		if (outcome.kind === "currency_refused" && outcome.reason !== COUPON_CURRENCY_MOVED) {
+			return err(couponCurrencyRefusalCopy(outcome.reason, bounds.send));
 		}
-		return saveCouponOutcome(result, code, showLeaf, showList);
+		return saveCouponOutcome(outcome, code, showLeaf, showList);
 	});
 }
 
 function saveCouponOutcome(
-	result: RulesUpdateResult<unknown>,
+	outcome: Exclude<CouponWriteOutcome<CouponWire>, { kind: "invalid" }>,
 	code: string,
 	showLeaf: CustomActionApi<AdminRulesSurface>["showLeaf"],
 	showList: CustomActionApi<AdminRulesSurface>["showList"],
 ) {
-	if (result.ok) {
+	if (outcome.kind === "ok") {
 		return showLeaf([code], {
 			variant: "default",
 			title: "Coupon saved",
@@ -2191,14 +2181,14 @@ function saveCouponOutcome(
 				"Every field was replaced with the submitted values (last write wins). Orders already placed keep their snapshotted discount.",
 		});
 	}
-	if (result.reason === "not_found") {
+	if (outcome.kind === "not_found") {
 		return showList(undefined, {
 			variant: "error",
 			title: "Coupon not found",
 			description: "This coupon no longer exists — it may have been deleted.",
 		});
 	}
-	if (result.status === 409) {
+	if (outcome.kind === "currency_refused") {
 		return showLeaf([code], {
 			variant: "error",
 			title: "Coupon not saved",
@@ -2220,7 +2210,7 @@ function deleteCouponAction() {
 		const couponId = readString(payload?.couponId);
 		const code = readString(payload?.code);
 		if (couponId === undefined || code === undefined) return showList();
-		const result = await client.deleteCoupon(couponId);
+		const result = await deleteCoupon(client, couponId);
 		return deleteCouponOutcome(result, code, showLeaf, showList);
 	});
 }
@@ -2275,7 +2265,7 @@ function retireCouponAction() {
 		if (couponId === undefined || code === undefined) return showList();
 		// The CLIENT stamps the instant, on the stores' clock — the one checkout
 		// validates against — and re-reads before its write (see `retireCoupon`).
-		const result = await client.retireCoupon(couponId);
+		const result = await retireCoupon(client, couponId);
 		if (result.ok) {
 			const { previous, coupon } = result.value;
 			return showLeaf([coupon.code], {
