@@ -2060,3 +2060,80 @@ describe("Settings: lowering the cash-on-delivery auto-cancel window (B flag 4)"
 		});
 	});
 });
+
+// ── Issue #677: a provider that fails is shown, without the recipient ──────────
+//
+// A selected provider that throws (a daily quota, a sender domain gone inactive)
+// spends an order email's attempts. The isolate's own cron tick sends through
+// `ctx.email`, the failure is recorded in the isolate's kv, and the Settings page
+// of the SAME boot shows it under the email line — never the buyer's address.
+
+describe("Settings: the last failed send (issue #677)", () => {
+	const seeded: string[] = [];
+	afterEach(async () => {
+		await dropOrders(seeded.splice(0));
+	});
+
+	test("a cron send the provider refuses shows on the email line, with no recipient address", async () => {
+		const { storage } = await storageBridge();
+		const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+		const orders = new EmdashOrderStore({
+			storage,
+			inventory,
+			idGen: uuidIdGen,
+			clock: systemClock,
+		});
+		const id = `order-mailfail-${String(Date.now())}`;
+		const buyer = "quota-buyer@example.test";
+		await orders.createFromCart({
+			orderId: toOrderId(id),
+			cartId: null,
+			currency: toCurrency("USD"),
+			idempotencyKey: idempotencyKey(`create-${id}`),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: buyer,
+			paymentMethod: "stripe",
+			lines: [
+				{
+					productId: toProductId("prod-mailfail"),
+					sku: toSku("SKU-MAILFAIL"),
+					title: "Mug",
+					unitPrice: cents(1000),
+					currency: toCurrency("USD"),
+					quantity: 1,
+					fulfillmentKind: "physical",
+					reservationId: null,
+				},
+			],
+			totals: { subtotal: cents(1000), total: cents(1000), currency: toCurrency("USD") },
+		});
+		seeded.push(id);
+		// pending → paid enqueues the confirmation email the cron leg sends.
+		expect(await orders.markPaid(toOrderId(id))).toBe(true);
+
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true, email: "failing" });
+		sandbox = boot;
+		const before = blocksOf(
+			await boot.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(contextTexts(before).join("\n")).not.toContain("last send failed");
+
+		const tick = await boot.invokeHook("cron", {
+			name: "commerce-sweeps",
+			scheduledAt: new Date().toISOString(),
+		});
+		expect("error" in tick).toBe(false);
+		expect(boot.sentEmails()).toEqual([]);
+
+		const after = blocksOf(
+			await boot.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		assertBlockContract(after, { screen: "settings", level: "list" });
+		const text = contextTexts(after).join("\n");
+		expect(text).toContain("Email: provider not confirmed");
+		expect(text).toMatch(
+			/Email: last send failed \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC — daily sending quota exceeded for \[address\]\. Each failure uses one of an order email's 5 attempts\./,
+		);
+		expect(JSON.stringify(after)).not.toContain(buyer);
+	}, 180_000);
+});
