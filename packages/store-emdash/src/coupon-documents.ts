@@ -110,7 +110,8 @@ export interface CouponCollectionIndexDeclaration {
  * A declared field is, first, the queryable-field allow-list. EmDash also
  * materializes a physical index for it (`syncDeclaredStorageIndexes`): in 1.3.1 on
  * the first scheduler tick after the declaration ships; since 1.5.0 also before
- * the first state-changing plugin route of a new isolate, which answers 503
+ * the first non-GET plugin route of a new isolate (every storefront Otta call is
+ * a POST, reads included), which answers 503
  * `STORAGE_INDEXES_NOT_READY` while that build fails. A query on a declared field
  * works before the index exists either way. So a newly
  * declared field — `idempotencyKey`, #598 — needs no migration, and every

@@ -143,14 +143,21 @@ not rolling, upgrade for `092` when sandboxed `ctx.kv` values exist
    `__kv` rows, review any value the migration log reports as conflicting before plugins write
    again.
 5. **After the deploy**, open the admin, load the shop and a product page, and run one test
-   order. Since 1.5.0, on each new Worker isolate, the first state-changing Otta request (a cart
-   change, a checkout, a payment webhook, an admin action) first checks that the plugin's storage
-   indexes are in place and builds any that are missing. If that fails, the request answers
-   `503 STORAGE_INDEXES_NOT_READY` and the next write or cron tick tries again. A shopper sees
-   the error and can retry; Stripe retries a webhook that failed (the route answers 500), so no
-   payment is lost.
+   order. Since 1.5.0, on each new Worker isolate, the first Otta request first checks that the
+   plugin's storage indexes are in place and builds any that are missing. EmDash runs that check
+   on every non-GET plugin request, and the storefront sends every Otta route as a POST, reads
+   included, so this is the first product page, product list, cart, checkout, payment webhook or
+   admin action that isolate serves. If the build fails, that request answers
+   `503 STORAGE_INDEXES_NOT_READY` (a product page renders without its price and add-to-cart, the
+   cart looks empty) and the next request or cron tick tries again. A shopper can reload; Stripe
+   retries a webhook that got the 503, so no payment is lost.
 
 ### Going back
+
+- **Stuck on "The migration lock has been held since …":** a migration was cut off (for
+  example by the Workers Free CPU limit on a store that skipped the CLI step). It does not clear
+  by itself: release the lock as [DEPLOYMENT.md §2.3](./DEPLOYMENT.md) describes, then load the
+  site again.
 
 - **Migrating failed:** restore the bookmark from step 1,
   `npx wrangler d1 time-travel restore <your-database-name> --bookmark=<id>`. A restore

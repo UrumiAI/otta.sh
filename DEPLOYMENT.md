@@ -536,7 +536,7 @@ fork), creates the D1 database (`DB`), the two R2 buckets (`MEDIA`, and the priv
 for the one secret (`EMDASH_ENCRYPTION_KEY`, from `.dev.vars.example`), and connects Workers
 Builds, which runs `npm run build` (`astro build`) and `npm run deploy` on every push to your
 production branch. `npm run deploy` runs `scripts/deploy.mjs`: it applies any pending database
-migrations from the build (90 on a new store at EmDash `1.3.1`), checks that none is pending and the database has none this build does not know, then runs
+migrations from the build (90 on a new store at EmDash `1.3.1`, 96 at `1.5.0`), checks that none is pending and the database has none this build does not know, then runs
 `wrangler deploy`, so a new store is never live on an unmigrated database. The Worker is not
 left to migrate itself on its first boot: on Workers Free that was cut off after 34 of 90
 migrations and left the migration lock held (503 on every request). Do not deploy a new store
