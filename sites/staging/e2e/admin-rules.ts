@@ -3,6 +3,7 @@
  * the way the Block Kit console drives it (dev-bypass session, form submits
  * with the form's own `block_id`, promoted buttons' values). Not a spec.
  */
+import { devBypassRefusal } from "../../store/scripts/seed-demo-commerce.js";
 import { setupClaimHeaders } from "../../store/scripts/setup-claim-cookie.js";
 import { E2E_BASE_URL, expect } from "./harness.js";
 
@@ -13,12 +14,13 @@ export type Block = Record<string, unknown>;
 export async function adminHeaders(): Promise<Record<string, string>> {
 	const res = await fetch(`${E2E_BASE_URL}/_emdash/api/auth/dev-bypass`, {
 		redirect: "manual",
-		headers: setupClaimHeaders(),
+		headers: setupClaimHeaders(E2E_BASE_URL),
 	});
 	const cookie = res.headers
 		.getSetCookie()
 		.map((c) => c.split(";", 1)[0])
 		.join("; ");
+	if (cookie === "") throw new Error(devBypassRefusal(E2E_BASE_URL, res.status));
 	return { Cookie: cookie, "Content-Type": "application/json", "X-EmDash-Request": "1" };
 }
 

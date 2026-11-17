@@ -68,7 +68,9 @@ function candidates(dir: string): { paths: string[]; errors: unknown[] } {
 				db.close();
 			}
 		} catch (err) {
-			errors.push(err);
+			// Named, so a stale or broken file can be found and moved aside.
+			const message = err instanceof Error ? err.message : String(err);
+			errors.push(new Error(`cannot read ${path}: ${message}`, { cause: err }));
 		}
 	}
 	return { paths, errors };
@@ -82,7 +84,14 @@ function candidates(dir: string): { paths: string[]; errors: unknown[] } {
  */
 export function findContentDbFile(dir: string = D1_DIR): string | undefined {
 	const { paths: matches, errors } = candidates(dir);
-	if (errors.length > 0) throw errors[0];
+	if (errors.length === 1) throw errors[0];
+	if (errors.length > 1) {
+		// Every one named, so a single cleanup pass moves them all aside.
+		throw new AggregateError(
+			errors,
+			errors.map((err) => (err instanceof Error ? err.message : String(err))).join("; "),
+		);
+	}
 	if (matches.length > 1) {
 		throw new Error(
 			`more than one local D1 file under ${dir} has a "${CONTENT_TABLE}" table ` +
@@ -97,6 +106,40 @@ export function openContentDb(dir: string = D1_DIR): Database.Database | undefin
 	const path = findContentDbFile(dir);
 	if (path === undefined) return undefined;
 	return new Database(path, { fileMustExist: true, timeout: BUSY_TIMEOUT_MS });
+}
+
+/**
+ * {@link openContentDb} for the spec: the file, or the reason it cannot have
+ * one, never a throw (#669). The spec hands the reason to
+ * `skipWithoutLocalD1`, so leftover local state (a stale D1 file from another
+ * `database_id`, an unreadable `.sqlite`) skips a bare `pnpm test:e2e` and
+ * fails only a gate run.
+ */
+export function openContentDbForSpec(
+	dir: string = D1_DIR,
+): { ok: true; db: Database.Database } | { ok: false; why: string } {
+	let db: Database.Database | undefined;
+	try {
+		db = openContentDb(dir);
+	} catch (err) {
+		return {
+			ok: false,
+			why:
+				`the local D1 under ${dir} cannot be used: ` +
+				`${(err instanceof Error ? err.message : String(err)).replace(/\.$/, "")}. ` +
+				`Move the stale or unreadable file out of that directory, then rerun.`,
+		};
+	}
+	if (db === undefined) {
+		return {
+			ok: false,
+			why:
+				`no local D1 file under ${dir} has a "${CONTENT_TABLE}" table. Seed the stack ` +
+				`(OTTA_E2E_SEED=1), or, if it is seeded, miniflare may have moved its D1 ` +
+				`layout and e2e/local-d1.ts needs the new path.`,
+		};
+	}
+	return { ok: true, db };
 }
 
 export function renameTable(db: Database.Database, from: string, to: string): void {

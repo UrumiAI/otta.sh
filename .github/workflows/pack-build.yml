@@ -14,8 +14,10 @@ name: Pack build
 # below never reports, and that blocks the PR. Move the path filter into a
 # job-level condition (e.g. a changed-files step) before doing so.
 #
-# A PR that moves a peer pin (sites/store's peerDependencies) fails this check
-# until the template repository's pins are bumped to match.
+# A PR that moves a peer pin (sites/store's peerDependencies) builds with the
+# template's pins aligned to the packed store's peers (and no template lock),
+# and says so in a `::warning::` per pin: the template needs that bump once the
+# release is published (scripts/pack-build-peers.mjs).
 #
 # Template code runs in this job: `npm install` runs its dependencies' lifecycle
 # scripts and `astro build` runs its astro.config.mjs. Any code in a job can write
@@ -42,6 +44,7 @@ on:
       - "package.json"
       - ".nvmrc"
       - "scripts/pack-build.mjs"
+      - "scripts/pack-build-peers.mjs"
       - ".github/workflows/pack-build.yml"
   # On a branch other than main only (the job condition below refuses main).
   workflow_dispatch:

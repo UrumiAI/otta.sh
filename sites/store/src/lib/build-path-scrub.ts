@@ -444,7 +444,10 @@ export function findInlinedSecretsInDir(dir: string): string[] {
  * module that reads them whenever they are set at build time (found by grepping
  * emdash's dist for `import.meta.env` reads and for the names its env-object
  * modules look up: `public-url-*`, `trusted-proxy-*`, the OAuth provider and
- * migration and preview modules). EmDash's secrets (`*_SECRET`, `*_KEY`, `*_SALT`)
+ * migration and preview modules). Re-checked on 1.5.0: its only new
+ * `import.meta.env` read is Astro's own `BASE_URL`, the `EMDASH_*` names it looks
+ * up are unchanged, and its new SMTP settings are read from `process.env` at run
+ * time, never inlined. EmDash's secrets (`*_SECRET`, `*_KEY`, `*_SALT`)
  * are not here: they are secret-shaped.
  */
 const ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([

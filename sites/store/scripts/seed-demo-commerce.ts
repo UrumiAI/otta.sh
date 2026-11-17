@@ -117,7 +117,11 @@ import {
 	OTTA_PLUGIN_ID,
 	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
 } from "@urumi.ai/otta-plugin";
-import { setupClaimCookie, setupClaimHeaders } from "./setup-claim-cookie.js";
+import {
+	setupClaimCookie,
+	setupClaimHeaders,
+	type SetupClaimSource,
+} from "./setup-claim-cookie.js";
 
 export interface DemoPricing {
 	sku: string;
@@ -357,8 +361,29 @@ function trimUrl(value: string): string {
 	return value.replace(/\/+$/, "");
 }
 
-/** Authenticate against the site and return the headers to read content with. */
-export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> {
+/**
+ * Why `/_emdash/api/auth/dev-bypass` gave no session, as a message. Since EmDash
+ * 1.5.0 (emdash #4711) it answers 409 SETUP_REQUIRED until setup is complete, so a
+ * fresh dev store must go through the SETUP bypass first (with `?content=0` to
+ * skip the sample content).
+ */
+export function devBypassRefusal(siteUrl: string, status: number): string {
+	const why =
+		status === 409
+			? ` — setup is not complete: on a store not yet claimed, open the setup link first (the [otta-setup] log line, or ${siteUrl}/_emdash/admin/setup?setup_token= followed by OTTA_SETUP_TOKEN), then ${siteUrl}/_emdash/api/setup/dev-bypass (or ?content=0 to skip the sample content) in that browser`
+			: status === 403
+				? " — that route is development-only"
+				: "";
+	return `no EMDASH_TOKEN set and the dev auth bypass at ${siteUrl} returned no session cookie (HTTP ${String(status)}${why}). On a deployed site, create an API token in the admin and set EMDASH_TOKEN.`;
+}
+
+/** Authenticate against the site and return the headers to read content with.
+ *  `claimSource` is where the setup token is looked up (tests point it at a
+ *  temporary `.dev.vars`). */
+export async function cmsAuthHeaders(
+	siteUrl: string,
+	claimSource: SetupClaimSource = {},
+): Promise<Record<string, string>> {
 	const token = process.env["EMDASH_TOKEN"];
 	if (token !== undefined && token.length > 0) {
 		console.info("[otta] using EMDASH_TOKEN");
@@ -371,24 +396,23 @@ export async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, st
 	// production build; it just returns 403 there (it is gated on
 	// `import.meta.env.DEV`), so a deployed site needs EMDASH_TOKEN. On a store
 	// not yet claimed, the route also needs the setup token (ADR-0042): sent as
-	// the claim cookie when OTTA_SETUP_TOKEN is set here.
+	// the claim cookie: from sites/staging/.dev.vars or this env for a loopback
+	// SITE_URL, from this env only for any other.
 	const res = await fetch(`${siteUrl}/_emdash/api/auth/dev-bypass`, {
 		redirect: "manual",
-		headers: setupClaimHeaders(),
+		headers: setupClaimHeaders(siteUrl, claimSource),
 	});
 	const cookies = res.headers
 		.getSetCookie()
 		.map((c) => c.split(";", 1)[0])
 		.filter((c): c is string => c !== undefined);
 	if (cookies.length === 0) {
-		throw new Error(
-			`no EMDASH_TOKEN set and the dev auth bypass at ${siteUrl} returned no session cookie (HTTP ${res.status}${res.status === 403 ? " — that route is development-only" : ""}). On a deployed site, create an API token in the admin and set EMDASH_TOKEN.`,
-		);
+		throw new Error(devBypassRefusal(siteUrl, res.status));
 	}
 	console.info("[otta] using the dev auth bypass (no EMDASH_TOKEN set)");
 	// Keep the claim cookie too (ADR-0042): until the store is claimed, every
 	// later /_emdash call this session makes needs it as much as the bypass did.
-	const claim = setupClaimCookie();
+	const claim = setupClaimCookie(siteUrl, claimSource);
 	return { Cookie: [...cookies, ...(claim === undefined ? [] : [claim])].join("; ") };
 }
 

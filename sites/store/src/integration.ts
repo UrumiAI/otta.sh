@@ -80,8 +80,7 @@ export interface OttaOptions {
 	/**
 	 * The wrangler config this build uses, relative to the project root. It must
 	 * be the file the Cloudflare adapter reads (`configPath`). Default
-	 * `wrangler.jsonc`. Any other file is treated as a local copy of
-	 * `wrangler.jsonc`, which then only serves as the tracked template.
+	 * `wrangler.jsonc`. Every build guard reads this one file.
 	 */
 	wranglerConfig?: string;
 	/** The disposable playground build (try.otta.sh). Never for a store. */
@@ -138,6 +137,9 @@ const CHECKED_PEERS = [
 	"react",
 	"react-dom",
 ] as const;
+
+// TWIN: `scripts/pack-build-peers.mjs` (`satisfiesPeer`) restates this check for
+// the pack-build test, which cannot import this file; keep their rules identical.
 
 /** `[major, minor, patch, hasPrerelease]` of a plain version, or undefined. */
 function parseVersion(version: string): [number, number, number, boolean] | undefined {
@@ -685,19 +687,16 @@ export default function otta(options: OttaOptions): AstroIntegration {
 				 * bucket (issue #376): EmDash serves every MEDIA key without auth
 				 * (`src/lib/downloads-bucket.ts`).
 				 */
-				assertDownloadsBucketPrivate(read(wranglerConfig), wranglerConfig);
+				const wranglerText = read(wranglerConfig);
+				assertDownloadsBucketPrivate(wranglerText, wranglerConfig);
 
 				/**
 				 * A configured sender needs the `EMAIL` send_email binding in the config
 				 * this build uses (ADR-0043): selected-but-unbound burns order-email
-				 * attempts.
+				 * attempts. The SAME text and name as the guard above (issue #677): the
+				 * site chose the file; nothing here chooses again.
 				 */
-				assertEmailBindingForBuild(emailFrom, {
-					...(wranglerConfig !== "wrangler.jsonc" ? { localText: read(wranglerConfig) } : {}),
-					templateText: read(
-						wranglerConfig === "wrangler.jsonc" ? wranglerConfig : "wrangler.jsonc",
-					),
-				});
+				assertEmailBindingForBuild(emailFrom, { text: wranglerText, name: wranglerConfig });
 
 				assertNoPublicCollisions(fileURLToPath(config.publicDir));
 				if (!playground) assertSeedFound(root);
@@ -768,7 +767,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 							// discovers them mid-session, re-bundles and reloads the admin SPA under
 							// a running e2e test. Listing them pre-bundles both at startup. Bare
 							// specifiers resolve from the site, which depends on emdash directly
-							// (same 1.3.1 instance admin-react gets). Merged with the emdash
+							// (same 1.5.0 instance admin-react gets). Merged with the emdash
 							// integration's own `include`; a production build does not use it.
 							include: ["emdash/internal/routes/PluginRegistry", "emdash/plugin-utils"],
 						},

@@ -22,14 +22,26 @@ export interface EmailBridge {
 	close(): Promise<void>;
 }
 
-export async function emailBridge(): Promise<EmailBridge> {
+/** A bridge that REFUSES every message the way a failing provider does (a
+ *  daily quota, issue #677): status 500, and a reason that quotes the
+ *  recipient, as a provider's error may. Nothing is recorded. */
+export const FAILING_PROVIDER_REASON = "daily sending quota exceeded for";
+
+export async function emailBridge(options: { failing?: boolean } = {}): Promise<EmailBridge> {
 	const messages: EmailMessage[] = [];
 	const server: Server = createServer((req, res) => {
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", () => {
 			try {
-				messages.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as EmailMessage);
+				const message = JSON.parse(Buffer.concat(chunks).toString("utf8")) as EmailMessage;
+				if (options.failing === true) {
+					res
+						.writeHead(500, { "content-type": "text/plain" })
+						.end(`${FAILING_PROVIDER_REASON} ${message.to}`);
+					return;
+				}
+				messages.push(message);
 				res.writeHead(204).end();
 			} catch (err) {
 				res.writeHead(400, { "content-type": "text/plain" }).end(String(err));
@@ -50,7 +62,8 @@ export async function emailBridge(): Promise<EmailBridge> {
 }
 
 /** The `sandbox-email.ts` the harness writes over the scratch copy: every
- *  message goes to the bridge; a refusal is a rejected send. */
+ *  message goes to the bridge; a refusal is a rejected send, with the bridge's
+ *  own text as its message when it gave one. */
 export function sandboxEmailSource(bridgeBaseUrl: string): string {
 	return [
 		`const BRIDGE = ${JSON.stringify(bridgeBaseUrl)};`,
@@ -62,7 +75,7 @@ export function sandboxEmailSource(bridgeBaseUrl: string): string {
 		'\t\t\theaders: { "content-type": "application/json" },',
 		"\t\t\tbody: JSON.stringify(message),",
 		"\t\t});",
-		"\t\tif (!res.ok) throw new Error(`email bridge refused: ${String(res.status)}`);",
+		"\t\tif (!res.ok) throw new Error((await res.text()) || `email bridge refused: ${String(res.status)}`);",
 		"\t};",
 		"}",
 		"",

@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import {
 	DEMO_PRICING,
 	demoRows,
+	devBypassRefusal,
 	fetchCmsProducts,
 	parseExistingCommerce,
 	priceBody,
@@ -632,5 +633,25 @@ describe("seed-demo-commerce", () => {
 	test("SKUs are unique — the store enforces one live product per SKU and would 409 the second", () => {
 		const skus = Object.values(DEMO_PRICING).map((p) => p.sku);
 		expect(new Set(skus).size).toBe(skus.length);
+	});
+});
+
+describe("devBypassRefusal", () => {
+	test("409 (EmDash 1.5: dev sign-in needs completed setup) names the setup bypass", () => {
+		const message = devBypassRefusal("http://127.0.0.1:4500", 409);
+		expect(message).toContain("HTTP 409");
+		expect(message).toContain("setup is not complete");
+		expect(message).toContain("http://127.0.0.1:4500/_emdash/api/setup/dev-bypass");
+		expect(message).toContain("?content=0");
+		expect(message).toContain("http://127.0.0.1:4500/_emdash/admin/setup?setup_token=");
+	});
+
+	test("403 says the route is development-only", () => {
+		expect(devBypassRefusal("http://x", 403)).toContain("development-only");
+	});
+
+	test("any refusal says how a deployed site authenticates", () => {
+		expect(devBypassRefusal("http://x", 500)).toMatch(/set EMDASH_TOKEN/);
+		expect(devBypassRefusal("http://x", 500)).not.toContain("setup is not complete");
 	});
 });
