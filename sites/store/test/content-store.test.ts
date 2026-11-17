@@ -48,7 +48,7 @@ describe("the emdash version LOADER_TABLES was audited against", () => {
 		expect(
 			version,
 			"emdash changed: re-audit LOADER_TABLES (src/lib/content-store.ts) against the tables loadEntry/loadCollection read in dist/loader-*.mjs, then update this pin",
-		).toBe("1.3.1");
+		).toBe("1.5.0");
 	});
 });
 

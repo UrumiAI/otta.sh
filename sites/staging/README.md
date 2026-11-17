@@ -125,6 +125,8 @@ A confirmation missed while `stripe listen` wasn't running can be sent again: ta
 
 ## Deploying
 
+One-click deploys use the public template [UrumiAI/otta-store-template](https://github.com/UrumiAI/otta-store-template), not this site (DEPLOYMENT.md §2.6).
+
 The deploy runbook for this site lives in the root [`DEPLOYMENT.md`](../../DEPLOYMENT.md):
 resource creation, the build/deploy ordering, first boot + claim, and failed-first-boot
 recovery are §2; why D1 `session` is `"primary-first"` (not `"auto"`), and why

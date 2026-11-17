@@ -140,16 +140,35 @@ function emdashSandboxSources(): {
 	};
 }
 
+/** EmDash 1.5's `emailSend` (`@emdash-cms/cloudflare` 1.5.0, emdash #4281), when
+ *  this isolate has no provider callback yet, first starts EmDash's runtime
+ *  locally (`withEmDashRuntime` from `emdash/middleware`), which registers the
+ *  callback when a provider exists, and only then refuses. That module needs D1
+ *  and the whole CMS, so the harness runs the body against a stand-in that
+ *  starts a runtime with NO provider: the callback stays unset, exactly as a
+ *  site without one. Matched exactly, so a reworded import fails loudly. */
+const EMDASH_RUNTIME_IMPORT = 'const { withEmDashRuntime } = await import("emdash/middleware");';
+const NO_PROVIDER_RUNTIME =
+	"const withEmDashRuntime = async (run) => run(); // harness: a runtime with no provider";
+
 /** The body of EmDash's `PluginBridge.emailSend`, from the installed source: plain
  *  JavaScript (its only types are in the signature), reading `this.ctx.props` and
- *  the module-level `emailSendCallback`. */
+ *  the module-level `emailSendCallback`; its one dynamic import is replaced by
+ *  {@link NO_PROVIDER_RUNTIME}. */
 async function emailSendBody(bridgePath: string): Promise<string> {
 	const source = await readFile(bridgePath, "utf8");
 	const body = /async emailSend\([\s\S]*?\): Promise<void> \{\n([\s\S]*?)\n\t\}\n/.exec(
 		source,
 	)?.[1];
 	if (body === undefined) throw new Error(`EmDash's emailSend not found in ${bridgePath}`);
-	return body;
+	if (body.split(EMDASH_RUNTIME_IMPORT).length !== 2) {
+		throw new Error(`EmDash's emailSend no longer imports its runtime as expected (${bridgePath})`);
+	}
+	const hosted = body.replace(EMDASH_RUNTIME_IMPORT, NO_PROVIDER_RUNTIME);
+	if (/\bimport\(/.test(hosted)) {
+		throw new Error(`EmDash's emailSend has an import the harness cannot host (${bridgePath})`);
+	}
+	return hosted;
 }
 
 function hostSource(
@@ -181,7 +200,8 @@ export class PluginBridge extends WorkerEntrypoint {
 		const { capabilities, allowedHosts } = this.ctx.props;
 		return sandboxHttpFetch(url, init, { capabilities, allowedHosts });
 	}
-	// EmDash's PluginBridge.emailSend, its body verbatim (bridge.ts:1928, @emdash-cms/cloudflare 1.0.1).
+	// EmDash's PluginBridge.emailSend, its body verbatim but for the runtime import
+	// (bridge.ts:1910, @emdash-cms/cloudflare 1.5.0; see emailSendBody).
 	async emailSend(message) {
 ${emailSend}
 	}

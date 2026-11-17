@@ -21,6 +21,19 @@
  * Needs the registry (emdash, astro, ... at the template's pins), unlike
  * `pack-consume-types.mjs`.
  *
+ * PEERS. On a branch that moves the host train (EmDash, Astro, React), the
+ * template still pins the last release's versions, which the packed
+ * `@urumi.ai/otta-store` refuses as peers (npm ERESOLVE), and the template can
+ * only move once this release is published. So each template pin BELOW the
+ * packed store's peer range is moved up to that peer's version (the range's floor
+ * for `~`/`^`) before installing (`pack-build-peers.mjs`), logged, flagged as a
+ * GitHub Actions warning and added to the step summary: the template needs the
+ * same bump after the release. A pin AHEAD of the range, or not a plain version,
+ * fails the run instead, as does a result some other packed package's peers
+ * refuse. After the install the run logs the host versions it resolved.
+ * The template's package-lock.json locks the old train, so it is then set aside
+ * and npm resolves the whole tree.
+ *
  *   node scripts/pack-build.mjs [--keep] [--template <dir>]
  *
  * `OTTA_TEMPLATE_DIR` also sets the template (default ~/otta-store-template);
@@ -29,6 +42,7 @@
 
 import { execFileSync } from "node:child_process";
 import {
+	appendFileSync,
 	cpSync,
 	existsSync,
 	mkdtempSync,
@@ -41,6 +55,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { alignPeerPins, pinsRefusedByPeers } from "./pack-build-peers.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -185,7 +200,52 @@ try {
 	for (const name of Object.keys(byName)) {
 		pkg.overrides[name] = direct.has(name) ? `$${name}` : byName[name];
 	}
+	// The host train: move pins below the packed store's peers up to them (see PEERS
+	// above); then every packed package's peers must accept the result.
+	const manifests = Object.values(byName).map((spec) =>
+		JSON.parse(run("tar", ["-xzOf", spec.slice("file:".length), "package/package.json"], work)),
+	);
+	const storeManifest = manifests.find((m) => m.name === "@urumi.ai/otta-store");
+	let aligned;
+	try {
+		aligned = alignPeerPins(pkg, storeManifest?.peerDependencies ?? {});
+	} catch (error) {
+		console.error(`pack-build: FAILED — ${error.message.replace(/^pack-build: /, "")}`);
+		throw Object.assign(new Error("template pins incompatible"), { reported: true });
+	}
+	const refused = pinsRefusedByPeers(pkg, manifests);
+	if (refused.length > 0) {
+		console.error(
+			"pack-build: FAILED — the site's pins do not satisfy every packed package's peers:",
+		);
+		for (const r of refused) console.error(`  ${r.name} ${r.pin}: ${r.by} wants ${r.peer}`);
+		throw Object.assign(new Error("packed peers disagree"), { reported: true });
+	}
+	const summary = [];
+	for (const { name, section, from, to, peer } of aligned) {
+		const message = `template pins ${name} ${from}, below this branch's packed store peer ${peer}; building with ${to}. Bump the template to it once this release is published.`;
+		step(`${section}: ${message}`);
+		summary.push(`- ${message}`);
+		if (process.env.GITHUB_ACTIONS === "true")
+			console.log(`::warning title=pack-build::${message}`);
+	}
+	if (summary.length > 0 && process.env.GITHUB_STEP_SUMMARY) {
+		appendFileSync(
+			process.env.GITHUB_STEP_SUMMARY,
+			`### pack-build: template pins aligned to the packed peers\n\n${summary.join("\n")}\n`,
+		);
+	}
 	writeFileSync(pkgPath, `${JSON.stringify(pkg, null, "\t")}\n`);
+	// The template's lock pins the OLD host train all the way down (emdash's own
+	// exact dependencies, kumo, ...), and npm also trusts a locked package's recorded
+	// peers while its version matches, which the packed store's (unchanged) version
+	// does. Re-resolving a few entries is not enough, so when peers moved the lock
+	// is set aside and the install takes the no-lock mode below.
+	const lockPath = path.join(site, "package-lock.json");
+	if (aligned.length > 0 && existsSync(lockPath)) {
+		rmSync(lockPath);
+		step("package-lock.json set aside: it locks the template's host train, not the packed peers");
+	}
 
 	// 3. npm install and astro build.
 	const npmEnv = {
@@ -200,6 +260,14 @@ try {
 			: "npm install (mode: no package-lock.json, full resolution)",
 	);
 	run("npm", ["install", "--no-progress"], site, npmEnv);
+	// What the host train resolved to, so a run can be reproduced.
+	const resolved = ["emdash", "@emdash-cms/cloudflare", "@emdash-cms/admin", "astro"].map(
+		(name) => {
+			const manifest = path.join(site, "node_modules", ...name.split("/"), "package.json");
+			return `${name}@${existsSync(manifest) ? JSON.parse(readFileSync(manifest, "utf8")).version : "(not installed)"}`;
+		},
+	);
+	step(`resolved ${resolved.join(", ")}`);
 	step("astro build");
 	try {
 		run("npx", ["--no-install", "astro", "build"], site, npmEnv);

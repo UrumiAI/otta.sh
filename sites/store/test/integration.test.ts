@@ -156,11 +156,11 @@ describe("the peer versions this release supports, checked at run time", () => {
 		return root;
 	}
 
-	const pins = { emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "~7.3.6" };
+	const pins = { emdash: "1.5.0", "@emdash-cms/cloudflare": "1.5.0", astro: "~7.3.6" };
 
 	test("exact pins compare exactly; ~ pins take patch releases of the same minor", () => {
-		expect(satisfiesPeerPin("1.3.1", "1.3.1")).toBe(true);
-		expect(satisfiesPeerPin("1.3.2", "1.3.1")).toBe(false);
+		expect(satisfiesPeerPin("1.5.0", "1.5.0")).toBe(true);
+		expect(satisfiesPeerPin("1.5.1", "1.5.0")).toBe(false);
 		expect(satisfiesPeerPin("7.3.6", "~7.3.6")).toBe(true);
 		expect(satisfiesPeerPin("7.3.9", "~7.3.6")).toBe(true);
 		expect(satisfiesPeerPin("7.3.5", "~7.3.6")).toBe(false);
@@ -188,7 +188,7 @@ describe("the peer versions this release supports, checked at run time", () => {
 	});
 
 	test("matching versions at the project root pass", () => {
-		const root = project({ emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.8" });
+		const root = project({ emdash: "1.5.0", "@emdash-cms/cloudflare": "1.5.0", astro: "7.3.8" });
 		expect(() => assertPeerVersions(root, pins, "0.2.0")).not.toThrow();
 	});
 
@@ -202,8 +202,8 @@ describe("the peer versions this release supports, checked at run time", () => {
 			}
 			return "";
 		})();
-		expect(error).toContain("emdash: expected 1.3.1, found 1.4.0");
-		expect(error).toContain("@emdash-cms/cloudflare: expected 1.3.1, found it not installed");
+		expect(error).toContain("emdash: expected 1.5.0, found 1.4.0");
+		expect(error).toContain("@emdash-cms/cloudflare: expected 1.5.0, found it not installed");
 		expect(error).not.toContain("astro:");
 		expect(error).toMatch(/without --legacy-peer-deps or --force/);
 	});
@@ -222,8 +222,8 @@ describe("the peer versions this release supports, checked at run time", () => {
 			expect(satisfiesPeerPin(installed.version, pin), name).toBe(true);
 		}
 		const root = project({
-			emdash: "1.3.1",
-			"@emdash-cms/cloudflare": "1.3.1",
+			emdash: "1.5.0",
+			"@emdash-cms/cloudflare": "1.5.0",
 			astro: "7.3.6",
 			"@astrojs/cloudflare": "14.1.2",
 			"@astrojs/react": "6.0.1",
@@ -236,7 +236,7 @@ describe("the peer versions this release supports, checked at run time", () => {
 	});
 
 	test("a manifest that does not parse is named with its path, not a raw SyntaxError", () => {
-		const root = project({ emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.6" });
+		const root = project({ emdash: "1.5.0", "@emdash-cms/cloudflare": "1.5.0", astro: "7.3.6" });
 		const manifest = path.join(root, "node_modules", "astro", "package.json");
 		writeFileSync(manifest, "{ not json");
 		const error = (() => {
@@ -261,26 +261,90 @@ describe("the peer versions this release supports, checked at run time", () => {
 	});
 
 	test("resolves from the project root upward, not from the package's own location", () => {
-		const root = project({ emdash: "1.3.1", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.6" });
+		const root = project({ emdash: "1.5.0", "@emdash-cms/cloudflare": "1.5.0", astro: "7.3.6" });
 		const nested = path.join(root, "apps", "shop");
 		mkdirSync(nested, { recursive: true });
 		expect(() => assertPeerVersions(nested, pins)).not.toThrow();
-		// The same call from this package, whose own node_modules has 1.3.1, still fails on a stale pin.
+		// The same call from this package, whose own node_modules has 1.5.0, still fails on a stale pin.
 		expect(() => assertPeerVersions(PKG, { emdash: "9.9.9" })).toThrow(/emdash: expected 9\.9\.9/);
 	});
 
 	test("the config:setup hook runs the check against config.root, with this release's pins", () => {
-		const root = project({ emdash: "1.3.0", "@emdash-cms/cloudflare": "1.3.1", astro: "7.3.6" });
+		const root = project({ emdash: "1.4.0", "@emdash-cms/cloudflare": "1.5.0", astro: "7.3.6" });
 		const setup = otta({ template: 1, env: {} }).hooks["astro:config:setup"] as (
 			o: unknown,
 		) => void;
 		expect(() => setup({ config: { root: pathToFileURL(`${root}/`) } })).toThrow(
-			/emdash: expected 1\.3\.1, found 1\.3\.0/,
+			/emdash: expected 1\.5\.0, found 1\.4\.0/,
 		);
 	});
 
 	test("the repository's staging site, which consumes the store by workspace, passes", () => {
 		expect(() => assertPeerVersions(path.join(PKG, "..", "staging"))).not.toThrow();
+	});
+});
+
+/** The error `otta()`'s setup hook throws for `root`, with a sender set and
+ *  `custom.jsonc` named as the wrangler config. */
+function setupError(root: string): Error {
+	const setup = otta({
+		template: 1,
+		emailFrom: "store@example.com",
+		wranglerConfig: "custom.jsonc",
+		env: {},
+	}).hooks["astro:config:setup"] as (o: unknown) => void;
+	try {
+		setup({ config: { root: pathToFileURL(`${root}/`) } });
+	} catch (e) {
+		return e as Error;
+	}
+	return new Error("did not throw");
+}
+
+/** Issue #677: the downloads and email guards read ONE file, the one the site
+ *  named (`wranglerConfig`), through the real setup hook. */
+describe("the wrangler guards in the config:setup hook", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+	});
+
+	/** A project root holding only `custom.jsonc`, with the peers this package
+	 *  resolves itself, so the peer check passes and the guards run next. */
+	function projectWith(wranglerText: string): string {
+		const root = mkdtempSync(path.join(tmpdir(), "otta-wrangler-"));
+		dirs.push(root);
+		const { peerDependencies } = JSON.parse(
+			readFileSync(path.join(PKG, "package.json"), "utf8"),
+		) as { peerDependencies: Record<string, string> };
+		for (const name of Object.keys(peerDependencies)) {
+			const manifest = path.join(PKG, "node_modules", ...name.split("/"), "package.json");
+			const { version } = JSON.parse(readFileSync(manifest, "utf8")) as { version: string };
+			const pkgDir = path.join(root, "node_modules", ...name.split("/"));
+			mkdirSync(pkgDir, { recursive: true });
+			writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({ name, version }));
+		}
+		writeFileSync(path.join(root, "custom.jsonc"), wranglerText);
+		return root;
+	}
+
+	test("both guards check the site's file, and no wrangler.jsonc is read beside it", () => {
+		// The email guard: no wrangler.jsonc exists here, and the error names the
+		// file the site chose, never a re-chosen one.
+		expect(setupError(projectWith("{}")).message).toMatch(
+			/OTTA_EMAIL_FROM is set but custom\.jsonc declares no send_email/,
+		);
+		// The downloads guard, on the same file.
+		const shared = `{
+	"send_email": [{ "name": "EMAIL" }],
+	"r2_buckets": [
+		{ "binding": "MEDIA", "bucket_name": "same" },
+		{ "binding": "DOWNLOADS", "bucket_name": "same" }
+	]
+}`;
+		const downloads = setupError(projectWith(shared)).message;
+		expect(downloads).toMatch(/custom\.jsonc/);
+		expect(downloads).not.toMatch(/send_email|ENOENT/);
 	});
 });
 
@@ -615,8 +679,8 @@ describe("one copy of each runtime in a site (ADR-0045)", () => {
 	});
 
 	test("EmDash and its Cloudflare package are pinned exactly; the rest to the tested minor", () => {
-		expect(pkg.peerDependencies["emdash"]).toBe("1.3.1");
-		expect(pkg.peerDependencies["@emdash-cms/cloudflare"]).toBe("1.3.1");
+		expect(pkg.peerDependencies["emdash"]).toBe("1.5.0");
+		expect(pkg.peerDependencies["@emdash-cms/cloudflare"]).toBe("1.5.0");
 		for (const name of ["astro", "@astrojs/cloudflare", "@astrojs/react", "react", "react-dom"]) {
 			expect(pkg.peerDependencies[name], name).toMatch(/^~\d+\.\d+\.\d+$/);
 			// The workspace builds and tests against the same range it declares.
