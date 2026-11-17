@@ -52,6 +52,7 @@ import {
 	SHELL_PATH_ENV_KEYS,
 	scrubBuildPaths,
 	scrubBuildPathsInDir,
+	scrubSourceMap,
 	workspaceRoot,
 	WHOLE_ENV_MARKER,
 } from "../../store/src/lib/build-path-scrub.js";
@@ -768,6 +769,136 @@ describe("scrubBuildPathsInDir", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("astro:build:done scrubs the client output's source maps (#679)", () => {
+	test("rewrites a client `.map` and leaves client code alone", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			const client = path.join(dir, "client");
+			mkdirSync(server);
+			mkdirSync(path.join(client, "_astro"), { recursive: true });
+			const map = path.join(client, "_astro", "island.js.map");
+			writeFileSync(map, `{"version":3,"sources":["/r/node_modules/emdash/dist/a.js"]}`);
+			const code = path.join(client, "_astro", "island.js");
+			writeFileSync(code, `const p = "/r/kept";`);
+			const { failure } = await runHooks("build", { serverDir: server, clientDir: client });
+			expect(failure).toBeUndefined();
+			expect(readFileSync(map, "utf8")).toBe(
+				`{"version":3,"sources":["/node_modules/emdash/dist/a.js"]}`,
+			);
+			expect(readFileSync(code, "utf8")).toBe(`const p = "/r/kept";`);
+		}));
+
+	test("rewrites sourceRoot and sourcesContent of a client `.map`, which stays valid JSON", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			const client = path.join(dir, "client");
+			mkdirSync(server);
+			mkdirSync(client);
+			const map = path.join(client, "a.js.map");
+			writeFileSync(
+				map,
+				JSON.stringify({
+					version: 3,
+					sourceRoot: "/r",
+					sources: ["src/a.ts"],
+					sourcesContent: ["// built in /r/src\nconst x = 1;"],
+					mappings: "",
+				}),
+			);
+			const { failure } = await runHooks("build", { serverDir: server, clientDir: client });
+			expect(failure).toBeUndefined();
+			const text = readFileSync(map, "utf8");
+			expect(text).not.toContain("/r/");
+			expect(JSON.parse(text)).toEqual({
+				version: 3,
+				sourceRoot: "/",
+				sources: ["src/a.ts"],
+				sourcesContent: ["// built in /src\nconst x = 1;"],
+				mappings: "",
+			});
+		}));
+});
+
+describe("scrubSourceMap (#679)", () => {
+	const root = "/home/builder/otta";
+	const scrub = (map: object) => JSON.parse(scrubSourceMap(JSON.stringify(map), root)) as unknown;
+
+	test.each([
+		["without a trailing slash", root, "/"],
+		["with a trailing slash", `${root}/`, "/"],
+		["below the root", `${root}/sites/store`, "/sites/store"],
+		["as a file URL", `file://${root}/src`, "file:///src"],
+		["somewhere else", "/elsewhere", "/elsewhere"],
+		["a sibling that shares the prefix", `${root}-other/src`, `${root}-other/src`],
+	])("rewrites sourceRoot %s", (_name, sourceRoot, expected) => {
+		expect(scrub({ version: 3, sourceRoot, sources: [], mappings: "" })).toEqual({
+			version: 3,
+			sourceRoot: expected,
+			sources: [],
+			mappings: "",
+		});
+	});
+
+	test("rewrites sources and the file field", () => {
+		expect(
+			scrub({
+				version: 3,
+				file: `${root}/dist/a.js`,
+				sources: [`${root}/src/a.ts`, `file://${root}/src/b.ts`, "../c.ts", null],
+				mappings: "",
+			}),
+		).toEqual({
+			version: 3,
+			file: "/dist/a.js",
+			sources: ["/src/a.ts", "file:///src/b.ts", "../c.ts", null],
+			mappings: "",
+		});
+	});
+
+	test("removes the root from sourcesContent wherever it starts a path, not inside another path", () => {
+		const content = [
+			`// generated from ${root}/src/a.ts (cwd ${root})`,
+			`import x from "${root}/src/x.ts";`,
+			`const url = "/_emdash/api/plugins/otta/admin";`,
+		].join("\n");
+		const out = scrub({
+			version: 3,
+			sources: ["a.ts"],
+			sourcesContent: [content, null],
+			mappings: "",
+		});
+		expect(out).toEqual({
+			version: 3,
+			sources: ["a.ts"],
+			sourcesContent: [
+				[
+					"// generated from /src/a.ts (cwd /)",
+					`import x from "/src/x.ts";`,
+					`const url = "/_emdash/api/plugins/otta/admin";`,
+				].join("\n"),
+				null,
+			],
+			mappings: "",
+		});
+		const short = JSON.parse(
+			scrubSourceMap(
+				JSON.stringify({ version: 3, sources: [], sourcesContent: [content], mappings: "" }),
+				"/otta",
+			),
+		) as { sourcesContent: string[] };
+		expect(short.sourcesContent[0]).toContain(`"/_emdash/api/plugins/otta/admin"`);
+	});
+
+	test("returns a map with nothing to rewrite unchanged, byte for byte", () => {
+		const text = `{ "version": 3, "sources": ["../a.ts"], "mappings": "" }`;
+		expect(scrubSourceMap(text, root)).toBe(text);
+	});
+
+	test("falls back to the anchored text rewrite for a map that is not JSON", () => {
+		expect(scrubSourceMap(`{"sources":["${root}/a.ts"],`, root)).toBe(`{"sources":["/a.ts"],`);
 	});
 });
 

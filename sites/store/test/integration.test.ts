@@ -179,6 +179,13 @@ describe("the peer versions this release supports, checked at run time", () => {
 		expect(satisfiesPeerPin("7.3.7-beta.1", "7.3.7")).toBe(false);
 	});
 
+	test("build metadata (+...) is ignored, as npm's semver does (#679)", () => {
+		expect(satisfiesPeerPin("1.3.1+build.5", "1.3.1")).toBe(true);
+		expect(satisfiesPeerPin("1.3.2+build.5", "1.3.1")).toBe(false);
+		expect(satisfiesPeerPin("1.3.1-rc.1+build.5", "1.3.1")).toBe(false);
+		expect(satisfiesPeerPin("7.3.8+build.5", "~7.3.6")).toBe(true);
+	});
+
 	test("^0.y.z stays in 0.y; ^0.0.z is exactly 0.0.z", () => {
 		expect(satisfiesPeerPin("0.2.5", "^0.2.3")).toBe(true);
 		expect(satisfiesPeerPin("0.3.0", "^0.2.3")).toBe(false);
@@ -281,6 +288,70 @@ describe("the peer versions this release supports, checked at run time", () => {
 
 	test("the repository's staging site, which consumes the store by workspace, passes", () => {
 		expect(() => assertPeerVersions(path.join(PKG, "..", "staging"))).not.toThrow();
+	});
+});
+
+/** The error `otta()`'s setup hook throws for `root`, with a sender set and
+ *  `custom.jsonc` named as the wrangler config. */
+function setupError(root: string): Error {
+	const setup = otta({
+		template: 1,
+		emailFrom: "store@example.com",
+		wranglerConfig: "custom.jsonc",
+		env: {},
+	}).hooks["astro:config:setup"] as (o: unknown) => void;
+	try {
+		setup({ config: { root: pathToFileURL(`${root}/`) } });
+	} catch (e) {
+		return e as Error;
+	}
+	return new Error("did not throw");
+}
+
+/** Issue #677: the downloads and email guards read ONE file, the one the site
+ *  named (`wranglerConfig`), through the real setup hook. */
+describe("the wrangler guards in the config:setup hook", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+	});
+
+	/** A project root holding only `custom.jsonc`, with the peers this package
+	 *  resolves itself, so the peer check passes and the guards run next. */
+	function projectWith(wranglerText: string): string {
+		const root = mkdtempSync(path.join(tmpdir(), "otta-wrangler-"));
+		dirs.push(root);
+		const { peerDependencies } = JSON.parse(
+			readFileSync(path.join(PKG, "package.json"), "utf8"),
+		) as { peerDependencies: Record<string, string> };
+		for (const name of Object.keys(peerDependencies)) {
+			const manifest = path.join(PKG, "node_modules", ...name.split("/"), "package.json");
+			const { version } = JSON.parse(readFileSync(manifest, "utf8")) as { version: string };
+			const pkgDir = path.join(root, "node_modules", ...name.split("/"));
+			mkdirSync(pkgDir, { recursive: true });
+			writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({ name, version }));
+		}
+		writeFileSync(path.join(root, "custom.jsonc"), wranglerText);
+		return root;
+	}
+
+	test("both guards check the site's file, and no wrangler.jsonc is read beside it", () => {
+		// The email guard: no wrangler.jsonc exists here, and the error names the
+		// file the site chose, never a re-chosen one.
+		expect(setupError(projectWith("{}")).message).toMatch(
+			/OTTA_EMAIL_FROM is set but custom\.jsonc declares no send_email/,
+		);
+		// The downloads guard, on the same file.
+		const shared = `{
+	"send_email": [{ "name": "EMAIL" }],
+	"r2_buckets": [
+		{ "binding": "MEDIA", "bucket_name": "same" },
+		{ "binding": "DOWNLOADS", "bucket_name": "same" }
+	]
+}`;
+		const downloads = setupError(projectWith(shared)).message;
+		expect(downloads).toMatch(/custom\.jsonc/);
+		expect(downloads).not.toMatch(/send_email|ENOENT/);
 	});
 });
 

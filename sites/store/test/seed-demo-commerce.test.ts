@@ -643,6 +643,7 @@ describe("devBypassRefusal", () => {
 		expect(message).toContain("setup is not complete");
 		expect(message).toContain("http://127.0.0.1:4500/_emdash/api/setup/dev-bypass");
 		expect(message).toContain("?content=0");
+		expect(message).toContain("http://127.0.0.1:4500/_emdash/admin/setup?setup_token=");
 	});
 
 	test("403 says the route is development-only", () => {

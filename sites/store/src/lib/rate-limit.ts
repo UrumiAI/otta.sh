@@ -419,7 +419,9 @@ export function rateLimitedResponse(cls: RateLimitClass, backTo: string | null):
 }
 
 /** Where a site route's 429 "Go back" points: a resume goes back to its order
- *  page (the shopper came from there), else the route's own `backTo`. */
+ *  page (the shopper came from there), else the route's own `backTo`. Only the
+ *  URL is read, never a body: the email page's POST names its order in the
+ *  form action's query for this (`resumeFormAction`, #669). */
 function siteBackTo(routePattern: string, url: URL): string {
 	if (routePattern === RESUME_ROUTE) {
 		const order = resumeOrderParam(url);
