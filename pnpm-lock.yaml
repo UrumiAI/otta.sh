@@ -429,6 +429,9 @@ importers:
       '@urumi.ai/otta-domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@urumi.ai/otta-mcp':
+        specifier: workspace:*
+        version: link:../../packages/mcp
       '@urumi.ai/otta-plugin':
         specifier: workspace:*
         version: link:../../packages/plugin

@@ -269,6 +269,7 @@ the tree).
 | `@urumi.ai/otta-plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
 | `@urumi.ai/otta-admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
 | `@urumi.ai/otta-admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — the Orders page, plus the product editor's Pricing & stock cards (and the Download file card for a digital product) and the products list's Price / Stock columns. |
+| `@urumi.ai/otta-mcp` | Opt-in admin MCP tools: wraps the Otta plugin so an AI agent can run the store over EmDash's `/_emdash/api/mcp`, admin-only, through the same guarded admin operations ([ADR-0046](./adr/0046-admin-mcp-tools-ship-as-a-plugin-wrapper.md)). Enabled with `otta({ mcp: true })`; not on npm yet, it ships with the next release. |
 | `@urumi.ai/otta-store` (`sites/store`) | The storefront and admin as one Astro integration, `otta()`: routes, middleware, theme, fonts and build guards (ADR-0045). What the one-click template depends on. |
 | `sites/staging` | Not published. The reference site built from `otta()` — EmDash on Cloudflare Workers, plugin registered trusted — plus the e2e suite and the playground config. |
 | `examples/email-provider` | Template for an EmDash email-transport plugin (not published); see [`docs/email-providers.md`](./docs/email-providers.md). |

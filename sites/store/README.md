@@ -36,6 +36,7 @@ package from npm and has a Deploy to Cloudflare button. See the repository's
 | `template` | — | Required. The template contract the site's own files follow. |
 | `emailFrom`, `emailFromName` | `OTTA_EMAIL_FROM`, `OTTA_EMAIL_FROM_NAME` | The default Cloudflare email sender (ADR-0043). Needs the `EMAIL` binding. |
 | `extraAllowedHosts` | `OTTA_EXTRA_ALLOWED_HOSTS` | Extra egress hosts for the plugin. |
+| `mcp` | — | Opt in to the admin MCP tools (ADR-0046). Default off. Needs `@urumi.ai/otta-mcp` installed at this package's version; enable steps in [its README](https://github.com/UrumiAI/otta.sh/blob/main/packages/mcp/README.md). |
 | `wranglerConfig` | — | The wrangler file the build uses, if not `wrangler.jsonc`. |
 | `envDir` | — | Where the `.env` fallback for the variables above is read. Default: the working directory. |
 

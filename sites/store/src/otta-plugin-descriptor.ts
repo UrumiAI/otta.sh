@@ -62,7 +62,18 @@ export interface OttaPluginDescriptorOptions {
 	/** Deployment-supplied in-process egress (only `OTTA_EXTRA_ALLOWED_HOSTS` today). Absent ⇒ no host
 	 *  granted for it. Email needs none: it goes through `ctx.email`. */
 	egress?: InProcessEgressUrls;
+	/**
+	 * Register the plugin with its admin MCP tools (ADR-0046): the entrypoint
+	 * becomes `@urumi.ai/otta-mcp/trusted`, the same plugin wrapped by `withMcp`.
+	 * Nothing else in the descriptor changes, so the id, storage, capabilities
+	 * and allowed hosts stay the plugin's own. Default off.
+	 */
+	mcp?: boolean;
 }
+
+/** The plugin's own trusted entry, and the opt-in one that adds the MCP tools. */
+export const OTTA_PLUGIN_TRUSTED_ENTRY = "@urumi.ai/otta-plugin/trusted";
+export const OTTA_MCP_TRUSTED_ENTRY = "@urumi.ai/otta-mcp/trusted";
 
 export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}): PluginDescriptor {
 	return {
@@ -72,7 +83,9 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// The TRUSTED entry (issue #447): the plugin's default export with
 		// `trustedHost` on, so a timed-out Stripe request is aborted at the
 		// socket. Right only because this registration is in-process.
-		entrypoint: "@urumi.ai/otta-plugin/trusted",
+		// With `mcp` it is the same plugin wrapped by @urumi.ai/otta-mcp (also
+		// `trustedHost`), which adds one private route per tool and `mcp.tools`.
+		entrypoint: options.mcp === true ? OTTA_MCP_TRUSTED_ENTRY : OTTA_PLUGIN_TRUSTED_ENTRY,
 		// EXACTLY the manifest's three capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
