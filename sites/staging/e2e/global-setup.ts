@@ -177,7 +177,7 @@ async function applyCmsSeed(withContent = true): Promise<void> {
 				// it, and an unclaimed store refuses it without the setup token.
 				res = await fetch(`${E2E_BASE_URL}/_emdash/api/setup/dev-bypass${query}`, {
 					redirect: "manual",
-					headers: setupClaimHeaders(),
+					headers: setupClaimHeaders(E2E_BASE_URL),
 				});
 			} catch (err) {
 				throw new RetryableError(`seed: the CMS seed (setup dev-bypass) failed: ${String(err)}`);
