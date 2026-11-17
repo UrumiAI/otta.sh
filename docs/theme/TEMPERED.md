@@ -1,6 +1,6 @@
 # "Tempered" — the Otta reference storefront theme
 
-Design direction for `sites/staging`, approved 2026-07-28. This file is the **spec**;
+Design direction for the reference storefront (`sites/store`, served by `sites/staging`), approved 2026-07-28. This file is the **spec**;
 [`tempered-mockup.html`](./tempered-mockup.html) is the rendered reference — open it in a
 browser and compare against it as you build. Where the two disagree, the mockup wins for
 *appearance* and this file wins for *rules*.
@@ -117,7 +117,7 @@ glyph's advance at text sizes, so body copy spaces unevenly. Apart from that one
 two builds are identical.
 
 Each file is the full variable font (same axes as the previous Google download), so every
-axis the theme sets is present. What the three entries in `astro.config.ts` ship:
+axis the theme sets is present. What the three entries in `OTTA_FONTS` (`sites/store/src/integration.ts`) ship:
 
 | Face | Weight range declared | Axes in the file |
 |---|---|---|
@@ -127,7 +127,7 @@ axis the theme sets is present. What the three entries in `astro.config.ts` ship
 
 Drop the `wdth` axis from a file and every `font-variation-settings: "wdth" …` in the theme
 becomes a silent no-op that renders at the default width, with no error anywhere.
-`test/fonts-config.test.ts` pins the local provider, that each file exists with its OFL, that
+`sites/store/test/fonts-config.test.ts` pins the local provider, that each file exists with its OFL, that
 each carries a non-empty `prep` table (FreeType checks the table's size, not just its
 presence), and that the display and data files carry their `wdth` (and `opsz`) axes.
 
