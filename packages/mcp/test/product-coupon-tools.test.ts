@@ -353,6 +353,22 @@ describe("coupons", () => {
 		expect(await couponRow(c)).toMatchObject({ code: c, amountCents: 500 });
 	});
 
+	test("coupons_update with nothing to change is refused, and changes nothing", async () => {
+		const c = code();
+		await call("coupons_create", {
+			id: `id-${c}`,
+			code: c,
+			type: "fixed_amount",
+			amountCents: 500,
+			currency: "USD",
+		});
+		const before = await couponRow(c);
+		const err = await failure("coupons_update", { couponId: `id-${c}` });
+		expect(err.code).toBe("INVALID_INPUT");
+		expect(err.message).toMatch(/nothing to change/i);
+		expect(await couponRow(c)).toEqual(before);
+	});
+
 	test("a partial update (only maxUses) keeps the dates and the minimum spend", async () => {
 		// Review focus 2.
 		const c = code();
@@ -464,8 +480,12 @@ describe("coupons", () => {
 	});
 
 	test("an unknown coupon is NOT_FOUND for update, retire and delete", async () => {
-		for (const name of ["coupons_update", "coupons_retire", "coupons_delete"]) {
-			const err = await failure(name, { couponId: "mcp-missing", maxUses: 1 });
+		for (const [name, input] of [
+			["coupons_update", { couponId: "mcp-missing", maxUses: 1 }],
+			["coupons_retire", { couponId: "mcp-missing" }],
+			["coupons_delete", { couponId: "mcp-missing" }],
+		] as const) {
+			const err = await failure(name, input);
 			expect(err.code, name).toBe("NOT_FOUND");
 		}
 	});

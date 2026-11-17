@@ -16,7 +16,7 @@ export const SHIPPING_TOOLS = [
 		name: "shipping_zones_list",
 		description:
 			"List the shipping zones (id, name, the regions each covers). Start here to find a zoneId for shipping_methods_list or tax_rates_list.",
-		input: z.object({}),
+		input: z.object({}).strict(),
 		async run({ clients }) {
 			return { items: await clients.rules.listZones() };
 		},
@@ -25,7 +25,9 @@ export const SHIPPING_TOOLS = [
 		name: "shipping_methods_list",
 		description:
 			"List the shipping methods offered in one zone (id, name). Use the methodId with shipping_rate_get to read its price. Fails with NOT_FOUND for an unknown zoneId.",
-		input: z.object({ zoneId: z.string().min(1).describe("A zone id from shipping_zones_list.") }),
+		input: z
+			.object({ zoneId: z.string().min(1).describe("A zone id from shipping_zones_list.") })
+			.strict(),
 		async run({ clients, input }) {
 			await requireZone(clients, input.zoneId);
 			return { items: await clients.rules.listMethods(input.zoneId) };
@@ -34,10 +36,12 @@ export const SHIPPING_TOOLS = [
 	defineTool({
 		name: "shipping_rate_get",
 		description: `Read the price of one shipping method in one currency. ${MONEY_NOTE} Fails with NOT_FOUND when the method has no rate in that currency.`,
-		input: z.object({
-			methodId: z.string().min(1).describe("A method id from shipping_methods_list."),
-			currency: z.string().length(3).describe("ISO-4217 code, e.g. USD."),
-		}),
+		input: z
+			.object({
+				methodId: z.string().min(1).describe("A method id from shipping_methods_list."),
+				currency: z.string().length(3).describe("ISO-4217 code, e.g. USD."),
+			})
+			.strict(),
 		async run({ clients, input }) {
 			const rate = await clients.rules.getRate(input.methodId, input.currency);
 			if (rate === null) {

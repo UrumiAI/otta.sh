@@ -34,10 +34,12 @@ void [productKindsComplete, taxStatusesComplete];
 
 const productIdInput = z.string().min(1).describe("The productId from products_list.");
 
-const moneyInput = z.object({
-	amount: z.number().int().nonnegative().describe("Integer minor units (1999 = 19.99)."),
-	currency: z.string().length(3).describe("ISO-4217 code, e.g. USD."),
-});
+const moneyInput = z
+	.object({
+		amount: z.number().int().nonnegative().describe("Integer minor units (1999 = 19.99)."),
+		currency: z.string().length(3).describe("ISO-4217 code, e.g. USD."),
+	})
+	.strict();
 
 const dimension = (what: string) =>
 	z.number().int().nonnegative().nullable().optional().describe(`${what}; null clears it.`);
@@ -45,19 +47,21 @@ const dimension = (what: string) =>
 const NONCE_NOTE =
 	"`idempotencyKey`: generate a fresh one (a UUID) for each decision to move stock, and reuse it unchanged if you retry that same decision (after a timeout, say). A retry with the same key is answered from the ledger and moves nothing again; a NEW key is a NEW movement.";
 
-const movementInput = z.object({
-	productId: productIdInput,
-	onHand: z
-		.number()
-		.int()
-		.nonnegative()
-		.describe("The product's `onHand` exactly as products_get returned it."),
-	qty: z.number().int().positive().describe("How many units, a positive whole number."),
-	idempotencyKey: z
-		.string()
-		.regex(NONCE_PATTERN)
-		.describe("A UUID minted for this decision (16-64 letters, digits or dashes)."),
-});
+const movementInput = z
+	.object({
+		productId: productIdInput,
+		onHand: z
+			.number()
+			.int()
+			.nonnegative()
+			.describe("The product's `onHand` exactly as products_get returned it."),
+		qty: z.number().int().positive().describe("How many units, a positive whole number."),
+		idempotencyKey: z
+			.string()
+			.regex(NONCE_PATTERN)
+			.describe("A UUID minted for this decision (16-64 letters, digits or dashes)."),
+	})
+	.strict();
 
 /**
  * The operation's `moved` / `failed` arms are typed with the surface's whole
@@ -212,7 +216,7 @@ function editAnswer(outcome: ProductEditOutcome, productId: string): unknown {
 export const PRODUCT_WRITE_TOOLS = [
 	defineTool({
 		name: "products_update",
-		description: `Change a product's commerce fields: sku, price, compare-at price, unit cost, tax class and status, kind, weight and dimensions. Send only the fields to change, and at least one; null clears a clearable one. An unknown key (such as products_get's \`priceCents\`) is refused INVALID_INPUT, never ignored. Pass the product's \`updatedAt\` from products_get as \`expectedUpdatedAt\`: if it changed since, nothing is written and the call fails PRODUCT_CHANGED. Sending the same edit twice is one write. Every amount must share the product's currency. Returns \`{status: "updated", updatedAt}\`. Refusals: NOT_FOUND, PRODUCT_CHANGED, UNSUPPORTED_CURRENCY, CURRENCY_MISMATCH, SKU_TAKEN, SKU_STOCK_CONFLICT, SKU_HELD_STOCK, INVALID_INPUT (details.field). ${MONEY_NOTE}`,
+		description: `Change a product's commerce fields: sku, price, compare-at price, unit cost, tax class and status, kind, weight and dimensions. Send only the fields to change, and at least one; null clears a clearable one. An unknown key (such as products_get's \`priceCents\`) is refused before the tool runs, never ignored. Pass the product's \`updatedAt\` from products_get as \`expectedUpdatedAt\`: if it changed since, nothing is written and the call fails PRODUCT_CHANGED. Sending the same edit twice is one write. Every amount must share the product's currency. Returns \`{status: "updated", updatedAt}\`. Refusals: NOT_FOUND, PRODUCT_CHANGED, UNSUPPORTED_CURRENCY, CURRENCY_MISMATCH, SKU_TAKEN, SKU_STOCK_CONFLICT, SKU_HELD_STOCK, INVALID_INPUT (details.field). ${MONEY_NOTE}`,
 		input: editInput,
 		async run({ clients, input }) {
 			const { productId, expectedUpdatedAt, ...fields } = input;

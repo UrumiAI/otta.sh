@@ -584,4 +584,21 @@ describe("tax rates", () => {
 		expect(await call("tax_rate_delete", { rateId: "r1" })).toEqual({ status: "deleted" });
 		expect((await failure("tax_rate_delete", { rateId: "r1" })).code).toBe("NOT_FOUND");
 	});
+
+	test("expectedRatePpm without expectedRateBps is refused, not ignored; nothing is written", async () => {
+		await seedZone("us", "US");
+		await call("tax_class_create", { id: "std", name: "Standard" });
+		await call("tax_rate_create", { id: "r1", taxClassId: "std", zoneId: "us", rateBps: 800 });
+		const err = await failure("tax_rate_update", {
+			zoneId: "us",
+			rateId: "r1",
+			rateBps: 900,
+			expectedRatePpm: 80_000,
+		});
+		expect(err.code).toBe("INVALID_INPUT");
+		expect(err.message).toMatch(/expectedRatePpm.*expectedRateBps/);
+		expect(await call("tax_rates_list", { zoneId: "us" })).toMatchObject({
+			items: [{ id: "r1", rateBps: 800 }],
+		});
+	});
 });

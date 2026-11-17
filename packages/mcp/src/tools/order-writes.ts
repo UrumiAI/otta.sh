@@ -110,11 +110,13 @@ export const ORDER_WRITE_TOOLS = [
 		name: "orders_transition",
 		description:
 			'Move an order to another state (for example paid → processing, shipped → delivered). Use one of the order\'s `allowedTransitions` from orders_get, and pass its current `state` as `observedState`. Cancelling is orders_cancel and refunding is orders_refund: a bare move to cancelled fails USE_CANCEL. Returns `{status: "transitioned" | "unchanged", settlement, email?}`; a refusal keeps the service\'s code (INVALID_TRANSITION, USE_CANCEL, MANUAL_PAYMENT_NOT_ALLOWED, REFUND_THROUGH_MONEY, REFUND_IN_FLIGHT, MARK_PAID_RETRY, NOT_FOUND).',
-		input: z.object({
-			orderId: orderIdInput,
-			toState: z.enum(ORDER_STATES).describe("The state to move the order to."),
-			observedState: observedStateInput,
-		}),
+		input: z
+			.object({
+				orderId: orderIdInput,
+				toState: z.enum(ORDER_STATES).describe("The state to move the order to."),
+				observedState: observedStateInput,
+			})
+			.strict(),
 		async run({ clients, input, operator }) {
 			const outcome = await operate(() => transitionOrder(clients.orders, input, operator));
 			switch (outcome.kind) {
@@ -146,21 +148,23 @@ export const ORDER_WRITE_TOOLS = [
 		name: "orders_record_fulfillment",
 		description:
 			'Record a shipment, which ships the order (processing → shipped, or awaiting_payment → shipped_awaiting_payment for an unpaid cash-on-delivery order) and emails the buyer the tracking. Retrying is safe: an order already shipped answers `{status: "unchanged"}`. Returns `{status: "recorded", state, email?}`; NOT_FULFILLABLE when the order cannot ship from its state.',
-		input: z.object({
-			orderId: orderIdInput,
-			carrier: z.string().min(1).max(200).describe("The carrier, e.g. UPS."),
-			trackingNumber: z.string().min(1).max(200),
-			trackingUrl: z
-				.string()
-				.min(1)
-				.optional()
-				.describe("An http(s) tracking link; it is emailed to the buyer."),
-			shippedAt: z
-				.string()
-				.min(1)
-				.optional()
-				.describe("When it shipped, a full ISO-8601 datetime. Defaults to now."),
-		}),
+		input: z
+			.object({
+				orderId: orderIdInput,
+				carrier: z.string().min(1).max(200).describe("The carrier, e.g. UPS."),
+				trackingNumber: z.string().min(1).max(200),
+				trackingUrl: z
+					.string()
+					.min(1)
+					.optional()
+					.describe("An http(s) tracking link; it is emailed to the buyer."),
+				shippedAt: z
+					.string()
+					.min(1)
+					.optional()
+					.describe("When it shipped, a full ISO-8601 datetime. Defaults to now."),
+			})
+			.strict(),
 		async run({ clients, input, operator }) {
 			const result = await operate(() =>
 				recordFulfillment(
@@ -190,22 +194,24 @@ export const ORDER_WRITE_TOOLS = [
 		name: "orders_cancel",
 		description: `Cancel an order with a reason. A paid order is refunded what is still refundable, through its own payment provider, as part of the cancel. Pass the order's current \`state\` as \`observedState\`. For any order that is not unpaid you MUST choose \`restock\` (true returns the units to stock, false keeps them off sale); without it the call fails RESTOCK_CHOICE_REQUIRED and nothing changes. Returns \`{status: "cancelled" | "unchanged", restock, refund, restockedUnits, restockPending?, restockSkipped?, email?}\`. A refusal keeps the service's code (NOT_CANCELLABLE, REFUND_FAILED with details.refundFailure, CANCEL_LOST_AFTER_REFUND, CANCEL_INCOMPLETE_AFTER_REFUND, …) and its details say what DID move. ${MONEY_NOTE}`,
 		destructive: true,
-		input: z.object({
-			orderId: orderIdInput,
-			reason: z.enum(CANCELLATION_REASONS).describe("Why the order is cancelled."),
-			observedState: observedStateInput,
-			restock: z
-				.boolean()
-				.optional()
-				.describe(
-					"Return the items to stock. Required unless the order is unpaid (pending, awaiting_payment, shipped_awaiting_payment).",
-				),
-			detail: z
-				.string()
-				.max(4000)
-				.optional()
-				.describe("Free-text detail, most useful with `other`."),
-		}),
+		input: z
+			.object({
+				orderId: orderIdInput,
+				reason: z.enum(CANCELLATION_REASONS).describe("Why the order is cancelled."),
+				observedState: observedStateInput,
+				restock: z
+					.boolean()
+					.optional()
+					.describe(
+						"Return the items to stock. Required unless the order is unpaid (pending, awaiting_payment, shipped_awaiting_payment).",
+					),
+				detail: z
+					.string()
+					.max(4000)
+					.optional()
+					.describe("Free-text detail, most useful with `other`."),
+			})
+			.strict(),
 		async run({ clients, input, operator }) {
 			const outcome = await operate(() =>
 				cancelOrder(
@@ -248,19 +254,21 @@ export const ORDER_WRITE_TOOLS = [
 		name: "orders_refund",
 		description: `Refund money on an order, through its payment provider (or, for an offline method such as cash on delivery, record a refund made off-platform). Read the order with orders_get first: \`amountCents\` must not exceed \`refunds.remainingCents\`. Pass refundedSoFarCents exactly as orders_get returned it. Retrying with identical arguments is safe and never refunds twice. Returns \`{status: "refunded", fullyRefunded, email?}\`, or \`{status: "already_refunded"}\` when this refund is already on the ledger. Fails REFUND_LEDGER_CHANGED (details.remainingCents) when another refund moved the ledger since you read it: nothing was refunded; read the order again before deciding. Other refusals keep the service's code (REFUND_EXCEEDS_TOTAL, REFUND_GATEWAY_UNAVAILABLE, GATEWAY_TERMINAL, …). GATEWAY_UNVERIFIED means the provider's outcome is UNKNOWN: do not retry; check the provider, then answer it with orders_resolve_unverified_refund. ${MONEY_NOTE}`,
 		destructive: true,
-		input: z.object({
-			orderId: orderIdInput,
-			amountCents: z
-				.number()
-				.int()
-				.positive()
-				.describe("The amount to refund, integer minor units (500 = 5.00)."),
-			refundedSoFarCents: minorUnits.describe(
-				"`refunds.refundedSoFarCents` from orders_get, unchanged.",
-			),
-			currency: z.string().length(3).describe("The order's ISO-4217 currency code."),
-			reason: z.string().max(4000).optional().describe("Why, for the ledger."),
-		}),
+		input: z
+			.object({
+				orderId: orderIdInput,
+				amountCents: z
+					.number()
+					.int()
+					.positive()
+					.describe("The amount to refund, integer minor units (500 = 5.00)."),
+				refundedSoFarCents: minorUnits.describe(
+					"`refunds.refundedSoFarCents` from orders_get, unchanged.",
+				),
+				currency: z.string().length(3).describe("The order's ISO-4217 currency code."),
+				reason: z.string().max(4000).optional().describe("Why, for the ledger."),
+			})
+			.strict(),
 		async run({ clients, input, operator }) {
 			const outcome = await operate(() =>
 				refundOrder(
@@ -309,16 +317,18 @@ export const ORDER_WRITE_TOOLS = [
 		name: "orders_resolve_unverified_refund",
 		description:
 			'Answer a refund whose provider outcome is unknown (an `unverified` row in orders_get\'s `refunds`, identified by its idempotency key): `confirmed` records it as refunded (pass the provider\'s refund id as `refundRef`), `voided` releases it. Check the payment provider first. Retrying the same answer changes nothing. Returns `{status: "resolved" | "unchanged", fullyRefunded, email?, followUp?}`.',
-		input: z.object({
-			orderId: orderIdInput,
-			refundKey: z.string().min(1).describe("The unverified refund row's `idempotencyKey`."),
-			outcome: z.enum(["confirmed", "voided"]),
-			refundRef: z
-				.string()
-				.min(1)
-				.optional()
-				.describe("The provider's refund id; used only with `confirmed`."),
-		}),
+		input: z
+			.object({
+				orderId: orderIdInput,
+				refundKey: z.string().min(1).describe("The unverified refund row's `idempotencyKey`."),
+				outcome: z.enum(["confirmed", "voided"]),
+				refundRef: z
+					.string()
+					.min(1)
+					.optional()
+					.describe("The provider's refund id; used only with `confirmed`."),
+			})
+			.strict(),
 		async run({ clients, input, operator }) {
 			const result = await operate(() =>
 				resolveUnverifiedRefund(
@@ -343,12 +353,14 @@ export const ORDER_WRITE_TOOLS = [
 		name: "orders_resolve_reconciliation",
 		description:
 			'Clear an order\'s reconciliation flag with a disposition. Pass `expectedFlag` exactly as orders_get\'s `reconciliationFlag` returned it: if a new anomaly was flagged since, nothing is cleared and the call fails RECONCILIATION_FLAG_CHANGED. Returns `{status: "resolved" | "unchanged"}`; NOT_IN_RECONCILIATION when the order carries no flag.',
-		input: z.object({
-			orderId: orderIdInput,
-			expectedFlag: z.string().min(1).describe("The order's `reconciliationFlag`, unchanged."),
-			outcome: z.enum(RECONCILIATION_OUTCOMES).describe("How it was resolved."),
-			reason: z.string().min(1).max(4000).describe("Why, for the record."),
-		}),
+		input: z
+			.object({
+				orderId: orderIdInput,
+				expectedFlag: z.string().min(1).describe("The order's `reconciliationFlag`, unchanged."),
+				outcome: z.enum(RECONCILIATION_OUTCOMES).describe("How it was resolved."),
+				reason: z.string().min(1).max(4000).describe("Why, for the record."),
+			})
+			.strict(),
 		async run({ clients, input, operator }) {
 			const result = await operate(() =>
 				resolveReconciliation(
@@ -367,10 +379,12 @@ export const ORDER_WRITE_TOOLS = [
 		name: "orders_add_note",
 		description:
 			'Add an internal note to an order (never shown to the buyer), authored by you. Adding the same note twice is a no-op. Returns `{status: "appended" | "unchanged", note}`.',
-		input: z.object({
-			orderId: orderIdInput,
-			body: z.string().min(1).max(4000).describe("The note text."),
-		}),
+		input: z
+			.object({
+				orderId: orderIdInput,
+				body: z.string().min(1).max(4000).describe("The note text."),
+			})
+			.strict(),
 		async run({ clients, input, operator }) {
 			const result = await operate(() =>
 				addOrderNote(
@@ -388,7 +402,7 @@ export const ORDER_WRITE_TOOLS = [
 		description:
 			'Close a paid order\'s digital download links. This cannot be undone; the order and its money are unchanged. Returns `{status: "revoked" | "unchanged"}`; NO_DOWNLOADS when the order has no digital line, NOT_DELIVERABLE when it is not a paid order.',
 		destructive: true,
-		input: z.object({ orderId: orderIdInput }),
+		input: z.object({ orderId: orderIdInput }).strict(),
 		async run({ clients, input, operator }) {
 			const result = await operate(() =>
 				revokeDownloadAccess(clients.orders, { orderId: input.orderId }, operator),

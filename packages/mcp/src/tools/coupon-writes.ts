@@ -120,22 +120,24 @@ export const COUPON_WRITE_TOOLS = [
 	defineTool({
 		name: "coupons_create",
 		description: `Create a discount coupon. A fixed_amount coupon needs \`amountCents\` and \`currency\`; a percentage one needs \`rateBps\` (basis points, 1000 = 10%), and \`currency\` only when it has a cap or minimum spend. Codes are matched case-insensitively and may not contain spaces. Pass your own \`id\` (a UUID) to make a retry safe: a create that already went through then fails COUPON_CODE_TAKEN with details.taken "same". Returns \`{status: "created", coupon}\`. Refusals: COUPON_CODE_TAKEN (details.taken: "code", "id", "same" or "unknown"), COUPON_CURRENCY_REFUSED (details.reason), INVALID_INPUT (details.field), COUPON_WRITE_FAILED. ${MONEY_NOTE}`,
-		input: z.object({
-			id: z
-				.string()
-				.min(1)
-				.optional()
-				.describe("The coupon's id. Defaults to a fresh UUID; pass one to make retries safe."),
-			code: z.string().min(1).describe("What shoppers type, e.g. SUMMER10."),
-			type: z.enum(COUPON_TYPES),
-			currency: z
-				.string()
-				.length(3)
-				.nullable()
-				.optional()
-				.describe("ISO-4217 code the amounts are in."),
-			...economics,
-		}),
+		input: z
+			.object({
+				id: z
+					.string()
+					.min(1)
+					.optional()
+					.describe("The coupon's id. Defaults to a fresh UUID; pass one to make retries safe."),
+				code: z.string().min(1).describe("What shoppers type, e.g. SUMMER10."),
+				type: z.enum(COUPON_TYPES),
+				currency: z
+					.string()
+					.length(3)
+					.nullable()
+					.optional()
+					.describe("ISO-4217 code the amounts are in."),
+				...economics,
+			})
+			.strict(),
 		async run({ clients, input }) {
 			const { id, ...rest } = input;
 			const couponId = id ?? crypto.randomUUID();
@@ -145,12 +147,18 @@ export const COUPON_WRITE_TOOLS = [
 	}),
 	defineTool({
 		name: "coupons_update",
-		description: `Change some of a coupon's fields: send only what changes; every field you leave out is kept, and an explicit null clears that field. The code and type cannot change (sending either, or any unknown key, is INVALID_INPUT). This tool cannot change a coupon's currency: \`currency\`, when sent, must be the coupon's current one (a different one fails COUPON_CURRENCY_REFUSED with details.reason "currency_moved"); only an unbound percentage coupon gaining a cap or minimum spend may name a currency, which binds it. Returns \`{status: "updated", coupon}\`. Refusals: NOT_FOUND, COUPON_CURRENCY_REFUSED, INVALID_INPUT (details.field), COUPON_WRITE_FAILED (e.g. clearing a fixed coupon's amount or a percentage coupon's rate). ${MONEY_NOTE}`,
+		description: `Change some of a coupon's fields: send only what changes; every field you leave out is kept, and an explicit null clears that field. The code and type cannot change (sending either, or any unknown key, is refused before the tool runs). This tool cannot change a coupon's currency: \`currency\`, when sent, must be the coupon's current one (a different one fails COUPON_CURRENCY_REFUSED with details.reason "currency_moved"); only an unbound percentage coupon gaining a cap or minimum spend may name a currency, which binds it. Returns \`{status: "updated", coupon}\`. Refusals: NOT_FOUND, COUPON_CURRENCY_REFUSED, INVALID_INPUT (details.field; or nothing to change), COUPON_WRITE_FAILED (e.g. clearing a fixed coupon's amount or a percentage coupon's rate). ${MONEY_NOTE}`,
 		input: updateInput,
 		async run({ clients, input }) {
 			const { couponId, ...fields } = input;
 			// `undefined` means "not mentioned" to patchCoupon; drop the keys outright.
 			const patch: Partial<CouponEdit> = defined(fields);
+			if (Object.keys(patch).length === 0) {
+				return toolFailure(
+					"INVALID_INPUT",
+					"nothing to change: send at least one field to change besides `couponId`.",
+				);
+			}
 			const outcome = await patchCoupon(clients.rules, couponId, patch);
 			return couponAnswer(outcome, "updated", couponId);
 		},
@@ -160,7 +168,7 @@ export const COUPON_WRITE_TOOLS = [
 		description:
 			'End a coupon now: it stops applying at checkout from this moment, and its history is kept. Retrying is safe. Returns `{status: "retired", coupon, retiredAt, previous}` (`previous` holds the window it replaced), or `{status: "already_ended"}`. NOT_FOUND for an unknown id.',
 		destructive: true,
-		input: z.object({ couponId: couponIdInput }),
+		input: z.object({ couponId: couponIdInput }).strict(),
 		async run({ clients, input }) {
 			const result = await readOrRefuse(() => retireCoupon(clients.rules, input.couponId));
 			if (result.ok) return { status: "retired", ...result.value };
@@ -170,7 +178,7 @@ export const COUPON_WRITE_TOOLS = [
 				case "not_found":
 					return toolFailure("NOT_FOUND", `No coupon with id ${input.couponId}.`);
 				default:
-					return unhandled(result.reason);
+					return unhandled(result.reason, result);
 			}
 		},
 	}),
@@ -179,7 +187,7 @@ export const COUPON_WRITE_TOOLS = [
 		description:
 			'Delete a coupon for good. A coupon that has been redeemed cannot be deleted (COUPON_IN_USE, its redemptions are kept for the record): retire it with coupons_retire instead. Returns `{status: "deleted"}`. NOT_FOUND for an unknown id, including one already deleted.',
 		destructive: true,
-		input: z.object({ couponId: couponIdInput }),
+		input: z.object({ couponId: couponIdInput }).strict(),
 		async run({ clients, input }) {
 			const result = await readOrRefuse(() => deleteCoupon(clients.rules, input.couponId));
 			if (result.ok) return { status: "deleted" };

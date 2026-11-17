@@ -32,7 +32,7 @@ import { makeAdminHarness, type AdminHarness } from "./helpers/admin-harness.js"
 const echo = defineTool({
 	name: "x",
 	description: "Echo the input back, with who called.",
-	input: z.object({ n: z.number().int() }),
+	input: z.object({ n: z.number().int() }).strict(),
 	destructive: true,
 	async run({ input, operator, clients }) {
 		return { n: input.n, operator, hasOrders: typeof clients.orders.getOrder === "function" };
@@ -42,7 +42,7 @@ const echo = defineTool({
 const failing = defineTool({
 	name: "y",
 	description: "Always fails with a stable code.",
-	input: z.object({}),
+	input: z.object({}).strict(),
 	async run() {
 		toolFailure("NOT_FOUND", "No such thing.", { id: "abc" });
 	},
@@ -141,6 +141,42 @@ describe("withMcp — the route and tool table", () => {
 
 	test("a name that is not snake_case throws", () => {
 		expect(() => withMcp(base, [{ ...echo, name: "Orders-List" }])).toThrow(/Orders-List/);
+	});
+
+	test("a tool whose input is not a strict object throws, naming the tool", () => {
+		expect(() => withMcp(base, [{ ...echo, input: z.object({ n: z.number() }) }])).toThrow(
+			/"x".*strict/,
+		);
+		expect(() =>
+			withMcp(base, [{ ...echo, input: z.object({ n: z.number() }).passthrough() }]),
+		).toThrow(/"x".*strict/);
+		expect(() => withMcp(base, [{ ...echo, input: z.string() as never }])).toThrow(
+			/"x".*strict object/,
+		);
+	});
+
+	test("a NESTED object that is not strict throws too, naming its path", () => {
+		const nested = (inner: z.ZodTypeAny) => ({
+			...echo,
+			input: z.object({ n: z.number(), m: inner }).strict(),
+		});
+		expect(() => withMcp(base, [nested(z.object({ a: z.number() }).optional())])).toThrow(
+			/"x".*\bm\b/,
+		);
+		expect(() => withMcp(base, [nested(z.array(z.object({ a: z.number() })))])).toThrow(/"x"/);
+		expect(() =>
+			withMcp(base, [
+				nested(
+					z.discriminatedUnion("k", [
+						z.object({ k: z.literal("a") }).strict(),
+						z.object({ k: z.literal("b") }),
+					]),
+				),
+			]),
+		).toThrow(/"x"/);
+		expect(() =>
+			withMcp(base, [nested(z.object({ a: z.number() }).strict().nullable().default(null))]),
+		).not.toThrow();
 	});
 
 	test("the default table is OTTA_MCP_TOOLS", () => {

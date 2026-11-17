@@ -55,6 +55,8 @@ export interface McpPlugin extends SandboxedPlugin {
  * An issue's message with nothing the caller sent in it: its kind, said
  * generically. For a {@link McpToolDef.sensitiveInput} tool, whose zod messages
  * could carry part of the input (an unknown key is named in its message).
+ * Defence in depth for direct route callers: through the MCP endpoint the MCP
+ * SDK validates first and this never runs.
  */
 function redactedMessage(issue: z.ZodError["issues"][number]): string {
 	switch (issue.code) {
@@ -88,6 +90,82 @@ function describeIssues(
 	return { message: `Invalid input: ${message}`, issues };
 }
 
+/** A zod v4 schema's `def`, as far as the strictness walk reads it. */
+interface SchemaDef {
+	type?: string;
+	shape?: Record<string, unknown>;
+	catchall?: { def?: SchemaDef };
+	innerType?: unknown;
+	element?: unknown;
+	options?: readonly unknown[];
+	in?: unknown;
+	out?: unknown;
+	left?: unknown;
+	right?: unknown;
+	items?: readonly unknown[];
+	rest?: unknown;
+	valueType?: unknown;
+}
+
+function schemaDef(schema: unknown): SchemaDef | undefined {
+	return (schema as { def?: SchemaDef } | undefined)?.def;
+}
+
+/**
+ * The path of the first object in `schema` that is not strict (its catchall is
+ * not `never`, so zod would DROP an unknown key there, or pass it through),
+ * else `undefined`. Walks through the wrappers and containers a tool input
+ * uses: optional, nullable, default, arrays, unions, pipes, records, tuples.
+ */
+function nonStrictPath(schema: unknown, path: string): string | undefined {
+	const def = schemaDef(schema);
+	if (def === undefined) return undefined;
+	if (def.type === "object") {
+		if (def.catchall?.def?.type !== "never") return path;
+		for (const [key, field] of Object.entries(def.shape ?? {})) {
+			const found = nonStrictPath(field, path === "" ? key : `${path}.${key}`);
+			if (found !== undefined) return found;
+		}
+		return undefined;
+	}
+	const children: unknown[] = [
+		def.innerType,
+		def.element,
+		def.in,
+		def.out,
+		def.left,
+		def.right,
+		def.rest,
+		def.valueType,
+		...(def.options ?? []),
+		...(def.items ?? []),
+	];
+	for (const child of children) {
+		if (child === undefined) continue;
+		const found = nonStrictPath(child, path);
+		if (found !== undefined) return found;
+	}
+	return undefined;
+}
+
+/**
+ * Every tool input is a strict object, nested objects included: an unknown key
+ * (an agent's typo, e.g. `maxUse`) must be refused, never dropped into a write
+ * that answers success. Checked at construction, so a forgotten `.strict()`
+ * fails at startup and in the tests.
+ */
+function assertStrictInput(def: McpToolDef<z.ZodTypeAny>): void {
+	if (schemaDef(def.input)?.type !== "object") {
+		throw new Error(`MCP tool "${def.name}" must take a strict object (z.object(…).strict()).`);
+	}
+	const path = nonStrictPath(def.input, "");
+	if (path !== undefined) {
+		throw new Error(
+			`MCP tool "${def.name}": the input object at ${path === "" ? "the top level" : `"${path}"`} is not strict; add .strict() so an unknown key is refused, not dropped.`,
+		);
+	}
+}
+
 function toolRoute(def: McpToolDef<z.ZodTypeAny>): McpRouteEntry {
 	return {
 		public: false,
@@ -117,8 +195,9 @@ function toolRoute(def: McpToolDef<z.ZodTypeAny>): McpRouteEntry {
  * that id, so the tools have to run inside it).
  *
  * Returns a NEW object; `plugin` is not touched. Throws when a tool's route
- * would replace an existing route, when two tools share a name, or when a name
- * is not snake_case: a tool table mistake fails at startup, not on first call.
+ * would replace an existing route, when two tools share a name, when a name
+ * is not snake_case, or when an input is not a strict object (nested objects
+ * included): a tool table mistake fails at startup, not on first call.
  */
 export function withMcp(
 	plugin: SandboxedPlugin,
@@ -139,6 +218,7 @@ export function withMcp(
 		if (Object.hasOwn(mcpTools, def.name)) {
 			throw new Error(`MCP tool "${def.name}" is declared more than once.`);
 		}
+		assertStrictInput(def);
 		routes[routeName] = toolRoute(def);
 		mcpTools[def.name] = {
 			description: def.description,

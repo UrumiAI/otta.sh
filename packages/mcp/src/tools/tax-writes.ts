@@ -175,12 +175,14 @@ export const TAX_WRITE_TOOLS = [
 		name: "tax_class_create",
 		description:
 			'Create a tax class (e.g. Reduced) that products and tax rates can name. Returns `{status: "created", taxClass}`. Refusals: TAX_CLASS_ID_TAKEN, INVALID_INPUT.',
-		input: z.object({
-			id: recordId(
-				"The class's id (printable ASCII, no spaces), e.g. reduced. Defaults to a fresh UUID.",
-			).optional(),
-			name: recordName("What the merchant calls it, e.g. Reduced rate."),
-		}),
+		input: z
+			.object({
+				id: recordId(
+					"The class's id (printable ASCII, no spaces), e.g. reduced. Defaults to a fresh UUID.",
+				).optional(),
+				name: recordName("What the merchant calls it, e.g. Reduced rate."),
+			})
+			.strict(),
 		async run({ clients, input }) {
 			const result = await readOrRefuse(() =>
 				clients.rules.createTaxClass({ id: input.id ?? crypto.randomUUID(), name: input.name }),
@@ -224,7 +226,7 @@ export const TAX_WRITE_TOOLS = [
 		description:
 			'Delete a tax class. A class still in use is refused with TAX_CLASS_IN_USE, details.usedBy "products" or "rates" (with details.count) or "settings" (the tax options\' fixed shipping tax class): move those off it first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
 		destructive: true,
-		input: z.object({ classId: classIdInput }),
+		input: z.object({ classId: classIdInput }).strict(),
 		async run({ clients, input }) {
 			const result = await readOrRefuse(() => clients.rules.deleteTaxClass(input.classId));
 			if (result.ok) return { status: "deleted" };
@@ -253,19 +255,21 @@ export const TAX_WRITE_TOOLS = [
 		name: "tax_rate_create",
 		description:
 			'Create a tax rate: the rate one tax class pays in one shipping zone. There is one rate per (class, zone): a second is refused with TAX_RATE_SLOT_TAKEN, details.existing naming the one there (update it with tax_rate_update instead). Returns `{status: "created", taxRate}`. Refusals: TAX_RATE_SLOT_TAKEN, TAX_RATE_ID_TAKEN, INVALID_INPUT.',
-		input: z.object({
-			id: recordId(
-				"The rate's id (printable ASCII, no spaces). Defaults to a fresh UUID.",
-			).optional(),
-			taxClassId: classIdInput,
-			zoneId: zoneIdInput,
-			rateBps: bps,
-			ratePpm: ppm.optional(),
-			appliesToShipping: z
-				.boolean()
-				.optional()
-				.describe("Whether the rate also taxes shipping. Defaults to false."),
-		}),
+		input: z
+			.object({
+				id: recordId(
+					"The rate's id (printable ASCII, no spaces). Defaults to a fresh UUID.",
+				).optional(),
+				taxClassId: classIdInput,
+				zoneId: zoneIdInput,
+				rateBps: bps,
+				ratePpm: ppm.optional(),
+				appliesToShipping: z
+					.boolean()
+					.optional()
+					.describe("Whether the rate also taxes shipping. Defaults to false."),
+			})
+			.strict(),
 		async run({ clients, input }) {
 			const { id, ...rest } = input;
 			const result = await readOrRefuse(() =>
@@ -302,7 +306,7 @@ export const TAX_WRITE_TOOLS = [
 	defineTool({
 		name: "tax_rate_update",
 		description:
-			'Change a tax rate\'s rate or whether it taxes shipping: send only what changes; a field you leave out is kept (sending rateBps without ratePpm makes the rate exactly rateBps). Pass the values you read as expectedRateBps / expectedAppliesToShipping to refuse the update if the rate moved since; without them the values read here are the guard. Returns `{status: "updated", taxRate}`. Refusals: NOT_FOUND (the rate is not in that zone), TAX_RATE_CHANGED (details.current), INVALID_INPUT (an unknown key, or nothing to change).',
+			'Change a tax rate\'s rate or whether it taxes shipping: send only what changes; a field you leave out is kept (sending rateBps without ratePpm makes the rate exactly rateBps). Pass the values you read as expectedRateBps / expectedAppliesToShipping to refuse the update if the rate moved since; without them the values read here are the guard. Returns `{status: "updated", taxRate}`. Refusals: NOT_FOUND (the rate is not in that zone), TAX_RATE_CHANGED (details.current), INVALID_INPUT (nothing to change, or expectedRatePpm without expectedRateBps). An unknown key is refused before the tool runs.',
 		input: updateTaxRateInput,
 		async run({ clients, input }) {
 			const { zoneId, rateId, rateBps, ratePpm, appliesToShipping } = input;
@@ -316,6 +320,12 @@ export const TAX_WRITE_TOOLS = [
 				return toolFailure(
 					"INVALID_INPUT",
 					"`ratePpm` needs `rateBps` too (ratePpm rounded half up to a basis point).",
+				);
+			}
+			if (input.expectedRatePpm !== undefined && input.expectedRateBps === undefined) {
+				return toolFailure(
+					"INVALID_INPUT",
+					"`expectedRatePpm` needs `expectedRateBps` too (send both as you read them with tax_rates_list).",
 				);
 			}
 			const rates = await readOrRefuse(() => clients.rules.listTaxRates(zoneId));
@@ -360,7 +370,7 @@ export const TAX_WRITE_TOOLS = [
 		description:
 			'Delete a tax rate. Orders already placed keep the tax they were charged. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
 		destructive: true,
-		input: z.object({ rateId: rateIdInput }),
+		input: z.object({ rateId: rateIdInput }).strict(),
 		async run({ clients, input }) {
 			const result = await readOrRefuse(() => clients.rules.deleteTaxRate(input.rateId));
 			if (result.ok) return { status: "deleted" };

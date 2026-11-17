@@ -1,12 +1,17 @@
 import { toolFailure } from "../errors.js";
 
 /**
- * The `default` of every outcome switch: `outcome` is `never` while the switch
+ * The `default` of every outcome switch: `checked` is `never` while the switch
  * covers its union, so a new outcome kind fails the typecheck. At runtime (a
  * plugin newer than this build) it is refused, never returned as success.
+ *
+ * When the switch is on a discriminant of a single (non-union) outcome type,
+ * only the discriminant narrows to `never`: pass it as `checked` and the
+ * OUTCOME as `outcome`, so the message names the unexpected kind/reason
+ * (`unhandled(outcome.reason, outcome)`).
  */
-export function unhandled(outcome: never): never {
-	const value = outcome as { kind?: unknown; reason?: unknown };
+export function unhandled(checked: never, outcome: unknown = checked): never {
+	const value = (outcome ?? {}) as { kind?: unknown; reason?: unknown };
 	return toolFailure(
 		"INTERNAL_ERROR",
 		`Unhandled operation outcome: ${String(value.kind ?? value.reason)}.`,

@@ -211,19 +211,21 @@ export const SHIPPING_WRITE_TOOLS = [
 		name: "shipping_zone_create",
 		description:
 			'Create a shipping zone: a named set of regions that its shipping methods and tax rates apply to. A region may be in only one zone. Creating the store\'s FIRST zone turns on address matching, so every address outside the zones can no longer check out: the first call answers `{status: "needs_confirmation", message, retryWith: {acknowledgeFirstZone: true}}` and writes nothing; tell the merchant, then call again with that flag. Returns `{status: "created", zone}`. Refusals: INVALID_REGION_CODES (details.invalid), ZONE_REGION_OVERLAP (details.code, zoneId, zoneName), ZONE_ID_TAKEN, INVALID_INPUT.',
-		input: z.object({
-			id: recordId(
-				"The zone's id (printable ASCII, no spaces), e.g. us. Defaults to a fresh UUID.",
-			).optional(),
-			name: recordName("What the merchant calls the zone, e.g. United States."),
-			regions: regionsInput,
-			acknowledgeFirstZone: z
-				.boolean()
-				.default(false)
-				.describe(
-					"Set true only after the merchant has accepted that the first zone stops checkout for addresses outside every zone.",
-				),
-		}),
+		input: z
+			.object({
+				id: recordId(
+					"The zone's id (printable ASCII, no spaces), e.g. us. Defaults to a fresh UUID.",
+				).optional(),
+				name: recordName("What the merchant calls the zone, e.g. United States."),
+				regions: regionsInput,
+				acknowledgeFirstZone: z
+					.boolean()
+					.default(false)
+					.describe(
+						"Set true only after the merchant has accepted that the first zone stops checkout for addresses outside every zone.",
+					),
+			})
+			.strict(),
 		async run({ clients, input }) {
 			const outcome = await readOrRefuse(() =>
 				createZone(clients.rules, {
@@ -257,7 +259,7 @@ export const SHIPPING_WRITE_TOOLS = [
 	defineTool({
 		name: "shipping_zone_update",
 		description:
-			'Rename a zone or change its regions: send only what changes; a field you leave out is kept. `regions` replaces the whole list (blank clears it). Returns `{status: "updated", zone}`. Refusals: NOT_FOUND, INVALID_REGION_CODES, ZONE_REGION_OVERLAP, LEGACY_ZONE_REGIONS (the zone still holds free-text regions from before ISO codes: send `regions` as ISO codes with the rename), INVALID_INPUT (an unknown key, or nothing to change).',
+			'Rename a zone or change its regions: send only what changes; a field you leave out is kept. `regions` replaces the whole list (blank clears it). Returns `{status: "updated", zone}`. Refusals: NOT_FOUND, INVALID_REGION_CODES, ZONE_REGION_OVERLAP, LEGACY_ZONE_REGIONS (the zone still holds free-text regions from before ISO codes: send `regions` as ISO codes with the rename), INVALID_INPUT (nothing to change). An unknown key is refused before the tool runs.',
 		input: updateZoneInput,
 		async run({ clients, input }) {
 			const { zoneId, name, regions } = input;
@@ -296,7 +298,7 @@ export const SHIPPING_WRITE_TOOLS = [
 		description:
 			'Delete a shipping zone. A zone that still has shipping methods is refused (ZONE_IN_USE): delete its methods first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
 		destructive: true,
-		input: z.object({ zoneId: zoneIdInput }),
+		input: z.object({ zoneId: zoneIdInput }).strict(),
 		async run({ clients, input }) {
 			const result = await readOrRefuse(() => clients.rules.deleteZone(input.zoneId));
 			return deleteAnswer(result, "shipping zone", "ZONE_IN_USE", "ZONE_DELETE_FAILED");
@@ -306,18 +308,20 @@ export const SHIPPING_WRITE_TOOLS = [
 		name: "shipping_method_create",
 		description:
 			'Add a shipping method to a zone. `flat_rate` always charges its rate; `free_shipping` is free above its rate\'s threshold. Set the price per currency with shipping_rate_set. Method ids are unique across every zone. Returns `{status: "created", method}`. Refusals: NOT_FOUND (unknown zone), METHOD_ID_TAKEN, INVALID_INPUT.',
-		input: z.object({
-			zoneId: zoneIdInput,
-			id: recordId(
-				"The method's id (printable ASCII, no spaces), e.g. us-standard. Defaults to a fresh UUID.",
-			).optional(),
-			name: recordName("What shoppers see, e.g. Standard shipping."),
-			type: z.enum(METHOD_TYPES),
-			taxable: z
-				.boolean()
-				.optional()
-				.describe("Whether the shipping charge is taxed. Defaults to true."),
-		}),
+		input: z
+			.object({
+				zoneId: zoneIdInput,
+				id: recordId(
+					"The method's id (printable ASCII, no spaces), e.g. us-standard. Defaults to a fresh UUID.",
+				).optional(),
+				name: recordName("What shoppers see, e.g. Standard shipping."),
+				type: z.enum(METHOD_TYPES),
+				taxable: z
+					.boolean()
+					.optional()
+					.describe("Whether the shipping charge is taxed. Defaults to true."),
+			})
+			.strict(),
 		async run({ clients, input }) {
 			const result = await readOrRefuse(() =>
 				clients.rules.createMethod(input.zoneId, {
@@ -334,7 +338,7 @@ export const SHIPPING_WRITE_TOOLS = [
 	defineTool({
 		name: "shipping_method_update",
 		description:
-			"Change a shipping method's name, type or taxable flag: send only what changes; a field you leave out is kept. Switching free_shipping → flat_rate leaves any threshold its rates carry unused, and the answer's `note` says so. Returns `{status: \"updated\", method, note?}`. Refusals: NOT_FOUND, INVALID_INPUT (an unknown key, or nothing to change).",
+			"Change a shipping method's name, type or taxable flag: send only what changes; a field you leave out is kept. Switching free_shipping → flat_rate leaves any threshold its rates carry unused, and the answer's `note` says so. Returns `{status: \"updated\", method, note?}`. Refusals: NOT_FOUND, INVALID_INPUT (nothing to change). An unknown key is refused before the tool runs.",
 		input: updateMethodInput,
 		async run({ clients, input }) {
 			const { zoneId, methodId, name, type, taxable } = input;
@@ -372,7 +376,7 @@ export const SHIPPING_WRITE_TOOLS = [
 		description:
 			'Delete a shipping method. A method that still has rates is refused (METHOD_IN_USE): delete its rates first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
 		destructive: true,
-		input: z.object({ methodId: methodIdInput }),
+		input: z.object({ methodId: methodIdInput }).strict(),
 		async run({ clients, input }) {
 			const result = await readOrRefuse(() => clients.rules.deleteMethod(input.methodId));
 			return deleteAnswer(result, "shipping method", "METHOD_IN_USE", "METHOD_DELETE_FAILED");
@@ -381,21 +385,23 @@ export const SHIPPING_WRITE_TOOLS = [
 	defineTool({
 		name: "shipping_rate_set",
 		description: `Set a shipping method's price in one currency: creates the rate, or updates the one there. \`minSubtotalCents\` is a free-shipping threshold and only applies to a free_shipping method: on a flat_rate method it is refused (THRESHOLD_ON_FLAT_RATE). Leaving \`minSubtotalCents\` out keeps the stored threshold; null clears it. A flat-rate rate that still carries a LEGACY threshold (saved before that rule) refuses an amount-only update with THRESHOLD_ON_FLAT_RATE too: send minSubtotalCents: null with the new amount. Pass \`expectedAmountCents\` (the amount you read with shipping_rate_get) to refuse an update if the rate moved since; without it the amount read here is the guard. Returns \`{status: "set", rate}\`. Refusals: NOT_FOUND (zone or method), THRESHOLD_ON_FLAT_RATE, RATE_CHANGED (details.current), INVALID_INPUT (e.g. a currency the store does not support). ${MONEY_NOTE}`,
-		input: z.object({
-			zoneId: zoneIdInput,
-			methodId: methodIdInput,
-			currency: currencyInput,
-			amountCents: minorUnits.describe("The shipping charge, integer minor units (500 = 5.00)."),
-			minSubtotalCents: minorUnits
-				.nullable()
-				.optional()
-				.describe(
-					"free_shipping only: the cart subtotal at which shipping is free, integer minor units; null clears it.",
-				),
-			expectedAmountCents: minorUnits
-				.optional()
-				.describe("The amount you last read for this rate; the update is refused if it changed."),
-		}),
+		input: z
+			.object({
+				zoneId: zoneIdInput,
+				methodId: methodIdInput,
+				currency: currencyInput,
+				amountCents: minorUnits.describe("The shipping charge, integer minor units (500 = 5.00)."),
+				minSubtotalCents: minorUnits
+					.nullable()
+					.optional()
+					.describe(
+						"free_shipping only: the cart subtotal at which shipping is free, integer minor units; null clears it.",
+					),
+				expectedAmountCents: minorUnits
+					.optional()
+					.describe("The amount you last read for this rate; the update is refused if it changed."),
+			})
+			.strict(),
 		async run({ clients, input }) {
 			const { zoneId, methodId, currency, amountCents, minSubtotalCents, expectedAmountCents } =
 				input;
@@ -416,7 +422,7 @@ export const SHIPPING_WRITE_TOOLS = [
 						"A flat-rate method always charges its rate, so a free-shipping threshold would never apply. Send minSubtotalCents: null (it also clears a legacy one), or make the method free_shipping. Nothing was written.",
 					);
 				default:
-					return unhandled(outcome.reason);
+					return unhandled(outcome.reason, outcome);
 			}
 		},
 	}),
@@ -425,7 +431,9 @@ export const SHIPPING_WRITE_TOOLS = [
 		description:
 			'Delete a shipping method\'s rate in one currency; the method then cannot ship in that currency. Orders already placed keep their shipping charge. Returns `{status: "deleted"}`; NOT_FOUND for an unknown zone, method or rate, including one already deleted.',
 		destructive: true,
-		input: z.object({ zoneId: zoneIdInput, methodId: methodIdInput, currency: currencyInput }),
+		input: z
+			.object({ zoneId: zoneIdInput, methodId: methodIdInput, currency: currencyInput })
+			.strict(),
 		async run({ clients, input }) {
 			await requireMethod(clients, input.zoneId, input.methodId);
 			const result = await readOrRefuse(() =>
