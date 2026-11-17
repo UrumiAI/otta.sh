@@ -35,6 +35,7 @@ import {
 	stripeKeyMode,
 } from "../src/payment-secret-shapes.js";
 import {
+	PAYMENT_SECRET_SETTINGS_SCHEMA,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
@@ -811,5 +812,150 @@ describe("#531: a NEW webhook signing secret starts the last-verified time from 
 		});
 		await saveSecret(ctx, "save-stripe-secret-key", "stripeSecretKey", SK_TEST);
 		expect(kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBe(RECORDED);
+	});
+});
+
+// ── Pins: the payment-secret outcomes, before the decisions move out ───────────
+//
+// What the operator reads for each secret save and remove, and where the value
+// goes, pinned before the decisions move into `admin/operations/settings.ts`
+// (shared with the MCP tools).
+
+/**
+ * A kv that behaves like EmDash's settings layer with a usable
+ * `EMDASH_ENCRYPTION_KEY` (ADR-0037): a `settings:<name>` key whose name is
+ * declared `secret` in `PAYMENT_SECRET_SETTINGS_SCHEMA` is stored as an
+ * envelope, never as the value, and decrypted on read. `raw` is the stored rows.
+ */
+/** Whether `k` is a payment key the host encrypts (declared `secret`). */
+function isDeclaredSecret(k: string): boolean {
+	return k.startsWith("settings:") && Object.hasOwn(PAYMENT_SECRET_SETTINGS_SCHEMA, k.slice(9));
+}
+
+/** A stand-in cipher: reversed, then base64. Only what leaves the store matters. */
+function seal(v: unknown): { $emdash: string; v: number; ciphertext: string } {
+	const reversed = [...JSON.stringify(v)].toReversed().join("");
+	return { $emdash: "plugin-setting", v: 1, ciphertext: Buffer.from(reversed).toString("base64") };
+}
+
+function unseal(stored: { ciphertext: string }): unknown {
+	const reversed = Buffer.from(stored.ciphertext, "base64").toString();
+	return JSON.parse([...reversed].toReversed().join(""));
+}
+
+function makeEncryptingCtx(): { ctx: PluginContext; raw: Map<string, unknown> } {
+	const raw = new Map<string, unknown>();
+	const { ctx } = makeCtx();
+	ctx.kv = {
+		async get<T>(k: string): Promise<T | null> {
+			if (!raw.has(k)) return null;
+			const stored = raw.get(k);
+			return (isDeclaredSecret(k) ? unseal(stored as { ciphertext: string }) : stored) as T;
+		},
+		async set(k: string, v: unknown): Promise<void> {
+			raw.set(k, isDeclaredSecret(k) ? seal(v) : v);
+		},
+		async delete(k: string): Promise<boolean> {
+			return raw.delete(k);
+		},
+		async list(): Promise<Array<{ key: string; value: unknown }>> {
+			return [...raw].map(([key, value]) => ({ key, value }));
+		},
+	};
+	return { ctx, raw };
+}
+
+describe("pin: payment secret outcomes", () => {
+	test("a set secret is written only to its declared-secret key: no plaintext in kv, the save generation bumps, and it reads back", async () => {
+		for (const [actionId, fieldId, kvKey, value] of SECRETS) {
+			const { ctx, raw } = makeEncryptingCtx();
+			const outcome = await saveSecret(ctx, actionId, fieldId, value);
+			const banner = findBlocks(outcome.blocks, "banner")[0];
+			expect(banner?.variant, actionId).toBe("default");
+			expect(String(banner?.title), actionId).toMatch(/ saved$/);
+			expect(String(banner?.description), actionId).toMatch(
+				/was saved\. It won't be shown again\.$/,
+			);
+			expect(outcome.toast, actionId).toEqual({
+				message: String(banner?.title),
+				type: "success",
+			});
+			expect(JSON.stringify([...raw]), actionId).not.toContain(value);
+			expect(JSON.stringify(outcome), actionId).not.toContain(value);
+			expect(await ctx.kv.get(kvKey), actionId).toBe(value);
+			const gens = [...raw].filter(([k]) => k.endsWith("Gen"));
+			expect(gens, actionId).toHaveLength(1);
+			expect(gens[0]?.[1], actionId).toBe(1);
+		}
+	});
+
+	test("the exact copy for a Stripe secret key save, a refusal, a failed write with no encryption key, and a remove", async () => {
+		const { ctx } = makeEncryptingCtx();
+		const saved = await saveSecret(ctx, "save-stripe-secret-key", "stripeSecretKey", SK_TEST);
+		expect(findBlocks(saved.blocks, "banner")[0]).toMatchObject({
+			variant: "default",
+			title: "Stripe secret key saved",
+			description: "The Stripe secret key was saved. It won't be shown again.",
+		});
+
+		const refused = await saveSecret(ctx, "save-stripe-secret-key", "stripeSecretKey", PK_TEST);
+		expect(findBlocks(refused.blocks, "banner")[0]).toMatchObject({
+			variant: "error",
+			title: "Stripe secret key not saved",
+			description: expect.stringMatching(
+				/^The Stripe secret key .+\. Nothing was saved\.$/,
+			) as unknown,
+		});
+		expect(refused.toast).toEqual({ message: "Stripe secret key not saved", type: "error" });
+
+		const removed = await invoke(ctx, {
+			type: "block_action",
+			action_id: "clear-payment-secret",
+			value: { secret: "stripeSecretKey" },
+		});
+		expect(findBlocks(removed.blocks, "banner")[0]).toMatchObject({
+			variant: "default",
+			title: "Stripe secret key removed",
+			description:
+				"Card payments and refunds stop working until a new key is saved. Copy it again from Stripe Dashboard → Developers → API keys, then enter it above.",
+		});
+		expect(removed.toast).toEqual({ message: "Stripe secret key removed", type: "success" });
+		expect(await ctx.kv.get(STRIPE_SECRET_KEY_KEY)).toBeNull();
+
+		const unknown = await invoke(ctx, {
+			type: "block_action",
+			action_id: "clear-payment-secret",
+			value: { secret: "nope" },
+		});
+		expect(findBlocks(unknown.blocks, "banner")[0]).toMatchObject({
+			variant: "error",
+			title: "Key not removed",
+			description: "That button did not name a key on this page. Nothing was removed.",
+		});
+		expect(unknown.toast).toEqual({ message: "Key not removed", type: "error" });
+	});
+
+	test("a write the host refuses: nothing stored, no save generation bump", async () => {
+		const { ctx, kv } = makeCtx();
+		ctx.kv.set = async (k: string, v: unknown) => {
+			if (k === STRIPE_WEBHOOK_SECRET_KEY) throw new Error("no EMDASH_ENCRYPTION_KEY");
+			kv.set(k, v);
+		};
+		const outcome = await saveSecret(
+			ctx,
+			"save-stripe-webhook-secret",
+			"stripeWebhookSecret",
+			WHSEC,
+		);
+		const banner = findBlocks(outcome.blocks, "banner")[0];
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.title)).toBe("Stripe webhook signing secret not saved");
+		expect(String(banner?.description)).toMatch(/Nothing was saved\.$/);
+		expect(outcome.toast).toEqual({
+			message: "Stripe webhook signing secret not saved",
+			type: "error",
+		});
+		expect(kv.has(STRIPE_WEBHOOK_SECRET_KEY)).toBe(false);
+		expect(kv.has("settings:stripeWebhookSecretGen")).toBe(false);
 	});
 });
