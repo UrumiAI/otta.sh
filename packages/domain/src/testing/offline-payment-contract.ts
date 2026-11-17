@@ -387,6 +387,12 @@ export function offlinePaymentContract(
 			}
 		});
 
+		/**
+		 * #678: the per-network count is `awaiting_payment` only. A shipped, unpaid
+		 * order is never auto-cancelled, so counting it would let a busy store's
+		 * parcels in transit hold a shared network's slots with no end. The buyer
+		 * count still includes it.
+		 */
 		test("the open-order counts behind the caps follow the buyer and the client network", async () => {
 			const h = await makeHarness();
 			const a = await seedOrder(h, "11a", "cod", {
@@ -405,7 +411,8 @@ export function offlinePaymentContract(
 				});
 			expect(await count()).toEqual({ byBuyer: 2, byClient: 2 });
 			await admin(h, a.order.id, "shipped_awaiting_payment");
-			expect(await count()).toEqual({ byBuyer: 2, byClient: 2 }); // still unpaid: still open
+			// Still unpaid: still open for the buyer, but no longer the network's.
+			expect(await count()).toEqual({ byBuyer: 2, byClient: 1 });
 			await admin(h, a.order.id, "delivered");
 			await cancel(h, b.order.id);
 			expect(await count()).toEqual({ byBuyer: 0, byClient: 0 });

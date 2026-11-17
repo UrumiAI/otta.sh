@@ -95,6 +95,25 @@ test.describe("setup claim on a fresh store (ADR-0042)", () => {
 			const status = await page.request.get(STATUS);
 			expect(status.status()).toBe(200);
 			expect(await status.json()).toMatchObject({ data: { needsSetup: true } });
+
+			// Reopening an old link whose token no longer matches, pasted into this
+			// browser (so the Strict cookie is sent): the cookie still admits it,
+			// the stale token is redirected out of the address bar, and the claim
+			// cookie is left as it was.
+			const stale = await page.goto(
+				`${CLAIM_SITE}${SETUP_CLAIM_PATH}?${SETUP_TOKEN_PARAM}=not-the-token`,
+			);
+			expect(stale?.status(), "a stale link with a valid claim cookie").toBe(200);
+			expect(stale?.request().redirectedFrom()?.url()).toContain(`${SETUP_TOKEN_PARAM}=`);
+			const landed = new URL(page.url());
+			expect(landed.pathname).toBe(SETUP_CLAIM_PATH);
+			expect(landed.searchParams.has(SETUP_TOKEN_PARAM)).toBe(false);
+			expect(page.url()).not.toContain("not-the-token");
+			await expect(page.getByText("This store hasn't been set up yet")).toHaveCount(0);
+			const after = (await page.context().cookies(`${CLAIM_SITE}${SETUP_CLAIM_PATH}`)).find(
+				(c) => c.name === SETUP_CLAIM_COOKIE,
+			);
+			expect(after?.value).toBe(E2E_SETUP_TOKEN);
 		} finally {
 			await new Promise((resolve) => server.close(resolve));
 		}

@@ -205,6 +205,24 @@ The Deploy to Cloudflare button goes into README.md only after all of these:
    public, the repository variable `OTTA_TEMPLATE_PUBLIC=true` turns on the `Pack build` job
    (`scripts/pack-build.mjs`: the packed packages, installed with npm into a copy of the
    template, and built), which is skipped until then.
+   Publish, lockfile and public template: done (2026-11-12: 0.2.0 is on npm, the template's
+   lockfile is committed, the template is public, `OTTA_TEMPLATE_PUBLIC=true` has been set
+   since 2026-11-09, and `Pack build` runs on pull requests and passes).
+   Also: the template's lockfile and this repository resolve the same Cloudflare adapter
+   chain. The adapter chain follows the **hoisted** `workerd` (the one
+   `@cloudflare/unenv-preset`'s `workerd` peer resolves to), not the one the top-level
+   wrangler nests. In the template that hoisted `workerd` comes from
+   `@cloudflare/vite-plugin`'s own pinned wrangler (and its miniflare). So the gate is: the
+   template lockfile's `@cloudflare/vite-plugin` version equals this repository's, and its
+   hoisted `node_modules/workerd` equals the catalog `workerd` (`pnpm-workspace.yaml`). Only
+   then do `sites/store` and `sites/staging` resolve the Cloudflare adapter variants a
+   merchant gets (`sites/store/test/workerd-pin.test.ts`). Bump one side to match the other.
+   Adapter chain: not yet. The template's lockfile (its `main`, `ea9d06ae`) has
+   `@cloudflare/vite-plugin` 1.68.0, which pins wrangler 4.157.0, so the hoisted `workerd` is
+   1.20261103.1 (the top-level wrangler 4.159.0 nests its own `workerd` 1.20261109.1, which the
+   adapter chain does not use). This repository has `@cloudflare/vite-plugin` 1.44.0, wrangler
+   4.110.0 and `workerd` 1.20260708.1.
+   *2026-11-12:* **Gate 1: not yet met.** The adapter chains still differ; the rest is done.
 2. The links merchants follow resolve publicly: otta.sh is public, or `OTTA_UPGRADE_NOTES_URL`
    and the documentation URLs in the package's messages and README point somewhere public.
    *2026-11-05:* otta.sh is public; `UPGRADING.md` resolves once this branch is on `main`.
@@ -215,6 +233,8 @@ The Deploy to Cloudflare button goes into README.md only after all of these:
    bundle that carries a secret's value. No 0.1.1 patch: 0.2.0 is the next release and goes out
    in the same session, so the deprecation can point straight at it, and a 0.1.1 would be one
    more version to deprecate when 0.2.0's peers move.
+   *2026-11-12:* done. `npm view @urumi.ai/otta-plugin@0.1.0 deprecated` prints "Leaks build
+   environment values into the bundle. Upgrade to 0.2.0."
 4. A real Cloudflare account has run the button, and these are checked:
    - the button creates the D1, R2 and KV resources and rewrites the template's zero-ID
      placeholders (`wrangler.jsonc` keeps them until then);
@@ -234,6 +254,17 @@ The Deploy to Cloudflare button goes into README.md only after all of these:
   version shares the production D1, and opening its URL runs that release's forward-only
   migrations against production data. The template README and DEPLOYMENT.md tell the merchant to
   turn non-production branch builds off.
+- **The pack build has a gap.** The `Pack build` job runs on pull requests that touch the
+  packages, `sites/store` or the toolchain, and on dispatch from a branch other than `main`.
+  It does not run on a push to `main` or on a schedule: template code runs in the job, and a
+  cache it saved in `main`'s scope would be restored by every other CI job (CodeQL
+  actions/cache-poisoning), so both triggers were removed. A schedule on a branch other than
+  `main` is not possible either (GitHub runs scheduled workflows on the default branch only).
+  So a change in the template repository, or a `~` patch release of a peer that breaks the
+  packed build, shows up only on the next such pull request, as a red check that is not that
+  pull request's fault. The job logs the template commit it built, and the workflow's
+  `TEMPLATE_REF` can pin the template to a known-good commit. Closing the gap needs a scheduled
+  pack build in the template repository's own CI.
 - The store's tests move with its source. Tests that read `astro.config.ts` as text now read the
   integration's source, with the same assertions.
 - These Cloudflare facts must be checked on a real account before the button goes into

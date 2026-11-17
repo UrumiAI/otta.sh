@@ -159,7 +159,8 @@ export const onRequest = defineMiddleware(async (context, next) => {
 
 async function handle(context: APIContext, next: MiddlewareNext): Promise<Response> {
 	// Before anything else: an unclaimed store's EmDash routes are the deployer's
-	// alone (ADR-0042). A string test, then nothing, for a storefront request.
+	// alone (ADR-0042). A few prefix tests and a decodeURI, then nothing, for a
+	// storefront request.
 	if (setupClaimApplies()) {
 		const unclaimed = await setupClaimGate().check(context, env);
 		if (unclaimed !== null) return unclaimed;

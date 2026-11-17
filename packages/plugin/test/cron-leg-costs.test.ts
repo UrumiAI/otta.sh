@@ -525,6 +525,29 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			expect(used).toBe(EMAIL_SENDER_BUILD_READS + 1 + EMAIL_SENT_RECORD_WRITES);
 		});
 
+		// Issue #677: a FAILED send records the failure instead of "last sent", so
+		// it costs no more than a delivered one.
+		test("building the sender and a FAILED send fit the same EMAIL_SENDER_BUILD_READS + 1 + EMAIL_SENT_RECORD_WRITES", async () => {
+			const { ctx } = countedEmailContext(seed);
+			(ctx.email as { send: () => Promise<void> }).send = () => {
+				counter.calls++;
+				return Promise.reject(new Error("daily quota exceeded"));
+			};
+			const used = await cost(async () => {
+				const sender = await makeEmailSender(ctx);
+				await sender
+					?.send({
+						to: "buyer@example.test" as never,
+						template: "order-confirmation",
+						data: { orderId: "ord_cost", totalCents: 100, currency: "USD" },
+						idempotencyKey: "row_cost",
+					})
+					.catch(() => undefined);
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			});
+			expect(used).toBe(EMAIL_SENDER_BUILD_READS + 1 + EMAIL_SENT_RECORD_WRITES);
+		});
+
 		test("one real unit — claim, reads, the first send with its build, the mark — fits the unit", async () => {
 			const placed = await placeOrder("email-real", new Date(Date.now() + DAY_MS).toISOString());
 			const { ctx, stores } = countedEmailContext(seed);

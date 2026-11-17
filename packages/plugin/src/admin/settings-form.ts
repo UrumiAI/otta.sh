@@ -3,14 +3,24 @@ import {
 	BACKGROUND_WORK_PRESETS,
 	readBackgroundWork,
 	validateBackgroundWork,
+	WORKERS_FREE_MAX_QUERY_BUDGET,
 } from "../cron/background-work-setting.js";
+import {
+	RECONCILE_REPAIRS_PER_DAY_FREE,
+	reconcileRepairsDailyCap,
+} from "../cron/product-reconcile.js";
 import { currencyChoiceLabel, currencyChoicesWith } from "@urumi.ai/otta-admin-presentation";
 import {
 	effectiveStoreCurrency,
 	isSupportedCurrency,
 	MAX_HOLD_TTL_MINUTES,
+	ORDER_EMAIL_MAX_ATTEMPTS,
 } from "@urumi.ai/otta-domain";
-import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
+import {
+	emailSendingReport,
+	type EmailSendFailure,
+	type EmailSendingStatus,
+} from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import {
 	countryRequiresBuyerAddress,
@@ -430,8 +440,11 @@ interface SettingsPageState {
 	 *  Stripe only when it holds nothing usable for the stored key. */
 	stripeAccount: StripeAccountCountryStatus;
 	/** What is known about the EmDash host's email provider (`ctx.email`, ADR-0031):
-	 *  none, not yet confirmed by a send, or confirmed — two kv reads. */
+	 *  none, not yet confirmed by a send, or confirmed — three kv reads with
+	 *  {@link emailLastFailure}. */
 	emailStatus: EmailSendingStatus;
+	/** Issue #677: the last failed send, while no send has gone through since. */
+	emailLastFailure: EmailSendFailure | undefined;
 	/** #531: when a Stripe webhook last verified — one kv read, fail-soft. */
 	stripeWebhookLastVerified: StripeWebhookLastVerified;
 	/** #497: whether a payment key saved now could be stored encrypted. Not kv,
@@ -491,7 +504,7 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		plain,
 		backgroundWork,
 		stripeAccount,
-		emailStatus,
+		emailReport,
 		stripeWebhookLastVerified,
 		cashOnDelivery,
 	] = await Promise.all([
@@ -510,8 +523,9 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		// reads only what is cached: that action never waits on Stripe.
 		peekCountry ? peekStripeAccountCountry(ctx) : readStripeAccountCountry(ctx),
 		// ADR-0031: `ctx.email`, no recent "no email provider" answer, and whether a
-		// send has gone through it since (PR #418 review: three states).
-		emailSendingStatus(ctx),
+		// send has gone through it since (PR #418 review: three states); and the
+		// last failed send, while it is the latest word (issue #677).
+		emailSendingReport(ctx),
 		// #531: never throws; a failed read is its own state, never "never".
 		readStripeWebhookLastVerified(ctx),
 		// ADR-0044: fail-soft — an unread toggle leaves its form out, never "off".
@@ -533,7 +547,8 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 	return {
 		backgroundWork,
 		stripeAccount,
-		emailStatus,
+		emailStatus: emailReport.status,
+		emailLastFailure: emailReport.lastFailure,
 		stripeWebhookLastVerified,
 		plainSettings: plain.values,
 		plainUnread: plain.unread,
@@ -1605,6 +1620,7 @@ function buildSettingsBlocks(args: {
 	backgroundWork: number;
 	stripeAccount: StripeAccountCountryStatus;
 	emailStatus: EmailSendingStatus;
+	emailLastFailure: EmailSendFailure | undefined;
 	stripeWebhookLastVerified: StripeWebhookLastVerified;
 	/** #497: whether a payment key typed below could be stored encrypted. */
 	encryptionKey: EncryptionKeyStatus;
@@ -1637,6 +1653,7 @@ function buildSettingsBlocks(args: {
 			args.plainUnread,
 			args.stripeAccount,
 			args.emailStatus,
+			args.emailLastFailure,
 			args.stripeWebhookLastVerified,
 			args.paymentRefusal,
 		),
@@ -1955,6 +1972,29 @@ const backgroundWorkContext: Block = {
 	text: "Background work: how much the every-minute sweep (hold expiry, order emails) may do. Free allows 50 database queries a run, Paid 1000 — stores with sale spikes should be on Paid.",
 };
 
+/** The preset the daily repair cap applies to, named as the radio names it, without
+ *  its number ("Workers Free (30)" → "Workers Free"). */
+const CAPPED_PRESET_NAME = (
+	BACKGROUND_WORK_PRESETS.find((preset) => reconcileRepairsDailyCap(preset.value) !== null)
+		?.label ?? "Workers Free"
+).replace(/\s*\(\d+\)$/, "");
+
+/** What a capped setting means for a first install over an existing catalogue
+ *  (#664): every product without a commerce row waits for the `product-reconcile`
+ *  sweep, which repairs at most `RECONCILE_REPAIRS_PER_DAY_FREE` a day at a budget of
+ *  `WORKERS_FREE_MAX_QUERY_BUDGET` or less. The cap follows the SETTING, not the
+ *  plan the store is really on, so the line is shown only while the setting is
+ *  capped, and names it by the setting. */
+function firstInstallContext(backgroundWork: number): Block[] {
+	if (reconcileRepairsDailyCap(backgroundWork) === null) return [];
+	return [
+		{
+			type: "context",
+			text: `With Background work at ${String(WORKERS_FREE_MAX_QUERY_BUDGET)} or less (the ${CAPPED_PRESET_NAME} preset), products published before Otta was installed become buyable at up to ${String(RECONCILE_REPAIRS_PER_DAY_FREE)} a day. "Publish changes" on a product makes it buyable at once.`,
+		},
+	];
+}
+
 /**
  * "Background work per minute" — a radio of the two plan presets, beside the
  * hold TTL because it decides how fast expired holds come back on sale.
@@ -2007,6 +2047,7 @@ function checkoutGroup(
 					},
 					// Stored in plugin kv, not the settings store, so it stays usable.
 					backgroundWorkContext,
+					...firstInstallContext(backgroundWork),
 					backgroundWorkForm(backgroundWork),
 				]
 			: [
@@ -2043,6 +2084,7 @@ function checkoutGroup(
 						},
 					}),
 					backgroundWorkContext,
+					...firstInstallContext(backgroundWork),
 					backgroundWorkForm(backgroundWork),
 				];
 	return section({
@@ -2071,6 +2113,7 @@ function paymentsGroup(
 	unread: ReadonlySet<string>,
 	stripeAccount: StripeAccountCountryStatus,
 	emailStatus: EmailSendingStatus,
+	emailLastFailure: EmailSendFailure | undefined,
 	webhookLastVerified: StripeWebhookLastVerified,
 	refusal?: PaymentRefusal,
 ): Block[] {
@@ -2138,6 +2181,11 @@ function paymentsGroup(
 			// keys-first. It prefills with what is stored, which says on its own that
 			// it is not a write-only key.
 			{ type: "context", text: emailStatusLine(emailStatus) },
+			// Issue #677: a provider that fails after it was confirmed (a daily
+			// quota) must not read as fine, nor an unconfirmed one as merely waiting.
+			...(emailLastFailure === undefined
+				? []
+				: [{ type: "context", text: emailFailureLine(emailLastFailure) } satisfies Block]),
 			...publishableKeyWarnings(plain.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "", state),
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
@@ -2220,19 +2268,33 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
  *  - `confirmed`: the host's provider has accepted a send since any "no provider";
  *  - `unconfirmed`: `ctx.email` is there but nothing has gone through it yet. A
  *    sandboxed host ALWAYS hands over `ctx.email`, so an idle store with no
- *    provider looks like this — it must not read as reassurance;
+ *    provider looks like this — it must not read as reassurance. Nor may it say
+ *    the mail is only waiting: a selected provider that fails spends an order
+ *    email's attempts on every try (ADR-0043, issue #677);
  *  - `unavailable`: no provider: order emails wait (72 h at most, then are
  *    skipped) and sign-in links are not sent.
+ *
+ * The from-address belongs to the provider's own setup: on the reference site's
+ * Cloudflare default it is the `OTTA_EMAIL_FROM` build variable (issue #677).
  */
 export function emailStatusLine(status: EmailSendingStatus): string {
 	switch (status) {
 		case "confirmed":
-			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM are set in that provider.";
+			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM come from that provider's setup (the Cloudflare default: the OTTA_EMAIL_FROM build variable).";
 		case "unconfirmed":
-			return "Email: provider not confirmed — nothing sent through it since setup or a refusal. Without one, order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
+			return `Email: provider not confirmed since setup or a "no provider" answer. A failed try uses 1 of an order email's ${String(ORDER_EMAIL_MAX_ATTEMPTS)} attempts; with none, mail is skipped after 72 h. See docs/email-providers.md.`;
 		case "unavailable":
 			return "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 	}
+}
+
+/** Issue #677 — the last failed send, under the email line: when, and the
+ *  provider's reason with no recipient address (`sendFailureReason`). Shown only
+ *  while no send has gone through since. Within the nested-context budget (200). */
+export function emailFailureLine(failure: EmailSendFailure): string {
+	// The reason carries no trailing punctuation; a cut one ends in "…".
+	const end = failure.reason.endsWith("…") ? "" : ".";
+	return `Email: last send failed ${failure.at.slice(0, 10)} ${failure.at.slice(11, 16)} UTC — ${failure.reason}${end} Each failure uses one of an order email's ${String(ORDER_EMAIL_MAX_ATTEMPTS)} attempts.`;
 }
 
 /** Issue #498 — what the stored publishable key means for card checkout, under

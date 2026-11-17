@@ -3,6 +3,7 @@ import {
 	dispatchOrderEmails,
 	idempotencyKey,
 	renderEmail,
+	transitionOrderAsAdmin,
 	type CreateOrderCommand,
 	type PaymentGateway,
 } from "@urumi.ai/otta-domain";
@@ -153,9 +154,10 @@ describe("createOrderFromCart — an offline (cash-on-delivery) checkout", () =>
 			{ sku: "SKU-1", productId: "p1", qty: 11, kind: "physical" },
 			{ sku: "DIG-1", productId: "d1", qty: 5, kind: "digital" },
 		]);
+		// Its own reason (#678), so the buyer is told to order fewer items.
 		expect(await place(big, { offline: { ...ON, maxUnitsPerOrder: 10 } })).toEqual({
 			ok: false,
-			reason: "OFFLINE_ORDER_LIMIT",
+			reason: "OFFLINE_ORDER_TOO_LARGE",
 		});
 		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${big}`))).toBeNull();
 		// At the cap (digital lines hold no stock and are not counted): placed.
@@ -168,6 +170,76 @@ describe("createOrderFromCart — an offline (cash-on-delivery) checkout", () =>
 			{ sku: "SKU-1", productId: "p1", qty: 25, kind: "physical" },
 		]);
 		expect((await place(uncapped, { offline: { ...ON, maxUnitsPerOrder: 0 } })).ok).toBe(true);
+	});
+
+	/**
+	 * #678 guard: the unit cap stays AHEAD of the open-order caps (as it already
+	 * was), judged from the cart alone. With its own reason, moving it after them
+	 * would let an oversized order, placing nothing, tell whether an email or a
+	 * network is at its cap (`OFFLINE_ORDER_LIMIT` stays neutral: it never says
+	 * orders are open). Nor does it read the store.
+	 */
+	test("keeps the unit cap ahead of the open-order caps: an oversized order is OFFLINE_ORDER_TOO_LARGE whether or not the buyer is at a cap, and counts nothing", async () => {
+		const capped = { ...ON, maxOpenPerBuyer: 1, maxUnitsPerOrder: 10 };
+		const big = () => h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 11, kind: "physical" }]);
+		const tooLarge = { ok: false, reason: "OFFLINE_ORDER_TOO_LARGE" };
+		let counted = 0;
+		const count = h.orderStore.countOpenOfflineOrders.bind(h.orderStore);
+		h.orderStore.countOpenOfflineOrders = (input) => {
+			counted++;
+			return count(input);
+		};
+		expect(await place(await big(), { offline: capped })).toEqual(tooLarge);
+		expect(counted).toBe(0);
+		expect((await place(await physicalCart(), { offline: capped })).ok).toBe(true);
+		// Now at the buyer cap: the oversized order's answer does not change.
+		expect(await place(await big(), { offline: capped })).toEqual(tooLarge);
+		// A normal-sized one gets the neutral refusal.
+		expect(await place(await physicalCart(), { offline: capped })).toEqual({
+			ok: false,
+			reason: "OFFLINE_ORDER_LIMIT",
+		});
+	});
+
+	/**
+	 * #678: a shipped, unpaid order is never auto-cancelled, so it no longer holds
+	 * a slot of the per-NETWORK cap (carrier NAT: many honest buyers share it).
+	 * It still counts toward its own buyer's cap.
+	 */
+	test("a shipped unpaid order frees its network's slot but still counts for its buyer", async () => {
+		const netCap = { ...ON, maxOpenPerBuyer: 0, maxOpenPerClient: 1 };
+		const first = await place(await physicalCart(), { offline: netCap });
+		if (!first.ok) throw new Error(`placement refused: ${first.reason}`);
+		const other = { buyerRef: "neighbour@example.com" };
+		expect(await place(await physicalCart(), { ...other, offline: netCap })).toEqual({
+			ok: false,
+			reason: "OFFLINE_ORDER_LIMIT",
+		});
+		const shipped = await transitionOrderAsAdmin(
+			{
+				orderStore: h.orderStore,
+				entitlementStore: h.entitlementStore,
+				offlinePayment: {
+					inventoryStore: h.inventory,
+					paymentEventStore: h.paymentEventStore,
+					clock: h.clock,
+				},
+			},
+			{
+				orderId: first.order.id,
+				toState: "shipped_awaiting_payment",
+				idempotencyKey: idempotencyKey(`ship:${first.order.id}`),
+				actor: "Ops Person",
+			},
+		);
+		expect(shipped).toMatchObject({ ok: true, transitioned: true });
+		expect((await place(await physicalCart(), { ...other, offline: netCap })).ok).toBe(true);
+		// The first buyer's shipped order is still theirs to pay: at a buyer cap of 1, refused.
+		expect(
+			await place(await physicalCart(), {
+				offline: { ...netCap, clientKey: "net-2", maxOpenPerBuyer: 1, maxOpenPerClient: 0 },
+			}),
+		).toEqual({ ok: false, reason: "OFFLINE_ORDER_LIMIT" });
 	});
 
 	test("the caps: a buyer, or a network, with the maximum open cod orders is refused", async () => {

@@ -80,8 +80,7 @@ export interface OttaOptions {
 	/**
 	 * The wrangler config this build uses, relative to the project root. It must
 	 * be the file the Cloudflare adapter reads (`configPath`). Default
-	 * `wrangler.jsonc`. Any other file is treated as a local copy of
-	 * `wrangler.jsonc`, which then only serves as the tracked template.
+	 * `wrangler.jsonc`. Every build guard reads this one file.
 	 */
 	wranglerConfig?: string;
 	/** The disposable playground build (try.otta.sh). Never for a store. */
@@ -155,13 +154,14 @@ function parseVersion(version: string): [number, number, number, boolean] | unde
  * write) is not checked and counts as satisfied. A prerelease satisfies only an
  * exact pin equal to it: npm's semver matches one against a range only when the
  * range's own comparator is a prerelease of the same `x.y.z`, which none of the
- * forms above is. `^0.0.z` means exactly `0.0.z`.
+ * forms above is. `^0.0.z` means exactly `0.0.z`. Build metadata (`+…`) is
+ * ignored, as npm's semver ignores it: `1.3.1+build.5` satisfies `1.3.1`.
  */
 export function satisfiesPeerPin(version: string, pin: string): boolean {
 	const range = /^([~^]?)(\d+\.\d+\.\d+)$/.exec(pin.trim());
 	if (range === null) return true;
 	const operator = range[1] ?? "";
-	if (operator === "") return version.trim() === range[2];
+	if (operator === "") return version.trim().replace(/\+[0-9A-Za-z.-]+$/, "") === range[2];
 	const found = parseVersion(version);
 	const floor = parseVersion(range[2] ?? "");
 	if (found === undefined || floor === undefined) return false;
@@ -687,19 +687,16 @@ export default function otta(options: OttaOptions): AstroIntegration {
 				 * bucket (issue #376): EmDash serves every MEDIA key without auth
 				 * (`src/lib/downloads-bucket.ts`).
 				 */
-				assertDownloadsBucketPrivate(read(wranglerConfig), wranglerConfig);
+				const wranglerText = read(wranglerConfig);
+				assertDownloadsBucketPrivate(wranglerText, wranglerConfig);
 
 				/**
 				 * A configured sender needs the `EMAIL` send_email binding in the config
 				 * this build uses (ADR-0043): selected-but-unbound burns order-email
-				 * attempts.
+				 * attempts. The SAME text and name as the guard above (issue #677): the
+				 * site chose the file; nothing here chooses again.
 				 */
-				assertEmailBindingForBuild(emailFrom, {
-					...(wranglerConfig !== "wrangler.jsonc" ? { localText: read(wranglerConfig) } : {}),
-					templateText: read(
-						wranglerConfig === "wrangler.jsonc" ? wranglerConfig : "wrangler.jsonc",
-					),
-				});
+				assertEmailBindingForBuild(emailFrom, { text: wranglerText, name: wranglerConfig });
 
 				assertNoPublicCollisions(fileURLToPath(config.publicDir));
 				if (!playground) assertSeedFound(root);

@@ -752,6 +752,8 @@ export class InMemoryOrderStore implements OrderStore {
 		const now = this.#clock.now().toISOString();
 		const to = input.toState ?? "shipped";
 		stored.order.state = to;
+		// Shipping unpaid drops the network key, as `#guardedFlip` does (#678).
+		delete stored.offlineClientKey;
 		stored.order.fulfillment = {
 			carrier: input.carrier,
 			trackingNumber: input.trackingNumber,
@@ -882,7 +884,11 @@ export class InMemoryOrderStore implements OrderStore {
 		for (const stored of this.#orders.values()) {
 			if (!OFFLINE_UNPAID_STATES.has(stored.order.state)) continue;
 			if (stored.order.buyerRef.toLowerCase() === buyer) byBuyer++;
-			if (input.clientKey !== undefined && stored.offlineClientKey === input.clientKey) byClient++;
+			// The real adapter's predicate: the key, on an open order. Only an
+			// `awaiting_payment` order keeps its key (#678), so a shipped one is out.
+			if (input.clientKey !== undefined && stored.offlineClientKey === input.clientKey) {
+				byClient++;
+			}
 		}
 		return { byBuyer, byClient };
 	}
@@ -1295,8 +1301,9 @@ export class InMemoryOrderStore implements OrderStore {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined || stored.order.state !== from) return false;
 		stored.order.state = to;
-		// ADR-0044 §7: the network key lives only while the offline order is open.
-		if (!OFFLINE_UNPAID_STATES.has(to)) delete stored.offlineClientKey;
+		// ADR-0044 §7: the network key lives only while the offline order is
+		// `awaiting_payment` (#678) — the real adapter's `#flip` rule.
+		if (to !== "awaiting_payment") delete stored.offlineClientKey;
 		stored.order.updatedAt = this.#clock.now().toISOString();
 		// State-change audit rides the (won) flip, exactly like the real adapter's
 		// event INSERT inside the guarded UPDATE transaction — so a 0-row miss above
