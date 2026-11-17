@@ -13,6 +13,9 @@
  * Review Focus 5: a token without the plugin-tool scope is refused with
  * `INSUFFICIENT_SCOPE`, even one with `admin` (EmDash checks the plugin scope
  * before its `admin` shortcut).
+ *
+ * The error contract: an Otta-raised refusal (`coupons_get` of a code that is
+ * not there) arrives as `isError` with `_meta.code: "NOT_FOUND"`, end to end.
  */
 import { setupClaimHeaders } from "../../store/scripts/setup-claim-cookie.js";
 import { adminHeaders } from "./admin-rules.js";
@@ -120,8 +123,20 @@ async function createToken(
 	return { id: data.info.id, token: data.token };
 }
 
+/** Revoke a token, and fail loudly if the host did not: a revoke that silently
+ *  failed would leave an admin-capable token live. */
 async function revokeToken(headers: Record<string, string>, id: string): Promise<void> {
-	await fetch(`${API_TOKENS}/${id}`, { method: "DELETE", headers });
+	const res = await fetch(`${API_TOKENS}/${id}`, { method: "DELETE", headers });
+	const body = await res.text();
+	expect(res.ok, `revoke token ${id} → HTTP ${res.status}: ${body.slice(0, 300)}`).toBe(true);
+}
+
+/** An Otta-raised refusal as the agent sees it: a tool error, its code in `_meta.code`. */
+function expectRefusal(result: ToolResult, code: string): void {
+	expect(result.isError, `expected ${code}, got ${JSON.stringify(result).slice(0, 400)}`).toBe(
+		true,
+	);
+	expect(result["_meta"]?.code).toBe(code);
 }
 
 test.describe("otta-mcp through /_emdash/api/mcp", () => {
@@ -148,8 +163,12 @@ test.describe("otta-mcp through /_emdash/api/mcp", () => {
 		// 2. Tokens: the plugin-tool scope, and `admin` alone.
 		const stamp = Date.now().toString(36);
 		const scoped = await createToken(headers, `otta-e2e-mcp-${stamp}`, ["mcp:tools:otta"]);
-		const unscoped = await createToken(headers, `otta-e2e-admin-${stamp}`, ["admin"]);
+		let unscoped: { id: string; token: string } | undefined;
+		let couponId: string | undefined;
+		let couponDeleted = false;
+		const cleanupFailures: string[] = [];
 		try {
+			unscoped = await createToken(headers, `otta-e2e-admin-${stamp}`, ["admin"]);
 			await initialize(scoped.token);
 
 			// 3. tools/list carries the Otta tools, destructive ones flagged.
@@ -174,18 +193,74 @@ test.describe("otta-mcp through /_emdash/api/mcp", () => {
 				}),
 			);
 			expect(created["status"]).toBe("created");
-			const couponId = (created["coupon"] as { id: string }).id;
+			couponId = (created["coupon"] as { id: string }).id;
+			expect(toolData(await callTool(scoped.token, "otta__coupons_get", { code }))).toMatchObject({
+				id: couponId,
+				code,
+			});
 			const deleted = toolData(await callTool(scoped.token, "otta__coupons_delete", { couponId }));
 			expect(deleted).toEqual({ status: "deleted" });
+			couponDeleted = true;
 
-			// 6. Review Focus 5: `admin` is not `mcp:tools:otta`.
+			// 6. An OTTA-raised refusal through the real endpoint: the tool throws a
+			// ToolError, EmDash's route layer must recognise it (`isPluginRouteError`)
+			// and the MCP server must unwrap it as `isError` with `_meta.code`. The
+			// canary for that contract on the next EmDash bump. The re-read is also
+			// the proof the delete happened, not just what it answered.
+			expectRefusal(await callTool(scoped.token, "otta__coupons_get", { code }), "NOT_FOUND");
+			expectRefusal(
+				await callTool(scoped.token, "otta__coupons_delete", { couponId }),
+				"NOT_FOUND",
+			);
+			expectRefusal(
+				await callTool(scoped.token, "otta__coupons_get", { code: `NOPE-${stamp}` }),
+				"NOT_FOUND",
+			);
+
+			// 7. Review Focus 5: `admin` is not `mcp:tools:otta`.
 			await initialize(unscoped.token);
 			const refused = await callTool(unscoped.token, "otta__settings_get", {});
-			expect(refused.isError).toBe(true);
-			expect(refused["_meta"]?.code).toBe("INSUFFICIENT_SCOPE");
+			expectRefusal(refused, "INSUFFICIENT_SCOPE");
+
+			// 8. No token at all: refused before MCP.
+			const anonymous = await fetch(MCP, {
+				method: "POST",
+				headers: {
+					...setupClaimHeaders(E2E_BASE_URL),
+					"Content-Type": "application/json",
+					Accept: "application/json, text/event-stream",
+				},
+				body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/list", params: {} }),
+			});
+			expect(anonymous.status).toBe(401);
 		} finally {
-			await revokeToken(headers, scoped.id);
-			await revokeToken(headers, unscoped.id);
+			// Cleanup runs whatever failed above, every step even if one throws:
+			// the coupon first (it needs the scoped token), then both tokens.
+			const cleanup: Array<() => Promise<void>> = [];
+			if (couponId !== undefined && !couponDeleted) {
+				const id = couponId;
+				cleanup.push(async () => {
+					await callTool(scoped.token, "otta__coupons_delete", { couponId: id });
+				});
+			}
+			cleanup.push(() => revokeToken(headers, scoped.id));
+			if (unscoped !== undefined) {
+				const id = unscoped.id;
+				cleanup.push(() => revokeToken(headers, id));
+			}
+			for (const step of cleanup) {
+				try {
+					await step();
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.error(`[otta-e2e] mcp cleanup failed: ${message}`);
+					cleanupFailures.push(message);
+				}
+			}
 		}
+		// Reached only when the body passed: a failed cleanup (a token left live)
+		// then fails the test too. Had the body failed, its error stands and the
+		// cleanup failures are logged above.
+		expect(cleanupFailures).toEqual([]);
 	});
 });
