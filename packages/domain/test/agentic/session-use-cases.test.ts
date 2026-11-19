@@ -1622,20 +1622,56 @@ describe("recorded messages (codes and paths only) replay with their write", () 
 });
 
 describe("detachAgentSessionCart", () => {
-	test("detaches the cart of an open session once; refused after a redeem", async () => {
+	test("detaches the cart and its quote once; refused after a redeem", async () => {
 		const h = harness();
 		const first = await created(h, content({ cartId: "cart-a" }));
 		const id = first.session.id;
-		expect(await detachAgentSessionCart(h.deps, { sessionId: id })).toEqual({
+		expect(await detachAgentSessionCart(h.deps, keyed(id, "put-d"))).toEqual({
 			ok: true,
+			detached: true,
 			cartId: "cart-a",
 		});
-		expect((await stored(h, id)).cartId).toBeUndefined();
-		expect(await detachAgentSessionCart(h.deps, { sessionId: id })).toEqual({ ok: true });
+		const after = await stored(h, id);
+		expect(after.cartId).toBeUndefined();
+		expect(after.quote).toBeUndefined();
+		expect(await detachAgentSessionCart(h.deps, keyed(id, "put-d"))).toEqual({
+			ok: true,
+			detached: true,
+		});
 		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
-		expect(await detachAgentSessionCart(h.deps, { sessionId: id })).toEqual({
+		expect(await detachAgentSessionCart(h.deps, keyed(id, "put-e"))).toEqual({
 			ok: false,
 			reason: "SESSION_HANDED_OFF",
 		});
+	});
+
+	test("a key already recorded never detaches: the same body replays (even after a redeem), another is IDEMPOTENCY_KEY_REUSED", async () => {
+		const h = harness();
+		const first = await created(h, content({ cartId: "cart-a" }));
+		const id = first.session.id;
+		const put = await replaceAgentSession(h.deps, {
+			...keyed(id, "put-1"),
+			content: content({ cartId: "cart-b" }),
+		});
+		expect(put.ok).toBe(true);
+		// The duplicate racing the first: nothing detached, the first's answer.
+		expect(await detachAgentSessionCart(h.deps, keyed(id, "put-1"))).toEqual({
+			ok: true,
+			detached: false,
+			replay: { ...put, replayed: true },
+		});
+		expect((await stored(h, id)).cartId).toBe("cart-b");
+		expect(
+			await detachAgentSessionCart(h.deps, {
+				sessionId: id,
+				idempotencyKey: "put-1",
+				fingerprint: "other",
+			}),
+		).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		// A same-key retry after a redeem replays the first answer, not SESSION_HANDED_OFF.
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		const late = await detachAgentSessionCart(h.deps, keyed(id, "put-1"));
+		expect(late).toMatchObject({ ok: true, detached: false, replay: { ok: true, replayed: true } });
+		expect((await stored(h, id)).cartId).toBe("cart-b");
 	});
 });

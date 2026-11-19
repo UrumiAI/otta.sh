@@ -1074,37 +1074,58 @@ export async function recordAgentHandoffCart(
 }
 
 /**
- * Detach the agent's cart from a session about to be re-built (an agent update),
- * so the caller may release that cart's stock holds before building the new one
- * (ADR-0047). One compare-and-set; refused once a link was redeemed (the shopper
- * may own that cart now: `SESSION_HANDED_OFF`), or the session is closed. A
- * redeem that wins the race marks the session first, so this is refused; one that
- * loses reads a session with no cart and builds its own. Answers the detached
- * cart id, or none when the session had no cart.
+ * Detach the agent's cart (and the quote it backed) from a session an agent
+ * update is re-building, so the caller may release that cart's stock holds for
+ * the new cart (ADR-0047). One compare-and-set, checked in this order:
+ *  - the update's own key already recorded on the session: nothing is detached —
+ *    the same body answers its replay, another body `IDEMPOTENCY_KEY_REUSED`
+ *    (a duplicate racing the first never strips the cart the first just wrote);
+ *  - a redeemed link: `SESSION_HANDED_OFF` (the shopper may own that cart);
+ *  - a closed session: `SESSION_CLOSED`.
+ * The quote goes with the cart: a session never shows totals no cart holds.
+ * Answers the detached cart id, or none when the session had no cart.
  */
 export async function detachAgentSessionCart(
-	deps: Pick<AgentSessionDeps, "store" | "clock">,
-	input: { sessionId: AgentSessionId },
+	deps: AgentSessionDeps,
+	input: AgentSessionKeyedRequest & { sessionId: AgentSessionId },
 ): Promise<
-	| { ok: true; cartId?: string }
+	| { ok: true; detached: true; cartId?: string }
+	| { ok: true; detached: false; replay: AgentSessionWriteResult }
 	| {
 			ok: false;
-			reason: "SESSION_NOT_FOUND" | "SESSION_HANDED_OFF" | "SESSION_CLOSED" | "WRITE_CONFLICT";
+			reason:
+				| "SESSION_NOT_FOUND"
+				| "SESSION_HANDED_OFF"
+				| "SESSION_CLOSED"
+				| "IDEMPOTENCY_KEY_REUSED"
+				| "WRITE_CONFLICT";
 	  }
 > {
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
 		const current = await deps.store.get(input.sessionId);
 		if (current === null) return { ok: false, reason: "SESSION_NOT_FOUND" };
+		const prior = current.writes.find((w) => sameKey(w, input));
+		if (prior !== undefined) {
+			if (prior.operation !== "replace" || prior.fingerprint !== input.fingerprint) {
+				return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+			}
+			const now = deps.clock.now().toISOString();
+			return {
+				ok: true,
+				detached: false,
+				replay: await answer(deps, current, prior.answer, true, now, prior),
+			};
+		}
 		if (isAgentSessionHandedOff(current)) return { ok: false, reason: "SESSION_HANDED_OFF" };
 		if (!isAgentSessionOpen(current.status)) return { ok: false, reason: "SESSION_CLOSED" };
 		const cartId = current.cartId;
-		if (cartId === undefined) return { ok: true };
-		const { cartId: _detached, ...rest } = current;
+		if (cartId === undefined) return { ok: true, detached: true };
+		const { cartId: _cart, quote: _quote, ...rest } = current;
 		const written = await deps.store.write(
 			{ ...rest, updatedAt: deps.clock.now().toISOString() },
 			current.revision,
 		);
-		if (written.ok) return { ok: true, cartId };
+		if (written.ok) return { ok: true, detached: true, cartId };
 	}
 	return { ok: false, reason: "WRITE_CONFLICT" };
 }
