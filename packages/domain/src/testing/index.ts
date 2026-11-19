@@ -213,6 +213,7 @@ export {
 // ADR-0047: agent checkout sessions.
 export { InMemoryAgentSessionStore } from "./in-memory-agent-session-store.js";
 export {
+	agentSessionSecretsContract,
 	agentSessionStoreContract,
 	type AgentSessionStoreHarness,
 	type AgentSessionStoreContractOptions,

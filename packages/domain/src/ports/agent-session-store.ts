@@ -26,31 +26,47 @@ export interface AgentSessionStore {
 		| { ok: true; session: AgentCheckoutSession }
 		| { ok: false; current: AgentCheckoutSession | null }
 	>;
-	/** The session whose LIVE hand-off token hashes to `tokenHash`, or null. */
+	/**
+	 * The session whose current `handoffTokenHash`, or one of whose
+	 * `redeemedHandoffs`, equals `tokenHash`, or null. Found WHATEVER the
+	 * session's status, expiry or use: redemption tells a used, canceled or
+	 * expired link apart from an unknown one by what this returns.
+	 */
 	findByHandoffTokenHash(tokenHash: string): Promise<AgentCheckoutSession | null>;
 	/** The most recently created session that last quoted on `cartId`, or null. */
 	findByCartId(cartId: string): Promise<AgentCheckoutSession | null>;
-	/** The create record for `key`, or null. */
-	getIdempotency(key: string): Promise<AgentCreateIdempotencyRecord | null>;
+	/** The create record for (`networkKey`, `key`), or null. Keys are caller-scoped. */
+	getIdempotency(networkKey: string, key: string): Promise<AgentCreateIdempotencyRecord | null>;
 	/**
-	 * Insert-if-absent. Exactly one of any number of racing puts for one key is
-	 * stored; every other answers the record that was.
+	 * Insert-if-absent on (`networkKey`, `key`). Exactly one of any number of
+	 * racing puts for one pair is stored; every other answers the record that was.
 	 */
 	putIdempotency(
 		record: AgentCreateIdempotencyRecord,
 	): Promise<{ stored: true } | { stored: false; existing: AgentCreateIdempotencyRecord }>;
 	/**
-	 * Atomically mark the session's hand-off used, guarded on: the session is
-	 * open (not canceled or completed), its live token hash is `tokenHash`, and it
-	 * is not already used. Exactly one of any number of racing calls wins.
+	 * Atomically mark the session's current hand-off link used, guarded on: the
+	 * session exists, its current token hash is `tokenHash`, it is open (not
+	 * canceled or completed), `expiresAt` is after `now`, and the link is not
+	 * already used. The mark stamps `handoffUsedAt = now` and bumps the revision.
+	 * Exactly one of any number of racing calls wins.
 	 */
 	markHandoffUsed(
 		id: AgentSessionId,
 		tokenHash: string,
-		usedAt: string,
+		now: string,
 	): Promise<
 		| { ok: true; session: AgentCheckoutSession }
-		| { ok: false; reason: "not_found" | "token_mismatch" | "closed" | "already_used" }
+		| {
+				ok: false;
+				reason:
+					| "not_found"
+					| "token_mismatch"
+					| "canceled"
+					| "completed"
+					| "expired"
+					| "already_used";
+		  }
 	>;
 	/** Sessions that are open and whose `expiresAt` is after `now`. */
 	countLive(now: string): Promise<number>;
@@ -59,16 +75,26 @@ export interface AgentSessionStore {
 	/** Ids of sessions whose `purgeAt` is at or before `now`, at most `limit` of them. */
 	listPurgeDue(now: string, limit: number): Promise<AgentSessionId[]>;
 	/**
-	 * Delete the session, and its create record, if its `purgeAt` is at or before
-	 * `now`. Answers whether it deleted; idempotent.
+	 * Delete the session, and its create records, if its `purgeAt` is at or
+	 * before `now`. Answers whether it deleted; idempotent.
 	 */
 	purge(id: AgentSessionId, now: string): Promise<boolean>;
+	/**
+	 * Delete up to `limit` create records whose `purgeAt` is at or before `now`,
+	 * whether or not their session exists (a create that crashed before its
+	 * session was written leaves an orphan record). Answers how many it deleted.
+	 */
+	purgeIdempotencyDue(now: string, limit: number): Promise<number>;
 }
 
-/** Maps a create's `Idempotency-Key` to the session it created. */
+/** Maps a caller's create `Idempotency-Key` to the session it created. */
 export interface AgentCreateIdempotencyRecord {
+	/** The creating caller's network key; part of the record's identity. */
+	networkKey: string;
 	key: string;
 	fingerprint: string;
 	sessionId: AgentSessionId;
 	createdAt: string;
+	/** createdAt + 30 d, as the session's own `purgeAt`. */
+	purgeAt: string;
 }

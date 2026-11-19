@@ -14,7 +14,7 @@ import type { OrderAddress } from "../orders/model.js";
  */
 
 declare const AgentSessionIdBrand: unique symbol;
-/** A checkout session id: `cs_` followed by an opaque, random suffix. */
+/** A checkout session id: `cs_` followed by an unguessable suffix from the secrets port. */
 export type AgentSessionId = string & { readonly [AgentSessionIdBrand]: true };
 
 export const AGENT_SESSION_ID_PREFIX = "cs_";
@@ -56,7 +56,8 @@ export interface AgentSessionBuyer {
  * The last quote computed for the session, a PREVIEW only (ADR-0047 Decision 4):
  * the hand-off re-prices from scratch. Computed outside this module by the
  * store's quote code; stored here verbatim. A part that could not be computed
- * yet (no destination, so no shipping or tax) is `null`, never zero.
+ * yet (no destination, so no shipping or tax) is `null`, never zero, and then
+ * `total` is `null` too: a partial quote has no total.
  */
 export interface AgentSessionQuote {
 	currency: Currency;
@@ -66,23 +67,40 @@ export interface AgentSessionQuote {
 	tax: Cents | null;
 	/** Payment rounding (ADR-0035 amendment); absent for a currency without an increment. */
 	rounding?: SignedCents;
-	total: Cents;
+	/** `null` whenever `fulfillment` or `tax` is `null`. */
+	total: Cents | null;
 	/** When the quote was computed (ISO-8601 UTC). */
 	quotedAt: string;
 }
 
-/** The request a write was keyed on: kept on the session so a replay answers it. */
-export interface AgentSessionWriteRecord {
-	/** The caller's `Idempotency-Key`. */
+export type AgentSessionOperation = "create" | "replace" | "cancel" | "complete" | "issue_handoff";
+
+/** The session as a write answered it: everything but the idempotency bookkeeping. */
+export type AgentSessionSnapshot = Omit<AgentCheckoutSession, "writes" | "retiredWriteKeys">;
+
+/** An `Idempotency-Key` as one caller sent it. Keys are scoped to the caller's
+ *  network: the same key from another network is a different request. */
+export interface AgentSessionWriteKey {
 	key: string;
+	networkKey: string;
+}
+
+/** A keyed write the session answered, kept so a replay returns the same answer. */
+export interface AgentSessionWriteRecord extends AgentSessionWriteKey {
 	operation: AgentSessionOperation;
 	/** The caller's fingerprint of the request body. */
 	fingerprint: string;
 	/** The session revision the write produced. */
 	revision: number;
+	/** The session as of this write; a replay answers it (secrets are re-derived). */
+	answer: AgentSessionSnapshot;
 }
 
-export type AgentSessionOperation = "create" | "replace" | "cancel" | "complete";
+/** An earlier hand-off link of the session that a shopper redeemed. */
+export interface AgentSessionRedeemedHandoff {
+	tokenHash: string;
+	usedAt: string;
+}
 
 export interface AgentCheckoutSession {
 	id: AgentSessionId;
@@ -99,12 +117,20 @@ export interface AgentCheckoutSession {
 	/** The cart last used to quote; may since have expired or been checked out. */
 	cartId?: string;
 	quote?: AgentSessionQuote;
-	/** Hash of the `order_secret` returned once at create. */
+	/** Hash of the derived `order_secret`. */
 	orderSecretHash: string;
-	/** Hash of the live hand-off token; absent until one is issued. */
+	/**
+	 * The current hand-off link's generation; 0 until the first one is issued.
+	 * Its token is derived from (id, generation), so it is never stored.
+	 */
+	linkGeneration: number;
+	/** Hash of the current generation's token; absent while `linkGeneration` is 0. */
 	handoffTokenHash?: string;
-	/** When the live hand-off token was redeemed (single use). */
+	/** When the current link was redeemed (single use). */
 	handoffUsedAt?: string;
+	/** Earlier links that were redeemed, oldest first. Never cleared, so a used
+	 *  link still answers "already used" and attribution survives a re-issue. */
+	redeemedHandoffs: AgentSessionRedeemedHandoff[];
 	orderId?: OrderId;
 	channel: AgentSessionChannel;
 	/**
@@ -118,24 +144,31 @@ export interface AgentCheckoutSession {
 	expiresAt: string;
 	/** createdAt + 30 d: the sweep deletes the session from here on. */
 	purgeAt: string;
-	/** Writes this session answered, newest last, bounded to {@link MAX_WRITE_RECORDS}. */
+	/** Recent keyed writes with their answers, newest last, at most
+	 *  {@link AGENT_SESSION_MAX_WRITE_RECORDS}. */
 	writes: AgentSessionWriteRecord[];
+	/** Keys whose records were evicted from `writes`: a late replay of one is
+	 *  refused (`IDEMPOTENCY_KEY_EXPIRED`), never re-applied. */
+	retiredWriteKeys: AgentSessionWriteKey[];
 }
 
 export const AGENT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 export const AGENT_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** UCP / spec cap on lines per session. */
 export const AGENT_SESSION_MAX_LINES = 50;
-/** How many keyed writes a session remembers for replay. A key evicted from this
- *  list is treated as new: a very late replay re-applies its request. */
-export const MAX_WRITE_RECORDS = 64;
+/** How many keyed writes a session keeps full answers for. */
+export const AGENT_SESSION_MAX_WRITE_RECORDS = 32;
+/** The most keyed writes one session accepts in its life (records plus retired
+ *  keys); beyond it writes are refused `WRITE_LIMIT_REACHED`, so no key is ever
+ *  forgotten while the session lives. */
+export const AGENT_SESSION_MAX_WRITES = 512;
 
 /** The status rule: no lines → `incomplete`; at least one → `requires_escalation`. */
-export function statusForLines(lines: readonly AgentSessionLine[]): AgentSessionStatus {
+export function agentSessionStatusForLines(lines: readonly AgentSessionLine[]): AgentSessionStatus {
 	return lines.length === 0 ? "incomplete" : "requires_escalation";
 }
 
 /** A session that agents may still write to and whose link may still be redeemed. */
-export function isOpenStatus(status: AgentSessionStatus): boolean {
+export function isAgentSessionOpen(status: AgentSessionStatus): boolean {
 	return status === "incomplete" || status === "requires_escalation";
 }

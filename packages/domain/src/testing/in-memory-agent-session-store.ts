@@ -1,4 +1,8 @@
-import { isOpenStatus, type AgentCheckoutSession, type AgentSessionId } from "../agentic/model.js";
+import {
+	isAgentSessionOpen,
+	type AgentCheckoutSession,
+	type AgentSessionId,
+} from "../agentic/model.js";
 import type {
 	AgentCreateIdempotencyRecord,
 	AgentSessionStore,
@@ -41,7 +45,12 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 
 	async findByHandoffTokenHash(tokenHash: string): Promise<AgentCheckoutSession | null> {
 		for (const s of this.#sessions.values()) {
-			if (s.handoffTokenHash === tokenHash) return structuredClone(s);
+			if (
+				s.handoffTokenHash === tokenHash ||
+				s.redeemedHandoffs.some((r) => r.tokenHash === tokenHash)
+			) {
+				return structuredClone(s);
+			}
 		}
 		return null;
 	}
@@ -55,34 +64,49 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		return found === null ? null : structuredClone(found);
 	}
 
-	async getIdempotency(key: string): Promise<AgentCreateIdempotencyRecord | null> {
-		const r = this.#idempotency.get(key);
+	async getIdempotency(
+		networkKey: string,
+		key: string,
+	): Promise<AgentCreateIdempotencyRecord | null> {
+		const r = this.#idempotency.get(idempotencyId(networkKey, key));
 		return r === undefined ? null : { ...r };
 	}
 
 	async putIdempotency(
 		record: AgentCreateIdempotencyRecord,
 	): Promise<{ stored: true } | { stored: false; existing: AgentCreateIdempotencyRecord }> {
-		const existing = this.#idempotency.get(record.key);
+		const id = idempotencyId(record.networkKey, record.key);
+		const existing = this.#idempotency.get(id);
 		if (existing !== undefined) return { stored: false, existing: { ...existing } };
-		this.#idempotency.set(record.key, { ...record });
+		this.#idempotency.set(id, { ...record });
 		return { stored: true };
 	}
 
 	async markHandoffUsed(
 		id: AgentSessionId,
 		tokenHash: string,
-		usedAt: string,
+		now: string,
 	): Promise<
 		| { ok: true; session: AgentCheckoutSession }
-		| { ok: false; reason: "not_found" | "token_mismatch" | "closed" | "already_used" }
+		| {
+				ok: false;
+				reason:
+					| "not_found"
+					| "token_mismatch"
+					| "canceled"
+					| "completed"
+					| "expired"
+					| "already_used";
+		  }
 	> {
 		const s = this.#sessions.get(id);
 		if (s === undefined) return { ok: false, reason: "not_found" };
 		if (s.handoffTokenHash !== tokenHash) return { ok: false, reason: "token_mismatch" };
-		if (!isOpenStatus(s.status)) return { ok: false, reason: "closed" };
+		if (s.status === "canceled") return { ok: false, reason: "canceled" };
+		if (s.status === "completed") return { ok: false, reason: "completed" };
 		if (s.handoffUsedAt !== undefined) return { ok: false, reason: "already_used" };
-		const stored: AgentCheckoutSession = { ...s, handoffUsedAt: usedAt, revision: s.revision + 1 };
+		if (s.expiresAt <= now) return { ok: false, reason: "expired" };
+		const stored: AgentCheckoutSession = { ...s, handoffUsedAt: now, revision: s.revision + 1 };
 		this.#sessions.set(id, stored);
 		return { ok: true, session: structuredClone(stored) };
 	}
@@ -90,7 +114,7 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 	async countLive(now: string): Promise<number> {
 		let n = 0;
 		for (const s of this.#sessions.values()) {
-			if (isOpenStatus(s.status) && s.expiresAt > now) n++;
+			if (isAgentSessionOpen(s.status) && s.expiresAt > now) n++;
 		}
 		return n;
 	}
@@ -124,4 +148,24 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		}
 		return true;
 	}
+
+	async purgeIdempotencyDue(now: string, limit: number): Promise<number> {
+		if (!Number.isSafeInteger(limit) || limit < 1) {
+			throw new RangeError("purgeIdempotencyDue limit must be a positive integer");
+		}
+		let deleted = 0;
+		for (const [id, r] of this.#idempotency) {
+			if (deleted >= limit) break;
+			if (r.purgeAt <= now) {
+				this.#idempotency.delete(id);
+				deleted++;
+			}
+		}
+		return deleted;
+	}
+}
+
+/** The map key of a caller-scoped create record. */
+function idempotencyId(networkKey: string, key: string): string {
+	return JSON.stringify([networkKey, key]);
 }

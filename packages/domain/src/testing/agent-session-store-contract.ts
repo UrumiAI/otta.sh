@@ -6,7 +6,11 @@ import {
 } from "../agentic/model.js";
 import { currency } from "../money/cents.js";
 import { productId, sku } from "../money/ids.js";
-import type { AgentSessionStore } from "../ports/agent-session-store.js";
+import type { AgentSessionSecrets } from "../agentic/secrets.js";
+import type {
+	AgentCreateIdempotencyRecord,
+	AgentSessionStore,
+} from "../ports/agent-session-store.js";
 
 export interface AgentSessionStoreHarness {
 	store: AgentSessionStore;
@@ -34,6 +38,8 @@ function sample(id: string, overrides: Partial<AgentCheckoutSession> = {}): Agen
 		currency: currency("USD"),
 		lines: [{ productId: productId("p-1"), sku: sku("MUG-1"), quantity: 1 }],
 		orderSecretHash: `secret-hash-${id}`,
+		linkGeneration: 0,
+		redeemedHandoffs: [],
 		channel: "other",
 		networkKey: "net-a",
 		createdAt,
@@ -41,6 +47,23 @@ function sample(id: string, overrides: Partial<AgentCheckoutSession> = {}): Agen
 		expiresAt: new Date(created + DAY_MS).toISOString(),
 		purgeAt: new Date(created + 30 * DAY_MS).toISOString(),
 		writes: [],
+		retiredWriteKeys: [],
+		...overrides,
+	};
+}
+
+function createRecord(
+	key: string,
+	sessionId: string,
+	overrides: Partial<AgentCreateIdempotencyRecord> = {},
+): AgentCreateIdempotencyRecord {
+	return {
+		networkKey: "net-a",
+		key,
+		fingerprint: "fp",
+		sessionId: agentSessionId(sessionId),
+		createdAt: T0,
+		purgeAt: at(30 * DAY_MS),
 		...overrides,
 	};
 }
@@ -95,6 +118,21 @@ export function agentSessionStoreContract(
 			expect((await store.get(s1.id))?.couponCode).toBe("NEW");
 		});
 
+		test("write ignores the passed revision: it stores expected + 1 (1 on insert)", async () => {
+			const { store } = await makeHarness();
+			const inserted = await store.write(sample("cs_rev", { revision: 7 }), null);
+			expect(inserted.ok && inserted.session.revision).toBe(1);
+			const s1 = await store.get(agentSessionId("cs_rev"));
+			if (s1 === null) throw new Error("missing");
+			const updated = await store.write({ ...s1, revision: 99, couponCode: "X" }, 1);
+			expect(updated.ok && updated.session.revision).toBe(2);
+			expect((await store.get(s1.id))?.revision).toBe(2);
+			// A write whose passed revision matches the stored one but whose expected
+			// revision does not still loses.
+			const stale = await store.write({ ...s1, revision: 2 }, 1);
+			expect(stale.ok).toBe(false);
+		});
+
 		test("a compare-and-set against a missing session loses with null", async () => {
 			const { store } = await makeHarness();
 			expect(await store.write(sample("cs_none"), 1)).toEqual({ ok: false, current: null });
@@ -130,13 +168,42 @@ export function agentSessionStoreContract(
 					},
 					shippingMethodId: "ship-std",
 					cartId: "cart-1",
-					writes: [{ key: "k", operation: "create", fingerprint: "f", revision: 1 }],
+					linkGeneration: 2,
+					handoffTokenHash: "hash-2",
+					redeemedHandoffs: [{ tokenHash: "hash-1", usedAt: T0 }],
+					writes: [
+						{
+							key: "k",
+							networkKey: "net-a",
+							operation: "create",
+							fingerprint: "f",
+							revision: 1,
+							answer: {
+								id: agentSessionId("cs_full"),
+								revision: 1,
+								status: "incomplete",
+								currency: currency("USD"),
+								lines: [],
+								orderSecretHash: "o",
+								linkGeneration: 0,
+								redeemedHandoffs: [],
+								channel: "other",
+								networkKey: "net-a",
+								createdAt: T0,
+								updatedAt: T0,
+								expiresAt: at(DAY_MS),
+								purgeAt: at(30 * DAY_MS),
+							},
+						},
+					],
+					retiredWriteKeys: [{ key: "old", networkKey: "net-a" }],
 				}),
 			);
 			const read = await store.get(s.id);
 			expect(read).toEqual(s);
 			expect(read && "quote" in read).toBe(false);
-			expect(read && "handoffTokenHash" in read).toBe(false);
+			expect(read && "handoffUsedAt" in read).toBe(false);
+			expect(read && "orderId" in read).toBe(false);
 		});
 
 		test("a returned session is a copy: changing it changes nothing stored", async () => {
@@ -147,7 +214,7 @@ export function agentSessionStoreContract(
 			expect(read?.lines).toHaveLength(1);
 		});
 
-		test("finds a session by its live hand-off token hash only", async () => {
+		test("finds a session by its current hand-off token hash; a replaced unused hash is gone", async () => {
 			const { store } = await makeHarness();
 			const s = await seed(store, sample("cs_tok", { handoffTokenHash: "hash-1" }));
 			expect((await store.findByHandoffTokenHash("hash-1"))?.id).toBe(s.id);
@@ -157,6 +224,34 @@ export function agentSessionStoreContract(
 			expect(rotated.ok).toBe(true);
 			expect(await store.findByHandoffTokenHash("hash-1")).toBeNull();
 			expect((await store.findByHandoffTokenHash("hash-2"))?.id).toBe(s.id);
+		});
+
+		test("finds a session by a redeemed earlier link's hash", async () => {
+			const { store } = await makeHarness();
+			const s = await seed(
+				store,
+				sample("cs_hist", {
+					handoffTokenHash: "hash-new",
+					redeemedHandoffs: [{ tokenHash: "hash-old", usedAt: T0 }],
+				}),
+			);
+			expect((await store.findByHandoffTokenHash("hash-old"))?.id).toBe(s.id);
+			expect((await store.findByHandoffTokenHash("hash-new"))?.id).toBe(s.id);
+		});
+
+		test("finds a session by token hash whatever its status, use or expiry", async () => {
+			const { store } = await makeHarness();
+			await seed(store, sample("cs_f_can", { status: "canceled", handoffTokenHash: "h-can" }));
+			await seed(store, sample("cs_f_done", { status: "completed", handoffTokenHash: "h-done" }));
+			await seed(store, sample("cs_f_used", { handoffTokenHash: "h-used", handoffUsedAt: T0 }));
+			await seed(
+				store,
+				sample("cs_f_exp", { handoffTokenHash: "h-exp", createdAt: at(-2 * DAY_MS) }),
+			);
+			expect((await store.findByHandoffTokenHash("h-can"))?.id).toBe("cs_f_can");
+			expect((await store.findByHandoffTokenHash("h-done"))?.id).toBe("cs_f_done");
+			expect((await store.findByHandoffTokenHash("h-used"))?.id).toBe("cs_f_used");
+			expect((await store.findByHandoffTokenHash("h-exp"))?.id).toBe("cs_f_exp");
 		});
 
 		test("finds the most recently created session for a cart", async () => {
@@ -170,15 +265,10 @@ export function agentSessionStoreContract(
 
 		test("the create idempotency index is insert-if-absent", async () => {
 			const { store } = await makeHarness();
-			const record = {
-				key: "idem-1",
-				fingerprint: "fp-1",
-				sessionId: agentSessionId("cs_i1"),
-				createdAt: T0,
-			};
-			expect(await store.getIdempotency("idem-1")).toBeNull();
+			const record = createRecord("idem-1", "cs_i1", { fingerprint: "fp-1" });
+			expect(await store.getIdempotency("net-a", "idem-1")).toBeNull();
 			expect(await store.putIdempotency(record)).toEqual({ stored: true });
-			expect(await store.getIdempotency("idem-1")).toEqual(record);
+			expect(await store.getIdempotency("net-a", "idem-1")).toEqual(record);
 
 			const again = await store.putIdempotency({
 				...record,
@@ -188,21 +278,27 @@ export function agentSessionStoreContract(
 			expect(again).toEqual({ stored: false, existing: record });
 		});
 
+		test("create records are scoped to the network: one key, two networks, two records", async () => {
+			const { store } = await makeHarness();
+			const a = createRecord("idem-s", "cs_sa", { networkKey: "net-a" });
+			const b = createRecord("idem-s", "cs_sb", { networkKey: "net-b", fingerprint: "other" });
+			expect(await store.putIdempotency(a)).toEqual({ stored: true });
+			expect(await store.putIdempotency(b)).toEqual({ stored: true });
+			expect(await store.getIdempotency("net-a", "idem-s")).toEqual(a);
+			expect(await store.getIdempotency("net-b", "idem-s")).toEqual(b);
+			expect(await store.getIdempotency("net-c", "idem-s")).toBeNull();
+		});
+
 		test("racing idempotency puts for one key: exactly one is stored", async () => {
 			const { store } = await makeHarness();
 			const results = await Promise.all(
 				Array.from({ length: 8 }, (_, i) =>
-					store.putIdempotency({
-						key: "idem-race",
-						fingerprint: "fp",
-						sessionId: agentSessionId(`cs_r${i}`),
-						createdAt: T0,
-					}),
+					store.putIdempotency(createRecord("idem-race", `cs_r${i}`)),
 				),
 			);
 			const winners = results.filter((r) => r.stored);
 			expect(winners).toHaveLength(1);
-			const stored = await store.getIdempotency("idem-race");
+			const stored = await store.getIdempotency("net-a", "idem-race");
 			for (const r of results) {
 				if (!r.stored) expect(r.existing).toEqual(stored);
 			}
@@ -224,7 +320,18 @@ export function agentSessionStoreContract(
 			expect(read?.revision).toBeGreaterThan(s.revision);
 		});
 
-		test("markHandoffUsed refuses a wrong hash, a closed session and an unknown id", async () => {
+		test("a compare-and-set at the pre-mark revision loses after a mark", async () => {
+			const { store } = await makeHarness();
+			const s = await seed(store, sample("cs_mark_cas", { handoffTokenHash: "h" }));
+			expect((await store.markHandoffUsed(s.id, "h", at(1000))).ok).toBe(true);
+			const lost = await store.write({ ...s, couponCode: "LATE" }, s.revision);
+			expect(lost.ok).toBe(false);
+			const read = await store.get(s.id);
+			expect(read?.handoffUsedAt).toBe(at(1000));
+			expect(read?.couponCode).toBeUndefined();
+		});
+
+		test("markHandoffUsed refuses a wrong hash, canceled, completed and unknown", async () => {
 			const { store } = await makeHarness();
 			const s = await seed(store, sample("cs_m2", { handoffTokenHash: "h" }));
 			expect(await store.markHandoffUsed(s.id, "other", T0)).toEqual({
@@ -237,7 +344,15 @@ export function agentSessionStoreContract(
 			);
 			expect(await store.markHandoffUsed(canceled.id, "h3", T0)).toEqual({
 				ok: false,
-				reason: "closed",
+				reason: "canceled",
+			});
+			const completed = await seed(
+				store,
+				sample("cs_m4", { handoffTokenHash: "h4", status: "completed" }),
+			);
+			expect(await store.markHandoffUsed(completed.id, "h4", T0)).toEqual({
+				ok: false,
+				reason: "completed",
 			});
 			expect(await store.markHandoffUsed(agentSessionId("cs_zz"), "h", T0)).toEqual({
 				ok: false,
@@ -245,6 +360,19 @@ export function agentSessionStoreContract(
 			});
 			expect((await store.get(s.id))?.handoffUsedAt).toBeUndefined();
 			expect((await store.get(canceled.id))?.handoffUsedAt).toBeUndefined();
+			expect((await store.get(completed.id))?.handoffUsedAt).toBeUndefined();
+		});
+
+		test("markHandoffUsed guards expiry inside the mark: refused at expiresAt, allowed just before", async () => {
+			const { store } = await makeHarness();
+			const s = await seed(store, sample("cs_m5", { handoffTokenHash: "h5" }));
+			expect(await store.markHandoffUsed(s.id, "h5", s.expiresAt)).toEqual({
+				ok: false,
+				reason: "expired",
+			});
+			expect((await store.get(s.id))?.handoffUsedAt).toBeUndefined();
+			const justBefore = new Date(Date.parse(s.expiresAt) - 1).toISOString();
+			expect((await store.markHandoffUsed(s.id, "h5", justBefore)).ok).toBe(true);
 		});
 
 		test("countLive counts open, unexpired sessions", async () => {
@@ -284,23 +412,96 @@ export function agentSessionStoreContract(
 			);
 		});
 
+		test("listPurgeDue includes a session whose purgeAt equals now, not one a millisecond later", async () => {
+			const { store } = await makeHarness();
+			const s = await seed(store, sample("cs_edge"));
+			const before = new Date(Date.parse(s.purgeAt) - 1).toISOString();
+			expect(await store.listPurgeDue(before, 10)).toEqual([]);
+			expect(await store.listPurgeDue(s.purgeAt, 10)).toEqual([s.id]);
+		});
+
 		test("purge deletes a due session and its create record; not before purgeAt", async () => {
 			const { store } = await makeHarness();
 			const s = await seed(store, sample("cs_purge"));
-			await store.putIdempotency({
-				key: "idem-p",
-				fingerprint: "f",
-				sessionId: s.id,
-				createdAt: T0,
-			});
+			await store.putIdempotency(createRecord("idem-p", s.id));
 
 			expect(await store.purge(s.id, at(29 * DAY_MS))).toBe(false);
 			expect(await store.get(s.id)).not.toBeNull();
 
 			expect(await store.purge(s.id, s.purgeAt)).toBe(true);
 			expect(await store.get(s.id)).toBeNull();
-			expect(await store.getIdempotency("idem-p")).toBeNull();
+			expect(await store.getIdempotency("net-a", "idem-p")).toBeNull();
 			expect(await store.purge(s.id, s.purgeAt)).toBe(false);
+		});
+
+		test("purgeIdempotencyDue sweeps due create records, orphans included, at most the limit", async () => {
+			const { store } = await makeHarness();
+			// Orphans: recorded creates whose session was never written.
+			for (let i = 0; i < 3; i++) {
+				await store.putIdempotency(createRecord(`orphan-${i}`, `cs_o${i}`));
+			}
+			await store.putIdempotency(createRecord("fresh", "cs_fresh_o", { purgeAt: at(31 * DAY_MS) }));
+			const due = at(30 * DAY_MS);
+			expect(await store.purgeIdempotencyDue(at(30 * DAY_MS - 1), 10)).toBe(0);
+			expect(await store.purgeIdempotencyDue(due, 2)).toBe(2);
+			expect(await store.purgeIdempotencyDue(due, 10)).toBe(1);
+			expect(await store.purgeIdempotencyDue(due, 10)).toBe(0);
+			for (let i = 0; i < 3; i++) {
+				expect(await store.getIdempotency("net-a", `orphan-${i}`)).toBeNull();
+			}
+			expect(await store.getIdempotency("net-a", "fresh")).not.toBeNull();
+		});
+	});
+}
+
+/**
+ * The `AgentSessionSecrets` behavioural spec: unguessable-shaped ids, derived
+ * secrets that are deterministic and separated by purpose, session and
+ * generation, a hash that never echoes its input, and a constant-time compare
+ * that answers false (never throws) on a length mismatch.
+ */
+export function agentSessionSecretsContract(
+	makeSecrets: () => Promise<AgentSessionSecrets>,
+	options: AgentSessionStoreContractOptions,
+): void {
+	describe(`AgentSessionSecrets contract [${options.dialect}]`, () => {
+		test("mintId: at least 22 base64url characters (128 bits), fresh each time", async () => {
+			const secrets = await makeSecrets();
+			const ids = Array.from({ length: 20 }, () => secrets.mintId());
+			for (const id of ids) expect(id).toMatch(/^[A-Za-z0-9_-]{22,}$/);
+			expect(new Set(ids).size).toBe(ids.length);
+		});
+
+		test("derive is deterministic and separated by purpose, session and generation", async () => {
+			const secrets = await makeSecrets();
+			const a = agentSessionId("cs_aaaaaaaaaaaaaaaaaaaaaa");
+			const b = agentSessionId("cs_bbbbbbbbbbbbbbbbbbbbbb");
+			const order = await secrets.derive("order", a);
+			expect(order.length).toBeGreaterThan(0);
+			expect(await secrets.derive("order", a)).toBe(order);
+			expect(await secrets.derive("order", b)).not.toBe(order);
+			const g1 = await secrets.derive("handoff", a, 1);
+			expect(await secrets.derive("handoff", a, 1)).toBe(g1);
+			expect(await secrets.derive("handoff", a, 2)).not.toBe(g1);
+			expect(await secrets.derive("handoff", b, 1)).not.toBe(g1);
+			expect(g1).not.toBe(order);
+		});
+
+		test("hash is deterministic, distinct per input, and never the input", async () => {
+			const secrets = await makeSecrets();
+			const h = await secrets.hash("token-1");
+			expect(await secrets.hash("token-1")).toBe(h);
+			expect(await secrets.hash("token-2")).not.toBe(h);
+			expect(h).not.toBe("token-1");
+		});
+
+		test("constantTimeEqual: true on equal, false on differing, false (no throw) on a length mismatch", async () => {
+			const secrets = await makeSecrets();
+			expect(secrets.constantTimeEqual("abcdef", "abcdef")).toBe(true);
+			expect(secrets.constantTimeEqual("abcdef", "abcdeg")).toBe(false);
+			expect(() => secrets.constantTimeEqual("abc", "abcdef")).not.toThrow();
+			expect(secrets.constantTimeEqual("abc", "abcdef")).toBe(false);
+			expect(secrets.constantTimeEqual("", "a")).toBe(false);
 		});
 	});
 }
