@@ -826,3 +826,73 @@ export {
 	updateSettings,
 } from "./settings/use-cases.js";
 export type { AttemptThrottle } from "./ports/attempt-throttle.js";
+// ADR-0047: agent checkout sessions (UCP) and the shopper hand-off link.
+export {
+	AGENT_SESSION_ID_PREFIX,
+	AGENT_SESSION_MAX_ADDRESS_FIELD_LENGTH,
+	AGENT_SESSION_MAX_BUYER_FIELD_LENGTH,
+	AGENT_SESSION_MAX_CART_ID_LENGTH,
+	AGENT_SESSION_MAX_COUPON_CODE_LENGTH,
+	AGENT_SESSION_MAX_FINGERPRINT_LENGTH,
+	AGENT_SESSION_MAX_IDEMPOTENCY_KEY_LENGTH,
+	AGENT_SESSION_MAX_LINES,
+	AGENT_SESSION_MAX_NETWORK_KEY_LENGTH,
+	AGENT_SESSION_MAX_SHIPPING_METHOD_ID_LENGTH,
+	AGENT_SESSION_MAX_WRITE_RECORDS,
+	AGENT_SESSION_MAX_WRITES,
+	AGENT_SESSION_RETENTION_MS,
+	AGENT_SESSION_TTL_MS,
+	agentSessionId,
+	AGENT_SESSION_VIEW_KEYS,
+	agentSessionStatusForLines,
+	isAgentSessionHandedOff,
+	isAgentSessionOpen,
+	type AgentCheckoutSession,
+	type AgentSessionBuyer,
+	type AgentSessionChannel,
+	type AgentSessionId,
+	type AgentSessionLine,
+	type AgentSessionOperation,
+	type AgentSessionQuote,
+	type AgentSessionRedeemedHandoff,
+	type AgentSessionStatus,
+	type AgentSessionView,
+	type AgentSessionWriteKey,
+	type AgentSessionWriteRecord,
+} from "./agentic/model.js";
+export type {
+	AgentHandoffFailure,
+	AgentHandoffFailureReason,
+	AgentOrderSecretFailure,
+	AgentSessionFailure,
+	AgentSessionFailureReason,
+} from "./agentic/errors.js";
+export {
+	AGENT_SESSION_MIN_SERVER_KEY_BYTES,
+	type AgentSessionSecretPurpose,
+	type AgentSessionSecrets,
+} from "./agentic/secrets.js";
+export {
+	DEFAULT_AGENT_SESSION_LIMITS,
+	cancelAgentSession,
+	completeAgentSession,
+	createAgentSession,
+	getAgentSession,
+	issueAgentHandoff,
+	recordAgentSessionOrder,
+	redeemAgentHandoff,
+	replaceAgentSession,
+	verifyAgentOrderSecret,
+	type AgentSessionContent,
+	type AgentSessionCreateRequest,
+	type AgentSessionDeps,
+	type AgentSessionKeyedRequest,
+	type AgentSessionLimits,
+	type AgentSessionWriteResult,
+	type CreateAgentSessionResult,
+	type RecordAgentSessionOrderResult,
+} from "./agentic/use-cases.js";
+export type {
+	AgentCreateIdempotencyRecord,
+	AgentSessionStore,
+} from "./ports/agent-session-store.js";
