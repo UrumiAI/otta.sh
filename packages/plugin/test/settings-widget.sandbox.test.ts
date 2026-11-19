@@ -982,14 +982,16 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		const labels = groupLabels(blocks);
 		// INC-D3a deleted "Service connection" outright; ADR-0044 adds "Cash on
-		// delivery" after the card group.
+		// delivery" after the card group, and ADR-0047 "Agentic checkout" after it.
 		expect([...labels.keys()]).toEqual([
 			"settings:store",
 			"settings:checkout",
 			"settings:payments",
 			"settings:cod",
+			"settings:agentic",
 		]);
 		expect(labels.get("settings:cod")).toBe("Cash on delivery — off");
+		expect(labels.get("settings:agentic")).toBe("Agentic checkout — off");
 		expect(labels.get("settings:store")).toBe("Store — no display name");
 		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
 		expect(labels.get("settings:payments")).toBe(
@@ -1010,6 +1012,39 @@ describe("Settings admin form (workerd sandbox)", () => {
 			0,
 		);
 		expect(formFor(sectionBlocks(blocks, "settings:cod"), "save-cash-on-delivery")).toBeDefined();
+		expect(
+			formFor(sectionBlocks(blocks, "settings:agentic"), "save-agentic-checkout"),
+		).toBeDefined();
+	});
+
+	// ADR-0047: the agentic-checkout switch saves only a real boolean, the heading
+	// says whether it is on, and nothing on the screen shows the server key.
+	test("agentic checkout: switched on and off, refused without a boolean, the server key never shown", async () => {
+		const boot = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		sandbox = boot;
+		const save = async (values: Record<string, unknown>) =>
+			blocksOf(
+				await boot.invokeRoute("admin", {
+					type: "form_submit",
+					action_id: "save-agentic-checkout",
+					values,
+				}),
+			);
+		const on = await save({ agenticEnabled: true });
+		expect(groupLabels(on).get("settings:agentic")).toBe("Agentic checkout — on");
+		// Using it creates the server key; the Settings screen never renders it.
+		const status = (await boot.invokeRoute("agentic/status", {})) as { result: unknown };
+		expect(status.result).toEqual({ ok: true, enabled: true });
+		const refused = await save({ agenticEnabled: "yes" });
+		expect(findBlocks(refused, "banner").some((b) => b.variant === "error")).toBe(true);
+		expect(groupLabels(refused).get("settings:agentic")).toBe("Agentic checkout — on");
+		const off = await save({ agenticEnabled: false });
+		expect(groupLabels(off).get("settings:agentic")).toBe("Agentic checkout — off");
+		expect(JSON.stringify(off)).not.toMatch(/agenticServerKey/);
+		expect(((await boot.invokeRoute("agentic/status", {})) as { result: unknown }).result).toEqual({
+			ok: false,
+			error: "NOT_FOUND",
+		});
 	});
 
 	// ADR-0044: the cash-on-delivery toggle saves only a real boolean, keeps its
@@ -1179,6 +1214,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			"settings:checkout",
 			"settings:payments",
 			"settings:cod",
+			"settings:agentic",
 		]);
 	});
 

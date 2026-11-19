@@ -19,7 +19,9 @@
  *    other leg is busy too — 50 lapsed orders cleared inside `EXPIRY_WITHIN` ticks.
  */
 import {
+	AGENT_SESSION_RETENTION_MS,
 	cents,
+	createAgentSession,
 	currency,
 	idempotencyKey,
 	money,
@@ -30,12 +32,14 @@ import {
 	type SendEmailInput,
 	NOOP_LOGGER,
 } from "@urumi.ai/otta-domain";
-import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
+import { FakePaymentGateway, FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
+	AGENT_SESSIONS_COLLECTION,
 	CART_CREATE_KEYS_COLLECTION,
 	CARTS_COLLECTION,
 	collectionOf,
 	COUPONS_COLLECTION,
+	EmdashAgentSessionStore,
 	EmdashCouponStore,
 	EmdashEntitlementStore,
 	EmdashPaymentEventStore,
@@ -46,6 +50,7 @@ import {
 	orderSkuIndexId,
 	PRODUCT_COMMERCE_COLLECTION,
 	uuidIdGen,
+	WebCryptoAgentSessionSecrets,
 	type CouponDoc,
 	type InventoryDoc,
 	type OrderDoc,
@@ -336,6 +341,25 @@ async function seedEveryLeg(): Promise<void> {
 		);
 	}
 
+	// prune-agent-sessions (ADR-0047): three agent sessions past their 30 days.
+	const agentDeps = {
+		store: new EmdashAgentSessionStore({ storage }),
+		clock: new FixedClock(new Date(START.getTime() - AGENT_SESSION_RETENTION_MS - DAY_MS)),
+		secrets: new WebCryptoAgentSessionSecrets(new Uint8Array(32).fill(4)),
+	};
+	for (let i = 0; i < 3; i++) {
+		const created = await createAgentSession(agentDeps, {
+			networkKey: "net-backlog",
+			idempotencyKey: `agent-${String(i)}`,
+			fingerprint: `fp-${String(i)}`,
+			content: {
+				currency: currency("USD"),
+				lines: [{ productId: toProductId("p-agent"), sku: toSku("AGENT-1"), quantity: 1 }],
+			},
+		});
+		expect(created.ok).toBe(true);
+	}
+
 	// cod-auto-cancel (ADR-0044): a cash-on-delivery order unpaid past the default
 	// fourteen-day window.
 	await placeAwaitingPaymentOrder(storage, "cod-stale", new Date(START.getTime() - 20 * DAY_MS));
@@ -464,6 +488,8 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 				),
 			])
 		).every((doc) => doc === null),
+		"prune-agent-sessions":
+			(await collectionOf(storage, AGENT_SESSIONS_COLLECTION).count({})) === 0,
 		"product-reconcile":
 			(await collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION).get("listed"))
 				?.active === true,
@@ -627,6 +653,7 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			"stranded-holds",
 			"product-orphans",
 			"prune-carts",
+			"prune-agent-sessions",
 			"product-reconcile",
 		];
 		for (const moneyLeg of ["expire-orders", "hold-intents", "late-refunds"] as const) {

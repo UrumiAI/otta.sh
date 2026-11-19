@@ -612,6 +612,33 @@ export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
 // The checkout email's (buyerRef's) bound the place route enforces, for a
 // site's email field.
 export { BUYER_REF_MAX } from "./commerce/commerce-input.js";
+// ADR-0047: agentic checkout — the route names (a site rate-limits and proxies
+// them), the setting keys, and the secret schema a site spreads into its descriptor.
+export {
+	AGENTIC_HANDOFF_REDEEM_ROUTE,
+	AGENTIC_ORDER_ROUTE,
+	AGENTIC_ROUTES,
+	AGENTIC_SESSION_CANCEL_ROUTE,
+	AGENTIC_SESSION_COMPLETE_ROUTE,
+	AGENTIC_SESSION_CREATE_ROUTE,
+	AGENTIC_SESSION_GET_ROUTE,
+	AGENTIC_SESSION_UPDATE_ROUTE,
+	AGENTIC_STATUS_ROUTE,
+	type AgentHandoffPrefill,
+	type AgentSessionWire,
+	type AgenticCreateResult,
+	type AgenticGetResult,
+	type AgenticOrderResult,
+	type AgenticRedeemResult,
+	type AgenticStatusResult,
+	type AgenticWriteResult,
+} from "./agentic/routes.js";
+export {
+	AGENTIC_ENABLED_KEY,
+	AGENTIC_SECRET_SETTINGS_SCHEMA,
+	AGENTIC_SERVER_KEY_KEY,
+} from "./agentic/settings.js";
+export type { AgentMessage } from "./agentic/cart-quote.js";
 export {
 	createShopperStateHandler,
 	STOREFRONT_SHOPPER_STATE_ROUTE,

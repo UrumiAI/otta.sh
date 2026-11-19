@@ -39,6 +39,7 @@
 
 import type {
 	AddressStore,
+	AgentSessionStore,
 	AttemptThrottle,
 	Clock,
 	CouponStore,
@@ -51,6 +52,7 @@ import type {
 } from "@urumi.ai/otta-domain";
 import {
 	EmdashAddressStore,
+	EmdashAgentSessionStore,
 	EmdashAttemptThrottle,
 	EmdashCartStore,
 	EmdashCouponStore,
@@ -117,6 +119,8 @@ export interface InProcessCommerceStores {
 	readonly resumeOrderThrottle: AttemptThrottle;
 	readonly reportingStore: EmdashReportingStore;
 	readonly settingsStore: EmdashSettingsStore;
+	/** ADR-0047: agent checkout sessions (UCP) and their hand-off links. */
+	readonly agentSessionStore: AgentSessionStore;
 }
 
 /**
@@ -190,6 +194,7 @@ export function createInProcessCommerceStores(
 		customerStore,
 		addressStore: new EmdashAddressStore({ storage, idGen, clock }),
 		sessionStore: new EmdashSessionStore({ storage, idGen, clock }),
+		agentSessionStore: new EmdashAgentSessionStore({ storage }),
 		credentialVerifier: new EmdashCredentialVerifier({
 			storage,
 			customerStore,

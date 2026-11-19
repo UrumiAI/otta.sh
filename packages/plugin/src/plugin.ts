@@ -79,6 +79,24 @@ import {
 	createAfterUnpublishHandler,
 } from "./sync/hooks.js";
 import type { TaxCalculator } from "@urumi.ai/otta-domain";
+import {
+	AGENTIC_HANDOFF_REDEEM_ROUTE,
+	AGENTIC_ORDER_ROUTE,
+	AGENTIC_SESSION_CANCEL_ROUTE,
+	AGENTIC_SESSION_COMPLETE_ROUTE,
+	AGENTIC_SESSION_CREATE_ROUTE,
+	AGENTIC_SESSION_GET_ROUTE,
+	AGENTIC_SESSION_UPDATE_ROUTE,
+	AGENTIC_STATUS_ROUTE,
+	createAgenticHandoffRedeemHandler,
+	createAgenticOrderHandler,
+	createAgenticSessionCancelHandler,
+	createAgenticSessionCompleteHandler,
+	createAgenticSessionCreateHandler,
+	createAgenticSessionGetHandler,
+	createAgenticSessionUpdateHandler,
+	createAgenticStatusHandler,
+} from "./agentic/routes.js";
 import { setTaxCalculator } from "./commerce/tax-calculator-slot.js";
 import { setTrustedHost } from "./payments/trusted-host.js";
 import type { SandboxedPlugin } from "./types.js";
@@ -252,6 +270,34 @@ const plugin: SandboxedPlugin = {
 			handler: createShopperStateHandler() as never,
 			public: true,
 		},
+		// ADR-0047: agentic checkout (UCP sessions and the shopper hand-off). Every
+		// one answers NOT_FOUND until the store switches agentic checkout on.
+		[AGENTIC_SESSION_CREATE_ROUTE]: {
+			handler: createAgenticSessionCreateHandler() as never,
+			public: true,
+		},
+		[AGENTIC_SESSION_GET_ROUTE]: {
+			handler: createAgenticSessionGetHandler() as never,
+			public: true,
+		},
+		[AGENTIC_SESSION_UPDATE_ROUTE]: {
+			handler: createAgenticSessionUpdateHandler() as never,
+			public: true,
+		},
+		[AGENTIC_SESSION_CANCEL_ROUTE]: {
+			handler: createAgenticSessionCancelHandler() as never,
+			public: true,
+		},
+		[AGENTIC_SESSION_COMPLETE_ROUTE]: {
+			handler: createAgenticSessionCompleteHandler() as never,
+			public: true,
+		},
+		[AGENTIC_HANDOFF_REDEEM_ROUTE]: {
+			handler: createAgenticHandoffRedeemHandler() as never,
+			public: true,
+		},
+		[AGENTIC_ORDER_ROUTE]: { handler: createAgenticOrderHandler() as never, public: true },
+		[AGENTIC_STATUS_ROUTE]: { handler: createAgenticStatusHandler() as never, public: true },
 		// Phase 7 (§6): the SINGLE `admin` dispatch route em-dash's admin shell
 		// invokes (`POST /plugins/{id}/admin` with a BlockInteraction body). It
 		// fans out on `type` + `page`/`action_id` to the Reports page and the

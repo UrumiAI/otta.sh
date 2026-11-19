@@ -14,6 +14,9 @@
  * call, which no test here can see.
  */
 import {
+	AGENT_SESSION_RETENTION_MS,
+	createAgentSession,
+	redeemAgentHandoff,
 	NOOP_LOGGER,
 	cents,
 	currency,
@@ -38,8 +41,9 @@ import {
 	type EmailSender,
 	type PaymentGateway,
 } from "@urumi.ai/otta-domain";
-import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
+import { FakePaymentGateway, FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
+	AGENT_SESSIONS_COLLECTION,
 	CART_CREATE_KEYS_COLLECTION,
 	CARTS_COLLECTION,
 	collectionOf,
@@ -47,7 +51,9 @@ import {
 	type CartCreateKeyDoc,
 	type CartDoc,
 	COUPONS_COLLECTION,
+	EmdashAgentSessionStore,
 	EmdashReportingStore,
+	WebCryptoAgentSessionSecrets,
 	INVENTORY_COLLECTION,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
@@ -84,6 +90,7 @@ import {
 	EMAIL_SEND_AND_RECORD_CALLS,
 	holdIntentCost,
 	PRUNE_CART_CALLS,
+	AGENT_SESSION_PURGE_CALLS,
 	pruneAbandonedCart,
 	releaseStrandedOnSku,
 	strandedReleaseCost,
@@ -897,6 +904,38 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		).toBeNull();
 		expect(used, `measured ${String(used)}`).toBe(PRUNE_CART_CALLS);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["prune-carts"].unit);
+	});
+
+	test("prune-agent-sessions: one redeemed session, purged with its create key (ADR-0047)", async () => {
+		const created = new Date(Date.now() - AGENT_SESSION_RETENTION_MS - DAY_MS);
+		const deps = {
+			store: new EmdashAgentSessionStore({ storage }),
+			clock: new FixedClock(created),
+			secrets: new WebCryptoAgentSessionSecrets(new Uint8Array(32).fill(6)),
+		};
+		const made = await createAgentSession(deps, {
+			networkKey: "net-cost",
+			idempotencyKey: "cost-purge",
+			fingerprint: "fp-cost",
+			content: {
+				currency: currency("USD"),
+				lines: [{ productId: toProductId("p-cost"), sku: toSku("SKU-COST"), quantity: 1 }],
+			},
+		});
+		if (!made.ok || made.handoffToken === undefined) throw new Error("create failed");
+		expect((await redeemAgentHandoff(deps, { token: made.handoffToken })).ok).toBe(true);
+		const store = new EmdashAgentSessionStore({ storage: wrappedStorage() });
+		let purged = false;
+		const used = await cost(async () => {
+			purged = await store.purge(made.session.id, new Date().toISOString());
+		});
+		expect(purged).toBe(true);
+		expect(await collectionOf(storage, AGENT_SESSIONS_COLLECTION).get(made.session.id)).toBeNull();
+		// One pointer: 6 measured. AGENT_SESSION_PURGE_CALLS is the two-pointer
+		// ceiling (a session that issued a second link): 2 more deletes.
+		expect(used, `measured ${String(used)}`).toBe(6);
+		expect(used + 2).toBe(AGENT_SESSION_PURGE_CALLS);
+		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["prune-agent-sessions"].unit);
 	});
 
 	test("stranded-holds: a sku held by a live order costs its order read alone", async () => {

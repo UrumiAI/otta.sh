@@ -277,9 +277,10 @@ export {
 	RECONCILE_PAGE_SIZE,
 } from "./product-reconcile.js";
 
-/** The seventeen legs in the order a SUMMARY lists them (and the order the sweep ran
+/** The eighteen legs in the order a SUMMARY lists them (and the order the sweep ran
  *  them in before QA2 M2; `cod-auto-cancel`, ADR-0044, joined just before the
- *  best-effort `late-refunds`, which stays last). The order a tick RUNS them in is `LEG_PRIORITY`, with
+ *  best-effort `late-refunds`, which stays last; `prune-agent-sessions`, ADR-0047,
+ *  right after `prune-carts`). The order a tick RUNS them in is `LEG_PRIORITY`, with
  *  `cancel-intents` always first and aged legs ahead of the rest (`tickOrder`). */
 export const SWEEP_LEGS = [
 	"order-emails",
@@ -296,6 +297,7 @@ export const SWEEP_LEGS = [
 	"stranded-holds",
 	"product-orphans",
 	"prune-carts",
+	"prune-agent-sessions",
 	"product-reconcile",
 	"cod-auto-cancel",
 	"late-refunds",
@@ -333,6 +335,10 @@ export const MAINTENANCE_LEGS: readonly SweepLeg[] = [
 	// An abandoned cart is a month untouched before it is judged (#39); deleting it
 	// is storage hygiene, and its walk pages the active carts.
 	"prune-carts",
+	// ADR-0047: an agent session is kept 30 days; deleting it (and its link
+	// pointers and create keys) after that is storage and privacy hygiene with a
+	// day's slack, not something anyone waits on.
+	"prune-agent-sessions",
 	// A lost publish/unpublish sync (#95) has no deadline either: the recovery verb
 	// a merchant sees is still "Publish changes", and this is the repair nobody
 	// has to click. A pass walks the whole CMS catalogue, so it keeps the cadence.
@@ -401,6 +407,7 @@ export const LEG_PRIORITY: readonly SweepLeg[] = [
 	"coupon-recount",
 	"product-orphans",
 	"prune-carts",
+	"prune-agent-sessions",
 	"product-reconcile",
 ];
 
@@ -495,6 +502,19 @@ const CANCEL_RECORD_CALLS = 4;
 export const COUPON_RELEASE_CALLS = 7;
 /** {@link COUPON_RELEASE_CALLS} for a guest redemption: no per-customer slot. */
 export const GUEST_COUPON_RELEASE_CALLS = 5;
+
+/**
+ * ADR-0047 `prune-agent-sessions`: one session's purge — its read, one page of
+ * link pointers and their deletes, one page of create keys and its delete, and
+ * the session's delete. 6 measured for one pointer (cron-leg-costs.test.ts); 8
+ * leaves room for a second pointer (a session that issued another link).
+ */
+export const AGENT_SESSION_PURGE_CALLS = 8;
+/** Sessions one run lists for purge (a page; the gate bounds what is purged). */
+export const AGENT_SESSION_PURGE_BATCH = 20;
+/** The create-key and orphan-pointer sweep after the sessions: two pages and
+ *  their deletes, at most this many each (fewer when the leg has less room). */
+export const AGENT_SESSION_KEY_PURGE_BATCH = 5;
 
 /** The legs with a per-tick batch, and which batch. */
 const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
@@ -646,6 +666,8 @@ export const LEG_SHARES: Partial<Record<SweepLeg, LegShare>> = {
 	"product-orphans": { time: 0.3, queries: 0.3 },
 	// Storage hygiene with a month's slack: a thin slice, its leftovers in the second pass.
 	"prune-carts": { time: 0.2, queries: 0.2 },
+	// ADR-0047: the same footing as `prune-carts` — retention, a thin slice.
+	"prune-agent-sessions": { time: 0.2, queries: 0.2 },
 	// A repair is a few writes, and an in-sync product costs nothing past its page:
 	// capped like the other scans so a catalogue-wide drift (a publish outage) heals
 	// over ticks without taking the tick from the legs a customer waits on.
@@ -793,6 +815,8 @@ export const UNPROMOTED_LEGS: readonly SweepLeg[] = [
 	"coupon-recount",
 	// #39: a cart a month abandoned can wait a few more ticks behind any backlog.
 	"prune-carts",
+	// ADR-0047: a session past its 30 days can wait a few more ticks too.
+	"prune-agent-sessions",
 ];
 
 /**
@@ -882,6 +906,9 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// create-key record's versioned read and delete, and the cart's guarded delete:
 		// 5, measured. An unkeyed cart costs 3.
 		"prune-carts": { entry: 2, unit: PRUNE_CART_CALLS },
+		// entry: the one page of due sessions. unit: one session's purge
+		// (`AGENT_SESSION_PURGE_CALLS`) — measured in cron-leg-costs.test.ts.
+		"prune-agent-sessions": { entry: 1, unit: AGENT_SESSION_PURGE_CALLS },
 		// entry and unit: see `PRODUCT_RECONCILE_ENTRY_QUERIES` and
 		// `PRODUCT_RECONCILE_REPAIR_CALLS` (product-reconcile.ts). A product already in
 		// sync costs nothing past its page.
@@ -2279,6 +2306,36 @@ export async function runCommerceSweeps(
 				// Stopped by its share with carts left: a candidate for the second pass.
 				if (legBudget.stopped) stoppedByBudget.add("prune-carts");
 				return result;
+			}),
+		"prune-agent-sessions": async () =>
+			await run("prune-agent-sessions", async (legBudget) => {
+				// ADR-0047 retention: sessions 30 days after creation (their link
+				// pointers and create keys with them), then create keys and orphan
+				// pointers due on their own. Bounded per tick like `prune-carts`: a
+				// gate before each purge, the rest next run.
+				const gate = legBudget.gate(0, LEG_QUERY_COSTS["prune-agent-sessions"].unit);
+				const store = stores.agentSessionStore;
+				const due = await store.listPurgeDue(nowIso, AGENT_SESSION_PURGE_BATCH);
+				let count = 0;
+				let stopped = false;
+				for (const id of due) {
+					if (!gate()) {
+						stopped = true;
+						break;
+					}
+					if (await store.purge(id, nowIso)) count++;
+				}
+				// Opportunistic, and sized to the room left rather than gated: two page
+				// reads and up to two deletes per record. Orphans a thin tick leaves are
+				// the next run's, so an idle store never reads as "more next tick".
+				const keyBatch = Math.min(
+					AGENT_SESSION_KEY_PURGE_BATCH,
+					Math.floor((legBudget.remainingQueries() - 2) / 2),
+				);
+				if (!stopped && keyBatch > 0) {
+					count += await store.purgeIdempotencyDue(nowIso, keyBatch);
+				}
+				return legResult(count, stopped || legBudget.stopped);
 			}),
 		"product-orphans": async () => {
 			// The host hands `ctx.content` over only under `content:read`, and the
