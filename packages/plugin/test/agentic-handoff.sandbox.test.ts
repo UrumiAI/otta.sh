@@ -10,6 +10,7 @@
  */
 import {
 	AGENT_SESSIONS_COLLECTION,
+	CARTS_COLLECTION,
 	collectionOf,
 	ORDERS_COLLECTION,
 	type StorageAccess,
@@ -36,6 +37,8 @@ const PLATE = { id: "prod-aho-plate", sku: "SKU-AHO-PLATE", amount: 1000 };
 const CUP = { id: "prod-aho-cup", sku: "SKU-AHO-CUP", amount: 800 };
 const JUG = { id: "prod-aho-jug", sku: "SKU-AHO-JUG", amount: 1200 };
 const VASE = { id: "prod-aho-vase", sku: "SKU-AHO-VASE", amount: 900 };
+/** A digital product: its cart line takes no reservation and has no deadline. */
+const EBOOK = { id: "prod-aho-ebook", sku: "SKU-AHO-EBOOK", amount: 700 };
 
 let handle: SandboxHandle;
 let storage: StorageAccess;
@@ -45,6 +48,7 @@ beforeAll(async () => {
 	handle = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 	await seedAgenticStore(storage, F);
 	for (const product of [PLATE, CUP, JUG, VASE]) await seedProduct(storage, product);
+	await seedProduct(storage, EBOOK, 1, { kind: "digital" });
 	await saveAgentic(handle, true);
 	const cod = await handle.invokeRoute("admin", {
 		type: "form_submit",
@@ -391,7 +395,9 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		expect(session["status"]).toBe("canceled");
 		expect(session).not.toHaveProperty("orderId");
 		const output = handle.workerOutput().slice(logged);
-		expect(output).toContain("placing a hand-off cart's order unattributed (SESSION_CLOSED)");
+		expect(output).toContain(
+			"order placed; agent attribution skipped for its hand-off cart (SESSION_CLOSED)",
+		);
 		expect(output).not.toContain(s2.id);
 		expect(output).not.toContain(cartId);
 	});
@@ -410,6 +416,38 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		).toEqual({ ok: true, sessionStatus: "completed", order: null });
 	});
 
+	test("re-adopt needs every hold live: a lapsed hold is rebuilt into a fresh cart", async () => {
+		const s2 = await createSession("lapsed-1", [{ productId: JUG.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const agentCart = (await storedSession(s2.id))["cartId"] as string;
+		const carts = collectionOf<{ lines: Record<string, { expiresAt: string | null }> }>(
+			storage,
+			CARTS_COLLECTION,
+		);
+		const doc = await carts.get(agentCart);
+		if (doc === null) throw new Error("no agent cart");
+		for (const line of Object.values(doc.lines)) line.expiresAt = "2020-01-01T00:00:00.000Z";
+		await carts.put(agentCart, doc);
+		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		expect(redeemed).toMatchObject({ ok: true, messages: [] });
+		expect(redeemed["cartId"]).not.toBe(agentCart);
+		expect(Object.keys((await cartLines(storage, redeemed["cartId"] as string)) ?? {})).toEqual([
+			JUG.sku,
+		]);
+	});
+
+	test("a cart with a digital line (no reservation, no deadline) is re-adopted", async () => {
+		const s2 = await createSession("digital-1", [{ productId: EBOOK.id, quantity: 1 }], {
+			couponCode: undefined,
+			shippingMethodId: undefined,
+		});
+		const agentCart = (await storedSession(s2.id))["cartId"] as string;
+		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		expect(redeemed).toMatchObject({ ok: true, messages: [] });
+		expect(redeemed["cartId"]).toBe(agentCart);
+	});
+
 	// Last: it switches agentic checkout off.
 	test("switched OFF after a redeem: the order is placed unattributed and AGENTIC_DISABLED is logged", async () => {
 		const s2 = await createSession("off-after-1", [{ productId: MUG.id, quantity: 1 }], {
@@ -423,7 +461,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true });
 		expect(await storedOrder(placed["orderId"] as string)).not.toHaveProperty("attribution");
 		expect(handle.workerOutput().slice(logged)).toContain(
-			"placing a hand-off cart's order unattributed (AGENTIC_DISABLED)",
+			"order placed; agent attribution skipped for its hand-off cart (AGENTIC_DISABLED)",
 		);
 		await saveAgentic(handle, true);
 	});

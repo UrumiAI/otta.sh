@@ -17,6 +17,7 @@ import {
 	cancelAgentSession,
 	completeAgentSession,
 	createAgentSession,
+	detachAgentSessionCart,
 	getAgentSession,
 	precheckAgentSessionCreate,
 	precheckAgentSessionReplace,
@@ -185,22 +186,35 @@ async function contentFor(
 		built.lines.length === 0
 			? { quote: undefined, messages: [] }
 			: await quoteAgentCart(client, built.cartId, selectionOf(input), nowIso);
+	// The session never advertises a coupon or method the quote refused: once a
+	// quote was made, only what it was made with is kept (its message says why).
+	const kept = "applied" in quoted && quoted.applied !== undefined ? quoted.applied : input;
 	const content: AgentSessionContent = {
 		currency: built.currency,
 		lines: built.lines,
 		cartId: built.cartId,
 		...(input.buyer !== undefined ? { buyer: input.buyer } : {}),
 		...(input.address !== undefined ? { destination: orderAddressOf(input.address) } : {}),
-		...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
-		...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
+		...(kept.shippingMethodId !== undefined ? { shippingMethodId: kept.shippingMethodId } : {}),
+		...(kept.couponCode !== undefined ? { couponCode: kept.couponCode } : {}),
 		...(quoted.quote !== undefined ? { quote: quoted.quote } : {}),
 	};
 	return { content, messages: [...built.messages, ...quoted.messages] };
 }
 
-/** A cart key no caller can name: a digest of the write's scope and its key. */
-async function agentCartKey(kind: string, scope: string, idempotencyKey: string): Promise<string> {
-	return `agentic:${kind}:${await hashToken(`${scope}\u0000${idempotencyKey}`)}`;
+/**
+ * A cart key no caller can name: a digest of the write's scope, its key AND its
+ * body's fingerprint — so two bodies racing under one key never share a cart (the
+ * loser's lines can never land in a cart the winner's shopper re-adopted), while
+ * a same-body retry lands in the same cart (deduped by its line keys).
+ */
+export async function agentCartKey(
+	kind: string,
+	scope: string,
+	idempotencyKey: string,
+	fingerprint: string,
+): Promise<string> {
+	return `agentic:${kind}:${await hashToken(`${scope}\u0000${idempotencyKey}\u0000${fingerprint}`)}`;
 }
 
 // ── session/create ─────────────────────────────────────────────────────────
@@ -233,25 +247,29 @@ export function createAgenticSessionCreateHandler(): RouteHandler<unknown> {
 			// no re-quote, so a replay is byte-stable), and a reused key or a hit cap
 			// is refused before any cart is created or any stock is held.
 			const pre = await precheckAgentSessionCreate(deps, request);
-			if (!pre.proceed) return createAnswer(pre.result, []);
+			if (!pre.proceed) return createAnswer(pre.result);
 			const client = await makeCommerceClient(ctx);
 			const built = await contentFor(
 				client,
-				await agentCartKey("create", net, input.idempotencyKey),
+				await agentCartKey("create", net, input.idempotencyKey, request.fingerprint),
 				input,
 				deps.clock.now().toISOString(),
 			);
 			if (!("content" in built)) return built;
-			const result = await createAgentSession(deps, { ...request, content: built.content });
-			return createAnswer(result, built.messages);
+			const result = await createAgentSession(deps, {
+				...request,
+				content: built.content,
+				messages: built.messages,
+			});
+			// Refused after the build (a cap race, a racer's key): the cart is this
+			// body's alone (its key carries the fingerprint), so release its holds.
+			if (!result.ok) await releaseBuilt(ctx, built.content.cartId);
+			return createAnswer(result);
 		});
 }
 
-/** A replay's messages are `[]`: they described the original build, not stored. */
-function createAnswer(
-	result: Awaited<ReturnType<typeof createAgentSession>>,
-	messages: AgentMessage[],
-): AgenticCreateResult {
+/** The answer, with the write's recorded messages (a replay's are the original's). */
+function createAnswer(result: Awaited<ReturnType<typeof createAgentSession>>): AgenticCreateResult {
 	if (!result.ok) return { ok: false, reason: result.reason };
 	return {
 		ok: true,
@@ -260,8 +278,13 @@ function createAnswer(
 		session: sessionWire(result.session),
 		orderSecret: result.orderSecret,
 		handoffToken: result.handoffToken ?? null,
-		messages: result.replayed ? [] : messages,
+		messages: result.messages ?? [],
 	};
+}
+
+/** Release a cart this request built for a write the domain then refused. */
+async function releaseBuilt(ctx: PluginContext, cartId: string | undefined): Promise<void> {
+	if (cartId !== undefined) await releaseCart(ctx, cartId);
 }
 
 // ── session/get ────────────────────────────────────────────────────────────
@@ -316,24 +339,35 @@ export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
 			// closed, expired or handed off (the shopper owns that cart) are refused
 			// with no cart built or touched. Only a fresh, allowed write builds one.
 			const pre = await precheckAgentSessionReplace(deps, request);
-			if (!pre.proceed) return writeAnswer(pre.result, []);
+			if (!pre.proceed) return writeAnswer(pre.result);
+			// The previous agent cart's holds would count against the new cart (the
+			// last unit would read OUT_OF_STOCK on the agent's own update), so release
+			// them FIRST — but only after detaching the cart from the session in one
+			// compare-and-set that a redeem cannot slip past: a redeem that won marked
+			// the session first, and the detach is refused (the shopper may own that
+			// cart now); one that loses reads a session with no cart and builds its own.
+			const detached = await detachAgentSessionCart(deps, { sessionId });
+			if (!detached.ok) return { ok: false as const, reason: detached.reason };
+			if (detached.cartId !== undefined) await releaseCart(ctx, detached.cartId);
 			const client = await makeCommerceClient(ctx);
 			const built = await contentFor(
 				client,
-				await agentCartKey("replace", sessionId, input.idempotencyKey),
+				await agentCartKey("replace", sessionId, input.idempotencyKey, request.fingerprint),
 				input,
 				deps.clock.now().toISOString(),
 			);
 			if (!("content" in built)) return built;
-			const result = await replaceAgentSession(deps, { ...request, content: built.content });
-			return writeAnswer(result, built.messages);
+			const result = await replaceAgentSession(deps, {
+				...request,
+				content: built.content,
+				messages: built.messages,
+			});
+			if (!result.ok) await releaseBuilt(ctx, built.content.cartId);
+			return writeAnswer(result);
 		});
 }
 
-function writeAnswer(
-	result: Awaited<ReturnType<typeof replaceAgentSession>>,
-	messages: AgentMessage[],
-): AgenticWriteResult {
+function writeAnswer(result: Awaited<ReturnType<typeof replaceAgentSession>>): AgenticWriteResult {
 	if (!result.ok) return { ok: false, reason: result.reason };
 	return {
 		ok: true,
@@ -341,7 +375,7 @@ function writeAnswer(
 		replayed: result.replayed,
 		session: sessionWire(result.session),
 		handoffToken: result.handoffToken ?? null,
-		messages: result.replayed ? [] : messages,
+		messages: result.messages ?? [],
 	};
 }
 
@@ -365,7 +399,7 @@ export function createAgenticSessionCancelHandler(): RouteHandler<unknown> {
 				const cartId = result.session.cartId ?? before?.cartId;
 				if (cartId !== undefined) await releaseCart(ctx, cartId);
 			}
-			return writeAnswer(result, []);
+			return writeAnswer(result);
 		});
 }
 
@@ -392,7 +426,7 @@ export function createAgenticSessionCompleteHandler(): RouteHandler<unknown> {
 				...keyed,
 				fingerprint: `complete:${keyed.idempotencyKey}`,
 			});
-			return writeAnswer(result, []);
+			return writeAnswer(result);
 		});
 }
 
@@ -421,10 +455,14 @@ export type AgenticRedeemResult =
 	| { ok: false; reason: "HANDOFF_NO_LINES"; messages: AgentMessage[] }
 	| Common;
 
-/** Every line's stock is still held for this cart (a live reservation). */
-function allHeld(cart: CartWire, nowIso: string): boolean {
-	return cart.lines.every(
-		(l) => l.reservationId !== null && (l.expiresAt === null || l.expiresAt > nowIso),
+/**
+ * Every line's stock is still held for this cart: a live reservation, or a line
+ * that takes none (a digital product: no reservation and no deadline). A line
+ * whose hold has lapsed (or that lost its reservation) is not held.
+ */
+export function allHeld(cart: Pick<CartWire, "lines">, nowIso: string): boolean {
+	return cart.lines.every((l) =>
+		l.reservationId === null ? l.expiresAt === null : l.expiresAt === null || l.expiresAt > nowIso,
 	);
 }
 

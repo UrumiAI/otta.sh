@@ -1430,8 +1430,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		// checkout's expense. With it OFF (`false`) nothing is read before placing;
 		// a placed order's cart is checked afterwards, so a cart redeemed while it
 		// was on is logged as AGENTIC_DISABLED (one indexed read, placed orders only).
-		const agentSession =
+		const handoff =
 			opts.agentAttribution === true ? await this.#handoffSessionFor(input.cartId, true) : null;
+		const agentSession = handoff?.session ?? null;
 		const attribution: OrderAttribution | undefined =
 			agentSession === null
 				? undefined
@@ -1458,7 +1459,16 @@ export class InProcessCommerceClient implements CommerceClient {
 				: {}),
 		});
 		if (!result.ok) return { ok: false, reason: result.reason };
-		if (opts.agentAttribution === false) await this.#handoffSessionFor(input.cartId, false);
+		// Logged only once the order exists, so the line is true when it is read.
+		const skipped =
+			opts.agentAttribution === false
+				? (await this.#handoffSessionFor(input.cartId, false)).skipped
+				: (handoff?.skipped ?? null);
+		if (skipped !== null) {
+			console.warn(
+				`[otta] checkout: order placed; agent attribution skipped for its hand-off cart (${skipped})`,
+			);
+		}
 		const placedFor = result.order.attribution?.sessionId;
 		if (agentSession !== null && placedFor === agentSession.id) {
 			await this.#completeAgentSession(agentSession, result.order.id, input.cartId);
@@ -1479,32 +1489,29 @@ export class InProcessCommerceClient implements CommerceClient {
 
 	/**
 	 * ADR-0047: the session whose redeemed hand-off built `cartId`, while it has no
-	 * order yet and is still open — or `null`. A session the agent canceled (or that
-	 * is otherwise closed) LOSES its attribution: the order is placed unattributed
-	 * and only the reason code is logged, as it is when agentic checkout is off
-	 * (`enabled` false). FAIL-SOFT: a failed read is logged (a fixed line) and the
-	 * order is placed unattributed rather than refused.
+	 * order yet and is still open — or none. A session the agent canceled (or that
+	 * is otherwise closed) LOSES its attribution, as does any hand-off cart while
+	 * agentic checkout is off (`enabled` false): `skipped` names the reason code,
+	 * which the caller logs once the order is placed. FAIL-SOFT: a failed read is
+	 * logged (a fixed line) and the order goes unattributed rather than refused.
 	 */
-	async #handoffSessionFor(cartId: string, enabled: boolean): Promise<AgentCheckoutSession | null> {
+	async #handoffSessionFor(
+		cartId: string,
+		enabled: boolean,
+	): Promise<{ session: AgentCheckoutSession | null; skipped: string | null }> {
+		const none = { session: null, skipped: null };
 		try {
 			const session = await this.#stores.agentSessionStore.findByCartId(cartId);
-			if (session === null || session.cartId !== cartId) return null;
-			if (!isAgentSessionHandedOff(session) || session.orderId !== undefined) return null;
-			const lost = !enabled
-				? "AGENTIC_DISABLED"
-				: !isAgentSessionOpen(session.status)
-					? "SESSION_CLOSED"
-					: null;
-			if (lost !== null) {
-				console.warn(`[otta] checkout: placing a hand-off cart's order unattributed (${lost})`);
-				return null;
-			}
-			return session;
+			if (session === null || session.cartId !== cartId) return none;
+			if (!isAgentSessionHandedOff(session) || session.orderId !== undefined) return none;
+			if (!enabled) return { session: null, skipped: "AGENTIC_DISABLED" };
+			if (!isAgentSessionOpen(session.status)) return { session: null, skipped: "SESSION_CLOSED" };
+			return { session, skipped: null };
 		} catch {
 			console.error(
-				"[otta] checkout: the agent session of a cart could not be read; placing unattributed",
+				"[otta] checkout: the agent session of a cart could not be read; its order goes unattributed",
 			);
-			return null;
+			return none;
 		}
 	}
 

@@ -43,11 +43,12 @@ export function agenticFixture(ns: string): AgenticFixture {
 	};
 }
 
-/** A live, priced, activated product with deep stock. */
+/** A live, priced, activated product: physical with deep stock unless told. */
 export async function seedProduct(
 	storage: StorageAccess,
 	product: { id: string; sku: string; amount: number },
 	version = 1,
+	options: { stock?: number; kind?: "physical" | "digital" } = {},
 ): Promise<void> {
 	const commerce = new EmdashProductCommerceStore({ storage, clock: systemClock });
 	await commerce.upsert(
@@ -56,14 +57,17 @@ export async function seedProduct(
 			sku: sku(product.sku),
 			price: { amount: cents(product.amount), currency: currency("USD") },
 			title: "Agentic test product",
+			...(options.kind !== undefined ? { productKind: options.kind } : {}),
 		},
 		idempotencyKey(`seed-${product.id}-v${String(version)}`),
 	);
 	if (version === 1) {
-		await new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock }).seedOnHand(
-			sku(product.sku),
-			500,
-		);
+		if (options.kind !== "digital") {
+			await new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock }).seedOnHand(
+				sku(product.sku),
+				options.stock ?? 500,
+			);
+		}
 		await commerce.activate(
 			productId(product.id),
 			idempotencyKey(`pub-${product.id}`),

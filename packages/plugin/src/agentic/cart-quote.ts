@@ -230,7 +230,13 @@ export async function quoteAgentCart(
 	cartId: string,
 	selection: AgentSelection,
 	nowIso: string,
-): Promise<{ quote: AgentSessionQuote | undefined; messages: AgentMessage[] }> {
+): Promise<{
+	quote: AgentSessionQuote | undefined;
+	/** The selection the quote was made with (refused parts dropped); absent when
+	 *  no quote could be made. */
+	applied?: AgentSelection;
+	messages: AgentMessage[];
+}> {
 	const messages: AgentMessage[] = [];
 	let current = selection;
 	for (let round = 0; round < MAX_QUOTES; round++) {
@@ -244,7 +250,7 @@ export async function quoteAgentCart(
 		};
 		const result = await client.quoteCheckout(request);
 		if (result.ok) {
-			return { quote: toSessionQuote(result, current, nowIso), messages };
+			return { quote: toSessionQuote(result, current, nowIso), applied: current, messages };
 		}
 		const dropped = dropRefused(current, result.reason);
 		if (dropped === null) {
