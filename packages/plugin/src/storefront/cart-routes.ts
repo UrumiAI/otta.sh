@@ -104,7 +104,7 @@ export interface CartCookieDescriptor {
 	maxAgeSeconds: number;
 }
 
-function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
+export function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
 	return {
 		name: CART_COOKIE_NAME,
 		value: cartId,

@@ -10,10 +10,15 @@ import {
 	completeAgentSession,
 	createAgentSession,
 	currency,
+	DEFAULT_AGENT_SESSION_LIMITS,
+	detachAgentSessionCart,
 	getAgentSession,
 	issueAgentHandoff,
 	orderId,
+	precheckAgentSessionCreate,
+	precheckAgentSessionReplace,
 	productId,
+	recordAgentHandoffCart,
 	recordAgentSessionOrder,
 	redeemAgentHandoff,
 	replaceAgentSession,
@@ -416,7 +421,8 @@ describe("createAgentSession", () => {
 		expect((await make("5")).ok).toBe(true);
 	});
 
-	test("store-wide cap on live sessions; the default is the 5000 tuning knob", async () => {
+	test("store-wide cap on live sessions; the default is the 500 tuning knob", async () => {
+		expect(DEFAULT_AGENT_SESSION_LIMITS.maxLiveSessions).toBe(500);
 		const h = harness({ maxLiveSessions: 1 });
 		await created(h);
 		const r = await createAgentSession(h.deps, {
@@ -1465,5 +1471,207 @@ describe("redeem classification after a refused mark", () => {
 			await redeemAgentHandoff({ ...h.deps, store: racing }, { token: first.handoffToken ?? "" }),
 		).toEqual({ ok: false, reason: "HANDOFF_INCOMPLETE" });
 		expect((await stored(h, first.session.id)).handoffUsedAt).toBeUndefined();
+	});
+});
+
+describe("recordAgentHandoffCart (the redeem marks the shopper's cart)", () => {
+	test("refuses before redemption; after it, points the session at the cart once", async () => {
+		const h = harness();
+		const r = await created(h, content({ cartId: "cart-agent" }));
+		const id = r.session.id;
+		expect(await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-shopper" })).toEqual(
+			{ ok: false, reason: "HANDOFF_NOT_REDEEMED" },
+		);
+		if (r.handoffToken === undefined) throw new Error("no link");
+		expect((await redeemAgentHandoff(h.deps, { token: r.handoffToken })).ok).toBe(true);
+		const marked = await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-shopper" });
+		expect(marked.ok && marked.session.cartId).toBe("cart-shopper");
+		expect((await h.store.findByCartId("cart-shopper"))?.id).toBe(id);
+		const revision = (await h.store.get(id))?.revision;
+		await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-shopper" });
+		expect((await h.store.get(id))?.revision).toBe(revision);
+	});
+
+	test("the order placed from the marked cart completes the session; the cart is then settled", async () => {
+		const h = harness();
+		const r = await created(h);
+		const id = r.session.id;
+		if (r.handoffToken === undefined) throw new Error("no link");
+		expect((await redeemAgentHandoff(h.deps, { token: r.handoffToken })).ok).toBe(true);
+		expect((await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-1" })).ok).toBe(
+			true,
+		);
+		const placed = await recordAgentSessionOrder(h.deps, {
+			sessionId: id,
+			orderId: orderId("ord-1"),
+			cartId: "cart-1",
+		});
+		expect(placed.ok && placed.session.status).toBe("completed");
+		expect(await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-2" })).toEqual({
+			ok: false,
+			reason: "SESSION_CLOSED",
+		});
+		expect(
+			await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "x".repeat(10_000) }),
+		).toEqual({ ok: false, reason: "INVALID_REQUEST" });
+	});
+});
+
+describe("prechecks: decide before any side work (ADR-0047)", () => {
+	test("create: a fresh key proceeds; a replay answers the stored session; another body is refused; the caps refuse", async () => {
+		const h = harness({ maxLiveSessions: 1 });
+		expect(await precheckAgentSessionCreate(h.deps, CREATE)).toEqual({ proceed: true });
+		const first = await created(h);
+		const replay = await precheckAgentSessionCreate(h.deps, CREATE);
+		expect(replay).toEqual({
+			proceed: false,
+			result: {
+				ok: true,
+				replayed: true,
+				session: first.session,
+				orderSecret: first.orderSecret,
+				handoffToken: first.handoffToken,
+			},
+		});
+		expect(await precheckAgentSessionCreate(h.deps, { ...CREATE, fingerprint: "other" })).toEqual({
+			proceed: false,
+			result: { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" },
+		});
+		expect(
+			await precheckAgentSessionCreate(h.deps, { ...CREATE, idempotencyKey: "create-2" }),
+		).toEqual({ proceed: false, result: { ok: false, reason: "TOO_MANY_SESSIONS" } });
+	});
+
+	test("replace: proceeds while writable; replays without work; refuses a reused key, a handed-off or a missing session", async () => {
+		const h = harness();
+		const first = await created(h);
+		const id = first.session.id;
+		expect(await precheckAgentSessionReplace(h.deps, keyed(id, "put-1"))).toEqual({
+			proceed: true,
+		});
+		const put = await replaceAgentSession(h.deps, { ...keyed(id, "put-1"), content: content() });
+		expect(await precheckAgentSessionReplace(h.deps, keyed(id, "put-1"))).toEqual({
+			proceed: false,
+			result: { ...put, replayed: true },
+		});
+		// The create's key on a replace: reused, never a fresh write.
+		expect(await precheckAgentSessionReplace(h.deps, { sessionId: id, ...CREATE })).toEqual({
+			proceed: false,
+			result: { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" },
+		});
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		expect(await precheckAgentSessionReplace(h.deps, keyed(id, "put-2"))).toEqual({
+			proceed: false,
+			result: { ok: false, reason: "SESSION_HANDED_OFF" },
+		});
+		expect(
+			await precheckAgentSessionReplace(h.deps, keyed(agentSessionId("cs_missing"), "put-3")),
+		).toEqual({ proceed: false, result: { ok: false, reason: "SESSION_NOT_FOUND" } });
+	});
+});
+
+describe("recorded messages (codes and paths only) replay with their write", () => {
+	const MSGS = [
+		{ code: "OUT_OF_STOCK", path: "lines[1]" },
+		{ code: "COUPON_NOT_FOUND", path: "couponCode" },
+	];
+
+	test("a create and a replace record their messages; each replay answers them", async () => {
+		const h = harness();
+		const first = await createAgentSession(h.deps, {
+			...CREATE,
+			content: content(),
+			messages: MSGS,
+		});
+		expect(first).toMatchObject({ ok: true, replayed: false, messages: MSGS });
+		const replay = await createAgentSession(h.deps, { ...CREATE, content: content() });
+		expect(replay).toMatchObject({ ok: true, replayed: true, messages: MSGS });
+		if (!first.ok) throw new Error("create failed");
+		const id = first.session.id;
+		const put = await replaceAgentSession(h.deps, {
+			...keyed(id, "put-m"),
+			content: content(),
+			messages: [MSGS[0]!],
+		});
+		expect(put).toMatchObject({ ok: true, messages: [MSGS[0]] });
+		expect(
+			await replaceAgentSession(h.deps, { ...keyed(id, "put-m"), content: content() }),
+		).toMatchObject({ ok: true, replayed: true, messages: [MSGS[0]] });
+		expect(await precheckAgentSessionReplace(h.deps, keyed(id, "put-m"))).toMatchObject({
+			proceed: false,
+			result: { replayed: true, messages: [MSGS[0]] },
+		});
+		// None recorded: absent, not [].
+		const plain = await replaceAgentSession(h.deps, { ...keyed(id, "put-n"), content: content() });
+		expect(plain).not.toHaveProperty("messages");
+	});
+
+	test("a message that is not token-shaped, or too many, is INVALID_REQUEST and writes nothing", async () => {
+		const h = harness();
+		for (const messages of [
+			[{ code: "out of stock", path: "lines[0]" }],
+			[{ code: "OUT_OF_STOCK", path: "a@example.com" }],
+			Array.from({ length: 65 }, () => ({ code: "X", path: "lines[0]" })),
+		]) {
+			expect(await createAgentSession(h.deps, { ...CREATE, content: content(), messages })).toEqual(
+				{ ok: false, reason: "INVALID_REQUEST" },
+			);
+		}
+		expect(await h.store.getIdempotency(CREATE.networkKey, CREATE.idempotencyKey)).toBeNull();
+	});
+});
+
+describe("detachAgentSessionCart", () => {
+	test("detaches the cart and its quote once; refused after a redeem", async () => {
+		const h = harness();
+		const first = await created(h, content({ cartId: "cart-a" }));
+		const id = first.session.id;
+		expect(await detachAgentSessionCart(h.deps, keyed(id, "put-d"))).toEqual({
+			ok: true,
+			detached: true,
+			cartId: "cart-a",
+		});
+		const after = await stored(h, id);
+		expect(after.cartId).toBeUndefined();
+		expect(after.quote).toBeUndefined();
+		expect(await detachAgentSessionCart(h.deps, keyed(id, "put-d"))).toEqual({
+			ok: true,
+			detached: true,
+		});
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		expect(await detachAgentSessionCart(h.deps, keyed(id, "put-e"))).toEqual({
+			ok: false,
+			reason: "SESSION_HANDED_OFF",
+		});
+	});
+
+	test("a key already recorded never detaches: the same body replays (even after a redeem), another is IDEMPOTENCY_KEY_REUSED", async () => {
+		const h = harness();
+		const first = await created(h, content({ cartId: "cart-a" }));
+		const id = first.session.id;
+		const put = await replaceAgentSession(h.deps, {
+			...keyed(id, "put-1"),
+			content: content({ cartId: "cart-b" }),
+		});
+		expect(put.ok).toBe(true);
+		// The duplicate racing the first: nothing detached, the first's answer.
+		expect(await detachAgentSessionCart(h.deps, keyed(id, "put-1"))).toEqual({
+			ok: true,
+			detached: false,
+			replay: { ...put, replayed: true },
+		});
+		expect((await stored(h, id)).cartId).toBe("cart-b");
+		expect(
+			await detachAgentSessionCart(h.deps, {
+				sessionId: id,
+				idempotencyKey: "put-1",
+				fingerprint: "other",
+			}),
+		).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		// A same-key retry after a redeem replays the first answer, not SESSION_HANDED_OFF.
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		const late = await detachAgentSessionCart(h.deps, keyed(id, "put-1"));
+		expect(late).toMatchObject({ ok: true, detached: false, replay: { ok: true, replayed: true } });
+		expect((await stored(h, id)).cartId).toBe("cart-b");
 	});
 });

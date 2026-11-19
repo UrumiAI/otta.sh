@@ -51,6 +51,14 @@ import {
 	ACCOUNT_ME_ROUTE,
 	ACCOUNT_ORDER_ROUTE,
 	ACCOUNT_ORDERS_ROUTE,
+	AGENTIC_HANDOFF_REDEEM_ROUTE,
+	AGENTIC_ORDER_ROUTE,
+	AGENTIC_SESSION_CANCEL_ROUTE,
+	AGENTIC_SESSION_COMPLETE_ROUTE,
+	AGENTIC_SESSION_CREATE_ROUTE,
+	AGENTIC_SESSION_GET_ROUTE,
+	AGENTIC_SESSION_UPDATE_ROUTE,
+	AGENTIC_STATUS_ROUTE,
 	ENTITLEMENT_DOWNLOAD_ROUTE,
 	OTTA_PLUGIN_ID,
 	STOREFRONT_CART_CREATE_ROUTE,
@@ -129,6 +137,14 @@ export const PLUGIN_ROUTES: ReadonlyMap<string, RateLimitClass> = new Map([
 	[STOREFRONT_CART_LINE_REMOVE_ROUTE, "writes"],
 	[STOREFRONT_CHECKOUT_PLACE_ROUTE, "writes"],
 	[STOREFRONT_ORDER_ABANDON_ROUTE, "writes"],
+	// ADR-0047: agentic checkout. Session writes build carts; redeem and the order
+	// read each test a bearer secret, so they share the guessing budget.
+	[AGENTIC_SESSION_CREATE_ROUTE, "writes"],
+	[AGENTIC_SESSION_UPDATE_ROUTE, "writes"],
+	[AGENTIC_SESSION_CANCEL_ROUTE, "writes"],
+	[AGENTIC_SESSION_COMPLETE_ROUTE, "writes"],
+	[AGENTIC_HANDOFF_REDEEM_ROUTE, "auth"],
+	[AGENTIC_ORDER_ROUTE, "auth"],
 ]);
 
 /**
@@ -163,6 +179,8 @@ export const RATE_LIMIT_EXEMPT_PLUGIN_ROUTES: ReadonlyMap<string, string> = new 
 	[ACCOUNT_ADDRESSES_ROUTE, "answers only for a valid session token"],
 	[ACCOUNT_LOGOUT_ROUTE, "ends the caller's own session"],
 	[ACCOUNT_ME_ROUTE, "answers only for a valid session token"],
+	[AGENTIC_SESSION_GET_ROUTE, "read: answers only for a 128-bit session id; creates nothing"],
+	[AGENTIC_STATUS_ROUTE, "read: one flag; creates nothing, sends nothing"],
 ]);
 
 const PLUGIN_MOUNT = `/_emdash/api/plugins/${OTTA_PLUGIN_ID}/`;

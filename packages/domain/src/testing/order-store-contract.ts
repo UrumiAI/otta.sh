@@ -622,6 +622,52 @@ export function orderStoreContract(
 			expect(flipped?.buyerAddressRequired).toBe(true);
 		});
 
+		test("createFromCart freezes the agent attribution (ADR-0047); a replay returns the same; a legacy order has none", async () => {
+			const { store } = await makeHarness();
+			const attribution = { channel: "agent", via: "handoff", sessionId: "cs_abc" } as const;
+			const agent = await store.createFromCart(physicalInput({ attribution }));
+			const legacy = await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+			);
+			expect(agent.order.attribution).toEqual(attribution);
+			expect(legacy.order).not.toHaveProperty("attribution");
+			expect((await store.getById(orderId("ord-1")))?.attribution).toEqual(attribution);
+			expect(await store.getById(orderId("ord-2"))).not.toHaveProperty("attribution");
+			// A replay under the same key answers the first write's attribution, even
+			// when the replay carries a different one (or none).
+			const replay = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-replay"),
+					attribution: { channel: "agent", via: "handoff", sessionId: "cs_other" },
+				}),
+			);
+			expect(replay.created).toBe(false);
+			expect(replay.order.attribution).toEqual(attribution);
+			expect((await store.getByIdempotencyKey(idempotencyKey("key-1")))?.attribution).toEqual(
+				attribution,
+			);
+			// A later write to the order keeps it.
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			expect((await store.getById(orderId("ord-1")))?.attribution).toEqual(attribution);
+		});
+
+		test("listOrders and countOrders filter by the agent channel (ADR-0047), ANDed with the rest", async () => {
+			const { store } = await makeHarness();
+			const attribution = { channel: "agent", via: "handoff", sessionId: "cs_list" } as const;
+			await store.createFromCart(physicalInput({ attribution }));
+			await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+			);
+			const agentOnly = await store.listOrders({ channel: "agent" }, { limit: 25 });
+			expect(agentOnly.orders.map((o) => o.id)).toEqual(["ord-1"]);
+			expect(await store.countOrders({ channel: "agent" })).toBe(1);
+			const all = await store.listOrders({}, { limit: 25 });
+			expect(all.orders.map((o) => o.id).toSorted()).toEqual(["ord-1", "ord-2"]);
+			expect(await store.countOrders({})).toBe(2);
+			expect(await store.countOrders({ channel: "agent", states: ["paid"] })).toBe(0);
+			expect(await store.countOrders({ channel: "agent", states: ["pending"] })).toBe(1);
+		});
+
 		test("recordPaymentIntent keeps the intent's customer decision (issue #382): an id, a recorded 'none', or — when not given — nothing at all", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());

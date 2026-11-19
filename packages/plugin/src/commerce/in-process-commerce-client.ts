@@ -47,6 +47,12 @@
  */
 
 import {
+	isAgentSessionHandedOff,
+	isAgentSessionOpen,
+	recordAgentSessionOrder,
+	type AgentCheckoutSession,
+	type OrderAttribution,
+	type OrderId,
 	activateProductCommerce,
 	addLine,
 	applyProductVariantSync,
@@ -1379,7 +1385,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	async createOrder(
 		input: CheckoutRequestWire,
 		idempotencyKey: string,
-		opts: { sessionToken?: string } = {},
+		opts: { sessionToken?: string; agentAttribution?: boolean } = {},
 	): Promise<CheckoutResult> {
 		requireIdToken("cartId", input.cartId);
 		requireDocumentIdempotencyKey(idempotencyKey);
@@ -1418,8 +1424,22 @@ export class InProcessCommerceClient implements CommerceClient {
 		// only for COD, so card checkout pays no extra kv read for it.
 		const offline =
 			input.paymentMethod === "cod" ? await this.#offlineCommand(input.clientKey) : undefined;
+		// ADR-0047: a cart a redeemed hand-off built is the agent's; its order is
+		// attributed to the session — only while the store has agentic checkout on
+		// (the place route passes `agentAttribution: true`), and never at a
+		// checkout's expense. With it OFF (`false`) nothing is read before placing;
+		// a placed order's cart is checked afterwards, so a cart redeemed while it
+		// was on is logged as AGENTIC_DISABLED (one indexed read, placed orders only).
+		const handoff =
+			opts.agentAttribution === true ? await this.#handoffSessionFor(input.cartId, true) : null;
+		const agentSession = handoff?.session ?? null;
+		const attribution: OrderAttribution | undefined =
+			agentSession === null
+				? undefined
+				: { channel: "agent", via: "handoff", sessionId: agentSession.id };
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
+			...(attribution !== undefined ? { attribution } : {}),
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
 			buyerRef: input.buyerRef,
 			...(customerId !== undefined ? { customerId } : {}),
@@ -1439,6 +1459,20 @@ export class InProcessCommerceClient implements CommerceClient {
 				: {}),
 		});
 		if (!result.ok) return { ok: false, reason: result.reason };
+		// Logged only once the order exists, so the line is true when it is read.
+		const skipped =
+			opts.agentAttribution === false
+				? (await this.#handoffSessionFor(input.cartId, false)).skipped
+				: (handoff?.skipped ?? null);
+		if (skipped !== null) {
+			console.warn(
+				`[otta] checkout: order placed; agent attribution skipped for its hand-off cart (${skipped})`,
+			);
+		}
+		const placedFor = result.order.attribution?.sessionId;
+		if (agentSession !== null && placedFor === agentSession.id) {
+			await this.#completeAgentSession(agentSession, result.order.id, input.cartId);
+		}
 		return {
 			ok: true,
 			// A checkout's reply describes the order it just placed (or replayed);
@@ -1451,6 +1485,61 @@ export class InProcessCommerceClient implements CommerceClient {
 			buyerRefHint: buyerRefHint(result.order.buyerRef),
 			buyerRefMatches: sameBuyerRef(result.order.buyerRef, input.buyerRef),
 		};
+	}
+
+	/**
+	 * ADR-0047: the session whose redeemed hand-off built `cartId`, while it has no
+	 * order yet and is still open — or none. A session the agent canceled (or that
+	 * is otherwise closed) LOSES its attribution, as does any hand-off cart while
+	 * agentic checkout is off (`enabled` false): `skipped` names the reason code,
+	 * which the caller logs once the order is placed. FAIL-SOFT: a failed read is
+	 * logged (a fixed line) and the order goes unattributed rather than refused.
+	 */
+	async #handoffSessionFor(
+		cartId: string,
+		enabled: boolean,
+	): Promise<{ session: AgentCheckoutSession | null; skipped: string | null }> {
+		const none = { session: null, skipped: null };
+		try {
+			const session = await this.#stores.agentSessionStore.findByCartId(cartId);
+			if (session === null || session.cartId !== cartId) return none;
+			if (!isAgentSessionHandedOff(session) || session.orderId !== undefined) return none;
+			if (!enabled) return { session: null, skipped: "AGENTIC_DISABLED" };
+			if (!isAgentSessionOpen(session.status)) return { session: null, skipped: "SESSION_CLOSED" };
+			return { session, skipped: null };
+		} catch {
+			console.error(
+				"[otta] checkout: the agent session of a cart could not be read; its order goes unattributed",
+			);
+			return none;
+		}
+	}
+
+	/**
+	 * ADR-0047 precondition: record the order on its session and COMPLETE it
+	 * (`recordAgentSessionOrder`), so no later agent write can mint a link after an
+	 * order. The session id is only ever the one this cart's own redeem pointed at
+	 * it, never a caller's. After the order exists, so it NEVER fails the checkout:
+	 * any refusal (SESSION_CLOSED — a cancel racing the placement — among them)
+	 * leaves the order standing and is logged as its reason code alone. A thrown failure is retried by the next same-key replay, which finds
+	 * the session still without an order.
+	 */
+	async #completeAgentSession(
+		session: AgentCheckoutSession,
+		orderId: OrderId,
+		cartId: string,
+	): Promise<void> {
+		try {
+			const recorded = await recordAgentSessionOrder(
+				{ store: this.#stores.agentSessionStore, clock: this.#stores.clock },
+				{ sessionId: session.id, orderId, cartId },
+			);
+			if (!recorded.ok) {
+				console.warn(`[otta] checkout: agent session order not recorded (${recorded.reason})`);
+			}
+		} catch {
+			console.error("[otta] checkout: an agent session could not record its order");
+		}
 	}
 
 	/**

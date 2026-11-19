@@ -11,6 +11,7 @@
  */
 import { describe, expect, test } from "vitest";
 import {
+	AGENT_SESSION_COLLECTIONS,
 	CART_COLLECTIONS,
 	COUPON_COLLECTIONS,
 	ENTITLEMENT_COLLECTIONS,
@@ -43,6 +44,7 @@ const SOURCES = [
 	PAYMENT_EVENT_COLLECTIONS,
 	SETTINGS_COLLECTIONS,
 	REPORTING_COLLECTIONS,
+	AGENT_SESSION_COLLECTIONS,
 ];
 
 describe("the declared commerce collections", () => {

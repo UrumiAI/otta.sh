@@ -466,3 +466,25 @@ export {
 	EmdashOrderNotesStore,
 	type EmdashOrderNotesStoreOptions,
 } from "./emdash-order-notes-store.js";
+// ADR-0047: agent checkout sessions and their secrets.
+export {
+	AGENT_SESSION_COLLECTIONS,
+	AGENT_SESSION_CREATE_KEYS_COLLECTION,
+	AGENT_SESSION_LINKS_COLLECTION,
+	AGENT_SESSIONS_COLLECTION,
+	agentSessionCreateKeyId,
+	type AgentSessionCollectionIndexDeclaration,
+	type AgentSessionCreateKeyDoc,
+	type AgentSessionDoc,
+	type AgentSessionLinkDoc,
+} from "./agent-session-documents.js";
+export {
+	EmdashAgentSessionStore,
+	type EmdashAgentSessionStoreOptions,
+} from "./emdash-agent-session-store.js";
+export {
+	base64UrlDecode,
+	base64UrlEncode,
+	randomBase64Url,
+	WebCryptoAgentSessionSecrets,
+} from "./webcrypto-agent-session-secrets.js";

@@ -77,6 +77,7 @@ import type {
 	FulfillmentKind,
 	IdempotencyKey,
 	OrderAddress,
+	OrderAttribution,
 	OrderCancellation,
 	OrderEventKind,
 	OrderFulfillment,
@@ -204,6 +205,8 @@ export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDecl
 			"holdsPendingAt",
 			// ADR-0044: the per-network cap on open cash-on-delivery orders.
 			"offlineClientKey",
+			// ADR-0047: the admin list's agent-orders filter (`OrderListFilter.channel`).
+			"channel",
 			// The late-payment refund-retry sweep's due scan (`listRefundRetriesDue`).
 			"refundRetryAt",
 			// The late-refund give-up escalation's age scan (`listRefundRetriesStale`).
@@ -531,6 +534,12 @@ export interface OrderDoc {
 	/** ADR-0044: the opaque client-network key an offline order was placed under
 	 *  (a one-way hash, never an address); absent on every other order. */
 	offlineClientKey?: string;
+	/** ADR-0047: the order's agent attribution, frozen by the creating write;
+	 *  absent on every other order. */
+	attribution?: OrderAttribution;
+	/** DECLARED INDEX: `attribution.channel`, the agent-orders filter's equality.
+	 *  Absent exactly when `attribution` is. */
+	channel?: string;
 	/** The payment that won the `pending → paid` flip, written in that flip's own
 	 *  compare-and-set (#543); absent on documents paid before it existed. */
 	paidProviderRef?: string;
@@ -741,6 +750,8 @@ export function normalizeOrderDoc(doc: OrderDoc): OrderDoc {
 		paymentIntents: doc.paymentIntents ?? [],
 		intentCancelDueAt: doc.intentCancelDueAt ?? null,
 		refunds: doc.refunds ?? [],
+		// Re-derived rather than trusted: the indexed mirror of the attribution.
+		...(doc.attribution !== undefined ? { channel: doc.attribution.channel } : {}),
 	};
 }
 

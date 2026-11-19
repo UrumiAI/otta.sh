@@ -530,7 +530,10 @@ export interface CommerceClient {
 	createOrder(
 		input: CheckoutRequestWire,
 		idempotencyKey: string,
-		opts?: { sessionToken?: string },
+		/** `agentAttribution` (ADR-0047): the store has agentic checkout on, so a
+		 *  cart a redeemed hand-off built is placed attributed to its session, and the
+		 *  session records the order and completes. */
+		opts?: { sessionToken?: string; agentAttribution?: boolean },
 	): Promise<CheckoutResult>;
 	/**
 	 * The delivery options of the zone a quote MATCHED (ADR-0021), each priced

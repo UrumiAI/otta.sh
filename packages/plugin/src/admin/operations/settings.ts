@@ -33,6 +33,7 @@
  * {@link saveCashOnDelivery} keeps the stored instructions when `instructions`
  * is left out (the page always sends them, so its behaviour is unchanged).
  */
+import { AGENTIC_ENABLED_KEY } from "../../agentic/settings.js";
 import {
 	effectiveStoreCurrency,
 	isSupportedCurrency,
@@ -303,6 +304,19 @@ export type CashOnDeliveryOutcome =
 	/** A shorter window (`days`, from `from`) cancels `affected` open unpaid
 	 *  orders on the next sweep — `COD_LOWERING_COUNT_CAP` or more reads "100+". */
 	| (NeedsConfirmation & { days: number; from: number });
+
+/**
+ * ADR-0047: switch agentic checkout on or off. Only a real boolean is saved (the
+ * form refuses anything else first); `false` makes every agentic route answer
+ * NOT_FOUND again. The server key is never touched here: it is created on first
+ * use and is never shown, accepted or cleared by Settings.
+ */
+export async function saveAgenticCheckout(
+	ctx: PluginContext,
+	input: { enabled: boolean },
+): Promise<void> {
+	await ctx.kv.set(AGENTIC_ENABLED_KEY, input.enabled);
+}
 
 /**
  * Save cash on delivery's toggle, instructions and numbers — all or nothing.
