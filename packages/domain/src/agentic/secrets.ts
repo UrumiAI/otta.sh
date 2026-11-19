@@ -22,16 +22,21 @@ export const AGENT_SESSION_MIN_SERVER_KEY_BYTES = 32;
  * the hand-off token of link generation `g` is `derive("handoff", id, g)`. The
  * session stores only their hashes, and a replay re-derives the exact secret the
  * lost response carried. Whenever a use-case re-derives a secret to hand it out
- * again it hashes it and compares with the stored hash; on a mismatch it refuses
- * with `SECRET_KEY_MISMATCH` and never hands out a secret that would not verify.
+ * again it hashes it and compares with the stored hash.
  *
  * Key rotation: derive MUST be keyed, so rotating the server key changes every
- * derived secret. Outstanding `order_secret`s and hand-off links are then
- * invalidated for every path that re-derives them (create/write replays,
- * `complete`, any answer carrying the current link): those refuse with
- * `SECRET_KEY_MISMATCH`. A link or secret a holder already has keeps verifying
- * (verification compares hashes, which are keyless), and `issue_handoff` mints
- * a fresh link under the new key; the `order_secret` cannot be re-issued.
+ * derived secret. A link or `order_secret` a holder already has keeps verifying
+ * (verification compares hashes, which are keyless). What changes:
+ * - REPLAYS (create, replace, complete, issue_handoff) that would re-derive a
+ *   secret refuse with `SECRET_KEY_MISMATCH`, never handing out one that would
+ *   not verify.
+ * - A FRESH replace or complete whose current unused link no longer re-derives
+ *   mints a new link generation under the new key in the same write and returns
+ *   it; the old link dies (as any replaced link does). `issue_handoff` likewise.
+ * - The `order_secret` is a stable credential and is never re-issued: an agent
+ *   that lost its create response cannot recover it after a rotation (the create
+ *   replay fails closed), so rotation strands the `order_secret` of every open
+ *   session whose holder lost it.
  */
 export interface AgentSessionSecrets {
 	/**
@@ -44,9 +49,16 @@ export interface AgentSessionSecrets {
 	/**
 	 * The `order_secret` of `sessionId`: deterministic, and MUST be keyed:
 	 * HMAC-SHA256 under the server key (at least
-	 * {@link AGENT_SESSION_MIN_SERVER_KEY_BYTES} bytes), over an encoding that
-	 * separates purpose, id and generation; output base64url. Never a plain hash
-	 * of its inputs.
+	 * {@link AGENT_SESSION_MIN_SERVER_KEY_BYTES} bytes); output base64url. Never a
+	 * plain hash of its inputs.
+	 *
+	 * The HMAC input MUST be an unambiguous encoding of (purpose, id, generation):
+	 * either length-prefix every field (e.g. a 4-byte big-endian length before the
+	 * UTF-8 bytes of each), or join them with a delimiter that cannot occur in any
+	 * field (e.g. `"handoff" + "\x00" + id + "\x00" + decimal(generation)`; ids are
+	 * `cs_` + base64url, so NUL never occurs). Plain concatenation is wrong:
+	 * ("cs_x1", 1) and ("cs_x", 11) would derive the same token. The contract
+	 * pins this with boundary-collision cases.
 	 */
 	derive(purpose: "order", sessionId: AgentSessionId): Promise<string>;
 	/** The hand-off token of link generation `generation` (a positive integer), keyed as above. */

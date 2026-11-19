@@ -1,4 +1,5 @@
 import type { Currency } from "../money/cents.js";
+import type { OrderId } from "../money/ids.js";
 import type { OrderAddress } from "../orders/model.js";
 import type { Clock } from "../ports/clock.js";
 import type {
@@ -13,16 +14,22 @@ import type {
 } from "./errors.js";
 import {
 	AGENT_SESSION_ID_PREFIX,
+	AGENT_SESSION_MAX_ADDRESS_FIELD_LENGTH,
+	AGENT_SESSION_MAX_BUYER_FIELD_LENGTH,
+	AGENT_SESSION_MAX_CART_ID_LENGTH,
+	AGENT_SESSION_MAX_COUPON_CODE_LENGTH,
 	AGENT_SESSION_MAX_FINGERPRINT_LENGTH,
 	AGENT_SESSION_MAX_IDEMPOTENCY_KEY_LENGTH,
 	AGENT_SESSION_MAX_LINES,
 	AGENT_SESSION_MAX_NETWORK_KEY_LENGTH,
+	AGENT_SESSION_MAX_SHIPPING_METHOD_ID_LENGTH,
 	AGENT_SESSION_MAX_WRITE_RECORDS,
 	AGENT_SESSION_MAX_WRITES,
 	AGENT_SESSION_RETENTION_MS,
 	AGENT_SESSION_TTL_MS,
 	agentSessionId,
 	agentSessionStatusForLines,
+	isAgentSessionHandedOff,
 	isAgentSessionOpen,
 	type AgentCheckoutSession,
 	type AgentSessionBuyer,
@@ -56,9 +63,14 @@ import type { AgentSessionSecrets } from "./secrets.js";
  *
  * Hand-off links: a link is stable. Create (with lines) issues generation 1;
  * replace and complete keep an unused link, because redemption always reads the
- * current session. A new generation is minted only when the current link was
- * already redeemed and a later write needs one, or by an explicit
- * {@link issueAgentHandoff}.
+ * current session. A new generation is minted by an explicit
+ * {@link issueAgentHandoff}, or by a fresh replace or complete whose unused
+ * link no longer re-derives under the current server key (a key rotation).
+ *
+ * Hand-off is terminal for the agent: once a shopper redeems a link, replace,
+ * complete and issue_handoff are refused `SESSION_HANDED_OFF` (the shopper owns
+ * the cart; a second link could be paid twice). Cancel stays, and the checkout
+ * that places the order calls {@link recordAgentSessionOrder}.
  */
 
 export interface AgentSessionLimits {
@@ -121,7 +133,7 @@ export interface AgentSessionCreateRequest extends AgentSessionKeyedRequest {
 
 /**
  * A write's answer. `session` is the session as this write (or, on a replay, the
- * replayed write) left it, so after later writes its `linkGeneration` can lag.
+ * replayed write) left it, so after later writes it can lag.
  * `handoffToken` is NOT from that time: it is always the session's CURRENT live
  * link, re-derived now. The site MUST build `continue_url` only from the
  * returned `handoffToken`, never from any field of `session`.
@@ -179,6 +191,7 @@ function validateContent(
 		if (skus.has(line.sku)) return fail("DUPLICATE_SKU");
 		skus.add(line.sku);
 	}
+	if (contentTooLong(content)) return fail("INVALID_REQUEST");
 	const quote = content.quote;
 	if (quote !== undefined) {
 		if (quote.currency !== content.currency) return fail("QUOTE_CURRENCY_MISMATCH");
@@ -189,7 +202,38 @@ function validateContent(
 	return null;
 }
 
-/** Refuse a missing or over-long key, network key or fingerprint. */
+function longerThan(value: string | null | undefined, max: number): boolean {
+	return typeof value === "string" && value.length > max;
+}
+
+/** Whether any content string is over its cap. */
+function contentTooLong(content: AgentSessionContent): boolean {
+	const buyer = content.buyer;
+	if (
+		buyer !== undefined &&
+		[buyer.email, buyer.firstName, buyer.lastName, buyer.phone].some((v) =>
+			longerThan(v, AGENT_SESSION_MAX_BUYER_FIELD_LENGTH),
+		)
+	) {
+		return true;
+	}
+	const d = content.destination;
+	if (
+		d !== undefined &&
+		[d.name, d.line1, d.line2, d.city, d.region, d.postalCode, d.country, d.email, d.phone].some(
+			(v) => longerThan(v, AGENT_SESSION_MAX_ADDRESS_FIELD_LENGTH),
+		)
+	) {
+		return true;
+	}
+	return (
+		longerThan(content.couponCode, AGENT_SESSION_MAX_COUPON_CODE_LENGTH) ||
+		longerThan(content.shippingMethodId, AGENT_SESSION_MAX_SHIPPING_METHOD_ID_LENGTH) ||
+		longerThan(content.cartId, AGENT_SESSION_MAX_CART_ID_LENGTH)
+	);
+}
+
+/** Refuse a missing or over-long key, an empty or over-long network key or fingerprint. */
 function refuseRequest(
 	request: AgentSessionKeyedRequest,
 	networkKey?: string,
@@ -197,8 +241,10 @@ function refuseRequest(
 	if (request.idempotencyKey.length === 0) return fail("IDEMPOTENCY_KEY_MISSING");
 	if (
 		request.idempotencyKey.length > AGENT_SESSION_MAX_IDEMPOTENCY_KEY_LENGTH ||
+		request.fingerprint.length === 0 ||
 		request.fingerprint.length > AGENT_SESSION_MAX_FINGERPRINT_LENGTH ||
-		(networkKey !== undefined && networkKey.length > AGENT_SESSION_MAX_NETWORK_KEY_LENGTH)
+		(networkKey !== undefined &&
+			(networkKey.length === 0 || networkKey.length > AGENT_SESSION_MAX_NETWORK_KEY_LENGTH))
 	) {
 		return fail("INVALID_REQUEST");
 	}
@@ -210,17 +256,28 @@ function sameKey(a: AgentSessionWriteKey, request: AgentSessionKeyedRequest): bo
 	return a.key === request.idempotencyKey;
 }
 
-/** The public projection: no bookkeeping, network key, hashes or link history. */
+/**
+ * The public projection, built by explicit pick (an allowlist): a field added to
+ * the stored document never reaches a result unless it is added here. Accepts a
+ * stored answer too (already a view), so a replay re-projects it.
+ */
 function viewOf(session: AgentCheckoutSession | AgentSessionView): AgentSessionView {
-	const {
-		writes: _writes,
-		retiredWriteKeys: _retired,
-		networkKey: _networkKey,
-		orderSecretHash: _orderSecretHash,
-		handoffTokenHash: _handoffTokenHash,
-		redeemedHandoffs: _redeemedHandoffs,
-		...view
-	} = session as AgentCheckoutSession;
+	const handedOff = "handedOff" in session ? session.handedOff : isAgentSessionHandedOff(session);
+	const view: AgentSessionView = {
+		id: session.id,
+		status: session.status,
+		currency: session.currency,
+		lines: session.lines,
+		expiresAt: session.expiresAt,
+		handedOff,
+	};
+	if (session.buyer !== undefined) view.buyer = session.buyer;
+	if (session.destination !== undefined) view.destination = session.destination;
+	if (session.shippingMethodId !== undefined) view.shippingMethodId = session.shippingMethodId;
+	if (session.couponCode !== undefined) view.couponCode = session.couponCode;
+	if (session.cartId !== undefined) view.cartId = session.cartId;
+	if (session.quote !== undefined) view.quote = session.quote;
+	if (session.orderId !== undefined) view.orderId = session.orderId;
 	return structuredClone(view);
 }
 
@@ -278,13 +335,12 @@ async function mintLinkGeneration(
 	};
 }
 
-/** Keep a usable link; mint one only for a session with lines that has none or used its last. */
+/** Keep an existing link; mint the first one for a session that has lines and none yet. */
 async function ensureLink(
 	deps: Pick<AgentSessionDeps, "secrets">,
 	session: AgentCheckoutSession,
 ): Promise<AgentCheckoutSession> {
-	if (session.lines.length === 0) return session;
-	if (session.linkGeneration > 0 && session.handoffUsedAt === undefined) return session;
+	if (session.lines.length === 0 || session.linkGeneration > 0) return session;
 	return mintLinkGeneration(deps, session);
 }
 
@@ -507,7 +563,8 @@ async function insertCreated(
 	return result;
 }
 
-/** A mutation's outcome: the next session, "nothing to change", or a refusal. */
+/** A mutation's outcome: the next session, "nothing to change" (only the key is
+ *  recorded), or a refusal. */
 type Mutation =
 	| { ok: true; session: AgentCheckoutSession }
 	| { ok: true; unchanged: true }
@@ -518,9 +575,18 @@ type Mutation =
  * the session (session-scoped: whatever network sends it); refuse a key whose
  * record was evicted; else apply `mutate` and compare-and-set, retrying on a lost
  * race. `mutate` runs only for a fresh request, so validation never blocks a true
- * replay. The live link the answer will carry is checked BEFORE the write, so a
- * `SECRET_KEY_MISMATCH` writes nothing. `cancel` is exempt from the lifetime
- * write cap, so a session can always be canceled.
+ * replay.
+ *
+ * Key rotation: a REPLAY whose live link no longer re-derives fails closed
+ * (`SECRET_KEY_MISMATCH`). A FRESH write whose next session keeps an unused link
+ * that no longer re-derives mints a new link generation (under the current key)
+ * in the same write and returns it; the old link dies, as any replaced link does.
+ *
+ * `cancel` is exempt from the lifetime write cap, so a session can always be
+ * canceled. A cancel of an already-canceled session (`unchanged`) still records
+ * its key (so reusing it with another body is `IDEMPOTENCY_KEY_REUSED`) and
+ * changes nothing else; at the cap it answers without recording, so the exemption
+ * cannot grow the session without bound.
  */
 async function keyedWrite(
 	deps: AgentSessionDeps,
@@ -545,20 +611,25 @@ async function keyedWrite(
 		if (current.retiredWriteKeys.some((k) => sameKey(k, request))) {
 			return fail("IDEMPOTENCY_KEY_EXPIRED");
 		}
-		if (
-			operation !== "cancel" &&
-			current.writes.length + current.retiredWriteKeys.length >= AGENT_SESSION_MAX_WRITES
-		) {
-			return fail("WRITE_LIMIT_REACHED");
-		}
+		const atCap =
+			current.writes.length + current.retiredWriteKeys.length >= AGENT_SESSION_MAX_WRITES;
+		if (atCap && operation !== "cancel") return fail("WRITE_LIMIT_REACHED");
 		const mutated = await mutate(current, now);
 		if (!mutated.ok) return mutated;
-		if ("unchanged" in mutated) return answer(deps, current, current, false, now);
+		if ("unchanged" in mutated && atCap) return answer(deps, current, current, false, now);
 
 		const revision = current.revision + 1;
-		const next: AgentCheckoutSession = { ...mutated.session, revision };
-		const link = await liveHandoffToken(deps, next, now);
-		if (!link.ok) return link;
+		let next: AgentCheckoutSession = {
+			...("unchanged" in mutated ? current : mutated.session),
+			revision,
+		};
+		let link = await liveHandoffToken(deps, next, now);
+		if (!link.ok) {
+			// The unused link no longer re-derives (the key rotated): replace it.
+			next = { ...(await mintLinkGeneration(deps, next)), revision };
+			link = await liveHandoffToken(deps, next, now);
+			if (!link.ok) return link;
+		}
 		const record: AgentSessionWriteRecord = {
 			key: request.idempotencyKey,
 			operation,
@@ -599,16 +670,18 @@ async function answer(
 	return result;
 }
 
+/** Why an agent may not change the session's content or link now, or null. */
 function refuseUnwritable(session: AgentCheckoutSession, now: string): AgentSessionFailure | null {
 	if (!isAgentSessionOpen(session.status)) return fail("SESSION_CLOSED");
 	if (isExpired(session, now)) return fail("SESSION_EXPIRED");
+	if (isAgentSessionHandedOff(session)) return fail("SESSION_HANDED_OFF");
 	return null;
 }
 
 /**
  * Replace the session's content (UCP `PUT`: full replacement). An unused link
- * stays valid; a session whose link was redeemed gets a new one. A session left
- * with no lines keeps its link, which redeems again once it has lines.
+ * stays valid. A session left with no lines keeps its link, which redeems again
+ * once it has lines. A session whose link was redeemed is `SESSION_HANDED_OFF`.
  */
 export async function replaceAgentSession(
 	deps: AgentSessionDeps,
@@ -622,20 +695,34 @@ export async function replaceAgentSession(
 	});
 }
 
-/** Read a session, as its public {@link AgentSessionView}. */
+/**
+ * Read a session, as its public {@link AgentSessionView}, with its current live
+ * link's token (for `continue_url`) when that link is unused, unexpired and
+ * re-derives under the current server key; otherwise no token (a read never
+ * fails on a rotated key).
+ */
 export async function getAgentSession(
-	deps: Pick<AgentSessionDeps, "store">,
+	deps: Pick<AgentSessionDeps, "store" | "clock" | "secrets">,
 	input: { sessionId: AgentSessionId },
-): Promise<{ ok: true; session: AgentSessionView } | AgentSessionFailure> {
+): Promise<{ ok: true; session: AgentSessionView; handoffToken?: string } | AgentSessionFailure> {
 	const session = await deps.store.get(input.sessionId);
-	return session === null ? fail("SESSION_NOT_FOUND") : { ok: true, session: viewOf(session) };
+	if (session === null) return fail("SESSION_NOT_FOUND");
+	const link = await liveHandoffToken(deps, session, deps.clock.now().toISOString());
+	const result: { ok: true; session: AgentSessionView; handoffToken?: string } = {
+		ok: true,
+		session: viewOf(session),
+	};
+	if (link.ok && link.token !== undefined) result.handoffToken = link.token;
+	return result;
 }
 
 /**
  * Cancel the session. Its hand-off link is dead from here on. Releasing the
- * cart's holds is the caller's job (it owns the cart). Canceling an already
- * canceled session answers it as it is and writes nothing; an expired session
- * may still be canceled, and so may one at its lifetime write cap.
+ * cart's holds is the caller's job (it owns the cart). Allowed after a hand-off
+ * (the agent ends its session; the shopper's rebuilt cart is not touched).
+ * Canceling an already canceled session answers it as it is and records only the
+ * key; an expired session may still be canceled, and so may one at its lifetime
+ * write cap.
  */
 export async function cancelAgentSession(
 	deps: AgentSessionDeps,
@@ -650,8 +737,9 @@ export async function cancelAgentSession(
 
 /**
  * UCP `complete`. The agent cannot pay, so this never completes: it answers the
- * session in `requires_escalation` with its current live link (a new one only if
- * the last was redeemed). A session with no lines is `SESSION_INCOMPLETE`.
+ * session in `requires_escalation` with its current live link. A session with no
+ * lines is `SESSION_INCOMPLETE`; one whose link was redeemed is
+ * `SESSION_HANDED_OFF`.
  */
 export async function completeAgentSession(
 	deps: AgentSessionDeps,
@@ -674,8 +762,8 @@ export async function completeAgentSession(
 
 /**
  * Explicitly issue a new hand-off link generation for an open session with
- * lines; the previous link dies (or, if redeemed, keeps answering "used"). A
- * keyed write like every other: a replay answers the same live link.
+ * lines that no shopper has redeemed; the previous link dies. A keyed write like
+ * every other: a replay answers the same live link.
  */
 export async function issueAgentHandoff(
 	deps: AgentSessionDeps,
@@ -734,10 +822,22 @@ export async function redeemAgentHandoff(
 	return (
 		refuseRedeem(await deps.store.get(session.id), tokenHash, now) ?? {
 			ok: false,
-			reason: "HANDOFF_INVALID",
+			reason: MARK_REFUSAL[marked.reason],
 		}
 	);
 }
+
+/** The mark's own reason, used when a re-read no longer shows why it refused
+ *  (e.g. the session was emptied and refilled between the mark and the read). */
+const MARK_REFUSAL = {
+	not_found: "HANDOFF_INVALID",
+	token_mismatch: "HANDOFF_INVALID",
+	canceled: "HANDOFF_CANCELED",
+	completed: "HANDOFF_USED",
+	already_used: "HANDOFF_USED",
+	expired: "HANDOFF_EXPIRED",
+	incomplete: "HANDOFF_INCOMPLETE",
+} as const satisfies Record<string, AgentHandoffFailure["reason"]>;
 
 /**
  * Check an `order_secret` against the session's stored hash, in constant time.
@@ -755,4 +855,54 @@ export async function verifyAgentOrderSecret(
 	return deps.secrets.constantTimeEqual(hash, session.orderSecretHash)
 		? { ok: true, session: viewOf(session) }
 		: { ok: false, reason: "ORDER_SECRET_INVALID" };
+}
+
+/** A {@link recordAgentSessionOrder} answer. `replayed` when this order was already recorded. */
+export type RecordAgentSessionOrderResult =
+	| { ok: true; replayed: boolean; session: AgentSessionView }
+	| AgentSessionFailure;
+
+/**
+ * Record the order a redeemed hand-off placed, and complete the session
+ * (ADR-0047, the plugin increment's precondition). One compare-and-set moves an
+ * open session that has had a link redeemed to `completed` with `orderId` (and
+ * `cartId`, the cart the order was placed from, when given). Not a keyed write:
+ * the checkout that placed the order calls it, and it is idempotent by
+ * construction. The same order again answers `replayed: true` and writes
+ * nothing; a different order is `ORDER_ALREADY_RECORDED`; a session nobody
+ * redeemed is `HANDOFF_NOT_REDEEMED`; a canceled one is `SESSION_CLOSED`.
+ * Allowed past `expiresAt`: the shopper may pay after the agent's 24 h window.
+ */
+export async function recordAgentSessionOrder(
+	deps: Pick<AgentSessionDeps, "store" | "clock">,
+	input: { sessionId: AgentSessionId; orderId: OrderId; cartId?: string },
+): Promise<RecordAgentSessionOrderResult> {
+	if (
+		input.orderId.length === 0 ||
+		(input.cartId !== undefined &&
+			(input.cartId.length === 0 || input.cartId.length > AGENT_SESSION_MAX_CART_ID_LENGTH))
+	) {
+		return fail("INVALID_REQUEST");
+	}
+	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+		const current = await deps.store.get(input.sessionId);
+		if (current === null) return fail("SESSION_NOT_FOUND");
+		if (current.orderId !== undefined) {
+			return current.orderId === input.orderId
+				? { ok: true, replayed: true, session: viewOf(current) }
+				: fail("ORDER_ALREADY_RECORDED");
+		}
+		if (!isAgentSessionOpen(current.status)) return fail("SESSION_CLOSED");
+		if (!isAgentSessionHandedOff(current)) return fail("HANDOFF_NOT_REDEEMED");
+		const next: AgentCheckoutSession = {
+			...current,
+			status: "completed",
+			orderId: input.orderId,
+			updatedAt: deps.clock.now().toISOString(),
+		};
+		if (input.cartId !== undefined) next.cartId = input.cartId;
+		const written = await deps.store.write(next, current.revision);
+		if (written.ok) return { ok: true, replayed: false, session: viewOf(written.session) };
+	}
+	return fail("WRITE_CONFLICT");
 }

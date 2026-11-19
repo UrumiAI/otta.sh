@@ -30,8 +30,10 @@ export function agentSessionId(value: string): AgentSessionId {
 	return value as AgentSessionId;
 }
 
-/** UCP checkout status. `completed` is never reached in this layer: the agent
- *  cannot take payment, so `complete` answers `requires_escalation`. */
+/** UCP checkout status. An agent never reaches `completed` (it cannot take
+ *  payment, so `complete` answers `requires_escalation`); only
+ *  `recordAgentSessionOrder`, called when a redeemed hand-off places an order,
+ *  sets it. */
 export type AgentSessionStatus = "incomplete" | "requires_escalation" | "completed" | "canceled";
 
 /** The attribution channel the session records (UCP open tier: unverified agent). */
@@ -82,24 +84,47 @@ export type AgentSessionOperation = "create" | "replace" | "cancel" | "complete"
 /**
  * The public projection of a session: what every use-case result the site layer
  * can see carries (get, create, replace, complete, cancel, issue_handoff and
- * their replays, redeem, verifyOrderSecret). It leaves out the idempotency
- * bookkeeping (`writes`, `retiredWriteKeys`), the creating `networkKey`, both
- * secret hashes and the redeemed-link history, so serialising it leaks none of
- * them. `linkGeneration` is informational only: build `continue_url` from the
- * returned token, never from this.
+ * their replays, redeem, verifyOrderSecret, recordOrder). An ALLOWLIST: it is
+ * built field by field ({@link AGENT_SESSION_VIEW_KEYS}), so a field added to
+ * the stored document never leaks by default. It carries no idempotency
+ * bookkeeping, network key, secret hash, link generation or history, revision
+ * or purge time; build `continue_url` only from a returned `handoffToken`.
  */
-export type AgentSessionView = Omit<
-	AgentCheckoutSession,
-	| "writes"
-	| "retiredWriteKeys"
-	| "networkKey"
-	| "orderSecretHash"
-	| "handoffTokenHash"
-	| "redeemedHandoffs"
->;
+export interface AgentSessionView {
+	id: AgentSessionId;
+	status: AgentSessionStatus;
+	currency: Currency;
+	lines: AgentSessionLine[];
+	buyer?: AgentSessionBuyer;
+	destination?: OrderAddress;
+	shippingMethodId?: string;
+	couponCode?: string;
+	cartId?: string;
+	quote?: AgentSessionQuote;
+	/** createdAt + 24 h: agent writes and hand-off links end here. */
+	expiresAt: string;
+	/** The order a redeemed hand-off placed, once recorded. */
+	orderId?: OrderId;
+	/** A shopper redeemed a hand-off link: the agent may now only cancel. */
+	handedOff: boolean;
+}
 
-/** @deprecated The name before the public projection; use {@link AgentSessionView}. */
-export type AgentSessionSnapshot = AgentSessionView;
+/** Every key an {@link AgentSessionView} may carry (optional ones only when set). */
+export const AGENT_SESSION_VIEW_KEYS = [
+	"id",
+	"status",
+	"currency",
+	"lines",
+	"buyer",
+	"destination",
+	"shippingMethodId",
+	"couponCode",
+	"cartId",
+	"quote",
+	"expiresAt",
+	"orderId",
+	"handedOff",
+] as const satisfies readonly (keyof AgentSessionView)[];
 
 /**
  * An `Idempotency-Key` recorded on a session. Session-scoped writes are keyed by
@@ -158,10 +183,12 @@ export interface AgentCheckoutSession {
 	linkGeneration: number;
 	/** Hash of the current generation's token; absent while `linkGeneration` is 0. */
 	handoffTokenHash?: string;
-	/** When the current link was redeemed (single use). */
+	/** When the current link was redeemed (single use). From then on agent
+	 *  writes other than cancel are refused `SESSION_HANDED_OFF`. */
 	handoffUsedAt?: string;
 	/** Earlier links that were redeemed, oldest first. Never cleared, so a used
-	 *  link still answers "already used" and attribution survives a re-issue. */
+	 *  link still answers "already used". Since a redeemed session takes no new
+	 *  link, the use-cases leave it empty; kept so stores can index it. */
 	redeemedHandoffs: AgentSessionRedeemedHandoff[];
 	orderId?: OrderId;
 	channel: AgentSessionChannel;
@@ -201,10 +228,24 @@ export const AGENT_SESSION_MAX_WRITES = 512;
 export const AGENT_SESSION_MAX_IDEMPOTENCY_KEY_LENGTH = 255;
 export const AGENT_SESSION_MAX_NETWORK_KEY_LENGTH = 128;
 export const AGENT_SESSION_MAX_FINGERPRINT_LENGTH = 128;
+/** Length caps (characters) on content strings; longer is `INVALID_REQUEST`. */
+export const AGENT_SESSION_MAX_BUYER_FIELD_LENGTH = 256;
+export const AGENT_SESSION_MAX_ADDRESS_FIELD_LENGTH = 256;
+export const AGENT_SESSION_MAX_COUPON_CODE_LENGTH = 64;
+export const AGENT_SESSION_MAX_SHIPPING_METHOD_ID_LENGTH = 128;
+export const AGENT_SESSION_MAX_CART_ID_LENGTH = 128;
 
 /** The status rule: no lines → `incomplete`; at least one → `requires_escalation`. */
 export function agentSessionStatusForLines(lines: readonly AgentSessionLine[]): AgentSessionStatus {
 	return lines.length === 0 ? "incomplete" : "requires_escalation";
+}
+
+/** Whether a shopper has redeemed any hand-off link of the session. From then
+ *  on the shopper owns the cart: agents may only cancel. */
+export function isAgentSessionHandedOff(
+	session: Pick<AgentCheckoutSession, "handoffUsedAt" | "redeemedHandoffs">,
+): boolean {
+	return session.handoffUsedAt !== undefined || session.redeemedHandoffs.length > 0;
 }
 
 /** A session that agents may still write to and whose link may still be redeemed. */

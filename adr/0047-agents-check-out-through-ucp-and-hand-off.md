@@ -76,21 +76,28 @@ Options considered:
   is purged. Erasure therefore deletes the whole session document, never only its current fields.
 - Session secrets are derived, not stored: the `order_secret` and each hand-off token are
   HMAC-SHA256 of the session id (and link generation) under a server key of at least 32 bytes,
-  and the session keeps only their hashes. Rotating that key invalidates every outstanding
-  `order_secret` and link for any path that re-derives them (replays, `complete`, any answer
-  carrying the current link): those fail closed with `SECRET_KEY_MISMATCH` rather than hand out a
-  secret that would not verify. A secret or link a holder already has keeps verifying, and a new
-  link can be issued under the new key; a lost `order_secret` cannot be re-issued.
+  and the session keeps only their hashes. Rotating that key changes every derived secret.
+  Replays that would re-derive one fail closed with `SECRET_KEY_MISMATCH` rather than hand out a
+  secret that would not verify. A fresh update or complete whose unused link no longer re-derives
+  mints a new link under the new key in the same write (the old link dies, as any replaced link
+  does). The `order_secret` is a stable credential and is never re-issued: one a holder already
+  has keeps verifying (verification compares hashes), but an agent that lost its create response
+  cannot recover it after a rotation, so rotation strands the `order_secret` of every open session
+  whose holder lost it.
 - Accepted risk: a create's `Idempotency-Key` is scoped to the caller's network key (a hash of
   the client IP), because no session exists yet to scope it to. A create retried from a different
   egress IP, normal for cloud agents, is a fresh create and may leave a duplicate session (it
   expires unused). Every later write is scoped to the session id alone, which is already the
   bearer credential, so its retries replay from any network and never mint a second link.
-- Precondition on the plugin increment: at order placement from a redeemed link it MUST record the
-  `orderId` on the session and move the session to `completed`. The domain already refuses
-  update, complete, issue-link and cancel on a completed session (`SESSION_CLOSED`); until the
-  plugin does this, a later update or complete would mint a new link after an order was placed,
-  so the guard against paying twice rests on that increment.
+- Hand-off is terminal for the agent. Once a shopper redeems a link the shopper owns the cart:
+  update, complete and issue-link are refused (`SESSION_HANDED_OFF`), so no second link can be
+  minted for the same session and the shopper cannot be sent to pay twice. Only cancel (and reads)
+  remain; an agent that needs changes after a hand-off creates a new session.
+- Precondition on the plugin increment: at order placement from a redeemed link it MUST call
+  `recordAgentSessionOrder`, which records the `orderId` (and the cart the order came from) and
+  moves the session to `completed` by compare-and-set. It is idempotent for the same order, refuses
+  a different one (`ORDER_ALREADY_RECORDED`) and refuses a session nobody redeemed
+  (`HANDOFF_NOT_REDEEMED`). A completed session refuses every agent write (`SESSION_CLOSED`).
 - Only products the storefront can sell are offered. Until the storefront exposes variants, a
   product with variants is listed with its default sku only.
 - Deferred, each needing its own decision: verified agent signatures, ACP (ChatGPT) carts and

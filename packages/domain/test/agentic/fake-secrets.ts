@@ -9,7 +9,8 @@ export const TEST_SERVER_KEY = new Uint8Array(AGENT_SESSION_MIN_SERVER_KEY_BYTES
 
 /**
  * Deterministic secrets for tests: counted 22-character ids, readable derived
- * secrets tagged with the server key (so a different key derives differently),
+ * secrets (fields joined by `:`, which no `cs_` base64url id contains, so the
+ * encoding is unambiguous) tagged with the server key (so a different key derives differently),
  * a "hash" that is never the token, and a compare that answers false on a
  * length mismatch. Refuses an empty or short key, as a real adapter must.
  */

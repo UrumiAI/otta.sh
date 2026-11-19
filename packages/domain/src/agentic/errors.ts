@@ -21,13 +21,23 @@ export type AgentSessionFailureReason =
 	| "IDEMPOTENCY_KEY_EXPIRED"
 	/** The request carried no `Idempotency-Key`. */
 	| "IDEMPOTENCY_KEY_MISSING"
-	/** A caller-supplied key is too long: `Idempotency-Key` over 255, network key
-	 *  or fingerprint over 128 characters. */
+	/** A caller-supplied value is malformed: an empty network key or fingerprint,
+	 *  an `Idempotency-Key` over 255, a network key or fingerprint over 128
+	 *  characters, or a content string over its cap (see the
+	 *  `AGENT_SESSION_MAX_*_LENGTH` constants). */
 	| "INVALID_REQUEST"
-	/** A re-derived secret does not match its stored hash (the server key changed
-	 *  since it was issued). Refused rather than handing out a secret that would
-	 *  not verify; see `AgentSessionSecrets` on key rotation. */
+	/** A REPLAY would re-derive a secret that no longer matches its stored hash
+	 *  (the server key changed since it was issued). Refused rather than handing
+	 *  out a secret that would not verify; see `AgentSessionSecrets` on key
+	 *  rotation. A fresh write instead mints a new link under the new key. */
 	| "SECRET_KEY_MISMATCH"
+	/** A shopper has redeemed the session's hand-off link and now owns the cart:
+	 *  the agent may only cancel it (or read it). For changes, create a new session. */
+	| "SESSION_HANDED_OFF"
+	/** `recordAgentSessionOrder` on a session whose hand-off link was never redeemed. */
+	| "HANDOFF_NOT_REDEEMED"
+	/** `recordAgentSessionOrder` with an order other than the one already recorded. */
+	| "ORDER_ALREADY_RECORDED"
 	/** The session has taken its lifetime maximum of keyed writes. */
 	| "WRITE_LIMIT_REACHED"
 	/** A concurrent writer kept winning the compare-and-set; the caller may retry. */

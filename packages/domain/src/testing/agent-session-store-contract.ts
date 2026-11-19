@@ -182,16 +182,11 @@ export function agentSessionStoreContract(
 							revision: 1,
 							answer: {
 								id: agentSessionId("cs_full"),
-								revision: 1,
 								status: "incomplete",
 								currency: currency("USD"),
 								lines: [],
-								linkGeneration: 0,
-								channel: "other",
-								createdAt: T0,
-								updatedAt: T0,
 								expiresAt: at(DAY_MS),
-								purgeAt: at(30 * DAY_MS),
+								handedOff: false,
 							},
 						},
 					],
@@ -499,7 +494,7 @@ function serverKey(fill: number, bytes = AGENT_SESSION_MIN_SERVER_KEY_BYTES): Ui
  * secrets that are KEYED (two adapters under the same key agree, under different
  * keys they differ for both purposes, and an empty or short key is refused at
  * construction), deterministic and separated by purpose, session and
- * generation, a hash that never echoes its input, and a constant-time compare
+ * generation under an unambiguous encoding (no field-boundary collisions), a hash that never echoes its input, and a constant-time compare
  * that answers false (never throws) on a length mismatch. A keyless derive, e.g.
  * SHA-256(purpose, id, generation), fails it.
  */
@@ -529,6 +524,36 @@ export function agentSessionSecretsContract(
 			expect(await secrets.derive("handoff", a, 2)).not.toBe(g1);
 			expect(await secrets.derive("handoff", b, 1)).not.toBe(g1);
 			expect(g1).not.toBe(order);
+		});
+
+		test("derive's encoding is unambiguous: field-boundary shifts never collide", async () => {
+			// Plain concatenation of (purpose, id, generation) would make ("cs_x1", 1)
+			// and ("cs_x", 11) derive alike; the encoding must length-prefix or delimit.
+			const secrets = await makeSecrets(serverKey(1));
+			const ids = [
+				"cs_x",
+				"cs_x1",
+				"cs_x11",
+				"cs_x1order",
+				"cs_xorder",
+				"cs_xhandoff",
+				"cs_x1handoff",
+			];
+			const derived = new Map<string, string>();
+			const add = (label: string, value: string): void => {
+				expect(derived.get(value), `${label} collides with ${derived.get(value)}`).toBeUndefined();
+				derived.set(value, label);
+			};
+			for (const raw of ids) {
+				const id = agentSessionId(raw);
+				add(`order(${raw})`, await secrets.derive("order", id));
+				for (const generation of [1, 11, 111]) {
+					add(`handoff(${raw}, ${generation})`, await secrets.derive("handoff", id, generation));
+				}
+			}
+			expect(await secrets.derive("handoff", agentSessionId("cs_x1"), 1)).not.toBe(
+				await secrets.derive("handoff", agentSessionId("cs_x"), 11),
+			);
 		});
 
 		test("derive is keyed: the same key agrees across instances, a different key differs for both purposes", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
 	AGENT_SESSION_MAX_LINES,
+	AGENT_SESSION_VIEW_KEYS,
 	AGENT_SESSION_MAX_WRITE_RECORDS,
 	AGENT_SESSION_MAX_WRITES,
 	agentSessionId,
@@ -11,7 +12,9 @@ import {
 	currency,
 	getAgentSession,
 	issueAgentHandoff,
+	orderId,
 	productId,
+	recordAgentSessionOrder,
 	redeemAgentHandoff,
 	replaceAgentSession,
 	sku,
@@ -92,14 +95,14 @@ describe("createAgentSession", () => {
 		const h = harness();
 		const r = await created(h);
 		expect(r.session.status).toBe("requires_escalation");
-		expect(r.session.channel).toBe("other");
-		expect(r.session.createdAt).toBe(T0.toISOString());
 		expect(Date.parse(r.session.expiresAt) - T0.getTime()).toBe(DAY_MS);
-		expect(Date.parse(r.session.purgeAt) - T0.getTime()).toBe(30 * DAY_MS);
-		expect(r.session.linkGeneration).toBe(1);
 		expect(r.orderSecret).toBe(h.secrets.orderSecret(r.session.id));
 		expect(r.handoffToken).toBe(h.secrets.token(r.session.id, 1));
 		const s = await stored(h, r.session.id);
+		expect(s.channel).toBe("other");
+		expect(s.createdAt).toBe(T0.toISOString());
+		expect(Date.parse(s.purgeAt) - T0.getTime()).toBe(30 * DAY_MS);
+		expect(s.linkGeneration).toBe(1);
 		expect(s.orderSecretHash).toBe(`h(${r.orderSecret})`);
 		expect(s.handoffTokenHash).toBe(`h(${r.handoffToken})`);
 		const doc = JSON.stringify(s);
@@ -119,7 +122,7 @@ describe("createAgentSession", () => {
 		const r = await created(h, content({ lines: [] }));
 		expect(r.session.status).toBe("incomplete");
 		expect(r.handoffToken).toBeUndefined();
-		expect(r.session.linkGeneration).toBe(0);
+		expect((await stored(h, r.session.id)).linkGeneration).toBe(0);
 		expect((await stored(h, r.session.id)).handoffTokenHash).toBeUndefined();
 	});
 
@@ -440,7 +443,7 @@ describe("replaceAgentSession", () => {
 		expect(r.session.couponCode).toBeUndefined();
 		expect(r.session.shippingMethodId).toBeUndefined();
 		expect(r.session.status).toBe("requires_escalation");
-		expect(r.session.linkGeneration).toBe(1);
+		expect((await stored(h, first.session.id)).linkGeneration).toBe(1);
 		expect(r.handoffToken).toBe(first.handoffToken);
 		const redeemed = await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" });
 		expect(redeemed.ok && redeemed.session.lines).toEqual([bowl]);
@@ -467,33 +470,6 @@ describe("replaceAgentSession", () => {
 		});
 		expect(refilled.ok && refilled.handoffToken).toBe(first.handoffToken);
 		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
-	});
-
-	test("after a redeem, a replace mints a new link; the old one still answers used and its record stays", async () => {
-		const h = harness();
-		const first = await created(h);
-		h.clock.advance(1000);
-		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
-		const r = await replaceAgentSession(h.deps, {
-			...keyed(first.session.id, "put-after"),
-			content: content({ lines: [bowl] }),
-		});
-		expect(r.ok && r.session.linkGeneration).toBe(2);
-		expect(r.ok && r.handoffToken).toBe(h.secrets.token(first.session.id, 2));
-		expect(r.ok && r.session.handoffUsedAt).toBeUndefined();
-		expect((await stored(h, first.session.id)).redeemedHandoffs).toEqual([
-			{
-				tokenHash: `h(${first.handoffToken})`,
-				usedAt: new Date(T0.getTime() + 1000).toISOString(),
-			},
-		]);
-		expect(await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).toEqual({
-			ok: false,
-			reason: "HANDOFF_USED",
-		});
-		expect(
-			(await redeemAgentHandoff(h.deps, { token: r.ok ? (r.handoffToken ?? "") : "" })).ok,
-		).toBe(true);
 	});
 
 	test("a replay answers that write's stored session and the live link; a reused key is refused", async () => {
@@ -683,14 +659,6 @@ describe("completeAgentSession", () => {
 		expect((await redeemAgentHandoff(h.deps, { token: r.handoffToken ?? "" })).ok).toBe(true);
 	});
 
-	test("after the link was redeemed, complete answers a fresh one", async () => {
-		const h = harness();
-		const first = await created(h);
-		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
-		const r = await completeAgentSession(h.deps, keyed(first.session.id, "done-2"));
-		expect(r.ok && r.handoffToken).toBe(h.secrets.token(first.session.id, 2));
-	});
-
 	test("a session with no lines is SESSION_INCOMPLETE", async () => {
 		const h = harness();
 		const first = await created(h, content({ lines: [] }));
@@ -729,7 +697,6 @@ describe("issueAgentHandoff", () => {
 		const issued = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
 		expect(issued.ok && !issued.replayed).toBe(true);
 		if (!issued.ok) return;
-		expect(issued.session.linkGeneration).toBe(2);
 		expect(issued.handoffToken).toBe(h.secrets.token(first.session.id, 2));
 		const replay = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
 		expect(replay.ok && replay.replayed && replay.handoffToken).toBe(issued.handoffToken);
@@ -750,9 +717,8 @@ describe("issueAgentHandoff", () => {
 		const replay = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
 		expect(replay.ok && replay.replayed).toBe(true);
 		if (!replay.ok || !one.ok) return;
-		// The stored answer is issue-1's (generation 2) ...
+		// The stored answer is issue-1's ...
 		expect(replay.session).toEqual(one.session);
-		expect(replay.session.linkGeneration).toBe(2);
 		// ... but the token is the live generation-3 link: the site builds continue_url from it.
 		expect(replay.handoffToken).toBe(h.secrets.token(first.session.id, 3));
 		expect(replay.handoffToken).not.toBe(one.handoffToken);
@@ -813,7 +779,10 @@ describe("redeemAgentHandoff", () => {
 		expect(r.ok).toBe(true);
 		if (!r.ok) return;
 		expect(r.session.lines).toEqual([mug]);
-		expect(r.session.handoffUsedAt).toBe(new Date(T0.getTime() + 5000).toISOString());
+		expect(r.session.handedOff).toBe(true);
+		expect((await stored(h, first.session.id)).handoffUsedAt).toBe(
+			new Date(T0.getTime() + 5000).toISOString(),
+		);
 		expect(await redeemAgentHandoff(h.deps, { token })).toEqual({
 			ok: false,
 			reason: "HANDOFF_USED",
@@ -926,7 +895,7 @@ describe("redeemAgentHandoff", () => {
 });
 
 describe("cancelAgentSession", () => {
-	test("replays on its key; canceling again under a new key answers it and writes nothing", async () => {
+	test("replays on its key; canceling again under a new key answers it and records only the key", async () => {
 		const h = harness();
 		const first = await created(h);
 		const req = keyed(first.session.id, "c1");
@@ -939,9 +908,36 @@ describe("cancelAgentSession", () => {
 		});
 		const before = await stored(h, first.session.id);
 		h.clock.advance(1000);
-		const b = await cancelAgentSession(h.deps, keyed(first.session.id, "c2"));
+		const again = keyed(first.session.id, "c2");
+		const b = await cancelAgentSession(h.deps, again);
 		expect(b).toEqual({ ok: true, replayed: false, session: a.ok && a.session });
-		expect(await stored(h, first.session.id)).toEqual(before);
+		const after = await stored(h, first.session.id);
+		const { writes: beforeWrites, revision: _rb, ...beforeState } = before;
+		const { writes: afterWrites, revision: _ra, ...afterState } = after;
+		expect(afterState).toEqual(beforeState);
+		expect(afterWrites.slice(0, -1)).toEqual(beforeWrites);
+		expect(afterWrites.at(-1)).toMatchObject({ key: "c2", operation: "cancel" });
+		// The key is now taken: the same key with another body is refused.
+		expect(await cancelAgentSession(h.deps, { ...again, fingerprint: "fp-other" })).toEqual({
+			ok: false,
+			reason: "IDEMPOTENCY_KEY_REUSED",
+		});
+		expect(await cancelAgentSession(h.deps, again)).toEqual({ ...b, replayed: true });
+	});
+
+	test("re-canceling at the lifetime write cap answers without recording", async () => {
+		const h = harness();
+		const first = await created(h);
+		expect((await cancelAgentSession(h.deps, keyed(first.session.id, "c1"))).ok).toBe(true);
+		const s = await stored(h, first.session.id);
+		const fill = Array.from({ length: AGENT_SESSION_MAX_WRITES - s.writes.length }, (_, i) => ({
+			key: `old-${i}`,
+		}));
+		const seeded = await h.store.write({ ...s, retiredWriteKeys: fill }, s.revision);
+		if (!seeded.ok) throw new Error("seed failed");
+		const r = await cancelAgentSession(h.deps, keyed(first.session.id, "c2"));
+		expect(r.ok && r.session.status).toBe("canceled");
+		expect(await stored(h, first.session.id)).toEqual(seeded.session);
 	});
 });
 
@@ -983,7 +979,7 @@ function rotated(h: Harness): FakeSecrets {
 }
 
 describe("secrets re-derived for return are checked against their stored hashes", () => {
-	test("after a key change, replays and complete fail closed with SECRET_KEY_MISMATCH and write nothing", async () => {
+	test("after a key change, replays fail closed with SECRET_KEY_MISMATCH and write nothing", async () => {
 		const h = harness();
 		const first = await created(h);
 		const put = { ...keyed(first.session.id, "put-1"), content: content({ lines: [bowl] }) };
@@ -993,13 +989,6 @@ describe("secrets re-derived for return are checked against their stored hashes"
 		const mismatch = { ok: false, reason: "SECRET_KEY_MISMATCH" };
 		expect(await createAgentSession(h.deps, { ...CREATE, content: content() })).toEqual(mismatch);
 		expect(await replaceAgentSession(h.deps, put)).toEqual(mismatch);
-		expect(await completeAgentSession(h.deps, keyed(first.session.id, "done"))).toEqual(mismatch);
-		expect(
-			await replaceAgentSession(h.deps, {
-				...keyed(first.session.id, "put-2"),
-				content: content({ lines: [mug] }),
-			}),
-		).toEqual(mismatch);
 		expect(await stored(h, first.session.id)).toEqual(before);
 		// What a holder already has still verifies: verification compares hashes.
 		const verified = await verifyAgentOrderSecret(h.deps, {
@@ -1007,6 +996,55 @@ describe("secrets re-derived for return are checked against their stored hashes"
 			secret: first.orderSecret,
 		});
 		expect(verified.ok).toBe(true);
+	});
+
+	test("after a key change, a fresh complete mints a new link under the new key that redeems", async () => {
+		const h = harness();
+		const first = await created(h);
+		const put = { ...keyed(first.session.id, "put-1"), content: content({ lines: [bowl] }) };
+		expect((await replaceAgentSession(h.deps, put)).ok).toBe(true);
+		const secrets = rotated(h);
+		// Before any fresh write, a replay still fails closed.
+		expect(await replaceAgentSession(h.deps, put)).toEqual({
+			ok: false,
+			reason: "SECRET_KEY_MISMATCH",
+		});
+		const done = await completeAgentSession(h.deps, keyed(first.session.id, "done"));
+		expect(done.ok && !done.replayed).toBe(true);
+		expect(done.ok && done.handoffToken).toBe(secrets.token(first.session.id, 2));
+		expect((await stored(h, first.session.id)).handoffTokenHash).toBe(
+			`h(${secrets.token(first.session.id, 2)})`,
+		);
+		// The old link died with the new generation.
+		expect(await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).toEqual({
+			ok: false,
+			reason: "HANDOFF_INVALID",
+		});
+		// The create replay still fails closed: the order_secret is never re-issued.
+		expect(await createAgentSession(h.deps, { ...CREATE, content: content() })).toEqual({
+			ok: false,
+			reason: "SECRET_KEY_MISMATCH",
+		});
+		// A replay now answers the new live link.
+		const replay = await completeAgentSession(h.deps, keyed(first.session.id, "done"));
+		expect(replay.ok && replay.replayed && replay.handoffToken).toBe(
+			secrets.token(first.session.id, 2),
+		);
+		expect(
+			(await redeemAgentHandoff(h.deps, { token: done.ok ? (done.handoffToken ?? "") : "" })).ok,
+		).toBe(true);
+	});
+
+	test("after a key change, a fresh replace mints a new link too", async () => {
+		const h = harness();
+		const first = await created(h);
+		const secrets = rotated(h);
+		const r = await replaceAgentSession(h.deps, {
+			...keyed(first.session.id, "put-2"),
+			content: content({ lines: [mug, bowl] }),
+		});
+		expect(r.ok && r.handoffToken).toBe(secrets.token(first.session.id, 2));
+		expect(r.ok && r.session.lines).toEqual([mug, bowl]);
 	});
 
 	test("after a key change, issue_handoff mints a link under the new key that redeems", async () => {
@@ -1034,18 +1072,73 @@ describe("secrets re-derived for return are checked against their stored hashes"
 });
 
 describe("the public view", () => {
-	const HIDDEN = [
-		"writes",
-		"retiredWriteKeys",
-		"networkKey",
-		"orderSecretHash",
-		"handoffTokenHash",
-		"redeemedHandoffs",
-	];
+	const ALL_KEYS = [...AGENT_SESSION_VIEW_KEYS].toSorted();
+	const REQUIRED = ["currency", "expiresAt", "handedOff", "id", "lines", "status"];
 	function expectView(session: object | false | undefined) {
 		expect(session).toBeTruthy();
-		for (const field of HIDDEN) expect(session && field in session).toBe(false);
+		if (!session) return;
+		const keys = Object.keys(session);
+		for (const k of keys) expect(ALL_KEYS).toContain(k);
+		for (const k of REQUIRED) expect(keys).toContain(k);
 	}
+
+	test("the view's key set is exactly the allowlist", async () => {
+		expect(ALL_KEYS).toEqual([
+			"buyer",
+			"cartId",
+			"couponCode",
+			"currency",
+			"destination",
+			"expiresAt",
+			"handedOff",
+			"id",
+			"lines",
+			"orderId",
+			"quote",
+			"shippingMethodId",
+			"status",
+		]);
+		const h = harness();
+		const first = await created(
+			h,
+			content({
+				buyer: { email: "a@example.test" },
+				destination: {
+					name: "Ada",
+					line1: "1 Main St",
+					line2: null,
+					city: "Austin",
+					region: "TX",
+					postalCode: "78701",
+					country: "US",
+					email: null,
+					phone: null,
+				},
+				shippingMethodId: "std",
+				couponCode: "SAVE",
+				cartId: "cart-1",
+				quote: {
+					currency: USD,
+					subtotal: cents(3000),
+					discount: cents(0),
+					fulfillment: null,
+					tax: null,
+					total: null,
+					quotedAt: T0.toISOString(),
+				},
+			}),
+		);
+		const redeemed = await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" });
+		const recorded = await recordAgentSessionOrder(h.deps, {
+			sessionId: first.session.id,
+			orderId: orderId("ord-1"),
+		});
+		// A fully populated session: every allowlisted key, and nothing else.
+		expect(recorded.ok && Object.keys(recorded.session).toSorted()).toEqual(ALL_KEYS);
+		expect(redeemed.ok && Object.keys(redeemed.session).toSorted()).toEqual(
+			ALL_KEYS.filter((k) => k !== "orderId"),
+		);
+	});
 
 	test("every result and every stored answer carries the view, never the document", async () => {
 		const h = harness();
@@ -1066,13 +1159,311 @@ describe("the public view", () => {
 			secret: first.orderSecret,
 		});
 		expectView(verified.ok && verified.session);
-		const redeemed = await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" });
-		expectView(redeemed.ok && redeemed.session);
-		expect(redeemed.ok && redeemed.session.lines).toEqual([bowl]);
 		const issued = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
 		expectView(issued.ok && issued.session);
+		const redeemed = await redeemAgentHandoff(h.deps, {
+			token: issued.ok ? (issued.handoffToken ?? "") : "",
+		});
+		expectView(redeemed.ok && redeemed.session);
+		expect(redeemed.ok && redeemed.session.lines).toEqual([bowl]);
 		const canceled = await cancelAgentSession(h.deps, keyed(first.session.id, "cancel-1"));
 		expectView(canceled.ok && canceled.session);
 		for (const w of (await stored(h, first.session.id)).writes) expectView(w.answer);
+	});
+});
+
+describe("hand-off is terminal for the agent", () => {
+	test("after a redeem, replace, complete and issue_handoff are SESSION_HANDED_OFF and write nothing", async () => {
+		const h = harness();
+		const first = await created(h);
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		const before = await stored(h, first.session.id);
+		const handedOff = { ok: false, reason: "SESSION_HANDED_OFF" };
+		expect(
+			await replaceAgentSession(h.deps, {
+				...keyed(first.session.id, "put"),
+				content: content({ lines: [bowl] }),
+			}),
+		).toEqual(handedOff);
+		expect(await completeAgentSession(h.deps, keyed(first.session.id, "done"))).toEqual(handedOff);
+		expect(await issueAgentHandoff(h.deps, keyed(first.session.id, "issue"))).toEqual(handedOff);
+		expect(await stored(h, first.session.id)).toEqual(before);
+		const got = await getAgentSession(h.deps, { sessionId: first.session.id });
+		expect(got.ok && got.session.handedOff).toBe(true);
+		expect(got.ok && got.handoffToken).toBeUndefined();
+		// Cancel stays.
+		const c = await cancelAgentSession(h.deps, keyed(first.session.id, "cancel"));
+		expect(c.ok && c.session.status).toBe("canceled");
+	});
+
+	test("a replay of a write made before the hand-off is still answered, with no link", async () => {
+		const h = harness();
+		const first = await created(h);
+		const put = { ...keyed(first.session.id, "put-1"), content: content({ lines: [bowl] }) };
+		const applied = await replaceAgentSession(h.deps, put);
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		expect(await replaceAgentSession(h.deps, put)).toEqual({
+			ok: true,
+			replayed: true,
+			session: applied.ok && applied.session,
+		});
+	});
+});
+
+describe("recordAgentSessionOrder", () => {
+	async function redeemed(h: Harness) {
+		const first = await created(h);
+		h.clock.advance(1000);
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		return first;
+	}
+
+	test("completes a redeemed session with the order (and cart); the same order again replays", async () => {
+		const h = harness();
+		const first = await redeemed(h);
+		const r = await recordAgentSessionOrder(h.deps, {
+			sessionId: first.session.id,
+			orderId: orderId("ord-1"),
+			cartId: "cart-rebuilt",
+		});
+		expect(r.ok && !r.replayed).toBe(true);
+		expect(r.ok && r.session.status).toBe("completed");
+		expect(r.ok && r.session.orderId).toBe("ord-1");
+		expect(r.ok && r.session.cartId).toBe("cart-rebuilt");
+		const after = await stored(h, first.session.id);
+		const again = await recordAgentSessionOrder(h.deps, {
+			sessionId: first.session.id,
+			orderId: orderId("ord-1"),
+		});
+		expect(again).toEqual({ ok: true, replayed: true, session: r.ok && r.session });
+		expect(await stored(h, first.session.id)).toEqual(after);
+		// A completed session refuses every agent write.
+		expect(await cancelAgentSession(h.deps, keyed(first.session.id, "c"))).toEqual({
+			ok: false,
+			reason: "SESSION_CLOSED",
+		});
+	});
+
+	test("a different order is ORDER_ALREADY_RECORDED and changes nothing", async () => {
+		const h = harness();
+		const first = await redeemed(h);
+		await recordAgentSessionOrder(h.deps, {
+			sessionId: first.session.id,
+			orderId: orderId("ord-1"),
+		});
+		const after = await stored(h, first.session.id);
+		expect(
+			await recordAgentSessionOrder(h.deps, {
+				sessionId: first.session.id,
+				orderId: orderId("ord-2"),
+			}),
+		).toEqual({ ok: false, reason: "ORDER_ALREADY_RECORDED" });
+		expect(await stored(h, first.session.id)).toEqual(after);
+	});
+
+	test("refuses a never-redeemed, canceled or unknown session, and a bad cart id", async () => {
+		const h = harness();
+		const first = await created(h);
+		const record = (sessionId: AgentSessionId, cartId?: string) =>
+			recordAgentSessionOrder(h.deps, {
+				sessionId,
+				orderId: orderId("ord-1"),
+				...(cartId === undefined ? {} : { cartId }),
+			});
+		expect(await record(first.session.id)).toEqual({
+			ok: false,
+			reason: "HANDOFF_NOT_REDEEMED",
+		});
+		expect(await record(agentSessionId("cs_nope"))).toEqual({
+			ok: false,
+			reason: "SESSION_NOT_FOUND",
+		});
+		expect(await record(first.session.id, "c".repeat(129))).toEqual({
+			ok: false,
+			reason: "INVALID_REQUEST",
+		});
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		await cancelAgentSession(h.deps, keyed(first.session.id, "c"));
+		expect(await record(first.session.id)).toEqual({ ok: false, reason: "SESSION_CLOSED" });
+	});
+
+	test("allowed past expiresAt: the shopper may pay after the agent's 24 h", async () => {
+		const h = harness();
+		const first = await redeemed(h);
+		h.clock.advance(2 * DAY_MS);
+		const r = await recordAgentSessionOrder(h.deps, {
+			sessionId: first.session.id,
+			orderId: orderId("ord-1"),
+		});
+		expect(r.ok && r.session.status).toBe("completed");
+	});
+
+	test("compare-and-set: racing records of two orders, exactly one wins", async () => {
+		const h = harness();
+		const first = await redeemed(h);
+		const results = await Promise.all(
+			["ord-1", "ord-2", "ord-1", "ord-2"].map((o) =>
+				recordAgentSessionOrder(h.deps, { sessionId: first.session.id, orderId: orderId(o) }),
+			),
+		);
+		const won = (await stored(h, first.session.id)).orderId;
+		for (const r of results) {
+			if (r.ok) expect(r.session.orderId).toBe(won);
+			else expect(r.reason).toBe("ORDER_ALREADY_RECORDED");
+		}
+		expect(results.filter((r) => r.ok && !r.replayed)).toHaveLength(1);
+	});
+
+	test("a lost compare-and-set re-reads: a concurrent different order is refused, not overwritten", async () => {
+		const h = harness();
+		const first = await redeemed(h);
+		const s = await stored(h, first.session.id);
+		let raced = false;
+		const racing: AgentSessionStore = {
+			...staleLookup(h.store, s),
+			write: async (session, expected) => {
+				if (!raced) {
+					raced = true;
+					await h.store.write(
+						{ ...s, status: "completed", orderId: orderId("ord-other") },
+						s.revision,
+					);
+				}
+				return h.store.write(session, expected);
+			},
+		};
+		expect(
+			await recordAgentSessionOrder(
+				{ ...h.deps, store: racing },
+				{ sessionId: first.session.id, orderId: orderId("ord-1") },
+			),
+		).toEqual({ ok: false, reason: "ORDER_ALREADY_RECORDED" });
+		expect((await stored(h, first.session.id)).orderId).toBe("ord-other");
+	});
+});
+
+describe("getAgentSession's live link", () => {
+	test("returns the current link while unused, unexpired and re-derivable; else none", async () => {
+		const h = harness();
+		const first = await created(h);
+		const got = await getAgentSession(h.deps, { sessionId: first.session.id });
+		expect(got.ok && got.handoffToken).toBe(first.handoffToken);
+		expect(got.ok && got.session.handedOff).toBe(false);
+		// A rotated key: no token, never an error.
+		const original = h.deps.secrets;
+		rotated(h);
+		const afterRotation = await getAgentSession(h.deps, { sessionId: first.session.id });
+		expect(afterRotation.ok).toBe(true);
+		expect(afterRotation.ok && afterRotation.handoffToken).toBeUndefined();
+		h.deps.secrets = original;
+		h.clock.advance(DAY_MS);
+		const expired = await getAgentSession(h.deps, { sessionId: first.session.id });
+		expect(expired.ok && expired.handoffToken).toBeUndefined();
+	});
+
+	test("no token for an empty or canceled session", async () => {
+		const h = harness();
+		const empty = await created(h, content({ lines: [] }));
+		const got = await getAgentSession(h.deps, { sessionId: empty.session.id });
+		expect(got.ok && got.handoffToken).toBeUndefined();
+		const h2 = harness();
+		const first = await created(h2);
+		await cancelAgentSession(h2.deps, keyed(first.session.id, "c"));
+		const canceled = await getAgentSession(h2.deps, { sessionId: first.session.id });
+		expect(canceled.ok && canceled.handoffToken).toBeUndefined();
+	});
+});
+
+describe("content and key caps", () => {
+	test("content strings over their caps are INVALID_REQUEST; at the cap they pass", async () => {
+		const h = harness();
+		const address = {
+			name: "Ada",
+			line1: "1 Main St",
+			line2: null,
+			city: "Austin",
+			region: "TX",
+			postalCode: "78701",
+			country: "US",
+			email: null,
+			phone: null,
+		};
+		let n = 0;
+		const make = (over: Partial<AgentSessionContent>) =>
+			createAgentSession(h.deps, {
+				...CREATE,
+				idempotencyKey: `cap-${++n}`,
+				content: content(over),
+			});
+		const invalid = { ok: false, reason: "INVALID_REQUEST" };
+		const cases: [Partial<AgentSessionContent>, Partial<AgentSessionContent>][] = [
+			[{ buyer: { email: "e".repeat(256) } }, { buyer: { email: "e".repeat(257) } }],
+			[{ buyer: { firstName: "f".repeat(256) } }, { buyer: { firstName: "f".repeat(257) } }],
+			[{ buyer: { lastName: "l".repeat(256) } }, { buyer: { lastName: "l".repeat(257) } }],
+			[{ buyer: { phone: "1".repeat(256) } }, { buyer: { phone: "1".repeat(257) } }],
+			[{ couponCode: "C".repeat(64) }, { couponCode: "C".repeat(65) }],
+			[{ shippingMethodId: "s".repeat(128) }, { shippingMethodId: "s".repeat(129) }],
+			[{ cartId: "c".repeat(128) }, { cartId: "c".repeat(129) }],
+		];
+		for (const field of [
+			"name",
+			"line1",
+			"line2",
+			"city",
+			"region",
+			"postalCode",
+			"country",
+			"email",
+			"phone",
+		] as const) {
+			cases.push([
+				{ destination: { ...address, [field]: "a".repeat(256) } },
+				{ destination: { ...address, [field]: "a".repeat(257) } },
+			]);
+		}
+		for (const [ok, tooLong] of cases) {
+			expect((await make(ok)).ok).toBe(true);
+			expect(await make(tooLong)).toEqual(invalid);
+		}
+		// Replace validates the same way.
+		const h2 = harness();
+		const s2 = await created(h2);
+		expect(
+			await replaceAgentSession(h2.deps, {
+				...keyed(s2.session.id, "p"),
+				content: content({ couponCode: "C".repeat(65) }),
+			}),
+		).toEqual(invalid);
+	});
+
+	test("an empty fingerprint or network key is INVALID_REQUEST", async () => {
+		const h = harness();
+		const invalid = { ok: false, reason: "INVALID_REQUEST" };
+		expect(
+			await createAgentSession(h.deps, { ...CREATE, fingerprint: "", content: content() }),
+		).toEqual(invalid);
+		expect(
+			await createAgentSession(h.deps, { ...CREATE, networkKey: "", content: content() }),
+		).toEqual(invalid);
+		const first = await created(h);
+		expect(
+			await completeAgentSession(h.deps, { ...keyed(first.session.id, "d"), fingerprint: "" }),
+		).toEqual(invalid);
+	});
+});
+
+describe("redeem classification after a refused mark", () => {
+	test("a mark refused as incomplete whose re-read shows lines again is HANDOFF_INCOMPLETE", async () => {
+		const h = harness();
+		const first = await created(h);
+		// The mark sees an emptied session; by the re-read it has lines again.
+		const racing: AgentSessionStore = {
+			...staleLookup(h.store, await stored(h, first.session.id)),
+			markHandoffUsed: async () => ({ ok: false, reason: "incomplete" }),
+		};
+		expect(
+			await redeemAgentHandoff({ ...h.deps, store: racing }, { token: first.handoffToken ?? "" }),
+		).toEqual({ ok: false, reason: "HANDOFF_INCOMPLETE" });
+		expect((await stored(h, first.session.id)).handoffUsedAt).toBeUndefined();
 	});
 });

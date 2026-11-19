@@ -106,15 +106,26 @@ AgentCheckoutSession {
   and Otta's own rule). A create's key is scoped to the caller's network key (no session exists
   yet), so a create retried from another egress IP may duplicate the session (accepted, ADR-0047);
   every later write is scoped to the session id alone and replays from any network.
-- **Public view:** every result the site sees carries `AgentSessionView`: no idempotency records,
-  network key, secret hashes or link history. A write's `handoffToken` is always the CURRENT live
-  link, also on a replay whose stored answer is older; the site builds `continue_url` only from
-  that token, never from session fields.
+- **Public view:** every result the site sees carries `AgentSessionView`, an allowlist projection:
+  `id, status, currency, lines, buyer?, destination?, shippingMethodId?, couponCode?, cartId?,
+  quote?, expiresAt, orderId?, handedOff`. No idempotency records, network key, secret hashes,
+  link generation or history, revision or purge time. A write's `handoffToken` is always the
+  CURRENT live link, also on a replay whose stored answer is older; `get` returns it too while it
+  is unused, unexpired and re-derives under the current key. The site builds `continue_url` only
+  from that token, never from session fields.
+- **Content caps:** buyer and address fields at most 256 characters, `couponCode` 64,
+  `shippingMethodId` and `cartId` 128; an empty fingerprint or network key is refused
+  (`INVALID_REQUEST`).
 - **Quote:** the plugin's verbatim preview from the domain pricing code; the session stores it
   unchecked (it refuses only another currency or a total beside an unknown part).
-- **Completion (plugin increment precondition):** placing an order from a redeemed link MUST record
-  `orderId` on the session and move it to `completed`; the domain refuses every later write to a
-  completed session (`SESSION_CLOSED`), so no new link can be minted after an order.
+- **Hand-off is terminal for the agent:** once a link is redeemed the shopper owns the cart, and
+  update, complete and issue-link are refused `SESSION_HANDED_OFF` (no second link, no double
+  pay). Cancel and get remain; for changes the agent creates a new session.
+- **Completion (plugin increment precondition):** placing an order from a redeemed link MUST call
+  `recordAgentSessionOrder({sessionId, orderId, cartId?})`: compare-and-set to `completed` with
+  `orderId`; idempotent for the same order, `ORDER_ALREADY_RECORDED` for another,
+  `HANDOFF_NOT_REDEEMED` if no link was redeemed. A completed session refuses every agent write
+  (`SESSION_CLOSED`).
 - **complete** never takes payment: it returns the session with `requires_escalation` and
   `continue_url` (UCP `buyer_handoff_required` message).
 - **cancel** releases the cart's holds and marks the session canceled; a canceled session's link
@@ -127,8 +138,11 @@ AgentCheckoutSession {
 - `continue_url = https://<store>/checkout/handoff#<token>`, `token` = HMAC-SHA256 of the session
   id and link generation under a server key of at least 32 bytes, base64url (the `order_secret` is
   derived the same way). Only `sha256(token)` is stored on the session; issuing a new link replaces
-  the hash. A re-derived secret is checked against its stored hash before it is returned, so
-  rotating the key fails replays closed (`SECRET_KEY_MISMATCH`) instead of handing out dead links.
+  the hash. A re-derived secret is checked against its stored hash before it is returned. After a
+  key rotation, replays fail closed (`SECRET_KEY_MISMATCH`) instead of handing out dead links; a
+  fresh update or complete whose unused link no longer re-derives mints a new link under the new
+  key in the same write and returns it. The `order_secret` is never re-issued: rotation strands it
+  for any open session whose agent lost its create response (one it holds still verifies).
 - `GET /checkout/handoff` is a static, cookieless, `no-store` page. An inline script keeps only the
   leading token characters of the fragment (agents and chat apps append `?utm_…`, `&…` or a
   trailing period: lesson from WooCommerce #4588), clears the fragment with `replaceState`, and on
@@ -146,7 +160,8 @@ AgentCheckoutSession {
 - Pre-fill never overwrites what a signed-in customer already has on their account, and the link's
   email and address are never saved to an account (lesson from #4592, #4593, #4599).
 - Reopening a used link in the same browser goes to `/checkout`; elsewhere it shows "this link was
-  already used, ask the assistant for a new one".
+  already used"; the assistant must start a new session for a new link (a redeemed session takes
+  no new link).
 
 ### Order attribution
 
