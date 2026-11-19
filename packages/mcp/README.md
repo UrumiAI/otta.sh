@@ -203,9 +203,12 @@ prune is a warning and never fails the call.
   (inclusive) and `until` (exclusive, ISO instants), plus `limit` (1 to 100, default 50) and
   `cursor`. Newest first, with `nextCursor` when there is more. A cursor works only with the
   filters it came from.
-- **The Audit log page** in the Otta admin (`/_emdash/admin/plugins/otta/mcp-audit`): a table of
-  time, user email, tool, status and code, and a short input summary, with the same filters and
-  paging. It is listed only on a site with the MCP tools on.
+- **The Audit log page** in the Otta admin (`/_emdash/admin/plugins/otta/mcp-audit`): a table
+  with the columns Time (UTC), User (the email, else the name or user id), Tool, Status and Input
+  (a short summary). A refusal's or error's code is shown in the Status column, for example
+  `refused: NOT_FOUND` or `error: INTERNAL_ERROR`, and an entry that never finished reads
+  `started (outcome unknown)`. It has the same filters and paging as `audit_list`, and is listed
+  only on a site with the MCP tools on.
 
 ### One EmDash user per agent
 
