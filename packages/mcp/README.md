@@ -140,7 +140,8 @@ Each entry holds:
   it. It is never read from the input. A call with no user is logged with `actor: null`.
 - `ip` and `userAgent`, from EmDash's request metadata.
 - `tool`: the bare name, such as `orders_refund`.
-- `input`: the parameters as sent, redacted (see below). A serialized input over 8 KB is stored
+- `input`: the parameters as sent, with only the keys the tool's schema knows, redacted (see
+  below). A serialized input over 8 KB is stored
   as `{truncated: true, bytes, preview}`: its byte length and its first 1,024 characters.
 - `status`: `started`, `ok`, `refused`, `needs_confirmation` or `error`.
 - `code`: the refusal code when `refused`, or `INTERNAL_ERROR` for an unexpected failure.
@@ -161,11 +162,34 @@ row records it.
 
 ### Redaction
 
-The two payment-secret tools (`payments_set_secret`, `payments_clear_secret`) are recorded as
-their keys only, every value `"[redacted]"`. An unknown key sent to them is counted, never named.
+Only the keys a tool's schema knows are recorded, nested ones included. An unknown key, such as a
+typo that might carry a pasted secret, is counted (`"[unrecognized keys]": n`) and never named or
+kept. An object sent where the schema has a plain value is recorded as `"[unexpected shape]"`. The
+two payment-secret tools (`payments_set_secret`, `payments_clear_secret`) are recorded as their
+keys only, every value `"[redacted]"`.
 No other tool takes a secret: every input field of the 47 tools was checked, and a test fails if a
 secret-like field is ever added to a tool that is not redacted. Notes, reasons and other free text
 are recorded as sent.
+
+### What it costs (D1, Workers Free)
+
+The log declares one index, `at`. EmDash builds a plugin index over **every** row of its
+`_plugin_storage` table (Otta's orders, carts and stock, and other plugins' rows), not only the
+log's:
+
+- **Once, on the day `mcp` is turned on**, the index build writes about one D1 row per stored
+  plugin-storage row. Otta's cron sweep sees the new index (the audit collection appears in its
+  storage) and holds its daily-capped work that UTC day, as it does for any index change, leaving
+  the day's budget to the build. A store with tens of thousands of plugin-storage rows should still
+  turn `mcp` on early in a UTC day, since Workers Free allows 100,000 rows written a day.
+- **On every later plugin-storage write**, commerce writes included, the index adds one more
+  entry to maintain.
+- **On every tool call**: 2 writes (the `started` entry and its final update) and 1 indexed
+  query for expired entries, plus up to 20 deletes when there are any.
+
+`tool`, `actorId` and `status` have no index: `audit_list` and the page match them in memory
+over the newest-first scan, reading at most 500 entries per page. With a sparse filter, a page can
+come back short or even empty with a `nextCursor`; keep following it.
 
 ### Retention
 

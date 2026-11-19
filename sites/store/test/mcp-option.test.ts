@@ -103,12 +103,9 @@ describe("otta({ mcp }) through the setup hook", () => {
 		const on = runSetup(true);
 		// The entry, and the audit log's collection and page (pinned in
 		// otta-plugin-descriptor.test.ts).
-		expect(on.descriptor).toEqual({
-			...unset.descriptor,
-			entrypoint: "@urumi.ai/otta-mcp/trusted",
-			storage: on.descriptor?.storage,
-			adminPages: on.descriptor?.adminPages,
-		});
+		const { storage: _s, adminPages: _p, ...onRest } = on.descriptor ?? {};
+		const { storage: _us, adminPages: _up, ...unsetRest } = unset.descriptor ?? {};
+		expect(onRest).toEqual({ ...unsetRest, entrypoint: "@urumi.ai/otta-mcp/trusted" });
 		expect(Object.keys(on.descriptor?.storage ?? {})).toEqual([
 			...Object.keys(unset.descriptor?.storage ?? {}),
 			"mcp_audit",

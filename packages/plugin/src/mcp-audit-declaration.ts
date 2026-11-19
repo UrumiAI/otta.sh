@@ -21,14 +21,21 @@ import type { CommerceStorageLayout } from "./commerce/commerce-storage.js";
 export const MCP_AUDIT_COLLECTION = "mcp_audit";
 
 /**
- * Its declaration. Each index is a field the log is read by: `at` (newest first,
- * the `since`/`until` range, and the retention prune), and the three filters.
- * Single-field indexes only: on D1 a new index costs a row write per stored
- * document on the day it is built, so the list stays as short as the reads allow.
+ * Its declaration: ONE index, `at`. It serves every read the log makes: newest
+ * first, the `since`/`until` range, and the retention prune (`at` < cutoff).
+ * The other filters (`tool`, `actorId`, `status`) are applied in memory over a
+ * bounded `at`-ordered scan (`@urumi.ai/otta-mcp`'s `listAudit`).
+ *
+ * WHY ONLY ONE. EmDash 1.5 builds a non-unique plugin index over EVERY
+ * `_plugin_storage` row (no partial predicate: `plugin_id, collection,
+ * json_extract(...)`), Otta's commerce rows and other plugins' included. So each
+ * index costs about one D1 row write per stored row on the day it is built, and
+ * one more index entry on every later plugin-storage write, commerce writes
+ * included. The cron's index-build-day guard counts it (`INDEX_LAYOUT`).
  */
 export const MCP_AUDIT_STORAGE_COLLECTIONS: CommerceStorageLayout = Object.freeze({
 	[MCP_AUDIT_COLLECTION]: Object.freeze({
-		indexes: Object.freeze(["at", "tool", "actorId", "status"]),
+		indexes: Object.freeze(["at"]),
 	}),
 });
 

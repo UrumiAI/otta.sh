@@ -92,8 +92,8 @@ asks for.
 
 Every Otta MCP tool call is logged by `withMcp`, in the plugin's own storage (collection
 `mcp_audit`): who called (EmDash's verified `ctx.user`, never the input), the IP and user agent,
-the tool, its input (a `sensitiveInput` tool's values are recorded as `"[redacted]"`; over 8 KB
-the input is truncated), how it ended (`ok`, `refused` with its code, `needs_confirmation`,
+the tool, its input (only the keys its schema knows, unknown keys counted; a `sensitiveInput`
+tool's values are recorded as `"[redacted]"`; over 8 KB the input is truncated), how it ended (`ok`, `refused` with its code, `needs_confirmation`,
 `error`), what it touched, and when. EmDash's own `audit_logs` row per call is left as it is; it
 has no parameters, no Otta code and no screen.
 
@@ -111,5 +111,12 @@ has no parameters, no Otta code and no screen.
   declaration is exported as data by `@urumi.ai/otta-plugin`, since the store cannot import its
   optional peer. The page is served by `withMcp`, which wraps the plugin's `admin` route and passes
   every other interaction through.
+- **One index, `at`.** EmDash's non-unique plugin indexes span every `_plugin_storage` row,
+  so each costs about one D1 row write per stored row on the day it is built, and one more index
+  entry on every later plugin-storage write. The log therefore declares only `at` (newest first,
+  time range, prune) and matches `tool`, `actorId` and `status` in memory over a bounded scan.
+  The cron sweep's index-build-day guard fingerprints the layout the site actually declares,
+  the audit collection included when it is in `ctx.storage`, so the day `mcp` is turned on holds
+  the daily-capped legs.
 - **Limitation:** EmDash passes a plugin the user, not the token, so two agents sharing one user
   cannot be told apart. The recommendation is one EmDash user per agent.

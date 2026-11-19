@@ -7,7 +7,7 @@
 import { createOttaPlugin, MCP_AUDIT_COLLECTION, type PluginContext } from "@urumi.ai/otta-plugin";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
-import { newAuditId } from "../src/audit.js";
+import { AUDIT_INPUT_PREVIEW_CHARS, AUDIT_SCAN_MAX_ROWS, newAuditId } from "../src/audit.js";
 import {
 	AUDIT_INPUT_MAX_BYTES,
 	defineTool,
@@ -279,6 +279,38 @@ describe("(b) a sensitive tool's values never reach the log", () => {
 	});
 });
 
+describe("only the keys a tool's schema knows are recorded, on every tool", () => {
+	/** Every stored entry, as one string: where a leaked value would show. */
+	async function storedText(): Promise<string> {
+		return JSON.stringify(await entries());
+	}
+
+	test("a secret under a mistyped top-level key is refused, counted, and stored nowhere", async () => {
+		const error = await refusal("settings_update", { holdTtlMinutes: 30, stripeKey: SECRET });
+		expect(error.code).toBe("INVALID_INPUT");
+		const entry = await only();
+		expect(entry.input).toEqual({ holdTtlMinutes: 30, "[unrecognized keys]": 1 });
+		const text = await storedText();
+		expect(text).not.toContain(SECRET);
+		expect(text).not.toContain("stripeKey");
+	});
+
+	test("a secret under a mistyped NESTED key is counted too", async () => {
+		const settings = (await call("tax_settings_get", {})).settings;
+		await harness.reset();
+		await refusal("tax_settings_update", { settings: { ...settings, apiKey: SECRET } });
+		const entry = await only();
+		expect(entry.input).toEqual({ settings, "[unrecognized keys]": 1 });
+		expect(await storedText()).not.toContain(SECRET);
+	});
+
+	test("an object where the schema has a scalar is not kept", async () => {
+		await refusal("coupons_get", { code: { [SECRET]: SECRET } });
+		expect((await only()).input).toEqual({ code: "[unexpected shape]" });
+		expect(await storedText()).not.toContain(SECRET);
+	});
+});
+
 describe("(c) a log that cannot be written refuses the call, and nothing runs", () => {
 	test("AUDIT_UNAVAILABLE (503), the handler not run", async () => {
 		const ctx = withAuditPut(() => Promise.reject(new Error("disk full")));
@@ -428,6 +460,23 @@ describe("(f) audit_list", () => {
 		expect((await refusal("audit_list", { cursor: "not-a-cursor" })).code).toBe("INVALID_CURSOR");
 	});
 
+	test("a sparse filter reads a bounded scan: a short page with a cursor, then the match", async () => {
+		const match = await seedEntry(30, { tool: "orders_refund" });
+		for (let i = 0; i < AUDIT_SCAN_MAX_ROWS + 20; i += 1) {
+			await seedEntry(20 - i / 1000, { tool: "orders_get" });
+		}
+		const first = await call("audit_list", { tool: "orders_refund", limit: 10 });
+		expect(first.entries).toEqual([]);
+		expect(first.nextCursor).toBeTypeOf("string");
+		const second = await call("audit_list", {
+			tool: "orders_refund",
+			limit: 10,
+			cursor: first.nextCursor,
+		});
+		expect(second.entries.map((e: AuditEntry) => e.id)).toEqual([match.id]);
+		expect(second.nextCursor).toBeUndefined();
+	});
+
 	test("a since that is not an instant, and a limit out of range, are refused", async () => {
 		expect((await refusal("audit_list", { since: "last tuesday" })).code).toBe("INVALID_INPUT");
 		expect((await refusal("audit_list", { limit: 101 })).code).toBe("INVALID_INPUT");
@@ -495,7 +544,7 @@ describe("(h) the input is capped at 8 KB", () => {
 		});
 		const preview = (entry.input as { preview: string }).preview;
 		expect(whole.startsWith(preview)).toBe(true);
-		expect(preview.length).toBeLessThan(AUDIT_INPUT_MAX_BYTES);
+		expect(preview).toHaveLength(AUDIT_INPUT_PREVIEW_CHARS);
 	});
 
 	test("at the cap: kept whole", async () => {

@@ -135,6 +135,14 @@ describe("the Audit log page", () => {
 			values: { since: day, until: day },
 		});
 		expect(table(response).rows).toHaveLength(1);
+		// The form shows the days as typed, not the stored (exclusive) instants.
+		const form = response.blocks.find((b) => b.type === "form");
+		const fields = form?.type === "form" ? form.fields : [];
+		const initial = (id: string) =>
+			(fields.find((f) => "action_id" in f && f.action_id === id) as { initial_value?: unknown })
+				?.initial_value;
+		expect(initial("since")).toBe(day);
+		expect(initial("until")).toBe(day);
 
 		const bad = await admin({
 			type: "form_submit",

@@ -77,6 +77,18 @@ function boundOf(raw: string, end: boolean): string | undefined {
 	return normalizeInstant(raw);
 }
 
+/**
+ * A bound as the form shows it: the inverse of {@link boundOf}, so what the
+ * operator typed comes back as typed. A UTC midnight shows as its day; for
+ * "Before" that is the day BEFORE it (typed `2026-11-19` is stored as the
+ * exclusive `2026-11-20T00:00:00.000Z`). Anything else shows as the instant.
+ */
+function boundText(instant: string, end: boolean): string {
+	if (!instant.endsWith("T00:00:00.000Z")) return instant;
+	const ms = Date.parse(instant) - (end ? 86_400_000 : 0);
+	return new Date(ms).toISOString().slice(0, 10);
+}
+
 /** The filters a filter form sent, or the problem with them. */
 function filtersFromValues(
 	values: unknown,
@@ -167,14 +179,14 @@ function filterForm(filters: AuditFilters, tools: readonly string[]): Block {
 				action_id: "since",
 				label: "From (UTC)",
 				placeholder: "YYYY-MM-DD or an ISO instant",
-				...(filters.since === undefined ? {} : { initial_value: filters.since }),
+				...(filters.since === undefined ? {} : { initial_value: boundText(filters.since, false) }),
 			},
 			{
 				type: "text_input",
 				action_id: "until",
 				label: "Before (UTC)",
 				placeholder: "YYYY-MM-DD (that whole day) or an ISO instant",
-				...(filters.until === undefined ? {} : { initial_value: filters.until }),
+				...(filters.until === undefined ? {} : { initial_value: boundText(filters.until, true) }),
 			},
 		],
 		submit: { label: "Filter", action_id: AUDIT_PAGE_ACTIONS.filter },

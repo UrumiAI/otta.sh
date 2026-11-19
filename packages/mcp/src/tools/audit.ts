@@ -12,7 +12,7 @@ export const AUDIT_TOOLS = [
 	defineTool({
 		name: "audit_list",
 		description:
-			'Read the audit log of Otta MCP tool calls, newest first: who called which tool (the EmDash user the API token belongs to), with what input (secrets recorded as "[redacted]"), and how it ended. Each entry: {id, at, actor: {id, email, name, role} | null, ip, userAgent, tool, input, status, code?, affected?, finishedAt?}. status is started (the outcome is unknown: the tool may or may not have acted), ok, refused (code is the refusal code), needs_confirmation, or error (code INTERNAL_ERROR). Filters combine; since is inclusive, until exclusive. Returns `{entries, nextCursor?}`. Entries are kept for one year. Refusals: INVALID_INPUT (a since/until that is not an instant), INVALID_CURSOR.',
+			'Read the audit log of Otta MCP tool calls, newest first: who called which tool (the EmDash user the API token belongs to), with what input (secrets recorded as "[redacted]"), and how it ended. Each entry: {id, at, actor: {id, email, name, role} | null, ip, userAgent, tool, input, status, code?, affected?, finishedAt?}. status is started (the outcome is unknown: the tool may or may not have acted), ok, refused (code is the refusal code), needs_confirmation, or error (code INTERNAL_ERROR). Filters combine; since is inclusive, until exclusive. Returns `{entries, nextCursor?}`; with tool/actorId/status filters a page reads at most 500 entries, so it can come back short or even empty with a nextCursor: keep following nextCursor until there is none. Entries are kept for one year. Refusals: INVALID_INPUT (a since/until that is not an instant), INVALID_CURSOR.',
 		input: z
 			.object({
 				tool: z.string().min(1).max(64).optional().describe("Only this tool, e.g. orders_refund."),

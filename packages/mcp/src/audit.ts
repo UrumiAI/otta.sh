@@ -14,8 +14,9 @@
  * the handler, and its failure changes nothing about the call (the action already
  * happened): the entry stays `started`, which reads "outcome unknown".
  *
- * NOTHING SECRET IS STORED. A `sensitiveInput` tool's input is recorded as its
- * keys only, every value `"[redacted]"`. The actor comes from `routeCtx.user`,
+ * NOTHING SECRET IS STORED. Only the keys a tool's schema knows are recorded;
+ * an unknown key (a typo that could carry a pasted secret) is counted, never
+ * named or kept. A `sensitiveInput` tool's values are all `"[redacted]"`. The actor comes from `routeCtx.user`,
  * which EmDash verified, never from input.
  */
 import {
@@ -142,29 +143,96 @@ function clip(text: string, max: number): string {
 	return text.slice(0, end);
 }
 
-/**
- * A `sensitiveInput` tool's input as recorded: its keys, every value
- * `"[redacted]"`. Only the schema's own keys are named, since an unknown key's
- * NAME is caller text too (a pasted secret could be one); unknown keys are
- * counted, not named. Anything that is not an object records as one marker.
- */
-function redactedInput(def: McpToolDef<z.ZodTypeAny>, raw: unknown): unknown {
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return REDACTED;
-	const shape = (def.input as { def?: { shape?: Record<string, unknown> } }).def?.shape ?? {};
-	const out: Record<string, unknown> = {};
-	let unknown = 0;
-	for (const key of Object.keys(raw)) {
-		if (Object.hasOwn(shape, key)) out[key] = REDACTED;
-		else unknown += 1;
-	}
-	if (unknown > 0) out["[unrecognized keys]"] = unknown;
-	return out;
+/** What an unknown key's presence is recorded as, at the top level: a count. */
+export const UNRECOGNIZED_KEYS = "[unrecognized keys]";
+/** A value under a known key whose shape the schema does not have (an object
+ *  where a string belongs): its keys would be caller text, so it is not kept. */
+export const UNEXPECTED_SHAPE = "[unexpected shape]";
+
+/** A zod v4 schema's `def`, as far as the recording walk reads it. */
+interface WalkDef {
+	type?: string;
+	shape?: Record<string, unknown>;
+	innerType?: unknown;
+	in?: unknown;
+	element?: unknown;
+	options?: readonly unknown[];
 }
 
-/** The input as recorded: redacted for a sensitive tool, and capped at 8 KB. */
+function walkDef(schema: unknown): WalkDef | undefined {
+	return (schema as { def?: WalkDef } | undefined)?.def;
+}
+
+/** Through optional / nullable / default / readonly / catch / a pipe's input. */
+function unwrap(schema: unknown): WalkDef | undefined {
+	let def = walkDef(schema);
+	for (let depth = 0; def !== undefined && depth < 16; depth += 1) {
+		const inner = def.innerType ?? (def.type === "pipe" ? def.in : undefined);
+		if (inner === undefined) return def;
+		def = walkDef(inner);
+	}
+	return def;
+}
+
+/** The object shapes a schema accepts here: its own, or every object option of a union. */
+function objectShapes(def: WalkDef | undefined): Record<string, unknown>[] {
+	if (def?.type === "object") return [def.shape ?? {}];
+	if (def?.type === "union") {
+		return (def.options ?? []).flatMap((option) => objectShapes(unwrap(option)));
+	}
+	return [];
+}
+
+/**
+ * `value` as recorded under `schema`: an object keeps only the keys the schema
+ * knows (unknown ones are counted into `unknown`, never named and never kept:
+ * a mistyped key can carry a secret), arrays recurse into their elements, a
+ * scalar is kept, and a container where the schema has none is not kept.
+ * `redact` replaces every kept scalar with `"[redacted]"`.
+ */
+function recordUnder(
+	schema: unknown,
+	value: unknown,
+	unknown: { count: number },
+	redact: boolean,
+): unknown {
+	const def = unwrap(schema);
+	if (Array.isArray(value)) {
+		if (def?.type !== "array") return UNEXPECTED_SHAPE;
+		return value.map((item) => recordUnder(def.element, item, unknown, redact));
+	}
+	if (typeof value === "object" && value !== null) {
+		const shapes = objectShapes(def);
+		if (shapes.length === 0) return UNEXPECTED_SHAPE;
+		const out: Record<string, unknown> = {};
+		for (const [key, field] of Object.entries(value)) {
+			const shape = shapes.find((candidate) => Object.hasOwn(candidate, key));
+			if (shape === undefined) unknown.count += 1;
+			else out[key] = recordUnder(shape[key], field, unknown, redact);
+		}
+		return out;
+	}
+	return redact && value !== null && value !== undefined ? REDACTED : value;
+}
+
+/**
+ * The input as recorded: only what the tool's schema knows, unknown keys counted
+ * (`"[unrecognized keys]": n`); a `sensitiveInput` tool's values all
+ * `"[redacted]"`; capped at 8 KB.
+ */
 export function auditInput(def: McpToolDef<z.ZodTypeAny>, raw: unknown): unknown {
-	const recorded = def.sensitiveInput === true ? redactedInput(def, raw) : raw;
-	if (recorded === undefined) return null;
+	const redact = def.sensitiveInput === true;
+	let recorded: unknown;
+	if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+		const unknown = { count: 0 };
+		recorded = recordUnder(def.input, raw, unknown, redact);
+		if (unknown.count > 0) {
+			recorded = { ...(recorded as Record<string, unknown>), [UNRECOGNIZED_KEYS]: unknown.count };
+		}
+	} else {
+		// Every tool takes an object: anything else is not its input at all.
+		recorded = raw === undefined || raw === null ? null : UNEXPECTED_SHAPE;
+	}
 	const text = JSON.stringify(recorded) ?? "null";
 	const bytes = byteLength(text);
 	if (bytes <= AUDIT_INPUT_MAX_BYTES) return recorded;
@@ -441,9 +509,42 @@ export function normalizeInstant(value: string): string | undefined {
 	return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
 }
 
+/** The most entries one `listAudit` call reads to fill a filtered page. */
+export const AUDIT_SCAN_MAX_ROWS = 500;
+/** The most storage queries one `listAudit` call makes. */
+export const AUDIT_SCAN_MAX_QUERIES = 10;
+
+function matches(entry: AuditEntry, filters: AuditFilters): boolean {
+	return (
+		(filters.tool === undefined || entry.tool === filters.tool) &&
+		(filters.actorId === undefined || entry.actorId === filters.actorId) &&
+		(filters.status === undefined || entry.status === filters.status)
+	);
+}
+
+/**
+ * EmDash's `InvalidCursorError` (thrown by its storage `query` for a cursor whose
+ * row is gone), matched by the `name` its constructor sets. The class IS exported
+ * by `emdash`, but this package imports nothing from the host at runtime (see
+ * errors.ts), and a class identity check would also fail across two bundled
+ * copies; the name is set explicitly by the host, so it is the stable signal.
+ */
+function isHostCursorError(error: unknown): boolean {
+	return error instanceof Error && error.name === "InvalidCursorError";
+}
+
 /**
  * One page of the log, newest first. A cursor must come from the same filters
  * (else `INVALID_CURSOR`); `since`/`until` must already be normalized.
+ *
+ * ONE INDEX, `at`. The time range is the storage query; `tool`, `actorId` and
+ * `status` are matched in memory over the `at`-ordered scan, read in storage
+ * pages of up to 100. When a storage page holds more matches than the page
+ * still needs, it is read again from the same position, up to the last needed
+ * row, so the host's cursor is an exact resume point and no match is skipped.
+ * The scan is bounded ({@link AUDIT_SCAN_MAX_ROWS} rows,
+ * {@link AUDIT_SCAN_MAX_QUERIES} queries): with sparse filters a page can come
+ * back SHORT, even empty, with a `nextCursor` to continue from.
  */
 export async function listAudit(
 	ctx: PluginContext,
@@ -462,35 +563,61 @@ export async function listAudit(
 		}
 		hostCursor = decoded.hostCursor;
 	}
-	const where: Record<string, string | { gte?: string; lt?: string }> = {};
-	if (filters.tool !== undefined) where["tool"] = filters.tool;
-	if (filters.actorId !== undefined) where["actorId"] = filters.actorId;
-	if (filters.status !== undefined) where["status"] = filters.status;
+	const where: Record<string, { gte?: string; lt?: string }> = {};
 	if (filters.since !== undefined || filters.until !== undefined) {
 		where["at"] = {
 			...(filters.since === undefined ? {} : { gte: filters.since }),
 			...(filters.until === undefined ? {} : { lt: filters.until }),
 		};
 	}
-	let page;
-	try {
-		page = await auditCollection(ctx).query({
-			where,
-			orderBy: { at: "desc" },
-			limit,
-			...(hostCursor === undefined ? {} : { cursor: hostCursor }),
-		});
-	} catch (error) {
-		// The host refuses a cursor whose row is gone (pruned since it was issued).
-		if (hostCursor !== undefined && error instanceof Error && /cursor/i.test(error.name)) {
-			toolFailure("INVALID_CURSOR", "That cursor has expired. Start again without `cursor`.");
+	const filtered =
+		filters.tool !== undefined || filters.actorId !== undefined || filters.status !== undefined;
+	const collection = auditCollection(ctx);
+	const read = async (from: string | undefined, rows: number) => {
+		try {
+			return await collection.query({
+				where,
+				orderBy: { at: "desc" },
+				limit: rows,
+				...(from === undefined ? {} : { cursor: from }),
+			});
+		} catch (error) {
+			if (from !== undefined && isHostCursorError(error)) {
+				toolFailure("INVALID_CURSOR", "That cursor has expired. Start again without `cursor`.");
+			}
+			throw error;
 		}
-		throw error;
-	}
-	return {
-		entries: page.items.map((item) => item.data as AuditEntry),
-		...(page.hasMore && page.cursor !== undefined
-			? { nextCursor: encodeAuditCursor(filters, page.cursor) }
-			: {}),
 	};
+
+	const entries: AuditEntry[] = [];
+	let scanned = 0;
+	for (let queries = 0; ;) {
+		const needed = limit - entries.length;
+		// Unfiltered, every row matches: read exactly what the page still needs.
+		const rows = filtered ? Math.min(100, AUDIT_SCAN_MAX_ROWS - scanned) : needed;
+		let page = await read(hostCursor, rows);
+		queries += 1;
+		let matched = page.items
+			.map((item) => item.data as AuditEntry)
+			.filter((entry) => matches(entry, filters));
+		if (matched.length > needed) {
+			// Re-read up to the last needed match, for a cursor right after it.
+			const last = matched[needed - 1] as AuditEntry;
+			const upTo = page.items.findIndex((item) => item.id === last.id) + 1;
+			page = await read(hostCursor, upTo);
+			queries += 1;
+			matched = matched.slice(0, needed);
+		}
+		scanned += page.items.length;
+		entries.push(...matched);
+		if (!page.hasMore || page.cursor === undefined) return { entries };
+		hostCursor = page.cursor;
+		if (
+			entries.length >= limit ||
+			scanned >= AUDIT_SCAN_MAX_ROWS ||
+			queries >= AUDIT_SCAN_MAX_QUERIES
+		) {
+			return { entries, nextCursor: encodeAuditCursor(filters, hostCursor) };
+		}
+	}
 }
