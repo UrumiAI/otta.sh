@@ -10,9 +10,12 @@ import {
 	completeAgentSession,
 	createAgentSession,
 	currency,
+	DEFAULT_AGENT_SESSION_LIMITS,
 	getAgentSession,
 	issueAgentHandoff,
 	orderId,
+	precheckAgentSessionCreate,
+	precheckAgentSessionReplace,
 	productId,
 	recordAgentHandoffCart,
 	recordAgentSessionOrder,
@@ -417,7 +420,8 @@ describe("createAgentSession", () => {
 		expect((await make("5")).ok).toBe(true);
 	});
 
-	test("store-wide cap on live sessions; the default is the 5000 tuning knob", async () => {
+	test("store-wide cap on live sessions; the default is the 500 tuning knob", async () => {
+		expect(DEFAULT_AGENT_SESSION_LIMITS.maxLiveSessions).toBe(500);
 		const h = harness({ maxLiveSessions: 1 });
 		await created(h);
 		const r = await createAgentSession(h.deps, {
@@ -1509,5 +1513,58 @@ describe("recordAgentHandoffCart (the redeem marks the shopper's cart)", () => {
 		expect(
 			await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "x".repeat(10_000) }),
 		).toEqual({ ok: false, reason: "INVALID_REQUEST" });
+	});
+});
+
+describe("prechecks: decide before any side work (ADR-0047)", () => {
+	test("create: a fresh key proceeds; a replay answers the stored session; another body is refused; the caps refuse", async () => {
+		const h = harness({ maxLiveSessions: 1 });
+		expect(await precheckAgentSessionCreate(h.deps, CREATE)).toEqual({ proceed: true });
+		const first = await created(h);
+		const replay = await precheckAgentSessionCreate(h.deps, CREATE);
+		expect(replay).toEqual({
+			proceed: false,
+			result: {
+				ok: true,
+				replayed: true,
+				session: first.session,
+				orderSecret: first.orderSecret,
+				handoffToken: first.handoffToken,
+			},
+		});
+		expect(await precheckAgentSessionCreate(h.deps, { ...CREATE, fingerprint: "other" })).toEqual({
+			proceed: false,
+			result: { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" },
+		});
+		expect(
+			await precheckAgentSessionCreate(h.deps, { ...CREATE, idempotencyKey: "create-2" }),
+		).toEqual({ proceed: false, result: { ok: false, reason: "TOO_MANY_SESSIONS" } });
+	});
+
+	test("replace: proceeds while writable; replays without work; refuses a reused key, a handed-off or a missing session", async () => {
+		const h = harness();
+		const first = await created(h);
+		const id = first.session.id;
+		expect(await precheckAgentSessionReplace(h.deps, keyed(id, "put-1"))).toEqual({
+			proceed: true,
+		});
+		const put = await replaceAgentSession(h.deps, { ...keyed(id, "put-1"), content: content() });
+		expect(await precheckAgentSessionReplace(h.deps, keyed(id, "put-1"))).toEqual({
+			proceed: false,
+			result: { ...put, replayed: true },
+		});
+		// The create's key on a replace: reused, never a fresh write.
+		expect(await precheckAgentSessionReplace(h.deps, { sessionId: id, ...CREATE })).toEqual({
+			proceed: false,
+			result: { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" },
+		});
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+		expect(await precheckAgentSessionReplace(h.deps, keyed(id, "put-2"))).toEqual({
+			proceed: false,
+			result: { ok: false, reason: "SESSION_HANDED_OFF" },
+		});
+		expect(
+			await precheckAgentSessionReplace(h.deps, keyed(agentSessionId("cs_missing"), "put-3")),
+		).toEqual({ proceed: false, result: { ok: false, reason: "SESSION_NOT_FOUND" } });
 	});
 });

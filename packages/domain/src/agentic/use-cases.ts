@@ -88,7 +88,7 @@ export interface AgentSessionLimits {
 }
 
 export const DEFAULT_AGENT_SESSION_LIMITS: AgentSessionLimits = {
-	maxLiveSessions: 5000,
+	maxLiveSessions: 500,
 	maxCreatesPerNetwork: 60,
 	createWindowMs: 60 * 60 * 1000,
 	maxLineQuantity: 10_000,
@@ -490,7 +490,7 @@ async function createFromRecord(
 async function replayCreate(
 	deps: AgentSessionDeps,
 	session: AgentCheckoutSession,
-	input: CreateInput,
+	input: AgentSessionKeyedRequest,
 ): Promise<CreateAgentSessionResult> {
 	const record = session.writes.find((w) => w.operation === "create" && sameKey(w, input));
 	if (record === undefined) return fail("IDEMPOTENCY_KEY_EXPIRED");
@@ -693,6 +693,77 @@ export async function replaceAgentSession(
 		if (refused !== null) return refused;
 		return { ok: true, session: await ensureLink(deps, applyContent(session, input.content, now)) };
 	});
+}
+
+/**
+ * What a precheck decided: `proceed` (a FRESH write the domain would accept now,
+ * so the caller may do its side work — build a cart — and then make the write), or
+ * the final `result`: a refusal, or a replay's stored answer. Prechecks only read.
+ */
+export type AgentSessionPrecheck<R> = { proceed: true } | { proceed: false; result: R };
+
+/**
+ * Ask before a create's side work (ADR-0047): a recorded key answers its replay
+ * (or `IDEMPOTENCY_KEY_REUSED` for another body) with NO new work; a fresh key is
+ * checked against the per-network and store-wide caps. A key recorded whose
+ * session was never written proceeds (its create finishes the orphan). Reads only;
+ * `createAgentSession` re-checks everything, so a racer is still answered right.
+ */
+export async function precheckAgentSessionCreate(
+	deps: AgentSessionDeps,
+	input: AgentSessionCreateRequest,
+): Promise<AgentSessionPrecheck<CreateAgentSessionResult>> {
+	const malformed = refuseRequest(input, input.networkKey);
+	if (malformed !== null) return { proceed: false, result: malformed };
+	const recorded = await deps.store.getIdempotency(input.networkKey, input.idempotencyKey);
+	if (recorded !== null) {
+		if (recorded.fingerprint !== input.fingerprint) {
+			return { proceed: false, result: fail("IDEMPOTENCY_KEY_REUSED") };
+		}
+		const existing = await deps.store.get(recorded.sessionId);
+		if (existing !== null) {
+			return { proceed: false, result: await replayCreate(deps, existing, input) };
+		}
+	}
+	const capped = await admitCreate(
+		deps,
+		recorded?.networkKey ?? input.networkKey,
+		deps.clock.now(),
+	);
+	return capped === null ? { proceed: true } : { proceed: false, result: capped };
+}
+
+/**
+ * Ask before a replace's side work (ADR-0047): a key recorded on the session
+ * answers its replay (or `IDEMPOTENCY_KEY_REUSED`) with NO new work; else the
+ * session must exist, the key must not be retired, the lifetime write cap must
+ * have room, and the session must be writable (open, unexpired, not handed off).
+ * Reads only; `replaceAgentSession` re-checks everything.
+ */
+export async function precheckAgentSessionReplace(
+	deps: AgentSessionDeps,
+	input: AgentSessionKeyedRequest & { sessionId: AgentSessionId },
+): Promise<AgentSessionPrecheck<AgentSessionWriteResult>> {
+	const malformed = refuseRequest(input);
+	if (malformed !== null) return { proceed: false, result: malformed };
+	const current = await deps.store.get(input.sessionId);
+	if (current === null) return { proceed: false, result: fail("SESSION_NOT_FOUND") };
+	const now = deps.clock.now().toISOString();
+	const prior = current.writes.find((w) => sameKey(w, input));
+	if (prior !== undefined) {
+		if (prior.operation !== "replace" || prior.fingerprint !== input.fingerprint) {
+			return { proceed: false, result: fail("IDEMPOTENCY_KEY_REUSED") };
+		}
+		return { proceed: false, result: await answer(deps, current, prior.answer, true, now) };
+	}
+	if (current.retiredWriteKeys.some((k) => sameKey(k, input))) {
+		return { proceed: false, result: fail("IDEMPOTENCY_KEY_EXPIRED") };
+	}
+	if (current.writes.length + current.retiredWriteKeys.length >= AGENT_SESSION_MAX_WRITES) {
+		return { proceed: false, result: fail("WRITE_LIMIT_REACHED") };
+	}
+	const refused = refuseUnwritable(current, now);
+	return refused === null ? { proceed: true } : { proceed: false, result: refused };
 }
 
 /**
