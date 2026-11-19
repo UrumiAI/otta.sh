@@ -13,6 +13,7 @@ import type {
 	AgentSessionFailureReason,
 } from "./errors.js";
 import {
+	isAgentSessionMessageList,
 	AGENT_SESSION_ID_PREFIX,
 	AGENT_SESSION_MAX_ADDRESS_FIELD_LENGTH,
 	AGENT_SESSION_MAX_BUYER_FIELD_LENGTH,
@@ -35,6 +36,7 @@ import {
 	type AgentSessionBuyer,
 	type AgentSessionId,
 	type AgentSessionLine,
+	type AgentSessionMessage,
 	type AgentSessionOperation,
 	type AgentSessionQuote,
 	type AgentSessionView,
@@ -148,6 +150,8 @@ export type AgentSessionWriteResult =
 			session: AgentSessionView;
 			/** The raw token of the session's CURRENT live link; absent when it has none. */
 			handoffToken?: string;
+			/** The write's recorded messages (a replay's are the original's); absent when none. */
+			messages?: AgentSessionMessage[];
 	  }
 	| AgentSessionFailure;
 
@@ -161,6 +165,8 @@ export type CreateAgentSessionResult =
 			orderSecret: string;
 			/** The raw token of the session's CURRENT live link; absent when it has none. */
 			handoffToken?: string;
+			/** The create's recorded messages (a replay's are the original's); absent when none. */
+			messages?: AgentSessionMessage[];
 	  }
 	| AgentSessionFailure;
 
@@ -414,7 +420,29 @@ async function admitCreate(
 	return null;
 }
 
-type CreateInput = AgentSessionCreateRequest & { content: AgentSessionContent };
+/** What a content-carrying write may record for replay: its typed messages. */
+export interface AgentSessionMessagesInput {
+	/** Codes and paths only (see {@link AgentSessionMessage}); bounded. */
+	messages?: AgentSessionMessage[];
+}
+
+type CreateInput = AgentSessionCreateRequest & {
+	content: AgentSessionContent;
+} & AgentSessionMessagesInput;
+
+/** `messages` that are present and not token-shaped or over the bound: INVALID_REQUEST. */
+function refuseMessages(input: AgentSessionMessagesInput): AgentSessionFailure | null {
+	return input.messages === undefined || isAgentSessionMessageList(input.messages)
+		? null
+		: fail("INVALID_REQUEST");
+}
+
+/** The messages to record: absent when none. */
+function recorded(input: AgentSessionMessagesInput): { messages?: AgentSessionMessage[] } {
+	return input.messages !== undefined && input.messages.length > 0
+		? { messages: input.messages.map((m) => ({ code: m.code, path: m.path })) }
+		: {};
+}
 
 /**
  * Create a session (UCP `POST /checkout-sessions`). The id's suffix comes from
@@ -439,10 +467,10 @@ export async function createAgentSession(
 	deps: AgentSessionDeps,
 	input: CreateInput,
 ): Promise<CreateAgentSessionResult> {
-	const malformed = refuseRequest(input, input.networkKey);
+	const malformed = refuseRequest(input, input.networkKey) ?? refuseMessages(input);
 	if (malformed !== null) return malformed;
-	const recorded = await deps.store.getIdempotency(input.networkKey, input.idempotencyKey);
-	if (recorded !== null) return createFromRecord(deps, input, recorded);
+	const record = await deps.store.getIdempotency(input.networkKey, input.idempotencyKey);
+	if (record !== null) return createFromRecord(deps, input, record);
 
 	const refused = validateContent(input.content, limitsOf(deps));
 	if (refused !== null) return refused;
@@ -503,6 +531,7 @@ async function replayCreate(
 		replayed: true,
 		session: viewOf(record.answer),
 		orderSecret: orderSecret.secret,
+		...recorded(record),
 	};
 	if (link.token !== undefined) result.handoffToken = link.token;
 	return result;
@@ -543,6 +572,7 @@ async function insertCreated(
 			fingerprint: input.fingerprint,
 			revision: 1,
 			answer: viewOf(session),
+			...recorded(input),
 		},
 	];
 	const written = await deps.store.write(session, null);
@@ -558,6 +588,7 @@ async function insertCreated(
 		replayed: false,
 		session: viewOf(written.session),
 		orderSecret,
+		...recorded(input),
 	};
 	if (link.token !== undefined) result.handoffToken = link.token;
 	return result;
@@ -594,8 +625,9 @@ async function keyedWrite(
 	request: AgentSessionKeyedRequest,
 	operation: AgentSessionOperation,
 	mutate: (session: AgentCheckoutSession, now: string) => Promise<Mutation>,
+	messages: AgentSessionMessagesInput = {},
 ): Promise<AgentSessionWriteResult> {
-	const malformed = refuseRequest(request);
+	const malformed = refuseRequest(request) ?? refuseMessages(messages);
 	if (malformed !== null) return malformed;
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
 		const current = await deps.store.get(sessionId);
@@ -606,7 +638,7 @@ async function keyedWrite(
 			if (prior.operation !== operation || prior.fingerprint !== request.fingerprint) {
 				return fail("IDEMPOTENCY_KEY_REUSED");
 			}
-			return answer(deps, current, prior.answer, true, now);
+			return answer(deps, current, prior.answer, true, now, prior);
 		}
 		if (current.retiredWriteKeys.some((k) => sameKey(k, request))) {
 			return fail("IDEMPOTENCY_KEY_EXPIRED");
@@ -636,6 +668,7 @@ async function keyedWrite(
 			fingerprint: request.fingerprint,
 			revision,
 			answer: viewOf(next),
+			...recorded(messages),
 		};
 		const writes = [...current.writes, record];
 		const evicted = writes.splice(0, Math.max(0, writes.length - AGENT_SESSION_MAX_WRITE_RECORDS));
@@ -647,6 +680,7 @@ async function keyedWrite(
 				ok: true,
 				replayed: false,
 				session: viewOf(written.session),
+				...recorded(messages),
 			};
 			if (link.token !== undefined) result.handoffToken = link.token;
 			return result;
@@ -662,10 +696,16 @@ async function answer(
 	shown: AgentCheckoutSession | AgentSessionView,
 	replayed: boolean,
 	now: string,
+	record: AgentSessionMessagesInput = {},
 ): Promise<AgentSessionWriteResult> {
 	const link = await liveHandoffToken(deps, current, now);
 	if (!link.ok) return link;
-	const result: AgentSessionWriteResult = { ok: true, replayed, session: viewOf(shown) };
+	const result: AgentSessionWriteResult = {
+		ok: true,
+		replayed,
+		session: viewOf(shown),
+		...recorded(record),
+	};
 	if (link.token !== undefined) result.handoffToken = link.token;
 	return result;
 }
@@ -685,14 +725,27 @@ function refuseUnwritable(session: AgentCheckoutSession, now: string): AgentSess
  */
 export async function replaceAgentSession(
 	deps: AgentSessionDeps,
-	input: AgentSessionKeyedRequest & { sessionId: AgentSessionId; content: AgentSessionContent },
+	input: AgentSessionKeyedRequest & {
+		sessionId: AgentSessionId;
+		content: AgentSessionContent;
+	} & AgentSessionMessagesInput,
 ): Promise<AgentSessionWriteResult> {
-	return keyedWrite(deps, input.sessionId, input, "replace", async (session, now) => {
-		const refused =
-			refuseUnwritable(session, now) ?? validateContent(input.content, limitsOf(deps));
-		if (refused !== null) return refused;
-		return { ok: true, session: await ensureLink(deps, applyContent(session, input.content, now)) };
-	});
+	return keyedWrite(
+		deps,
+		input.sessionId,
+		input,
+		"replace",
+		async (session, now) => {
+			const refused =
+				refuseUnwritable(session, now) ?? validateContent(input.content, limitsOf(deps));
+			if (refused !== null) return refused;
+			return {
+				ok: true,
+				session: await ensureLink(deps, applyContent(session, input.content, now)),
+			};
+		},
+		input,
+	);
 }
 
 /**
@@ -715,21 +768,17 @@ export async function precheckAgentSessionCreate(
 ): Promise<AgentSessionPrecheck<CreateAgentSessionResult>> {
 	const malformed = refuseRequest(input, input.networkKey);
 	if (malformed !== null) return { proceed: false, result: malformed };
-	const recorded = await deps.store.getIdempotency(input.networkKey, input.idempotencyKey);
-	if (recorded !== null) {
-		if (recorded.fingerprint !== input.fingerprint) {
+	const record = await deps.store.getIdempotency(input.networkKey, input.idempotencyKey);
+	if (record !== null) {
+		if (record.fingerprint !== input.fingerprint) {
 			return { proceed: false, result: fail("IDEMPOTENCY_KEY_REUSED") };
 		}
-		const existing = await deps.store.get(recorded.sessionId);
+		const existing = await deps.store.get(record.sessionId);
 		if (existing !== null) {
 			return { proceed: false, result: await replayCreate(deps, existing, input) };
 		}
 	}
-	const capped = await admitCreate(
-		deps,
-		recorded?.networkKey ?? input.networkKey,
-		deps.clock.now(),
-	);
+	const capped = await admitCreate(deps, record?.networkKey ?? input.networkKey, deps.clock.now());
 	return capped === null ? { proceed: true } : { proceed: false, result: capped };
 }
 
@@ -754,7 +803,7 @@ export async function precheckAgentSessionReplace(
 		if (prior.operation !== "replace" || prior.fingerprint !== input.fingerprint) {
 			return { proceed: false, result: fail("IDEMPOTENCY_KEY_REUSED") };
 		}
-		return { proceed: false, result: await answer(deps, current, prior.answer, true, now) };
+		return { proceed: false, result: await answer(deps, current, prior.answer, true, now, prior) };
 	}
 	if (current.retiredWriteKeys.some((k) => sameKey(k, input))) {
 		return { proceed: false, result: fail("IDEMPOTENCY_KEY_EXPIRED") };
@@ -1020,6 +1069,42 @@ export async function recordAgentHandoffCart(
 			current.revision,
 		);
 		if (written.ok) return { ok: true, session: viewOf(written.session) };
+	}
+	return { ok: false, reason: "WRITE_CONFLICT" };
+}
+
+/**
+ * Detach the agent's cart from a session about to be re-built (an agent update),
+ * so the caller may release that cart's stock holds before building the new one
+ * (ADR-0047). One compare-and-set; refused once a link was redeemed (the shopper
+ * may own that cart now: `SESSION_HANDED_OFF`), or the session is closed. A
+ * redeem that wins the race marks the session first, so this is refused; one that
+ * loses reads a session with no cart and builds its own. Answers the detached
+ * cart id, or none when the session had no cart.
+ */
+export async function detachAgentSessionCart(
+	deps: Pick<AgentSessionDeps, "store" | "clock">,
+	input: { sessionId: AgentSessionId },
+): Promise<
+	| { ok: true; cartId?: string }
+	| {
+			ok: false;
+			reason: "SESSION_NOT_FOUND" | "SESSION_HANDED_OFF" | "SESSION_CLOSED" | "WRITE_CONFLICT";
+	  }
+> {
+	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+		const current = await deps.store.get(input.sessionId);
+		if (current === null) return { ok: false, reason: "SESSION_NOT_FOUND" };
+		if (isAgentSessionHandedOff(current)) return { ok: false, reason: "SESSION_HANDED_OFF" };
+		if (!isAgentSessionOpen(current.status)) return { ok: false, reason: "SESSION_CLOSED" };
+		const cartId = current.cartId;
+		if (cartId === undefined) return { ok: true };
+		const { cartId: _detached, ...rest } = current;
+		const written = await deps.store.write(
+			{ ...rest, updatedAt: deps.clock.now().toISOString() },
+			current.revision,
+		);
+		if (written.ok) return { ok: true, cartId };
 	}
 	return { ok: false, reason: "WRITE_CONFLICT" };
 }
