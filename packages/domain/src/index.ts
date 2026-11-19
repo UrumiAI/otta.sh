@@ -826,3 +826,53 @@ export {
 	updateSettings,
 } from "./settings/use-cases.js";
 export type { AttemptThrottle } from "./ports/attempt-throttle.js";
+// ADR-0047: agent checkout sessions (UCP) and the shopper hand-off link.
+export {
+	AGENT_SESSION_ID_PREFIX,
+	AGENT_SESSION_MAX_LINES,
+	AGENT_SESSION_RETENTION_MS,
+	AGENT_SESSION_TTL_MS,
+	MAX_WRITE_RECORDS,
+	agentSessionId,
+	isOpenStatus,
+	statusForLines,
+	type AgentCheckoutSession,
+	type AgentSessionBuyer,
+	type AgentSessionChannel,
+	type AgentSessionId,
+	type AgentSessionLine,
+	type AgentSessionOperation,
+	type AgentSessionQuote,
+	type AgentSessionStatus,
+	type AgentSessionWriteRecord,
+} from "./agentic/model.js";
+export type {
+	AgentSessionFailure,
+	AgentSessionFailureCode,
+	AgentSessionInvalidReason,
+	HandoffFailure,
+	HandoffFailureCode,
+	OrderSecretFailure,
+} from "./agentic/errors.js";
+export type { AgentSessionSecrets } from "./agentic/secrets.js";
+export {
+	DEFAULT_AGENT_SESSION_LIMITS,
+	cancelSession,
+	completeSession,
+	createSession,
+	getSession,
+	issueHandoff,
+	redeemHandoff,
+	replaceSession,
+	verifyOrderSecret,
+	type AgentSessionContent,
+	type AgentSessionDeps,
+	type AgentSessionLimits,
+	type AgentSessionWriteResult,
+	type CreateAgentSessionResult,
+	type KeyedRequest,
+} from "./agentic/use-cases.js";
+export type {
+	AgentCreateIdempotencyRecord,
+	AgentSessionStore,
+} from "./ports/agent-session-store.js";

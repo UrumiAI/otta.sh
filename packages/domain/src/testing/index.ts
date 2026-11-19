@@ -210,3 +210,10 @@ export {
 	type AttemptThrottleContractOptions,
 	type AttemptThrottleHarness,
 } from "./attempt-throttle-contract.js";
+// ADR-0047: agent checkout sessions.
+export { InMemoryAgentSessionStore } from "./in-memory-agent-session-store.js";
+export {
+	agentSessionStoreContract,
+	type AgentSessionStoreHarness,
+	type AgentSessionStoreContractOptions,
+} from "./agent-session-store-contract.js";
