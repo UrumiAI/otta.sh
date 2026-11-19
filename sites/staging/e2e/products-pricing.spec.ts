@@ -33,6 +33,17 @@ function productRows(page: Page) {
 	return page.locator("tbody tr").filter({ hasNot: page.locator("td[colspan]") });
 }
 
+/** How many product rows the list settled on. The Price header renders with the
+ *  shell, BEFORE the rows load, so counting right after `openList` can read 0 on
+ *  a seeded stack (main CI 44175558642, 44082615245). Wait for a product row or
+ *  EmDash's empty-collection message, whichever comes first, then count. */
+async function settledProductRowCount(page: Page): Promise<number> {
+	const rows = productRows(page);
+	const empty = page.locator("tbody td[colspan]", { hasText: /No products yet/i });
+	await expect(rows.first().or(empty)).toBeVisible({ timeout: ADMIN_SHELL_TIMEOUT_MS });
+	return rows.count();
+}
+
 async function openList(page: Page): Promise<void> {
 	await page.goto(LIST_URL);
 	// On a fresh database EmDash greets the first admin with a modal that opens
@@ -55,8 +66,7 @@ test.describe("pricing and stock live in the products collection", () => {
 	test("the products list shows each product's price and stock", async ({ adminPage }, info) => {
 		await openList(adminPage);
 		await expect(adminPage.getByRole("columnheader", { name: "Stock" })).toBeVisible();
-		const rows = productRows(adminPage);
-		await skipWithoutProducts(info, await rows.count());
+		await skipWithoutProducts(info, await settledProductRowCount(adminPage));
 		// Every cell settles to a value — a price or "Not priced", a count or a
 		// reason — never stays on the loading mark.
 		await expect(adminPage.locator(".otta-pricing-cell").first()).toBeVisible();
@@ -74,7 +84,7 @@ test.describe("pricing and stock live in the products collection", () => {
 	}, info) => {
 		await openList(adminPage);
 		const rows = productRows(adminPage);
-		await skipWithoutProducts(info, await rows.count());
+		await skipWithoutProducts(info, await settledProductRowCount(adminPage));
 		await rows.first().getByRole("link").first().click();
 
 		const cardsGroup = adminPage.getByTestId("otta-pricing-cards");
