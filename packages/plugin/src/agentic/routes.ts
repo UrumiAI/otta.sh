@@ -27,6 +27,7 @@ import {
 	verifyAgentOrderSecret,
 	type AgentSessionContent,
 	type AgentSessionDeps,
+	type AgentSessionId,
 	type AgentSessionLine,
 	type AgentSessionView,
 	type OrderAddress,
@@ -44,8 +45,12 @@ import {
 	addAgentLines,
 	buildAgentCart,
 	quoteAgentCart,
+	retryAgentLine,
 	screenAgentLines,
+	startAgentCart,
 	type AgentMessage,
+	type AgentSelection,
+	type BuiltCart,
 } from "./cart-quote.js";
 import {
 	fingerprintOf,
@@ -182,24 +187,52 @@ async function contentFor(
 ): Promise<{ content: AgentSessionContent; messages: AgentMessage[] } | Refused> {
 	const built = await buildAgentCart(client, cartKey, input.lines, input.currency);
 	if ("failed" in built) return { ok: false, reason: built.failed };
+	return quotedContent(client, built, input, nowIso);
+}
+
+/** Quote a built cart and assemble the content the domain stores. */
+async function quotedContent(
+	client: CommerceClient,
+	built: BuiltCart,
+	input: AgentSessionInput,
+	nowIso: string,
+): Promise<{ content: AgentSessionContent; messages: AgentMessage[] }> {
 	const quoted =
 		built.lines.length === 0
 			? { quote: undefined, messages: [] }
 			: await quoteAgentCart(client, built.cartId, selectionOf(input), nowIso);
-	// The session never advertises a coupon or method the quote refused: once a
-	// quote was made, only what it was made with is kept (its message says why).
-	const kept = "applied" in quoted && quoted.applied !== undefined ? quoted.applied : input;
 	const content: AgentSessionContent = {
 		currency: built.currency,
 		lines: built.lines,
 		cartId: built.cartId,
 		...(input.buyer !== undefined ? { buyer: input.buyer } : {}),
-		...(input.address !== undefined ? { destination: orderAddressOf(input.address) } : {}),
-		...(kept.shippingMethodId !== undefined ? { shippingMethodId: kept.shippingMethodId } : {}),
-		...(kept.couponCode !== undefined ? { couponCode: kept.couponCode } : {}),
+		...acceptedSelection(input, quoted),
 		...(quoted.quote !== undefined ? { quote: quoted.quote } : {}),
 	};
 	return { content, messages: [...built.messages, ...quoted.messages] };
+}
+
+/**
+ * The destination, shipping method and coupon the session may keep: ONLY those a
+ * quote positively accepted (`applied`, refused parts dropped — their messages say
+ * why). No quote made (no lines, or it failed for another reason) ⇒ none of them:
+ * a session never advertises or pre-fills a selection nothing accepted.
+ */
+export function acceptedSelection(
+	input: Pick<AgentSessionInput, "address" | "shippingMethodId" | "couponCode">,
+	quoted: { applied?: AgentSelection },
+): Pick<AgentSessionContent, "destination" | "shippingMethodId" | "couponCode"> {
+	const applied = quoted.applied;
+	if (applied === undefined) return {};
+	return {
+		...(applied.destination !== undefined && input.address !== undefined
+			? { destination: orderAddressOf(input.address) }
+			: {}),
+		...(applied.shippingMethodId !== undefined
+			? { shippingMethodId: applied.shippingMethodId }
+			: {}),
+		...(applied.couponCode !== undefined ? { couponCode: applied.couponCode } : {}),
+	};
 }
 
 /**
@@ -340,31 +373,183 @@ export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
 			// with no cart built or touched. Only a fresh, allowed write builds one.
 			const pre = await precheckAgentSessionReplace(deps, request);
 			if (!pre.proceed) return writeAnswer(pre.result);
-			// The previous agent cart's holds would count against the new cart (the
-			// last unit would read OUT_OF_STOCK on the agent's own update), so release
-			// them FIRST — but only after detaching the cart from the session in one
-			// compare-and-set that a redeem cannot slip past: a redeem that won marked
-			// the session first, and the detach is refused (the shopper may own that
-			// cart now); one that loses reads a session with no cart and builds its own.
-			const detached = await detachAgentSessionCart(deps, { sessionId });
-			if (!detached.ok) return { ok: false as const, reason: detached.reason };
-			if (detached.cartId !== undefined) await releaseCart(ctx, detached.cartId);
-			const client = await makeCommerceClient(ctx);
-			const built = await contentFor(
-				client,
-				await agentCartKey("replace", sessionId, input.idempotencyKey, request.fingerprint),
-				input,
-				deps.clock.now().toISOString(),
-			);
-			if (!("content" in built)) return built;
-			const result = await replaceAgentSession(deps, {
-				...request,
-				content: built.content,
-				messages: built.messages,
-			});
-			if (!result.ok) await releaseBuilt(ctx, built.content.cartId);
-			return writeAnswer(result);
+			return replaceWithNewCart(ctx, deps, request, input);
 		});
+}
+
+/**
+ * An update's cart work (ADR-0047). The previous agent cart stays ATTACHED and
+ * holding its stock while the new cart is built, so a redeem landing at any point
+ * re-adopts a cart that holds the stock (and this update is then refused
+ * SESSION_HANDED_OFF, its new cart released). Only when the new cart is refused
+ * OUT_OF_STOCK for lines the old cart holds is the old cart detached (one
+ * compare-and-set: refused once handed off, a replay for this key's own body),
+ * released, and those lines retried once. After a fresh write, the old cart is
+ * released.
+ *
+ * If anything throws after the new cart exists, that cart is released (unless the
+ * session points at it) and the error propagates. A session the throw left
+ * detached shows NO cart and NO quote (the detach drops both), never totals no
+ * cart holds; its lines rebuild at redeem.
+ */
+async function replaceWithNewCart(
+	ctx: PluginContext,
+	deps: AgentSessionDeps,
+	request: { sessionId: AgentSessionId; idempotencyKey: string; fingerprint: string },
+	input: AgentSessionInput,
+): Promise<AgenticWriteResult> {
+	const { sessionId } = request;
+	const client = await makeCommerceClient(ctx);
+	const oldCartId = (await deps.store.get(sessionId))?.cartId;
+	const started = await startAgentCart(
+		client,
+		await agentCartKey("replace", sessionId, input.idempotencyKey, request.fingerprint),
+		input.currency,
+	);
+	if ("failed" in started) return { ok: false, reason: started.failed };
+	const newCartId = started.cartId;
+	let oldReleased = false;
+	try {
+		const added = await addAgentLines(client, newCartId, started.currency, input.lines);
+		let lines = added.lines;
+		let messages = added.messages;
+		const retry = await heldByOldCart(client, oldCartId, input.lines, messages, deps);
+		if (retry.length > 0) {
+			const detached = await detachAgentSessionCart(deps, request);
+			if (!detached.ok) {
+				await releaseUnlessAttached(ctx, deps, sessionId, newCartId);
+				return { ok: false, reason: detached.reason };
+			}
+			// This key's own body already wrote (a duplicate that lost the race):
+			// answer it; the cart is that write's, so nothing is released.
+			if (!detached.detached) return writeAnswer(detached.replay);
+			if (detached.cartId !== undefined) {
+				await releaseCart(ctx, detached.cartId);
+				oldReleased = true;
+			}
+			({ lines, messages } = await retryLines(
+				client,
+				newCartId,
+				input.lines,
+				retry,
+				lines,
+				messages,
+			));
+		}
+		const { content, messages: all } = await quotedContent(
+			client,
+			{ cartId: newCartId, currency: started.currency, lines, messages },
+			input,
+			deps.clock.now().toISOString(),
+		);
+		const result = await replaceAgentSession(deps, { ...request, content, messages: all });
+		if (!result.ok) {
+			await releaseUnlessAttached(ctx, deps, sessionId, newCartId);
+			return writeAnswer(result);
+		}
+		// The write moved the session to the new cart: the old one is nobody's.
+		if (
+			!result.replayed &&
+			!result.session.handedOff &&
+			!oldReleased &&
+			oldCartId !== undefined &&
+			oldCartId !== newCartId
+		) {
+			await releaseCart(ctx, oldCartId);
+		}
+		return writeAnswer(result);
+	} catch (err) {
+		await releaseUnlessAttached(ctx, deps, sessionId, newCartId);
+		throw err;
+	}
+}
+
+/** One retry candidate: a requested line refused OUT_OF_STOCK whose stock the
+ *  session's previous cart still holds. */
+interface HeldRetry {
+	index: number;
+	sku: string;
+}
+
+async function heldByOldCart(
+	client: CommerceClient,
+	oldCartId: string | undefined,
+	requested: AgentSessionInput["lines"],
+	messages: readonly AgentMessage[],
+	deps: AgentSessionDeps,
+): Promise<HeldRetry[]> {
+	const refused = messages
+		.filter((m) => m.code === "OUT_OF_STOCK")
+		.map((m) => /^lines\[(\d+)\]$/.exec(m.path))
+		.filter((match): match is RegExpExecArray => match !== null)
+		.map((match) => Number(match[1]));
+	if (refused.length === 0 || oldCartId === undefined) return [];
+	const old = await client.getCart(oldCartId);
+	if (!old.ok) return [];
+	const nowIso = deps.clock.now().toISOString();
+	const held: HeldRetry[] = [];
+	for (const index of refused) {
+		const want = requested[index];
+		const line = old.cart.lines.find(
+			(l) =>
+				want !== undefined && l.productId === want.productId && allHeld({ lines: [l] }, nowIso),
+		);
+		if (line !== undefined) held.push({ index, sku: line.sku });
+	}
+	return held;
+}
+
+/** Retry each held line once; the lines come back in request order. */
+async function retryLines(
+	client: CommerceClient,
+	cartId: string,
+	requested: AgentSessionInput["lines"],
+	retry: readonly HeldRetry[],
+	lines: AgentSessionLine[],
+	messages: AgentMessage[],
+): Promise<{ lines: AgentSessionLine[]; messages: AgentMessage[] }> {
+	const next = [...lines];
+	let kept = [...messages];
+	for (const { index, sku } of retry) {
+		const want = requested[index];
+		if (want === undefined) continue;
+		const path = `lines[${String(index)}]`;
+		const again = await retryAgentLine(client, cartId, {
+			productId: want.productId,
+			sku,
+			quantity: want.quantity,
+		});
+		kept = kept.filter((m) => m.path !== path);
+		if (again.ok) next.push(again.line);
+		else kept.push({ code: again.reason, path });
+	}
+	const order = new Map(requested.map((l, i) => [l.productId, i]));
+	const at = (productId: string): number => order.get(productId) ?? Number.MAX_SAFE_INTEGER;
+	return {
+		lines: next.toSorted((a, b) => at(a.productId) - at(b.productId)),
+		messages: kept.toSorted((a, b) => messageLineIndex(a) - messageLineIndex(b)),
+	};
+}
+
+/** A message's line index; non-line messages sort last. */
+function messageLineIndex(m: AgentMessage): number {
+	const match = /^lines\[(\d+)\]$/.exec(m.path);
+	return match === null ? Number.MAX_SAFE_INTEGER : Number(match[1]);
+}
+
+/** Release `cartId` unless the session now points at it (a same-body twin's write). */
+async function releaseUnlessAttached(
+	ctx: PluginContext,
+	deps: AgentSessionDeps,
+	sessionId: AgentSessionId,
+	cartId: string,
+): Promise<void> {
+	try {
+		if ((await deps.store.get(sessionId))?.cartId === cartId) return;
+	} catch {
+		return;
+	}
+	await releaseCart(ctx, cartId);
 }
 
 function writeAnswer(result: Awaited<ReturnType<typeof replaceAgentSession>>): AgenticWriteResult {

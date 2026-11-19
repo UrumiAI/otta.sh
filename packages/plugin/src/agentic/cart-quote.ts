@@ -70,6 +70,34 @@ function lineKey(cartId: string, productId: string): string {
 	return `agentic:${cartId}:line:${productId}`;
 }
 
+/**
+ * Add one line again under a FRESH key (a refused reserve key is once-only: its
+ * replay answers the same refusal): the update's single retry of a line whose
+ * stock the session's previous cart held until it was released.
+ */
+export async function retryAgentLine(
+	client: CommerceClient,
+	cartId: string,
+	line: { productId: string; sku: string; quantity: number },
+): Promise<{ ok: true; line: AgentSessionLine } | { ok: false; reason: string }> {
+	const added = await client.addCartLine(
+		cartId,
+		line.sku,
+		line.productId,
+		line.quantity,
+		`${lineKey(cartId, line.productId)}:retry`,
+	);
+	if (!added.ok) return { ok: false, reason: added.reason };
+	return {
+		ok: true,
+		line: {
+			productId: toProductId(line.productId),
+			sku: toSku(line.sku),
+			quantity: line.quantity,
+		},
+	};
+}
+
 /** A requested line that passed the catalog checks, with the product's sku. */
 export interface ScreenedLine {
 	index: number;
@@ -181,12 +209,27 @@ export async function buildAgentCart(
 	requested: readonly AgentLineRequest[],
 	currency: string | undefined,
 ): Promise<BuiltCart | { failed: "CART_UNAVAILABLE" }> {
+	const started = await startAgentCart(client, cartKey, currency);
+	if ("failed" in started) return started;
+	const { lines, messages } = await addAgentLines(
+		client,
+		started.cartId,
+		started.currency,
+		requested,
+	);
+	return { ...started, lines, messages };
+}
+
+/** Create (or, under the same key, find) the empty cart and read its currency. */
+export async function startAgentCart(
+	client: CommerceClient,
+	cartKey: string,
+	currency: string | undefined,
+): Promise<{ cartId: string; currency: Currency } | { failed: "CART_UNAVAILABLE" }> {
 	const { cartId } = await client.createCart(currency, cartKey);
 	const read = await client.getCart(cartId);
 	if (!read.ok) return { failed: "CART_UNAVAILABLE" };
-	const cartCurrency = read.cart.currency;
-	const { lines, messages } = await addAgentLines(client, cartId, cartCurrency, requested);
-	return { cartId, currency: toCurrency(cartCurrency), lines, messages };
+	return { cartId, currency: toCurrency(read.cart.currency) };
 }
 
 /** The selection fields a refusal drops, as the checkout summary drops them. */

@@ -29,21 +29,31 @@ import {
 import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	acceptedSelection,
 	agentCartKey,
 	allHeld,
+	createAgenticHandoffRedeemHandler,
 	createAgenticSessionCancelHandler,
 	createAgenticSessionCreateHandler,
+	createAgenticSessionUpdateHandler,
 } from "../src/agentic/routes.js";
 import { fingerprintOf, parseAgentSessionInput } from "../src/agentic/input.js";
 import { AGENTIC_ENABLED_KEY, AGENTIC_SERVER_KEY_KEY } from "../src/agentic/settings.js";
 import { makeCommerceClient } from "../src/commerce/make-commerce-client.js";
 import type { PluginContext } from "../src/types.js";
 import { sweepContext } from "./cron-sweep-fixtures.js";
-import { agenticFixture, cartLines, seedAgenticStore } from "./helpers/agentic-sandbox.js";
+import {
+	agenticFixture,
+	cartLines,
+	seedAgenticStore,
+	seedProduct,
+} from "./helpers/agentic-sandbox.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
 const F = agenticFixture("aru");
 const [MUG] = F.products;
+/** One unit on hand. */
+const LAST = { id: "prod-aru-last", sku: "SKU-ARU-LAST", amount: 4000 };
 const SERVER_KEY = randomBase64Url(32);
 const REQUEST = {
 	method: "POST",
@@ -104,6 +114,7 @@ const BODY = { idempotencyKey: "race-1", lines: [{ productId: MUG.id, quantity: 
 beforeEach(async () => {
 	({ storage: base } = await makeSqliteStorage(commerceStorageLayout()));
 	await seedAgenticStore(base, F);
+	await seedProduct(base, LAST, 1, { stock: 1 });
 	before = null;
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	vi.spyOn(console, "error").mockImplementation(() => {});
@@ -167,6 +178,81 @@ describe("a write refused after its cart was built", () => {
 		);
 		const { cartId } = await client.createCart(undefined, cartKey);
 		expect(await cartLines(base, cartId)).toEqual({});
+	});
+});
+
+describe("a redeem landing mid-update", () => {
+	test("the last unit: the shopper re-adopts the agent's cart holding it; the update is SESSION_HANDED_OFF and its cart released", async () => {
+		const c = ctx();
+		const created = await call(createAgenticSessionCreateHandler(), c, {
+			idempotencyKey: "mid-create",
+			lines: [{ productId: LAST.id, quantity: 1 }],
+		});
+		expect(created).toMatchObject({ ok: true, messages: [] });
+		const id = (created["session"] as { id: string }).id;
+		const agentCart = (await new EmdashAgentSessionStore({ storage: base }).get(id as never))
+			?.cartId;
+		if (agentCart === undefined) throw new Error("no cart");
+
+		let redeemed: Record<string, unknown> | null = null;
+		before = async (collection) => {
+			// The update's first stock call: its new cart is being filled right now.
+			if (redeemed !== null || collection !== "inventory") return;
+			redeemed = {};
+			const shopper = sweepContext(base, undefined, {
+				[AGENTIC_ENABLED_KEY]: true,
+				[AGENTIC_SERVER_KEY_KEY]: SERVER_KEY,
+			});
+			redeemed = await call(createAgenticHandoffRedeemHandler(), shopper, {
+				token: created["handoffToken"],
+			});
+		};
+		const body = {
+			sessionId: id,
+			idempotencyKey: "mid-update",
+			lines: [{ productId: LAST.id, quantity: 1 }],
+			couponCode: "NOPE",
+		};
+		const updated = await call(createAgenticSessionUpdateHandler(), c, body);
+		before = null;
+
+		expect(redeemed).toMatchObject({ ok: true, cartId: agentCart, messages: [] });
+		expect(Object.keys((await cartLines(base, agentCart)) ?? {})).toEqual([LAST.sku]);
+		expect(updated).toEqual({ ok: false, reason: "SESSION_HANDED_OFF" });
+		const input = parseAgentSessionInput(body);
+		if (input === null) throw new Error("bad body");
+		const client = await makeCommerceClient(sweepContext(base));
+		const { cartId: built } = await client.createCart(
+			undefined,
+			await agentCartKey("replace", id, body.idempotencyKey, await fingerprintOf(input, "replace")),
+		);
+		expect(built).not.toBe(agentCart);
+		expect(await cartLines(base, built)).toEqual({});
+	});
+});
+
+describe("acceptedSelection", () => {
+	const input = {
+		address: {
+			name: "A",
+			line1: "1 Main St",
+			city: "Springfield",
+			region: "IL",
+			postalCode: "62701",
+			country: "US",
+		},
+		shippingMethodId: "ship",
+		couponCode: "SAVE",
+	} as never;
+	test("only what the quote positively accepted; nothing when no quote was made", () => {
+		// A refused coupon, then the quote failed for another reason: no `applied`.
+		expect(acceptedSelection(input, {})).toEqual({});
+		expect(acceptedSelection(input, { applied: {} })).toEqual({});
+		const all = acceptedSelection(input, {
+			applied: { destination: { country: "US" }, shippingMethodId: "ship", couponCode: "SAVE" },
+		});
+		expect(all).toMatchObject({ shippingMethodId: "ship", couponCode: "SAVE" });
+		expect(all.destination).toMatchObject({ country: "US", postalCode: "62701" });
 	});
 });
 

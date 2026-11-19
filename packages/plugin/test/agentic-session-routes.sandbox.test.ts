@@ -356,4 +356,29 @@ describe("agentic routes, switched on", () => {
 		const cart = await cartLines(storage, await storedCartId(won.id));
 		expect(Object.keys(cart ?? {})).toEqual(won.lines.map((l) => l.sku));
 	});
+
+	test("a refused destination is neither stored nor pre-filled, and takes its method with it", async () => {
+		const created = await call(handle, "agentic/session/create", {
+			idempotencyKey: "create-fr",
+			lines: [{ productId: MUG.id, quantity: 1 }],
+			destination: {
+				...AGENT_ADDRESS,
+				country: "FR",
+				region: "IDF",
+				postalCode: "75001",
+				city: "Paris",
+			},
+			shippingMethodId: F.methodId,
+		});
+		expect(created["ok"]).toBe(true);
+		expect(created["messages"]).toEqual([expect.objectContaining({ path: "destination" })]);
+		expect(created["session"]).toMatchObject({ destination: null, shippingMethodId: null });
+		const redeemed = await call(handle, "agentic/handoff/redeem", {
+			token: created["handoffToken"],
+		});
+		expect(redeemed).toMatchObject({
+			ok: true,
+			prefill: { address: null, shippingMethodId: null, couponCode: null },
+		});
+	});
 });
