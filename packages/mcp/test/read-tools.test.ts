@@ -214,6 +214,19 @@ describe("reports", () => {
 		expect((await failure("reports_revenue", wide)).code).toBe("INVALID_INPUT");
 		expect((await failure("reports_orders_by_status", wide)).code).toBe("INVALID_INPUT");
 	});
+	test.each(["reports_revenue", "reports_orders_by_status", "reports_top_products"])(
+		"%s refuses `from` after `to` as INVALID_INPUT on field from, not an empty result",
+		async (name) => {
+			const backwards = { from: "2026-06-01T00:00:00.000Z", to: "2026-01-01T00:00:00.000Z" };
+			const err = (await failure(name, backwards)) as { code: string; details?: unknown };
+			expect(err.code).toBe("INVALID_INPUT");
+			expect(err.details).toEqual({ field: "from" });
+		},
+	);
+	test("from equal to to is an empty range, not a refusal", async () => {
+		const at = "2026-06-01T00:00:00.000Z";
+		expect(await call("reports_orders_by_status", { from: at, to: at })).toEqual({ items: [] });
+	});
 	test("a bad range is INVALID_INPUT, not an internal error", async () => {
 		expect((await failure("reports_revenue", { from: "yesterday", to: "today" })).code).toBe(
 			"INVALID_INPUT",
