@@ -294,9 +294,12 @@ export function createAgenticSessionCreateHandler(): RouteHandler<unknown> {
 				content: built.content,
 				messages: built.messages,
 			});
-			// Refused after the build (a cap race, a racer's key): the cart is this
-			// body's alone (its key carries the fingerprint), so release its holds.
-			if (!result.ok) await releaseBuilt(ctx, built.content.cartId);
+			// Refused FOR GOOD after the build (a racer's body took the key): the cart
+			// is this body's alone (its key carries the fingerprint), so release it.
+			// A retryable refusal keeps it — see {@link isFinalRefusal}.
+			if (!result.ok && isFinalRefusal(result.reason)) {
+				await releaseBuilt(ctx, built.content.cartId);
+			}
 			return createAnswer(result);
 		});
 }
@@ -313,6 +316,25 @@ function createAnswer(result: Awaited<ReturnType<typeof createAgentSession>>): A
 		handoffToken: result.handoffToken ?? null,
 		messages: result.messages ?? [],
 	};
+}
+
+/**
+ * Whether a refusal after the keyed cart was built is FINAL for this key and body:
+ * the key is recorded for another body (a retry answers the same refusal, never
+ * rebuilds), or the session can never take the write (handed off, closed,
+ * expired). Only then is the built cart released. Anything else — a throw, a
+ * WRITE_CONFLICT, a cap race, any refusal that leaves the key unrecorded — keeps
+ * it: a same-key retry gets the SAME cart back and replays its completed line
+ * keys, which answer from the cart's lines, so emptying it would make that retry
+ * write a session with no lines. Hold expiry reclaims a cart nobody retries.
+ */
+function isFinalRefusal(reason: string): boolean {
+	return (
+		reason === "IDEMPOTENCY_KEY_REUSED" ||
+		reason === "SESSION_HANDED_OFF" ||
+		reason === "SESSION_CLOSED" ||
+		reason === "SESSION_EXPIRED"
+	);
 }
 
 /** Release a cart this request built for a write the domain then refused. */
@@ -379,18 +401,21 @@ export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
 
 /**
  * An update's cart work (ADR-0047). The previous agent cart stays ATTACHED and
- * holding its stock while the new cart is built, so a redeem landing at any point
- * re-adopts a cart that holds the stock (and this update is then refused
+ * holding its stock while the new cart is built, so a redeem landing during the
+ * build re-adopts a cart that holds the stock (and this update is then refused
  * SESSION_HANDED_OFF, its new cart released). Only when the new cart is refused
  * OUT_OF_STOCK for lines the old cart holds is the old cart detached (one
  * compare-and-set: refused once handed off, a replay for this key's own body),
- * released, and those lines retried once. After a fresh write, the old cart is
- * released.
+ * released, and those lines retried once. REMAINING WINDOW: on that retry path,
+ * a redeem landing between the detach and this write finds no cart and rebuilds,
+ * and it can lose the released stock to this update's retry. After a fresh write,
+ * the old cart is released.
  *
- * If anything throws after the new cart exists, that cart is released (unless the
- * session points at it) and the error propagates. A session the throw left
- * detached shows NO cart and NO quote (the detach drops both), never totals no
- * cart holds; its lines rebuild at redeem.
+ * The new cart is released only on a FINAL refusal ({@link isFinalRefusal}),
+ * re-checked against the session (never a cart a same-body twin attached). A
+ * throw or a retryable refusal keeps it for the same-key retry, which gets it
+ * back. A session a failure left detached shows NO cart and NO quote (the detach
+ * drops both), never totals no cart holds; its lines rebuild at redeem.
  */
 async function replaceWithNewCart(
 	ctx: PluginContext,
@@ -409,59 +434,58 @@ async function replaceWithNewCart(
 	if ("failed" in started) return { ok: false, reason: started.failed };
 	const newCartId = started.cartId;
 	let oldReleased = false;
-	try {
-		const added = await addAgentLines(client, newCartId, started.currency, input.lines);
-		let lines = added.lines;
-		let messages = added.messages;
-		const retry = await heldByOldCart(client, oldCartId, input.lines, messages, deps);
-		if (retry.length > 0) {
-			const detached = await detachAgentSessionCart(deps, request);
-			if (!detached.ok) {
+	const added = await addAgentLines(client, newCartId, started.currency, input.lines);
+	let lines = added.lines;
+	let messages = added.messages;
+	const retry = await heldByOldCart(client, oldCartId, input.lines, messages, deps);
+	if (retry.length > 0) {
+		const detached = await detachAgentSessionCart(deps, request);
+		if (!detached.ok) {
+			if (isFinalRefusal(detached.reason)) {
 				await releaseUnlessAttached(ctx, deps, sessionId, newCartId);
-				return { ok: false, reason: detached.reason };
 			}
-			// This key's own body already wrote (a duplicate that lost the race):
-			// answer it; the cart is that write's, so nothing is released.
-			if (!detached.detached) return writeAnswer(detached.replay);
-			if (detached.cartId !== undefined) {
-				await releaseCart(ctx, detached.cartId);
-				oldReleased = true;
-			}
-			({ lines, messages } = await retryLines(
-				client,
-				newCartId,
-				input.lines,
-				retry,
-				lines,
-				messages,
-			));
+			return { ok: false, reason: detached.reason };
 		}
-		const { content, messages: all } = await quotedContent(
+		// This key's own body already wrote (a duplicate that lost the race):
+		// answer it; the cart is that write's, so nothing is released.
+		if (!detached.detached) return writeAnswer(detached.replay);
+		if (detached.cartId !== undefined) {
+			await releaseCart(ctx, detached.cartId);
+			oldReleased = true;
+		}
+		({ lines, messages } = await retryLines(
 			client,
-			{ cartId: newCartId, currency: started.currency, lines, messages },
-			input,
-			deps.clock.now().toISOString(),
-		);
-		const result = await replaceAgentSession(deps, { ...request, content, messages: all });
-		if (!result.ok) {
+			newCartId,
+			input.lines,
+			retry,
+			lines,
+			messages,
+		));
+	}
+	const { content, messages: all } = await quotedContent(
+		client,
+		{ cartId: newCartId, currency: started.currency, lines, messages },
+		input,
+		deps.clock.now().toISOString(),
+	);
+	const result = await replaceAgentSession(deps, { ...request, content, messages: all });
+	if (!result.ok) {
+		if (isFinalRefusal(result.reason)) {
 			await releaseUnlessAttached(ctx, deps, sessionId, newCartId);
-			return writeAnswer(result);
-		}
-		// The write moved the session to the new cart: the old one is nobody's.
-		if (
-			!result.replayed &&
-			!result.session.handedOff &&
-			!oldReleased &&
-			oldCartId !== undefined &&
-			oldCartId !== newCartId
-		) {
-			await releaseCart(ctx, oldCartId);
 		}
 		return writeAnswer(result);
-	} catch (err) {
-		await releaseUnlessAttached(ctx, deps, sessionId, newCartId);
-		throw err;
 	}
+	// The write moved the session to the new cart: the old one is nobody's.
+	if (
+		!result.replayed &&
+		!result.session.handedOff &&
+		!oldReleased &&
+		oldCartId !== undefined &&
+		oldCartId !== newCartId
+	) {
+		await releaseCart(ctx, oldCartId);
+	}
+	return writeAnswer(result);
 }
 
 /** One retry candidate: a requested line refused OUT_OF_STOCK whose stock the

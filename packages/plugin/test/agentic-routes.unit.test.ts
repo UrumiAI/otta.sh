@@ -43,6 +43,7 @@ import { makeCommerceClient } from "../src/commerce/make-commerce-client.js";
 import type { PluginContext } from "../src/types.js";
 import { sweepContext } from "./cron-sweep-fixtures.js";
 import {
+	AGENT_ADDRESS,
 	agenticFixture,
 	cartLines,
 	seedAgenticStore,
@@ -228,6 +229,46 @@ describe("a redeem landing mid-update", () => {
 		);
 		expect(built).not.toBe(agentCart);
 		expect(await cartLines(base, built)).toEqual({});
+	});
+});
+
+describe("an update that throws after building its cart", () => {
+	test("keeps the keyed cart: the same-key, same-body retry writes a session with its lines and a priced quote", async () => {
+		const c = ctx();
+		const created = await call(createAgenticSessionCreateHandler(), c, {
+			idempotencyKey: "throw-create",
+			lines: [{ productId: MUG.id, quantity: 1 }],
+		});
+		expect(created["ok"]).toBe(true);
+		const id = (created["session"] as { id: string }).id;
+		const body = {
+			sessionId: id,
+			idempotencyKey: "throw-update",
+			lines: [{ productId: MUG.id, quantity: 2 }],
+			destination: AGENT_ADDRESS,
+			shippingMethodId: F.methodId,
+		};
+		let thrown = false;
+		before = async (collection, method) => {
+			// The update's session write, after its new cart was built and quoted.
+			if (thrown || collection !== AGENT_SESSIONS_COLLECTION || method !== "compareAndSet") return;
+			thrown = true;
+			throw new Error("injected storage failure");
+		};
+		const failed = await call(createAgenticSessionUpdateHandler(), c, body).catch(() => ({
+			ok: false,
+			error: "THROWN",
+		}));
+		before = null;
+		expect(thrown).toBe(true);
+		expect(failed["ok"]).toBe(false);
+
+		const retried = await call(createAgenticSessionUpdateHandler(), c, body);
+		expect(retried).toMatchObject({ ok: true, replayed: false, messages: [] });
+		const session = retried["session"] as Record<string, unknown>;
+		expect(session["lines"]).toEqual([{ productId: MUG.id, sku: MUG.sku, quantity: 2 }]);
+		expect(session["quote"]).toMatchObject({ subtotal: 3000, fulfillment: 599 });
+		expect((session["quote"] as { total: number | null }).total).not.toBeNull();
 	});
 });
 
