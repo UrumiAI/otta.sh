@@ -177,6 +177,34 @@ describe("createCoupon", () => {
 	});
 });
 
+describe("createCoupon refuses a coupon without its own economics, before any write", () => {
+	// A fixed_amount coupon is an amount IN a currency; a percentage coupon is its
+	// rate. Without them the row is created but can never discount anything (the
+	// domain's validate-coupon refuses it at checkout). `invalid`, so the page's
+	// refusal net and the MCP tools' INVALID_INPUT both name the field.
+	test.each([
+		["fixed_amount without amountCents", { type: "fixed_amount", currency: "USD" }, "amountCents"],
+		[
+			"fixed_amount with amountCents null",
+			{ type: "fixed_amount", amountCents: null, currency: "USD" },
+			"amountCents",
+		],
+		["fixed_amount without currency", { type: "fixed_amount", amountCents: 500 }, "currency"],
+		[
+			"fixed_amount with currency null",
+			{ type: "fixed_amount", amountCents: 500, currency: null },
+			"currency",
+		],
+		["fixed_amount with neither (amount named first)", { type: "fixed_amount" }, "amountCents"],
+		["percentage without rateBps", { type: "percentage" }, "rateBps"],
+		["percentage with rateBps null", { type: "percentage", rateBps: null }, "rateBps"],
+	] as const)("%s is `invalid`, nothing written", async (_name, economics, field) => {
+		const outcome = await createCoupon(client, { id: "c-bare", code: "BARE", ...economics });
+		expect(outcome).toMatchObject({ kind: "invalid", field });
+		expect(await stored("c-bare")).toBeNull();
+	});
+});
+
 describe("updateCoupon (full replace, as the page saves)", () => {
 	test("an edit is `ok`, and a field it does not carry is cleared — the page's full replace", async () => {
 		await seed({ id: "c-five", code: "FIVEOFF", minSubtotalCents: 3500, maxUses: 10 });
@@ -214,6 +242,22 @@ describe("updateCoupon (full replace, as the page saves)", () => {
 			kind: "failed",
 			status: 400,
 		});
+	});
+
+	test("blanking a percentage coupon's rate is `failed` (the route's 400), nothing written", async () => {
+		await seed({ id: "c-pct", code: "PCT10", type: "percentage", rateBps: 1000 });
+		expect(await updateCoupon(client, "c-pct", { rateBps: null })).toEqual({
+			kind: "failed",
+			status: 400,
+		});
+		expect((await stored("c-pct"))?.rateBps).toBe(1000);
+	});
+
+	test("clearing a fixed coupon's currency is refused (a set currency never changes), nothing written", async () => {
+		await seed({ id: "c-five", code: "FIVEOFF" });
+		const outcome = await updateCoupon(client, "c-five", { currency: null, amountCents: 500 });
+		expect(outcome).toMatchObject({ kind: "currency_refused", reason: COUPON_CURRENCY_MOVED });
+		expect((await stored("c-five"))?.currency).toBe("USD");
 	});
 
 	test("a malformed coupon ID is `invalid`", async () => {

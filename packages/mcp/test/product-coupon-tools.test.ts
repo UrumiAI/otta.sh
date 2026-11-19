@@ -439,6 +439,30 @@ describe("coupons", () => {
 		expect(err.details).toMatchObject({ field: "code" });
 	});
 
+	test.each([
+		[
+			"a fixed_amount coupon without amountCents",
+			{ type: "fixed_amount", currency: "USD" },
+			"amountCents",
+		],
+		[
+			"a fixed_amount coupon without currency",
+			{ type: "fixed_amount", amountCents: 500 },
+			"currency",
+		],
+		["a fixed_amount coupon with neither", { type: "fixed_amount" }, "amountCents"],
+		["a percentage coupon without rateBps", { type: "percentage" }, "rateBps"],
+	] as const)(
+		"%s is INVALID_INPUT naming the field, and nothing is created",
+		async (_n, economics, field) => {
+			const c = code();
+			const err = await failure("coupons_create", { code: c, ...economics });
+			expect(err.code).toBe("INVALID_INPUT");
+			expect(err.details).toMatchObject({ field });
+			expect((await failure("coupons_get", { code: c })).code).toBe("NOT_FOUND");
+		},
+	);
+
 	test("a percentage coupon with a cap but no currency is COUPON_CURRENCY_REFUSED", async () => {
 		const err = await failure("coupons_create", {
 			code: code(),
@@ -477,6 +501,31 @@ describe("coupons", () => {
 		const err = await failure("coupons_update", { couponId: `id-${c}`, amountCents: null });
 		expect(err.code).toBe("COUPON_WRITE_FAILED");
 		expect(err.details).toEqual({ status: 400 });
+	});
+
+	test("blanking a percentage coupon's rate is COUPON_WRITE_FAILED, and the rate is kept", async () => {
+		const c = code();
+		await call("coupons_create", { id: `id-${c}`, code: c, type: "percentage", rateBps: 1000 });
+		const err = await failure("coupons_update", { couponId: `id-${c}`, rateBps: null });
+		expect(err.code).toBe("COUPON_WRITE_FAILED");
+		expect(err.details).toEqual({ status: 400 });
+		expect((await couponRow(c)).rateBps).toBe(1000);
+	});
+
+	test("clearing a fixed coupon's currency is refused, and the currency is kept", async () => {
+		const c = code();
+		await call("coupons_create", {
+			id: `id-${c}`,
+			code: c,
+			type: "fixed_amount",
+			amountCents: 500,
+			currency: "USD",
+		});
+		const err = await failure("coupons_update", { couponId: `id-${c}`, currency: null });
+		expect(err.code).toBe("COUPON_CURRENCY_REFUSED");
+		const row = await couponRow(c);
+		expect(row.currency).toBe("USD");
+		expect(row.amountCents).toBe(500);
 	});
 
 	test("an unknown coupon is NOT_FOUND for update, retire and delete", async () => {
