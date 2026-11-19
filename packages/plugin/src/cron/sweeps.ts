@@ -208,7 +208,11 @@ import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
 } from "../commerce/in-process-commerce-stores.js";
-import { COMMERCE_STORAGE_COLLECTIONS } from "../commerce/commerce-storage.js";
+import {
+	COMMERCE_STORAGE_COLLECTIONS,
+	type CommerceStorageLayout,
+} from "../commerce/commerce-storage.js";
+import { MCP_AUDIT_COLLECTION, MCP_AUDIT_STORAGE_COLLECTIONS } from "../mcp-audit-declaration.js";
 import {
 	countTimeoutsAsAttempts,
 	EMAIL_AVAILABILITY_READS,
@@ -1392,7 +1396,12 @@ export async function runCommerceSweeps(
 		lateRefunds: lateRefundLimit,
 	};
 	const state = await readState(cursors);
-	let stateChanged = noteIndexLayout(state, state.existed === true, nowIso.slice(0, 10));
+	let stateChanged = noteIndexLayout(
+		state,
+		state.existed === true,
+		nowIso.slice(0, 10),
+		declaredIndexLayout(ctx.storage),
+	);
 	delete state.existed;
 	const indexBuildHold =
 		queryBudget <= WORKERS_FREE_MAX_QUERY_BUDGET && state.indexBuildDay === nowIso.slice(0, 10);
@@ -2911,7 +2920,7 @@ interface SweepState {
 	 *  tick that affords one order. Cleared when a run drains the listing, so the next
 	 *  pass starts at the oldest again. */
 	codAutoCancelCursor?: { createdAt: string; orderId: string };
-	/** The declared index layout (`INDEX_LAYOUT`) the last tick saw. */
+	/** The declared index layout (`declaredIndexLayout`) the last tick saw. */
 	indexLayout?: string;
 	/** The UTC day a tick first saw a new index layout: EmDash builds the new indexes
 	 *  that day (see `indexBuildHold`). */
@@ -2921,26 +2930,53 @@ interface SweepState {
 }
 
 /**
- * A fingerprint of every index Otta declares (`COMMERCE_STORAGE_COLLECTIONS`): EmDash
- * builds a newly declared index on the first scheduled tick after the deploy (since
- * 1.5.0, or on the first non-GET plugin request of a new isolate, if sooner: every
- * storefront Otta call is a POST, reads included),
- * so a tick that finds a different one stored is on that deploy's day.
+ * A fingerprint of an index layout: collection → its indexes and unique indexes,
+ * in name order. FNV-1a, 32 bits: a short tag, not a security boundary.
  */
-export const INDEX_LAYOUT: string = (() => {
+export function indexLayoutOf(layout: CommerceStorageLayout): string {
 	const text = JSON.stringify(
-		Object.entries(COMMERCE_STORAGE_COLLECTIONS)
+		Object.entries(layout)
 			.toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
 			.map(([name, c]) => [name, c.indexes ?? [], c.uniqueIndexes ?? []]),
 	);
-	// FNV-1a, 32 bits: a short tag, not a security boundary.
 	let hash = 0x811c9dc5;
 	for (let i = 0; i < text.length; i++) {
 		hash ^= text.charCodeAt(i);
 		hash = Math.imul(hash, 0x01000193) >>> 0;
 	}
 	return hash.toString(16).padStart(8, "0");
-})();
+}
+
+/**
+ * A fingerprint of every index Otta declares (`COMMERCE_STORAGE_COLLECTIONS`): EmDash
+ * builds a newly declared index on the first scheduled tick after the deploy (since
+ * 1.5.0, or on the first non-GET plugin request of a new isolate, if sooner: every
+ * storefront Otta call is a POST, reads included),
+ * so a tick that finds a different one stored is on that deploy's day.
+ */
+export const INDEX_LAYOUT: string = indexLayoutOf(COMMERCE_STORAGE_COLLECTIONS);
+
+/**
+ * The same, on a site that has the MCP add-on on: its audit log's collection
+ * (`MCP_AUDIT_STORAGE_COLLECTIONS`) is declared too. A non-unique EmDash index spans
+ * every `_plugin_storage` row, so its build costs as much as a commerce one, and the
+ * day a site turns `mcp` on is an index-build day like any other.
+ */
+export const INDEX_LAYOUT_WITH_MCP_AUDIT: string = indexLayoutOf({
+	...COMMERCE_STORAGE_COLLECTIONS,
+	...MCP_AUDIT_STORAGE_COLLECTIONS,
+});
+
+/**
+ * The layout THIS site declares. The plugin cannot read its descriptor, but
+ * `ctx.storage` holds exactly the declared collections, so the audit collection's
+ * presence says whether the site opted in to `mcp`.
+ */
+export function declaredIndexLayout(
+	storage: Readonly<Record<string, unknown>> | undefined,
+): string {
+	return storage?.[MCP_AUDIT_COLLECTION] === undefined ? INDEX_LAYOUT : INDEX_LAYOUT_WITH_MCP_AUDIT;
+}
 
 /**
  * Whether today is an index-build day on Workers Free: the deploy day of a new index
@@ -2954,9 +2990,14 @@ export const INDEX_LAYOUT: string = (() => {
  * the new layout; a store with no state yet (a fresh install) has no Otta rows to build
  * indexes over (other plugins' rows still count), and is not held.
  */
-function noteIndexLayout(state: SweepState, existed: boolean, today: string): boolean {
-	if (state.indexLayout === INDEX_LAYOUT) return false;
-	state.indexLayout = INDEX_LAYOUT;
+function noteIndexLayout(
+	state: SweepState,
+	existed: boolean,
+	today: string,
+	layout: string,
+): boolean {
+	if (state.indexLayout === layout) return false;
+	state.indexLayout = layout;
 	if (existed) state.indexBuildDay = today;
 	return true;
 }

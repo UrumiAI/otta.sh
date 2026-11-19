@@ -39,6 +39,24 @@ pull that brings the move reports modify/delete conflicts for edited files git d
 to their new path: re-apply each edit to the same file under `sites/store/src/`, then `git rm`
 the old path.
 
+## The admin MCP tools log every call (a site with its own Otta descriptor)
+
+`@urumi.ai/otta-mcp` logs every tool call to an audit log in the plugin's storage
+([ADR-0046](./adr/0046-admin-mcp-tools-ship-as-a-plugin-wrapper.md), "Amendment: audit log").
+`otta({ mcp: true })` declares what the log needs. **A site that registers the Otta descriptor
+itself** and points its entrypoint at `@urumi.ai/otta-mcp/trusted` must also declare the
+collection and the page, or **every tool call is refused with `AUDIT_UNAVAILABLE`** (nothing
+runs unlogged):
+
+```ts
+storage: { ...COMMERCE_STORAGE_COLLECTIONS, ...MCP_AUDIT_STORAGE_COLLECTIONS },
+adminPages: [/* your Otta pages */ MCP_AUDIT_PAGE],
+```
+
+All three come from `@urumi.ai/otta-plugin`. On Workers Free, deploy it on a quiet day: the log's
+`at` index is built over every plugin-storage row that day (see the cost note in the
+`@urumi.ai/otta-mcp` README).
+
 ## Your own middleware runs before Otta's
 
 `otta()` registers the store's middleware after EmDash's (`order: "post"`), and Astro runs a

@@ -240,7 +240,8 @@ describe("OTTA_EMAIL_FROM at config load", () => {
 		expect(src).toMatch(
 			/const fromEnv = env\[name\];\s*if \(fromEnv !== undefined\) return fromEnv;[\s\S]{0,80}parseDotEnv\(readFileSync\(path\.join\(envDir, "\.env"\)/,
 		);
-		expect(src).toMatch(/buildEmdashOptions\(egress,\s*emailFrom\)/);
+		// The third argument is the MCP opt-in (ADR-0046).
+		expect(src).toMatch(/buildEmdashOptions\(egress,\s*emailFrom,\s*\{ mcp \}\)/);
 		// ...and this site points envDir at its own directory, where its .env lives.
 		const site = readFileSync(path.join(root, "astro.config.ts"), "utf8");
 		expect(site).toMatch(/envDir: new URL\("\.", import\.meta\.url\)/);

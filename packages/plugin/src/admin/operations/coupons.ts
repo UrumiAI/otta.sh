@@ -85,15 +85,46 @@ async function couponCollision(
 	return byCode.id === id ? "same" : "code";
 }
 
+/** Why a create without its own economics is refused (`invalid`'s `reason`). */
+const COUPON_ECONOMICS_REQUIRED = {
+	amountCents: "a fixed_amount coupon needs its amount",
+	currency: "a fixed_amount coupon needs the currency its amount is in",
+	rateBps: "a percentage coupon needs its rate",
+} as const;
+
+/**
+ * The field a coupon of this type cannot be created without, when it is
+ * missing, else `undefined`. A fixed_amount coupon is an amount IN a currency;
+ * a percentage coupon is its rate. Without them the row would be created and
+ * then refused at every checkout (`validate-coupon`). The rules client's create
+ * checks shapes only; its update already refuses blanking these (the route's
+ * 400), so this closes the create path for every caller (the page and MCP).
+ */
+function missingEconomics(input: CouponInput): keyof typeof COUPON_ECONOMICS_REQUIRED | undefined {
+	if (input.type === "fixed_amount") {
+		if (input.amountCents === undefined || input.amountCents === null) return "amountCents";
+		if (input.currency === undefined || input.currency === null) return "currency";
+	} else if (input.type === "percentage") {
+		if (input.rateBps === undefined || input.rateBps === null) return "rateBps";
+	}
+	return undefined;
+}
+
 /**
  * Create a coupon. A collision (409) is classified by looking the CODE up — the
  * store does not say which of the two was taken. A rules-client refusal of the
- * input is an outcome, not a throw.
+ * input is an outcome, not a throw, and so is a coupon without its own
+ * economics ({@link COUPON_ECONOMICS_REQUIRED}), refused before any write.
  */
 export async function createCoupon(
 	client: AdminRulesSurface,
 	input: CouponInput,
 ): Promise<CouponWriteOutcome<CouponWire>> {
+	const missing = missingEconomics(input);
+	if (missing !== undefined) {
+		const reason = COUPON_ECONOMICS_REQUIRED[missing];
+		return { kind: "invalid", field: missing, reason, message: `invalid ${missing}: ${reason}` };
+	}
 	let result: Awaited<ReturnType<AdminRulesSurface["createCoupon"]>>;
 	try {
 		result = await client.createCoupon(input);

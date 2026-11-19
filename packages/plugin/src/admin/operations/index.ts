@@ -70,6 +70,7 @@ export {
 	PAYMENT_SECRET_STORAGE,
 	pricedProductsText,
 	readSaveGen,
+	readCashOnDeliverySummary,
 	readSettingsSummary,
 	saveCashOnDelivery,
 	saveOperationalSettings,
@@ -87,6 +88,8 @@ export {
 	type PaymentSecretStorage,
 	type SetPaymentSecretOutcome,
 	type SettingsSummary,
+	type CashOnDeliverySummary,
 	type StoreCurrencyInput,
 	type StoreCurrencyOutcome,
 } from "./settings.js";
+export type { CodNumberField } from "../../payments/cash-on-delivery.js";

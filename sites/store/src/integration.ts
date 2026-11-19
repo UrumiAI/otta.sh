@@ -83,6 +83,13 @@ export interface OttaOptions {
 	 * `wrangler.jsonc`. Every build guard reads this one file.
 	 */
 	wranglerConfig?: string;
+	/**
+	 * Register the Otta plugin with its admin MCP tools (ADR-0046), served on
+	 * EmDash's own `/_emdash/api/mcp`. Needs `@urumi.ai/otta-mcp` installed (an
+	 * optional peer). Default off. Ignored by the playground build, which has no
+	 * MCP endpoint.
+	 */
+	mcp?: boolean;
 	/** The disposable playground build (try.otta.sh). Never for a store. */
 	playground?: boolean;
 	/** The build environment. Default `process.env`; tests pass their own. */
@@ -126,6 +133,9 @@ export function assertTemplateContract(given: unknown, version: string = package
 			`the last version that built.`,
 	);
 }
+
+/** The optional peer a site installs only to opt in to the admin MCP tools (ADR-0046). */
+const MCP_PEER = "@urumi.ai/otta-mcp";
 
 /** The peers whose exact version this release is built and tested against. */
 const CHECKED_PEERS = [
@@ -216,6 +226,17 @@ function installedVersion(root: string, name: string): string | undefined {
 	}
 }
 
+/** Whether `root` resolves a `node_modules/<name>/package.json`, going up. */
+function resolvesPackage(root: string, name: string): boolean {
+	let dir = root;
+	for (;;) {
+		if (existsSync(path.join(dir, "node_modules", ...name.split("/"), "package.json"))) return true;
+		const parent = path.dirname(dir);
+		if (parent === dir) return false;
+		dir = parent;
+	}
+}
+
 /** The pins this release ships with: its own `peerDependencies`, read at run time. */
 function peerPins(): Record<string, string> {
 	const { peerDependencies } = JSON.parse(
@@ -230,11 +251,16 @@ function peerPins(): Record<string, string> {
  * check is the only other thing that enforces them, and `--legacy-peer-deps`,
  * `--force` or pnpm skip it. Resolved from the PROJECT root, not from this
  * package: a nested copy here would not be the one the site builds with.
+ *
+ * `@urumi.ai/otta-mcp` is an optional peer, checked only with `mcp: true`
+ * (ADR-0046). Missing, it gets its own message: npm never installs an optional
+ * peer, so the site has to add it.
  */
 export function assertPeerVersions(
 	root: string,
 	pins: Record<string, string> = peerPins(),
 	version: string = packageVersion(),
+	options: { mcp?: boolean } = {},
 ): void {
 	if (nearestNodeModules(root) === undefined) {
 		throw new Error(
@@ -243,8 +269,18 @@ export function assertPeerVersions(
 				`(npm install, as the template uses); Yarn Plug'n'Play has no node_modules and is not supported.`,
 		);
 	}
+	if (options.mcp === true && !resolvesPackage(root, MCP_PEER)) {
+		// The exact version to install, when the pin is one (it is, once published).
+		const pin = pins[MCP_PEER];
+		const spec = pin === undefined || !/^\d/.test(pin) ? MCP_PEER : `${MCP_PEER}@${pin}`;
+		throw new Error(
+			`otta({ mcp: true }) needs ${MCP_PEER} installed, and ${root} does not resolve it. ` +
+				`Add it to the store's dependencies (npm install ${spec}) and build again, or ` +
+				`remove mcp: true.`,
+		);
+	}
 	const problems: string[] = [];
-	for (const name of CHECKED_PEERS) {
+	for (const name of options.mcp === true ? [...CHECKED_PEERS, MCP_PEER] : CHECKED_PEERS) {
 		const pin = pins[name];
 		if (pin === undefined) continue;
 		let found: string | undefined;
@@ -610,6 +646,8 @@ export default function otta(options: OttaOptions): AstroIntegration {
 				? fileURLToPath(options.envDir)
 				: options.envDir;
 	const playground = options.playground === true;
+	/** The admin MCP tools (ADR-0046). The playground has no MCP endpoint (`mcp: false`). */
+	const mcp = options.mcp === true && !playground;
 
 	/**
 	 * Issue #498: the Stripe publishable key is no longer a build setting — it is
@@ -678,7 +716,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 		hooks: {
 			"astro:config:setup": ({ config, updateConfig, injectRoute, addMiddleware }) => {
 				const root = fileURLToPath(config.root);
-				assertPeerVersions(root);
+				assertPeerVersions(root, undefined, undefined, { mcp });
 				const read = (file: string) => readFileSync(path.join(root, file), "utf8");
 
 				/**
@@ -717,7 +755,7 @@ export default function otta(options: OttaOptions): AstroIntegration {
 						react(),
 						playground
 							? emdash(buildPlaygroundEmdashOptions(egress))
-							: emdash(buildEmdashOptions(egress, emailFrom)),
+							: emdash(buildEmdashOptions(egress, emailFrom, { mcp })),
 						buildPathScrub(),
 					],
 					// CSRF: Astro's `security.checkOrigin` does NOT protect the storefront's
@@ -754,10 +792,15 @@ export default function otta(options: OttaOptions): AstroIntegration {
 							//
 							// @urumi.ai/otta-store itself: its runtime ships as `.ts` and `.astro`
 							// source, which only Vite can compile.
+							//
+							// @urumi.ai/otta-mcp, only when the site opts in (ADR-0046), for the
+							// plugin's reason: it imports @urumi.ai/otta-plugin, and an
+							// externalized copy would load a second plugin without the defines.
 							noExternal: [
 								"@urumi.ai/otta-plugin",
 								"@urumi.ai/otta-admin-react",
 								OTTA_INTEGRATION_NAME,
+								...(mcp ? [MCP_PEER] : []),
 							],
 						},
 						optimizeDeps: {

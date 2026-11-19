@@ -122,6 +122,7 @@ export {
 	type ZoneRegionsRefusal,
 	updateTaxSettings,
 	clearPaymentSecret,
+	readCashOnDeliverySummary,
 	readSettingsSummary,
 	saveCashOnDelivery,
 	saveOperationalSettings,
@@ -137,10 +138,30 @@ export {
 	type PaymentSecretState,
 	type SetPaymentSecretOutcome,
 	type SettingsSummary,
+	type CashOnDeliverySummary,
+	type CodNumberField,
 	type StoreCurrencyInput,
 	type StoreCurrencyOutcome,
 } from "./admin/operations/index.js";
 export type { AdminOrdersSurface, InlineEmailStatus } from "./admin/admin-orders-surface.js";
+// The closed sets an MCP tool's input schema restates, TYPE-ONLY: `@urumi.ai/otta-mcp`
+// pins its copies to these at compile time, so a new state, cancel reason,
+// reconciliation outcome, coupon type, product kind, tax status or shipping
+// method type fails its typecheck instead of being silently refused.
+export type { OrderState } from "@urumi.ai/otta-admin-presentation";
+export type {
+	CancellationReason,
+	CouponType,
+	ProductKind,
+	ProductTaxStatus,
+	ReconciliationOutcome,
+	ShippingMethodType,
+} from "@urumi.ai/otta-domain";
+// The admin composition root and the operator rule, for `@urumi.ai/otta-mcp`: its
+// tool routes build the SAME clients the console routes do and record the SAME
+// operator name, so an MCP write and a console write cannot disagree on either.
+export { makeAdminClients, type AdminClients } from "./admin/make-admin-clients.js";
+export { operatorName } from "./admin/orders-console-route.js";
 // `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
 // export are gone (INC-R3, ADR-0015): that Block Kit screen was retired once the
 // React console's writes moved off it, so `/products` is served by the
@@ -209,6 +230,13 @@ export {
 	type ShippingPageInput,
 } from "./admin/shipping-page.js";
 export { STORE_SETTINGS_PAGE } from "./admin/store-settings-page.js";
+// The MCP add-on's audit log (ADR-0046): its collection and page, as data, for the
+// descriptor to declare when a site opts in to `mcp`. See the module doc.
+export {
+	MCP_AUDIT_COLLECTION,
+	MCP_AUDIT_PAGE,
+	MCP_AUDIT_STORAGE_COLLECTIONS,
+} from "./mcp-audit-declaration.js";
 export {
 	couponDiscountSummary,
 	couponUsesSummary,
@@ -665,7 +693,13 @@ export type {
 	HttpResponse,
 	KvAccess,
 	PluginContext,
+	RouteCaller,
+	RouteRequestMeta,
+	RouteEntry,
+	RouteHandler,
 	SandboxedPlugin,
+	SandboxedRequest,
+	SandboxedRouteContext,
 	SettingsFieldSpec,
 } from "./types.js";
 export { default as plugin } from "./plugin.js";

@@ -16,6 +16,8 @@ import {
 	COMMERCE_STORAGE_COLLECTIONS,
 	COUPONS_PAGE,
 	type InProcessEgressUrls,
+	MCP_AUDIT_PAGE,
+	MCP_AUDIT_STORAGE_COLLECTIONS,
 	REPORTS_PAGE,
 	resolveAllowedHosts,
 	STORE_SETTINGS_PAGE,
@@ -57,12 +59,32 @@ function commerceStorage(): DescriptorStorage {
 	return COMMERCE_STORAGE_COLLECTIONS as unknown as DescriptorStorage;
 }
 
+/** With `mcp`, the add-on's audit log collection beside the commerce layout. */
+function mcpStorage(): DescriptorStorage {
+	return {
+		...commerceStorage(),
+		...(MCP_AUDIT_STORAGE_COLLECTIONS as unknown as DescriptorStorage),
+	};
+}
+
 /** INC-C3 — what the egress allowlist depends on. */
 export interface OttaPluginDescriptorOptions {
 	/** Deployment-supplied in-process egress (only `OTTA_EXTRA_ALLOWED_HOSTS` today). Absent ⇒ no host
 	 *  granted for it. Email needs none: it goes through `ctx.email`. */
 	egress?: InProcessEgressUrls;
+	/**
+	 * Register the plugin with its admin MCP tools (ADR-0046): the entrypoint
+	 * becomes `@urumi.ai/otta-mcp/trusted`, the same plugin wrapped by `withMcp`,
+	 * and the add-on's audit log is declared: its `mcp_audit` collection beside
+	 * the commerce layout, and its "Audit log" admin page. Nothing else changes,
+	 * so the id, capabilities and allowed hosts stay the plugin's own. Default off.
+	 */
+	mcp?: boolean;
 }
+
+/** The plugin's own trusted entry, and the opt-in one that adds the MCP tools. */
+export const OTTA_PLUGIN_TRUSTED_ENTRY = "@urumi.ai/otta-plugin/trusted";
+export const OTTA_MCP_TRUSTED_ENTRY = "@urumi.ai/otta-mcp/trusted";
 
 export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}): PluginDescriptor {
 	return {
@@ -72,7 +94,9 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// The TRUSTED entry (issue #447): the plugin's default export with
 		// `trustedHost` on, so a timed-out Stripe request is aborted at the
 		// socket. Right only because this registration is in-process.
-		entrypoint: "@urumi.ai/otta-plugin/trusted",
+		// With `mcp` it is the same plugin wrapped by @urumi.ai/otta-mcp (also
+		// `trustedHost`), which adds one private route per tool and `mcp.tools`.
+		entrypoint: options.mcp === true ? OTTA_MCP_TRUSTED_ENTRY : OTTA_PLUGIN_TRUSTED_ENTRY,
 		// EXACTLY the manifest's three capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
@@ -97,7 +121,10 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// by @urumi.ai/otta-plugin precisely so the deploying site declares the layout the
 		// adapters actually read, and site-config.test.ts asserts equality with it
 		// (names AND per-collection index lists) rather than a hand-copied snapshot.
-		storage: commerceStorage(),
+		// With `mcp`, plus the audit log's collection (ADR-0046): EmDash takes a
+		// plugin's collections from its descriptor only, so the add-on cannot
+		// declare it itself.
+		storage: options.mcp === true ? mcpStorage() : commerceStorage(),
 		// NO `fieldWidgets` — deliberate, and pinned by site-config.test.ts.
 		// Commercial fields have exactly one home, `product_commerce`, edited
 		// only from the admin's Pricing & inventory page ("one home per field",
@@ -128,7 +155,13 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// Settings, Tax and Shipping are ONE entry, Store settings, which hosts the
 		// three as tabs (`store-settings-page.ts`). Their own `/settings`, `/tax`
 		// and `/shipping` pages are still served for bookmarks, just not listed.
-		adminPages: [REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE],
+		//
+		// With `mcp`, the add-on's Audit log page too (ADR-0046), served by the
+		// add-on through this same `admin` route.
+		adminPages:
+			options.mcp === true
+				? [REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE, MCP_AUDIT_PAGE]
+				: [REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE],
 		// ADR-0037: the payment credentials, declared `secret` so EmDash encrypts
 		// them at rest under EMDASH_ENCRYPTION_KEY. The plugin's Settings page stays
 		// where they are entered; declaring a schema also makes EmDash list a

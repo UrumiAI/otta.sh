@@ -408,11 +408,23 @@ export interface RouteCaller {
 	role?: unknown;
 }
 
+/**
+ * The request facts the host normalised (EmDash's `RequestMeta`, passed through
+ * as `routeCtx.requestMeta`): the client IP (honouring only the host's trusted
+ * proxy headers) and user agent, each `null` when unknown.
+ */
+export interface RouteRequestMeta {
+	ip: string | null;
+	userAgent: string | null;
+}
+
 export interface SandboxedRouteContext<TInput = unknown> {
 	input: TInput;
 	request: SandboxedRequest;
 	/** The authenticated caller — private routes only. */
 	user?: RouteCaller;
+	/** Absent where the caller is not EmDash (a unit test, the workerd mirror). */
+	requestMeta?: RouteRequestMeta;
 }
 
 export type RouteHandler<TInput = unknown> = (

@@ -67,6 +67,7 @@
 		"@types/react-dom": "^19.2.3",
 		"@urumi.ai/otta-admin-react": "workspace:*",
 		"@urumi.ai/otta-domain": "workspace:*",
+		"@urumi.ai/otta-mcp": "workspace:*",
 		"@urumi.ai/otta-plugin": "workspace:*",
 		"astro": "~7.3.6",
 		"better-sqlite3": "catalog:",
@@ -85,11 +86,17 @@
 		"@astrojs/react": "~6.0.1",
 		"@emdash-cms/cloudflare": "1.5.0",
 		"@urumi.ai/otta-admin-react": "workspace:*",
+		"@urumi.ai/otta-mcp": "workspace:*",
 		"@urumi.ai/otta-plugin": "workspace:*",
 		"astro": "~7.3.6",
 		"emdash": "1.5.0",
 		"react": "~19.2.7",
 		"react-dom": "~19.2.7"
+	},
+	"peerDependenciesMeta": {
+		"@urumi.ai/otta-mcp": {
+			"optional": true
+		}
 	},
 	"engines": {
 		"node": ">=22.16"

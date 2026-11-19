@@ -348,7 +348,14 @@ describe("readSettingsSummary", () => {
 			storeDisplayName: "Acme",
 			currency: "USD",
 			operational: { holdTtlMinutes: 15, lowStockThreshold: 5 },
-			cashOnDelivery: { enabled: false, autoCancelDays: 14 },
+			cashOnDelivery: {
+				enabled: false,
+				autoCancelDays: 14,
+				maxOpenPerBuyer: 3,
+				maxOpenPerClient: 20,
+				maxUnitsPerOrder: 10,
+				instructions: null,
+			},
 			paymentSecrets: {
 				stripeSecretKey: "set",
 				stripeWebhookSecret: "not_set",
@@ -356,6 +363,28 @@ describe("readSettingsSummary", () => {
 			},
 		});
 		expect(JSON.stringify(summary).includes("sk_test_PINNED")).toBe(false);
+	});
+
+	test("reports every cash-on-delivery setting as saved", async () => {
+		const saved = await saveCashOnDelivery(harness.ctx, {
+			enabled: true,
+			instructions: " Exact change, please. ",
+			numbers: {
+				codAutoCancelDays: 7,
+				codMaxOpenPerBuyer: 2,
+				codMaxOpenPerClient: 9,
+				codMaxUnitsPerOrder: 40,
+			},
+		});
+		expect(saved.kind).toBe("saved");
+		expect((await readSettingsSummary(harness.ctx, client)).cashOnDelivery).toEqual({
+			enabled: true,
+			autoCancelDays: 7,
+			maxOpenPerBuyer: 2,
+			maxOpenPerClient: 9,
+			maxUnitsPerOrder: 40,
+			instructions: "Exact change, please.",
+		});
 	});
 });
 
@@ -368,6 +397,7 @@ test("the settings operations are exported from the plugin entry (admin operatio
 		"setPaymentSecret",
 		"clearPaymentSecret",
 		"readSettingsSummary",
+		"readCashOnDeliverySummary",
 	]) {
 		expect(typeof (pluginIndex as Record<string, unknown>)[name], name).toBe("function");
 	}

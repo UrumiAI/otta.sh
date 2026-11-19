@@ -21,8 +21,12 @@ import {
 import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { REPORTING_SETTLE_MS, SWEEP_TASK_NAME } from "../src/cron/index.js";
+import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
 import {
+	declaredIndexLayout,
 	INDEX_LAYOUT,
+	INDEX_LAYOUT_WITH_MCP_AUDIT,
+	indexLayoutOf,
 	REPORTING_BACKFILL_DAYS_PER_DAY_FREE,
 	REPORTING_LINES_HISTORY_DAYS,
 	runCommerceSweeps,
@@ -30,6 +34,10 @@ import {
 	type CommerceSweepSummary,
 	type SweepCursorStore,
 } from "../src/cron/sweeps.js";
+import {
+	MCP_AUDIT_COLLECTION,
+	MCP_AUDIT_STORAGE_COLLECTIONS,
+} from "../src/mcp-audit-declaration.js";
 import { DAY_MS, memoryCursors, placeOrder, sweepContext } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
@@ -523,6 +531,48 @@ describe("the backfill's write volume", () => {
 		for (let run = 0; run < 6; run++) await sweep(cursors, 30, QUIET);
 		expect(await productsDirtyOf(a.day)).toEqual([0]);
 	}, 300_000);
+
+	test("on Free, the day a site turns on the MCP add-on (its audit index declared) builds no backfill", async () => {
+		const cursors = memoryCursors();
+		await sweep(cursors, 30, QUIET);
+		const a = await orderDaysAgo("mcp-on-day", 40);
+		// Built and settled under the commerce layout alone: nothing held.
+		const before = JSON.parse((await cursors.read("state"))!) as Record<string, unknown>;
+		expect(before.indexLayout).toBe(INDEX_LAYOUT);
+		// The deploy that sets `mcp: true` declares the audit collection, which the
+		// host then hands over in ctx.storage. EmDash builds its `at` index over
+		// every plugin-storage row that day.
+		const audit = await makeSqliteStorage({
+			[MCP_AUDIT_COLLECTION]: { indexes: ["at"], uniqueIndexes: [] },
+		});
+		try {
+			storage = { ...storage, [MCP_AUDIT_COLLECTION]: audit.storage[MCP_AUDIT_COLLECTION]! };
+			for (let run = 0; run < 6; run++) await sweep(cursors, 30, QUIET);
+			expect(await productsDirtyOf(a.day)).toEqual([undefined]);
+			const state = JSON.parse((await cursors.read("state"))!) as Record<string, unknown>;
+			expect(state.indexLayout).toBe(INDEX_LAYOUT_WITH_MCP_AUDIT);
+			expect(state.indexBuildDay).toBe(sweepDay());
+			// The next UTC day builds again.
+			await editState(cursors, (st) => ({ ...st, indexBuildDay: "2000-01-01" }));
+			for (let run = 0; run < 6; run++) await sweep(cursors, 30, QUIET);
+			expect(await productsDirtyOf(a.day)).toEqual([0]);
+		} finally {
+			await audit.close();
+		}
+	}, 300_000);
+
+	test("the layout fingerprint follows the declared collections: the audit index only where declared", () => {
+		expect(INDEX_LAYOUT).toBe(indexLayoutOf(COMMERCE_STORAGE_COLLECTIONS));
+		expect(INDEX_LAYOUT_WITH_MCP_AUDIT).toBe(
+			indexLayoutOf({ ...COMMERCE_STORAGE_COLLECTIONS, ...MCP_AUDIT_STORAGE_COLLECTIONS }),
+		);
+		expect(INDEX_LAYOUT_WITH_MCP_AUDIT).not.toBe(INDEX_LAYOUT);
+		expect(declaredIndexLayout(undefined)).toBe(INDEX_LAYOUT);
+		expect(declaredIndexLayout({ orders: {} })).toBe(INDEX_LAYOUT);
+		expect(declaredIndexLayout({ orders: {}, [MCP_AUDIT_COLLECTION]: {} })).toBe(
+			INDEX_LAYOUT_WITH_MCP_AUDIT,
+		);
+	});
 
 	test("days past the history floor are not backfilled", async () => {
 		const cursors = memoryCursors();

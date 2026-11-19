@@ -59,6 +59,7 @@ const STUB_PACKAGES = [
 	"payments-stripe",
 	"payments-cod",
 	"plugin",
+	"mcp",
 ] as const;
 
 interface CruiseViolation {
@@ -348,5 +349,34 @@ describe("the domain perimeter", () => {
 				'import { stub } from "@urumi.ai/otta-plugin";\nexport const x = stub;\n',
 			),
 		).toEqual(["domain-is-io-free"]);
+	});
+});
+
+describe("the otta-mcp layering", () => {
+	test("the plugin importing otta-mcp is forbidden — the edge runs one way", () => {
+		expect(
+			rulesViolatedBy(
+				"plugin",
+				'import { stub } from "@urumi.ai/otta-mcp";\nexport const x = stub;\n',
+			),
+		).toEqual(["plugin-does-not-import-mcp"]);
+	});
+
+	test("otta-mcp importing the plugin is admitted — that is the layering", () => {
+		expect(
+			rulesViolatedBy(
+				"mcp",
+				'import { stub } from "@urumi.ai/otta-plugin";\nexport const x = stub;\n',
+			),
+		).toEqual([]);
+	});
+
+	test("otta-mcp's src running host code is forbidden — only its tests may name emdash", () => {
+		expect(
+			rulesViolatedBy(
+				"mcp",
+				'import { PluginStorageRepository } from "emdash";\nexport const x = PluginStorageRepository;\n',
+			),
+		).toEqual(["console-react-is-quarantined"]);
 	});
 });

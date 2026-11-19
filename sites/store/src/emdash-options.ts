@@ -82,10 +82,15 @@ export interface StagingEmdashOptions {
  *   environment here: the playground calls this builder too and must not
  *   inherit an email provider (ADR-0043). Undefined registers nothing, which is
  *   the fail-closed "no provider" state of ADR-0031.
+ *
+ * @param options.mcp register the Otta plugin with its admin MCP tools
+ *   (`otta({ mcp: true })`, ADR-0046). Default off; only the Otta descriptor
+ *   changes (its entrypoint, plus the audit log's collection and page).
  */
 export function buildEmdashOptions(
 	egress: InProcessEgressUrls = {},
 	emailFrom?: EmailSender,
+	options: { mcp?: boolean } = {},
 ): StagingEmdashOptions {
 	return {
 		// "primary-first", never "auto" — see the module doc above.
@@ -103,7 +108,7 @@ export function buildEmdashOptions(
 		// APPENDED. EmDash auto-selects it as the only active provider; it reads
 		// the `send_email` binding `EMAIL` (wrangler.jsonc) at send time.
 		plugins: [
-			ottaPluginDescriptor({ egress }),
+			ottaPluginDescriptor({ egress, mcp: options.mcp === true }),
 			ottaConsoleDescriptor(),
 			...(emailFrom === undefined ? [] : [cloudflareEmail({ from: emailFrom, binding: "EMAIL" })]),
 		],

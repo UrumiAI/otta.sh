@@ -147,37 +147,53 @@ export async function removeStock(
  *  save` row: "content hash of the submitted wire + `expectedUpdatedAt`").
  *  FNV-1a twice with independent seeds — dependency-free and sandbox-safe.
  *
- *  KNOWN FOOTGUN, INHERITED VERBATIM AND UNREACHABLE TODAY. `?? null`
- *  canonicalises an ABSENT field and an EXPLICIT `null` identically, so "clear
- *  the compare-at" and "leave the compare-at alone" hash to the same key. That
- *  cannot bite across the three forms this screen ships: each carries its
- *  clearable fields in every submit, so a form that can send `null` never omits
- *  the field, and one that omits it can never send `null`. A FOURTH form that
- *  submits a clearable field only sometimes would collide the two — and, under a
- *  once-only store, silently drop the second write. Whoever adds one must
- *  distinguish the cases here (an absent sentinel, not `null`) rather than
- *  assume this holds. */
+ *  ABSENT IS NOT NULL. "Clear the compare-at" and "leave the compare-at alone"
+ *  are different edits, and under a once-only store a shared key would answer
+ *  the second as the first's replay: reported saved, never written. (The store
+ *  checks the key BEFORE the watermark, so a stale second edit is not caught
+ *  either.) An agent reading once and sending two small clears at one watermark
+ *  hits exactly that. So every field is hashed injectively — but WITHOUT moving
+ *  the key of any wire the console sends, so an in-flight console retry across
+ *  an upgrade still dedupes:
+ *  - compare-at, unit cost and tax class: the console's save always carries them
+ *    (blank = `null`), so `null` keeps hashing as `null` and ABSENT gets the
+ *    sentinel;
+ *  - every other field: the console omits it when blank and never sends `null`,
+ *    so ABSENT keeps hashing as `null` and an explicit `null` gets the sentinel.
+ *  The retired split forms (`save-price`, `save-shipping`, `save-identity`) can
+ *  omit a clearable group; their keys change once, which only matters for a
+ *  retry spanning the deploy. */
 export function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): string {
+	/** The console always sends it; absent is the distinct case. */
+	const carried = (value: unknown): unknown => (value === undefined ? EDIT_KEY_ABSENT : value);
+	/** The console omits it when blank, never null; null is the distinct case. */
+	const omitted = (value: unknown): unknown =>
+		value === undefined ? null : value === null ? EDIT_KEY_NULL : value;
 	const canonical = JSON.stringify([
 		productId,
 		wire.expectedUpdatedAt,
-		wire.sku ?? null,
-		wire.price ?? null,
+		omitted(wire.sku),
+		omitted(wire.price),
 		// No `title` component — the wire cannot carry one (ADR-0013).
-		wire.taxClass ?? null,
-		wire.compareAtPrice ?? null,
-		wire.unitCost ?? null,
-		wire.weightGrams ?? null,
-		wire.lengthMm ?? null,
-		wire.widthMm ?? null,
-		wire.heightMm ?? null,
-		wire.productKind ?? null,
+		carried(wire.taxClass),
+		carried(wire.compareAtPrice),
+		carried(wire.unitCost),
+		omitted(wire.weightGrams),
+		omitted(wire.lengthMm),
+		omitted(wire.widthMm),
+		omitted(wire.heightMm),
+		omitted(wire.productKind),
 		// PR 2b: without it, two saves at one watermark that differ only in tax
 		// status share a key, and the second is answered as the first's replay.
-		wire.taxStatus ?? null,
+		omitted(wire.taxStatus),
 	]);
 	return `${productId}:edit:${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x01234567)}`;
 }
+
+/** The two sentinels: arrays, a shape no wire field ever has (strings, numbers,
+ *  `{amount, currency}` objects or null), so neither can collide with a value. */
+const EDIT_KEY_ABSENT = ["absent"] as const;
+const EDIT_KEY_NULL = ["null"] as const;
 
 /** FNV-1a over UTF-16 code units, base-36. Shared with the download-attach key. */
 export function fnv1a(input: string, seed: number): string {

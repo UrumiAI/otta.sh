@@ -32,7 +32,12 @@
  * it out of the generator means it is made once rather than once per migration.
  */
 import type { Page } from "@playwright/test";
-import { COUPONS_PAGE, REPORTS_PAGE, STORE_SETTINGS_PAGE } from "@urumi.ai/otta-plugin";
+import {
+	COUPONS_PAGE,
+	MCP_AUDIT_PAGE,
+	REPORTS_PAGE,
+	STORE_SETTINGS_PAGE,
+} from "@urumi.ai/otta-plugin";
 import type { ConsoleScreen } from "./harness.js";
 import {
 	ADMIN_BASE_PATH,
@@ -79,9 +84,11 @@ const HOST_SCREEN = hostScreen();
  * The Block Kit screens that must survive the console's presence — taken from
  * `@urumi.ai/otta-plugin`'s own exports, which are the same constants
  * `ottaPluginDescriptor` registers. `site-config.test.ts` pins the descriptor's
- * `adminPages` to exactly this list, so the two cannot drift.
+ * `adminPages` to exactly this list, so the two cannot drift. The staging site
+ * opts in to `mcp` (astro.config.ts), so the MCP add-on's Audit log page is
+ * listed too (ADR-0046; pinned in sites/store's otta-plugin-descriptor.test.ts).
  */
-const BLOCK_KIT_PAGES = [REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE] as const;
+const BLOCK_KIT_PAGES = [REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE, MCP_AUDIT_PAGE] as const;
 
 /**
  * Open the host screen and wait for the admin SPA to hand it to React.

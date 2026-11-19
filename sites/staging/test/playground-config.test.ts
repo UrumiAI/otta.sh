@@ -108,7 +108,7 @@ describe("playground build files", () => {
 		expect(playground).toContain("wrangler.playground.jsonc");
 		expect(playground).toContain('imageService: "passthrough"');
 		expect(integration).toMatch(
-			/playground\s*\?\s*emdash\(buildPlaygroundEmdashOptions\(egress\)\)\s*:\s*emdash\(buildEmdashOptions\(egress, emailFrom\)\)/,
+			/playground\s*\?\s*emdash\(buildPlaygroundEmdashOptions\(egress\)\)\s*:\s*emdash\(buildEmdashOptions\(egress, emailFrom, \{ mcp \}\)\)/,
 		);
 		expect(integration).toMatch(/__OTTA_PLAYGROUND__:\s*JSON\.stringify\(playground\)/);
 		expect(integration).toMatch(/const playground = options\.playground === true;/);

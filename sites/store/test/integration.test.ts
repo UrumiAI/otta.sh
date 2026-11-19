@@ -289,6 +289,42 @@ describe("the peer versions this release supports, checked at run time", () => {
 	test("the repository's staging site, which consumes the store by workspace, passes", () => {
 		expect(() => assertPeerVersions(path.join(PKG, "..", "staging"))).not.toThrow();
 	});
+
+	// ADR-0046: @urumi.ai/otta-mcp is an OPTIONAL peer, checked only for a site that opts in.
+	const mcpPins = { ...pins, "@urumi.ai/otta-mcp": "0.2.0" };
+	const peersOk = { emdash: "1.5.0", "@emdash-cms/cloudflare": "1.5.0", astro: "7.3.6" };
+
+	test("without mcp, @urumi.ai/otta-mcp is not checked, installed or not", () => {
+		expect(() => assertPeerVersions(project(peersOk), mcpPins, "0.2.0")).not.toThrow();
+		const stale = project({ ...peersOk, "@urumi.ai/otta-mcp": "0.1.0" });
+		expect(() => assertPeerVersions(stale, mcpPins, "0.2.0", { mcp: false })).not.toThrow();
+	});
+
+	test("mcp: true with @urumi.ai/otta-mcp missing names the package to install", () => {
+		const root = project(peersOk);
+		expect(() => assertPeerVersions(root, mcpPins, "0.2.0", { mcp: true })).toThrow(
+			"otta({ mcp: true }) needs @urumi.ai/otta-mcp installed",
+		);
+	});
+
+	test("mcp: true checks @urumi.ai/otta-mcp against its pin like any other peer", () => {
+		const stale = project({ ...peersOk, "@urumi.ai/otta-mcp": "0.1.0" });
+		expect(() => assertPeerVersions(stale, mcpPins, "0.2.0", { mcp: true })).toThrow(
+			/@urumi\.ai\/otta-mcp: expected 0\.2\.0, found 0\.1\.0/,
+		);
+		const ok = project({ ...peersOk, "@urumi.ai/otta-mcp": "0.2.0" });
+		expect(() => assertPeerVersions(ok, mcpPins, "0.2.0", { mcp: true })).not.toThrow();
+	});
+
+	test("otta({ mcp: true })'s setup hook runs the otta-mcp check against config.root", () => {
+		const root = project(peersOk);
+		const opted = otta({ template: 1, mcp: true, env: {} }).hooks["astro:config:setup"] as (
+			o: unknown,
+		) => void;
+		expect(() => opted({ config: { root: pathToFileURL(`${root}/`) } })).toThrow(
+			"otta({ mcp: true }) needs @urumi.ai/otta-mcp installed",
+		);
+	});
 });
 
 /** The error `otta()`'s setup hook throws for `root`, with a sender set and
@@ -696,5 +732,17 @@ describe("one copy of each runtime in a site (ADR-0045)", () => {
 		// pnpm publishes workspace:* as the exact version.
 		expect(pkg.peerDependencies["@urumi.ai/otta-plugin"]).toBe("workspace:*");
 		expect(pkg.peerDependencies["@urumi.ai/otta-admin-react"]).toBe("workspace:*");
+	});
+
+	test("@urumi.ai/otta-mcp is an OPTIONAL peer (ADR-0046): a site that does not opt in never installs it", () => {
+		const manifest = pkg as typeof pkg & {
+			peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+		};
+		expect(pkg.peerDependencies["@urumi.ai/otta-mcp"]).toBe("workspace:*");
+		expect(manifest.peerDependenciesMeta?.["@urumi.ai/otta-mcp"]).toEqual({ optional: true });
+		expect(pkg.dependencies?.["@urumi.ai/otta-mcp"]).toBeUndefined();
+		expect(pkg.devDependencies["@urumi.ai/otta-mcp"]).toBe("workspace:*");
+		// The only optional one: every runtime above is required.
+		expect(Object.keys(manifest.peerDependenciesMeta ?? {})).toEqual(["@urumi.ai/otta-mcp"]);
 	});
 });
