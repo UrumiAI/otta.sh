@@ -101,8 +101,20 @@ AgentCheckoutSession {
   lines through `addCartLine`, then `quoteCheckout` with destination, shipping method and coupon.
   Map refused lines and coupon refusals to UCP `messages[]`. Status is `incomplete` with no lines,
   else `requires_escalation`, and the response carries `continue_url`.
-- **Idempotency:** every write requires `Idempotency-Key`; the same key and body replay the stored
-  answer, a different body is `409 idempotency_key_reused` (UCP semantics, and Otta's own rule).
+- **Idempotency:** every write requires `Idempotency-Key` (1–255 characters); the same key and
+  body replay the stored answer, a different body is `409 idempotency_key_reused` (UCP semantics,
+  and Otta's own rule). A create's key is scoped to the caller's network key (no session exists
+  yet), so a create retried from another egress IP may duplicate the session (accepted, ADR-0047);
+  every later write is scoped to the session id alone and replays from any network.
+- **Public view:** every result the site sees carries `AgentSessionView`: no idempotency records,
+  network key, secret hashes or link history. A write's `handoffToken` is always the CURRENT live
+  link, also on a replay whose stored answer is older; the site builds `continue_url` only from
+  that token, never from session fields.
+- **Quote:** the plugin's verbatim preview from the domain pricing code; the session stores it
+  unchecked (it refuses only another currency or a total beside an unknown part).
+- **Completion (plugin increment precondition):** placing an order from a redeemed link MUST record
+  `orderId` on the session and move it to `completed`; the domain refuses every later write to a
+  completed session (`SESSION_CLOSED`), so no new link can be minted after an order.
 - **complete** never takes payment: it returns the session with `requires_escalation` and
   `continue_url` (UCP `buyer_handoff_required` message).
 - **cancel** releases the cart's holds and marks the session canceled; a canceled session's link
@@ -112,8 +124,11 @@ AgentCheckoutSession {
 
 ### Hand-off link
 
-- `continue_url = https://<store>/checkout/handoff#<token>`, `token` = 32 random bytes base64url.
-  Only `sha256(token)` is stored on the session; issuing a new link (on update) replaces the hash.
+- `continue_url = https://<store>/checkout/handoff#<token>`, `token` = HMAC-SHA256 of the session
+  id and link generation under a server key of at least 32 bytes, base64url (the `order_secret` is
+  derived the same way). Only `sha256(token)` is stored on the session; issuing a new link replaces
+  the hash. A re-derived secret is checked against its stored hash before it is returned, so
+  rotating the key fails replays closed (`SECRET_KEY_MISMATCH`) instead of handing out dead links.
 - `GET /checkout/handoff` is a static, cookieless, `no-store` page. An inline script keeps only the
   leading token characters of the fragment (agents and chat apps append `?utm_…`, `&…` or a
   trailing period: lesson from WooCommerce #4588), clears the fragment with `replaceState`, and on
@@ -178,6 +193,8 @@ false, every agent route and `/.well-known/ucp` answer 404.
 
 - Sessions are swept 30 days after creation (cron, bounded per tick like `prune-carts`).
 - Account data export and erasure (`privacy` paths) include sessions matching the email.
+  Erasure deletes the whole session document: its kept write answers hold earlier copies of the
+  buyer and address until the session is purged.
 - Logs carry session ids and outcome codes only.
 
 ## Delivery (one PR each, in order, each merges before the next starts)

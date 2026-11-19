@@ -71,6 +71,26 @@ Options considered:
   default-deny tests force it), and a store that has not opted in exposes nothing.
 - Agent checkout sessions hold shopper contact and address data. They are kept for at most 30 days
   and are covered by the account data export and erasure paths.
+  Each session also keeps up to 32 earlier write answers for idempotent replay, and those are
+  historical copies: a buyer or address a later update cleared survives in them until the session
+  is purged. Erasure therefore deletes the whole session document, never only its current fields.
+- Session secrets are derived, not stored: the `order_secret` and each hand-off token are
+  HMAC-SHA256 of the session id (and link generation) under a server key of at least 32 bytes,
+  and the session keeps only their hashes. Rotating that key invalidates every outstanding
+  `order_secret` and link for any path that re-derives them (replays, `complete`, any answer
+  carrying the current link): those fail closed with `SECRET_KEY_MISMATCH` rather than hand out a
+  secret that would not verify. A secret or link a holder already has keeps verifying, and a new
+  link can be issued under the new key; a lost `order_secret` cannot be re-issued.
+- Accepted risk: a create's `Idempotency-Key` is scoped to the caller's network key (a hash of
+  the client IP), because no session exists yet to scope it to. A create retried from a different
+  egress IP, normal for cloud agents, is a fresh create and may leave a duplicate session (it
+  expires unused). Every later write is scoped to the session id alone, which is already the
+  bearer credential, so its retries replay from any network and never mint a second link.
+- Precondition on the plugin increment: at order placement from a redeemed link it MUST record the
+  `orderId` on the session and move the session to `completed`. The domain already refuses
+  update, complete, issue-link and cancel on a completed session (`SESSION_CLOSED`); until the
+  plugin does this, a later update or complete would mint a new link after an order was placed,
+  so the guard against paying twice rests on that increment.
 - Only products the storefront can sell are offered. Until the storefront exposes variants, a
   product with variants is listed with its default sku only.
 - Deferred, each needing its own decision: verified agent signatures, ACP (ChatGPT) carts and
