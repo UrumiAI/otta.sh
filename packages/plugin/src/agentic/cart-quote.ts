@@ -70,27 +70,32 @@ function lineKey(cartId: string, productId: string): string {
 	return `agentic:${cartId}:line:${productId}`;
 }
 
+/** A requested line that passed the catalog checks, with the product's sku. */
+export interface ScreenedLine {
+	index: number;
+	productId: string;
+	sku: string;
+	quantity: number;
+}
+
 /**
- * Add `requested` to `cartId` (already created), each line checked against the
- * catalog batch first: an unknown, unsellable or other-currency product, a sku
- * that is not the product's, or a product named twice is refused with a message,
- * as is any line `addCartLine` refuses (out of stock, over the line cap). Only the
- * lines the cart took come back.
+ * Check `requested` against the catalog batch WITHOUT touching any cart: an
+ * unknown or unsellable product, a sku that is not the product's, another
+ * currency, or a product named twice is refused with a message. One read.
  */
-export async function addAgentLines(
+export async function screenAgentLines(
 	client: CommerceClient,
-	cartId: string,
 	cartCurrency: string,
 	requested: readonly AgentLineRequest[],
-): Promise<{ lines: AgentSessionLine[]; messages: AgentMessage[] }> {
+): Promise<{ accepted: ScreenedLine[]; messages: AgentMessage[] }> {
 	const messages: AgentMessage[] = [];
-	const lines: AgentSessionLine[] = [];
+	const accepted: ScreenedLine[] = [];
 	const ids = [...new Set(requested.map((line) => line.productId))];
 	const rows = ids.length === 0 ? [] : await client.getCommerceBatch(ids);
 	const byId = new Map(rows.map((row) => [row.productId, parseCommerceBatchItem(row)]));
 	const seen = new Set<string>();
 	for (const [index, line] of requested.entries()) {
-		const path = `lines[${String(index)}]`;
+		const path = linePath(index);
 		if (seen.has(line.productId)) {
 			messages.push({ code: "DUPLICATE_LINE", path });
 			continue;
@@ -109,24 +114,60 @@ export async function addAgentLines(
 			messages.push({ code: "CURRENCY_MISMATCH", path });
 			continue;
 		}
+		accepted.push({ index, productId: line.productId, sku: row.sku, quantity: line.quantity });
+	}
+	return { accepted, messages };
+}
+
+function linePath(index: number): string {
+	return `lines[${String(index)}]`;
+}
+
+/** A message's line index; non-line messages sort last. */
+function lineIndexOf(message: AgentMessage): number {
+	const match = /^lines\[(\d+)\]$/.exec(message.path);
+	return match === null ? Number.MAX_SAFE_INTEGER : Number(match[1]);
+}
+
+/** Line messages in request order (a stable sort: ties keep their order). */
+function inRequestOrder(messages: AgentMessage[]): AgentMessage[] {
+	return messages.toSorted((a, b) => lineIndexOf(a) - lineIndexOf(b));
+}
+
+/**
+ * Add `requested` to `cartId` (already created): screened first
+ * ({@link screenAgentLines}), then each line through `addCartLine`, which holds
+ * stock and refuses what cannot be sold (out of stock, over the line cap) with a
+ * message. Only the lines the cart took come back.
+ */
+export async function addAgentLines(
+	client: CommerceClient,
+	cartId: string,
+	cartCurrency: string,
+	requested: readonly AgentLineRequest[],
+): Promise<{ lines: AgentSessionLine[]; messages: AgentMessage[] }> {
+	const screened = await screenAgentLines(client, cartCurrency, requested);
+	const messages = [...screened.messages];
+	const lines: AgentSessionLine[] = [];
+	for (const line of screened.accepted) {
 		const added = await client.addCartLine(
 			cartId,
-			row.sku,
+			line.sku,
 			line.productId,
 			line.quantity,
 			lineKey(cartId, line.productId),
 		);
 		if (!added.ok) {
-			messages.push({ code: added.reason, path });
+			messages.push({ code: added.reason, path: linePath(line.index) });
 			continue;
 		}
 		lines.push({
 			productId: toProductId(line.productId),
-			sku: toSku(row.sku),
+			sku: toSku(line.sku),
 			quantity: line.quantity,
 		});
 	}
-	return { lines, messages };
+	return { lines, messages: inRequestOrder(messages) };
 }
 
 /**

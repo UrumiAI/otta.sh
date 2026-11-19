@@ -19,9 +19,11 @@ import {
 	AGENT_ADDRESS,
 	agenticFixture,
 	call,
+	cartLines,
 	saveAgentic,
 	seedAgenticStore,
 	seedProduct,
+	unpublishProduct,
 } from "./helpers/agentic-sandbox.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
@@ -30,6 +32,10 @@ const F = agenticFixture("aho");
 const [MUG, BOWL] = F.products;
 /** Re-priced later in the file; never part of the main flow. */
 const PLATE = { id: "prod-aho-plate", sku: "SKU-AHO-PLATE", amount: 1000 };
+/** Unpublished mid-test: each case that needs one gets its own. */
+const CUP = { id: "prod-aho-cup", sku: "SKU-AHO-CUP", amount: 800 };
+const JUG = { id: "prod-aho-jug", sku: "SKU-AHO-JUG", amount: 1200 };
+const VASE = { id: "prod-aho-vase", sku: "SKU-AHO-VASE", amount: 900 };
 
 let handle: SandboxHandle;
 let storage: StorageAccess;
@@ -38,7 +44,7 @@ beforeAll(async () => {
 	({ storage } = await storageBridge());
 	handle = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 	await seedAgenticStore(storage, F);
-	await seedProduct(storage, PLATE);
+	for (const product of [PLATE, CUP, JUG, VASE]) await seedProduct(storage, product);
 	await saveAgentic(handle, true);
 	const cod = await handle.invokeRoute("admin", {
 		type: "form_submit",
@@ -90,6 +96,28 @@ async function storedSession(id: string): Promise<Record<string, unknown>> {
 	);
 	if (doc === null) throw new Error("missing session");
 	return doc;
+}
+
+/** Place a COD order from `cartId` through the site's path. */
+async function placeCod(cartId: string, ip: string): Promise<Record<string, unknown>> {
+	return call(
+		handle,
+		"storefront/checkout/place",
+		{
+			cartId,
+			// Its own buyer: open COD orders are capped per buyer (ADR-0044).
+			buyerRef: `agent-buyer-${ip}@example.com`,
+			idempotencyKey: `checkout:${cartId}`,
+			paymentMethod: "cod",
+			shippingAddress: AGENT_ADDRESS,
+			shippingMethodId: F.methodId,
+		},
+		{ headers: { "x-otta-cod-attest": "rate-limited", "cf-connecting-ip": ip } },
+	);
+}
+
+async function storedOrder(orderId: string): Promise<Record<string, unknown> | null> {
+	return collectionOf<Record<string, unknown>>(storage, ORDERS_COLLECTION).get(orderId);
 }
 
 async function editSession(id: string, patch: Record<string, unknown>): Promise<void> {
@@ -288,5 +316,115 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		});
 		const totals = summary["totals"] as Record<string, { money: { amount: number } | null }>;
 		expect(totals["subtotal"]?.money?.amount).toBe(1200);
+	});
+
+	test("re-adopt checks sellability: the agent's cart still exists but its product is unpublished → no cookie, the cart untouched", async () => {
+		const s2 = await createSession("unsold-1", [{ productId: VASE.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const agentCart = (await storedSession(s2.id))["cartId"] as string;
+		const before = await cartLines(storage, agentCart);
+		expect(Object.keys(before ?? {})).toEqual([VASE.sku]);
+		await unpublishProduct(storage, VASE.id);
+		const refused = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		expect(refused).toEqual({
+			ok: false,
+			reason: "HANDOFF_NO_LINES",
+			messages: [{ code: "PRODUCT_UNAVAILABLE", path: "lines[0]" }],
+		});
+		expect(refused).not.toHaveProperty("cookie");
+		expect(await cartLines(storage, agentCart)).toEqual(before);
+	});
+
+	test("rebuild: the agent's cart no longer fits (one product unpublished) → a cart of the rest, pointed at the session, and its order attributed", async () => {
+		const s2 = await createSession(
+			"rebuild-1",
+			[
+				{ productId: MUG.id, quantity: 1 },
+				{ productId: CUP.id, quantity: 1 },
+			],
+			{ couponCode: undefined },
+		);
+		const agentCart = (await storedSession(s2.id))["cartId"] as string;
+		await unpublishProduct(storage, CUP.id);
+		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		expect(redeemed).toMatchObject({
+			ok: true,
+			messages: [{ code: "PRODUCT_UNAVAILABLE", path: "lines[1]" }],
+		});
+		const cartId = redeemed["cartId"] as string;
+		expect(cartId).not.toBe(agentCart);
+		expect(Object.keys((await cartLines(storage, cartId)) ?? {})).toEqual([MUG.sku]);
+		// recordAgentHandoffCart pointed the session at the rebuilt cart...
+		expect((await storedSession(s2.id))["cartId"]).toBe(cartId);
+		// ...and the agent's dead cart released its holds.
+		expect(await cartLines(storage, agentCart)).toEqual({});
+		const placed = await placeCod(cartId, "203.0.113.11");
+		expect(placed["ok"]).toBe(true);
+		expect((await storedOrder(placed["orderId"] as string))?.["attribution"]).toEqual({
+			channel: "agent",
+			via: "handoff",
+			sessionId: s2.id,
+		});
+		expect((await storedSession(s2.id))["status"]).toBe("completed");
+	});
+
+	test("cancel after redeem, then place: the order stands UNATTRIBUTED, the session stays canceled, the reason code alone is logged", async () => {
+		const s2 = await createSession("cancel-after-1", [{ productId: MUG.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		const cartId = redeemed["cartId"] as string;
+		const canceled = await call(handle, "agentic/session/cancel", {
+			sessionId: s2.id,
+			idempotencyKey: "cancel-after",
+		});
+		expect(canceled).toMatchObject({ ok: true, session: { status: "canceled", handedOff: true } });
+		// Handed off: the shopper's cart is NEVER released by the agent's cancel.
+		expect(Object.keys((await cartLines(storage, cartId)) ?? {})).toEqual([MUG.sku]);
+
+		const logged = handle.workerOutput().length;
+		const placed = await placeCod(cartId, "203.0.113.12");
+		expect(placed).toMatchObject({ ok: true, state: "awaiting_payment" });
+		expect(await storedOrder(placed["orderId"] as string)).not.toHaveProperty("attribution");
+		const session = await storedSession(s2.id);
+		expect(session["status"]).toBe("canceled");
+		expect(session).not.toHaveProperty("orderId");
+		const output = handle.workerOutput().slice(logged);
+		expect(output).toContain("placing a hand-off cart's order unattributed (SESSION_CLOSED)");
+		expect(output).not.toContain(s2.id);
+		expect(output).not.toContain(cartId);
+	});
+
+	test("agentic/order: an unknown session is ORDER_SECRET_INVALID; an order that cannot be read answers order null", async () => {
+		expect(
+			await call(handle, "agentic/order", {
+				sessionId: "cs_AAAAAAAAAAAAAAAAAAAAAA",
+				orderSecret: "x".repeat(43),
+			}),
+		).toEqual({ ok: false, reason: "ORDER_SECRET_INVALID" });
+		const s2 = await createSession("order-unreadable", [{ productId: MUG.id, quantity: 1 }]);
+		await editSession(s2.id, { orderId: "order-aho-missing", status: "completed" });
+		expect(
+			await call(handle, "agentic/order", { sessionId: s2.id, orderSecret: s2.orderSecret }),
+		).toEqual({ ok: true, sessionStatus: "completed", order: null });
+	});
+
+	// Last: it switches agentic checkout off.
+	test("switched OFF after a redeem: the order is placed unattributed and AGENTIC_DISABLED is logged", async () => {
+		const s2 = await createSession("off-after-1", [{ productId: MUG.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		const cartId = redeemed["cartId"] as string;
+		await saveAgentic(handle, false);
+		const logged = handle.workerOutput().length;
+		const placed = await placeCod(cartId, "203.0.113.13");
+		expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true });
+		expect(await storedOrder(placed["orderId"] as string)).not.toHaveProperty("attribution");
+		expect(handle.workerOutput().slice(logged)).toContain(
+			"placing a hand-off cart's order unattributed (AGENTIC_DISABLED)",
+		);
+		await saveAgentic(handle, true);
 	});
 });

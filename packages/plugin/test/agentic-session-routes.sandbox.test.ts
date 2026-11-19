@@ -5,8 +5,10 @@
  * and a refused coupon, idempotent replay, and the trusted network key.
  */
 import {
+	AGENT_SESSION_CREATE_KEYS_COLLECTION,
 	AGENT_SESSION_LINKS_COLLECTION,
 	AGENT_SESSIONS_COLLECTION,
+	CARTS_COLLECTION,
 	collectionOf,
 	type StorageAccess,
 } from "@urumi.ai/otta-store-emdash";
@@ -16,6 +18,7 @@ import {
 	AGENT_ADDRESS,
 	agenticFixture,
 	call,
+	cartLines,
 	saveAgentic,
 	seedAgenticStore,
 } from "./helpers/agentic-sandbox.js";
@@ -38,6 +41,31 @@ afterAll(async () => {
 	await handle?.close();
 });
 
+/** Documents in every collection an agentic write could touch. */
+async function counts(): Promise<Record<string, number>> {
+	const names = [
+		AGENT_SESSIONS_COLLECTION,
+		AGENT_SESSION_LINKS_COLLECTION,
+		AGENT_SESSION_CREATE_KEYS_COLLECTION,
+		CARTS_COLLECTION,
+	];
+	const entries = await Promise.all(
+		names.map(async (name) => [name, await collectionOf(storage, name).count({})] as const),
+	);
+	return Object.fromEntries(entries);
+}
+
+const cartCount = (): Promise<number> => collectionOf(storage, CARTS_COLLECTION).count({});
+
+/** The session's cart id, as stored (the wire never carries it). */
+async function storedCartId(sessionId: string): Promise<string> {
+	const doc = await collectionOf<{ cartId?: string }>(storage, AGENT_SESSIONS_COLLECTION).get(
+		sessionId,
+	);
+	if (doc?.cartId === undefined) throw new Error("the session has no cart");
+	return doc.cartId;
+}
+
 function body(key: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		idempotencyKey: key,
@@ -52,16 +80,16 @@ function body(key: string, extra: Record<string, unknown> = {}): Record<string, 
 }
 
 describe("agentic routes, switched off (the default)", () => {
-	test("every route answers NOT_FOUND and writes nothing", async () => {
-		const sessions = collectionOf(storage, AGENT_SESSIONS_COLLECTION);
-		const before = await sessions.count({});
+	test("every route answers NOT_FOUND and writes nothing: no session, cart, link pointer or create key", async () => {
+		const before = await counts();
 		for (const route of AGENTIC_ROUTES) {
 			expect(await call(handle, route, body("off-1")), route).toEqual({
 				ok: false,
 				error: "NOT_FOUND",
 			});
 		}
-		expect(await sessions.count({})).toBe(before);
+		expect(await counts()).toEqual(before);
+		// (No server key either: agentic-settings.test.ts pins that on a recording kv.)
 	});
 });
 
@@ -104,15 +132,22 @@ describe("agentic routes, switched on", () => {
 		expect(created["orderSecret"]).toMatch(/^[A-Za-z0-9_-]{43}$/);
 		expect(created["handoffToken"]).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
-		// The same key and body replays the same answer, secret and link included.
+		// The same key and body replays the same answer, secret and link included —
+		// with no cart work: still exactly one cart.
+		const carts = await cartCount();
 		const replay = await call(handle, "agentic/session/create", body("create-1"));
+		expect(await cartCount()).toBe(carts);
+		expect(replay["handoffToken"]).toBe(created["handoffToken"]);
+		// Byte-stable: a second replay is the first, exactly.
+		expect(await call(handle, "agentic/session/create", body("create-1"))).toEqual(replay);
 		expect(replay).toMatchObject({ ok: true, replayed: true });
 		expect((replay["session"] as { id: string }).id).toBe(session["id"]);
 		expect(replay["orderSecret"]).toBe(created["orderSecret"]);
-		// A different body under the key is refused.
+		// A different body under the key is refused, building no cart.
 		expect(
 			await call(handle, "agentic/session/create", body("create-1", { couponCode: "OTHER" })),
 		).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect(await cartCount()).toBe(carts);
 	});
 
 	test("refused lines and a refused coupon are typed messages; the quote is made without them", async () => {
@@ -203,5 +238,53 @@ describe("agentic routes, switched on", () => {
 		expect(
 			await call(handle, "agentic/session/update", { sessionId: id, ...body("update-2") }),
 		).toEqual({ ok: false, reason: "SESSION_CLOSED" });
+	});
+
+	test("after a redeem, the old key with another body leaves the shopper's cart as it was; an update builds no cart", async () => {
+		const created = await call(handle, "agentic/session/create", body("create-handed"));
+		const id = (created["session"] as { id: string }).id;
+		const redeemed = await call(handle, "agentic/handoff/redeem", {
+			token: created["handoffToken"],
+		});
+		expect(redeemed["ok"]).toBe(true);
+		const shopperCart = redeemed["cartId"] as string;
+		// The agent's own cart was re-adopted: the create key's cart IS the shopper's.
+		expect(shopperCart).toBe(await storedCartId(id));
+		const lines = await cartLines(storage, shopperCart);
+		const carts = await cartCount();
+
+		const extra = { lines: [{ productId: BOWL.id, quantity: 5 }] };
+		expect(await call(handle, "agentic/session/create", body("create-handed", extra))).toEqual({
+			ok: false,
+			reason: "IDEMPOTENCY_KEY_REUSED",
+		});
+		expect(
+			await call(handle, "agentic/session/update", {
+				sessionId: id,
+				...body("create-handed", extra),
+			}),
+		).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect(
+			await call(handle, "agentic/session/update", { sessionId: id, ...body("upd-handed", extra) }),
+		).toEqual({ ok: false, reason: "SESSION_HANDED_OFF" });
+
+		expect(await cartLines(storage, shopperCart)).toEqual(lines);
+		expect(await cartCount()).toBe(carts);
+	});
+
+	test("an update replay is byte-stable and does no cart work", async () => {
+		const created = await call(handle, "agentic/session/create", body("create-replay-upd"));
+		const id = (created["session"] as { id: string }).id;
+		const put = {
+			sessionId: id,
+			...body("put-replay", { lines: [{ productId: MUG.id, quantity: 1 }] }),
+		};
+		const first = await call(handle, "agentic/session/update", put);
+		expect(first).toMatchObject({ ok: true, replayed: false });
+		const carts = await cartCount();
+		const again = await call(handle, "agentic/session/update", put);
+		expect(again).toMatchObject({ ok: true, replayed: true, messages: [] });
+		expect(await call(handle, "agentic/session/update", put)).toEqual(again);
+		expect(await cartCount()).toBe(carts);
 	});
 });

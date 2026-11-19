@@ -7,9 +7,13 @@
  *    every agentic route then answers `NOT_FOUND`.
  *  - `settings:agenticServerKey` — the HMAC key the session secrets are derived
  *    under (`order_secret`, hand-off tokens): 32 random bytes, base64url. Created
- *    on first use, NEVER shown or accepted by the Settings form, and declared
- *    `secret` in {@link AGENTIC_SECRET_SETTINGS_SCHEMA} so a site that spreads that
- *    schema into its descriptor gets it encrypted at rest (ADR-0037).
+ *    on first use, NEVER shown or accepted by the Settings form. It is NOT YET
+ *    ENCRYPTED AT REST: it is declared `secret` in
+ *    {@link AGENTIC_SECRET_SETTINGS_SCHEMA}, but no site spreads that schema into
+ *    its descriptor yet, so today it is stored as plain kv. Before ANY store turns
+ *    the switch on, that must be wired under ADR-0037 — the site descriptor spreads
+ *    the schema, with a re-save migration like `encrypt-payment-secrets.ts` for a
+ *    key already stored in the clear.
  *
  * Nothing here logs a value or an error message (fixed lines only).
  */
@@ -59,19 +63,23 @@ function keyBytes(stored: unknown): Uint8Array | null {
  * the caller then refuses as unavailable. A stored but unusable value is NEVER
  * overwritten: replacing it would rotate the key and kill every outstanding
  * `order_secret`. Racing first uses converge on one key: the insert is a
- * compare-and-set against no value where the host offers it, and the winner is
- * re-read either way.
+ * compare-and-set against no value and the winner is re-read; a host without
+ * compare-and-set gets `null` (no racy plain `set`).
  */
 export async function readAgenticServerKey(ctx: PluginContext): Promise<Uint8Array | null> {
 	try {
 		const stored = await ctx.kv.get<unknown>(AGENTIC_SERVER_KEY_KEY);
 		if (stored !== null && stored !== undefined) return unusable(keyBytes(stored));
 		const fresh = randomBase64Url(32);
-		if (ctx.kv.compareAndSet !== undefined) {
-			await ctx.kv.compareAndSet(AGENTIC_SERVER_KEY_KEY, null, fresh);
-		} else {
-			await ctx.kv.set(AGENTIC_SERVER_KEY_KEY, fresh);
+		// FAIL CLOSED without compare-and-set: a plain `set` lets two first uses
+		// each write a key, and secrets derived under the loser stop verifying.
+		if (ctx.kv.compareAndSet === undefined) {
+			console.error(
+				"[otta] agentic: the host cannot create the server key atomically; agentic checkout is unavailable",
+			);
+			return null;
 		}
+		await ctx.kv.compareAndSet(AGENTIC_SERVER_KEY_KEY, null, fresh);
 		return unusable(keyBytes(await ctx.kv.get<unknown>(AGENTIC_SERVER_KEY_KEY)));
 	} catch {
 		console.error(

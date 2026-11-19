@@ -5,6 +5,8 @@
  */
 import { cents, currency, idempotencyKey, productId, sku } from "@urumi.ai/otta-domain";
 import {
+	CARTS_COLLECTION,
+	collectionOf,
 	EmdashCouponStore,
 	EmdashInventoryStore,
 	EmdashProductCommerceStore,
@@ -68,6 +70,28 @@ export async function seedProduct(
 			PUBLISHED_AT,
 		);
 	}
+}
+
+/** Unpublish a product (the CMS's afterUnpublish mirror): no longer sellable. */
+export async function unpublishProduct(storage: StorageAccess, id: string): Promise<void> {
+	await new EmdashProductCommerceStore({ storage, clock: systemClock }).deactivate(
+		productId(id),
+		idempotencyKey(`unpub-${id}`),
+		"2026-06-01T00:00:00.000Z",
+	);
+}
+
+/** A cart document's lines (the test's own read of the store), keyed by sku. */
+export async function cartLines(
+	storage: StorageAccess,
+	cartId: string,
+): Promise<Record<string, { qty: number }> | null> {
+	const doc = await collectionOf<{ lines: Record<string, { qty: number }> }>(
+		storage,
+		CARTS_COLLECTION,
+	).get(cartId);
+	if (doc === null) return null;
+	return Object.fromEntries(Object.entries(doc.lines).map(([k, v]) => [k, { qty: v.qty }]));
 }
 
 /** The catalogue, a US zone with a $5.99 flat method and 10% tax on everything,

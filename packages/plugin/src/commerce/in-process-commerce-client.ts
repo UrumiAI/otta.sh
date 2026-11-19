@@ -48,6 +48,7 @@
 
 import {
 	isAgentSessionHandedOff,
+	isAgentSessionOpen,
 	recordAgentSessionOrder,
 	type AgentCheckoutSession,
 	type OrderAttribution,
@@ -1424,10 +1425,13 @@ export class InProcessCommerceClient implements CommerceClient {
 		const offline =
 			input.paymentMethod === "cod" ? await this.#offlineCommand(input.clientKey) : undefined;
 		// ADR-0047: a cart a redeemed hand-off built is the agent's; its order is
-		// attributed to the session. Looked up only when the store has agentic
-		// checkout on (the place route says so), and never at a checkout's expense.
+		// attributed to the session — only while the store has agentic checkout on
+		// (the place route passes `agentAttribution: true`), and never at a
+		// checkout's expense. With it OFF (`false`) nothing is read before placing;
+		// a placed order's cart is checked afterwards, so a cart redeemed while it
+		// was on is logged as AGENTIC_DISABLED (one indexed read, placed orders only).
 		const agentSession =
-			opts.agentAttribution === true ? await this.#handoffSessionFor(input.cartId) : null;
+			opts.agentAttribution === true ? await this.#handoffSessionFor(input.cartId, true) : null;
 		const attribution: OrderAttribution | undefined =
 			agentSession === null
 				? undefined
@@ -1454,6 +1458,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				: {}),
 		});
 		if (!result.ok) return { ok: false, reason: result.reason };
+		if (opts.agentAttribution === false) await this.#handoffSessionFor(input.cartId, false);
 		const placedFor = result.order.attribution?.sessionId;
 		if (agentSession !== null && placedFor === agentSession.id) {
 			await this.#completeAgentSession(agentSession, result.order.id, input.cartId);
@@ -1474,14 +1479,26 @@ export class InProcessCommerceClient implements CommerceClient {
 
 	/**
 	 * ADR-0047: the session whose redeemed hand-off built `cartId`, while it has no
-	 * order yet — or `null`. FAIL-SOFT: a failed read is logged (a fixed line) and
-	 * the order is placed unattributed rather than refused.
+	 * order yet and is still open — or `null`. A session the agent canceled (or that
+	 * is otherwise closed) LOSES its attribution: the order is placed unattributed
+	 * and only the reason code is logged, as it is when agentic checkout is off
+	 * (`enabled` false). FAIL-SOFT: a failed read is logged (a fixed line) and the
+	 * order is placed unattributed rather than refused.
 	 */
-	async #handoffSessionFor(cartId: string): Promise<AgentCheckoutSession | null> {
+	async #handoffSessionFor(cartId: string, enabled: boolean): Promise<AgentCheckoutSession | null> {
 		try {
 			const session = await this.#stores.agentSessionStore.findByCartId(cartId);
 			if (session === null || session.cartId !== cartId) return null;
 			if (!isAgentSessionHandedOff(session) || session.orderId !== undefined) return null;
+			const lost = !enabled
+				? "AGENTIC_DISABLED"
+				: !isAgentSessionOpen(session.status)
+					? "SESSION_CLOSED"
+					: null;
+			if (lost !== null) {
+				console.warn(`[otta] checkout: placing a hand-off cart's order unattributed (${lost})`);
+				return null;
+			}
 			return session;
 		} catch {
 			console.error(
@@ -1496,9 +1513,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * (`recordAgentSessionOrder`), so no later agent write can mint a link after an
 	 * order. The session id is only ever the one this cart's own redeem pointed at
 	 * it, never a caller's. After the order exists, so it NEVER fails the checkout:
-	 * any refusal (SESSION_CLOSED — the agent canceled after the hand-off — among
-	 * them) leaves the order standing, attributed, and is logged as its reason code
-	 * alone. A thrown failure is retried by the next same-key replay, which finds
+	 * any refusal (SESSION_CLOSED — a cancel racing the placement — among them)
+	 * leaves the order standing and is logged as its reason code alone. A thrown failure is retried by the next same-key replay, which finds
 	 * the session still without an order.
 	 */
 	async #completeAgentSession(

@@ -18,7 +18,8 @@ import {
 	completeAgentSession,
 	createAgentSession,
 	getAgentSession,
-	isAgentSessionHandedOff,
+	precheckAgentSessionCreate,
+	precheckAgentSessionReplace,
 	recordAgentHandoffCart,
 	redeemAgentHandoff,
 	replaceAgentSession,
@@ -38,7 +39,13 @@ import type { CartWire, CommerceClient } from "../product-commerce/commerce-clie
 import { cartCookieDescriptor, type CartCookieDescriptor } from "../storefront/cart-routes.js";
 import { renderGuard, type RenderGuardFailure } from "../storefront/pdp-route.js";
 import type { PluginContext, RouteHandler, SandboxedRequest } from "../types.js";
-import { addAgentLines, buildAgentCart, quoteAgentCart, type AgentMessage } from "./cart-quote.js";
+import {
+	addAgentLines,
+	buildAgentCart,
+	quoteAgentCart,
+	screenAgentLines,
+	type AgentMessage,
+} from "./cart-quote.js";
 import {
 	fingerprintOf,
 	orderAddressOf,
@@ -217,6 +224,16 @@ export function createAgenticSessionCreateHandler(): RouteHandler<unknown> {
 			if (input === null) return INVALID_INPUT;
 			const net = await requestNetworkKey(ctx, routeCtx.request);
 			if (net === null) return UNAVAILABLE;
+			const request = {
+				networkKey: net,
+				idempotencyKey: input.idempotencyKey,
+				fingerprint: await fingerprintOf(input, "create"),
+			};
+			// Ask the domain FIRST: a replay answers its stored session (no cart work,
+			// no re-quote, so a replay is byte-stable), and a reused key or a hit cap
+			// is refused before any cart is created or any stock is held.
+			const pre = await precheckAgentSessionCreate(deps, request);
+			if (!pre.proceed) return createAnswer(pre.result, []);
 			const client = await makeCommerceClient(ctx);
 			const built = await contentFor(
 				client,
@@ -225,23 +242,26 @@ export function createAgenticSessionCreateHandler(): RouteHandler<unknown> {
 				deps.clock.now().toISOString(),
 			);
 			if (!("content" in built)) return built;
-			const result = await createAgentSession(deps, {
-				networkKey: net,
-				idempotencyKey: input.idempotencyKey,
-				fingerprint: await fingerprintOf(input, "create"),
-				content: built.content,
-			});
-			if (!result.ok) return { ok: false as const, reason: result.reason };
-			return {
-				ok: true as const,
-				...NO_STORE,
-				replayed: result.replayed,
-				session: sessionWire(result.session),
-				orderSecret: result.orderSecret,
-				handoffToken: result.handoffToken ?? null,
-				messages: built.messages,
-			};
+			const result = await createAgentSession(deps, { ...request, content: built.content });
+			return createAnswer(result, built.messages);
 		});
+}
+
+/** A replay's messages are `[]`: they described the original build, not stored. */
+function createAnswer(
+	result: Awaited<ReturnType<typeof createAgentSession>>,
+	messages: AgentMessage[],
+): AgenticCreateResult {
+	if (!result.ok) return { ok: false, reason: result.reason };
+	return {
+		ok: true,
+		...NO_STORE,
+		replayed: result.replayed,
+		session: sessionWire(result.session),
+		orderSecret: result.orderSecret,
+		handoffToken: result.handoffToken ?? null,
+		messages: result.replayed ? [] : messages,
+	};
 }
 
 // ── session/get ────────────────────────────────────────────────────────────
@@ -286,9 +306,17 @@ export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
 			const input = parseAgentSessionInput(routeCtx.input);
 			if (input === null) return INVALID_INPUT;
 			if (sessionId === null) return { ok: false as const, reason: "SESSION_NOT_FOUND" };
-			// Read first: a session that cannot be written gets no cart built for it.
-			const current = await getAgentSession(deps, { sessionId });
-			if (!current.ok) return { ok: false as const, reason: current.reason };
+			const request = {
+				sessionId,
+				idempotencyKey: input.idempotencyKey,
+				fingerprint: await fingerprintOf(input, "replace"),
+			};
+			// Ask the domain FIRST, before any cart work: a replay answers its stored
+			// result; a reused or retired key, the write cap, and a session that is
+			// closed, expired or handed off (the shopper owns that cart) are refused
+			// with no cart built or touched. Only a fresh, allowed write builds one.
+			const pre = await precheckAgentSessionReplace(deps, request);
+			if (!pre.proceed) return writeAnswer(pre.result, []);
 			const client = await makeCommerceClient(ctx);
 			const built = await contentFor(
 				client,
@@ -297,12 +325,7 @@ export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
 				deps.clock.now().toISOString(),
 			);
 			if (!("content" in built)) return built;
-			const result = await replaceAgentSession(deps, {
-				sessionId,
-				idempotencyKey: input.idempotencyKey,
-				fingerprint: await fingerprintOf(input, "replace"),
-				content: built.content,
-			});
+			const result = await replaceAgentSession(deps, { ...request, content: built.content });
 			return writeAnswer(result, built.messages);
 		});
 }
@@ -318,7 +341,7 @@ function writeAnswer(
 		replayed: result.replayed,
 		session: sessionWire(result.session),
 		handoffToken: result.handoffToken ?? null,
-		messages,
+		messages: result.replayed ? [] : messages,
 	};
 }
 
@@ -335,9 +358,11 @@ export function createAgenticSessionCancelHandler(): RouteHandler<unknown> {
 				fingerprint: `cancel:${keyed.idempotencyKey}`,
 			});
 			// Release the agent cart's holds (best-effort): only a cart the agent
-			// built — never one a shopper redeemed into.
-			if (result.ok && !result.replayed && before !== null && !isAgentSessionHandedOff(before)) {
-				const cartId = before.cartId;
+			// built — never one a shopper redeemed into. Decided on the session AS THE
+			// CANCEL LEFT IT: a redeem that won the race in between makes it handed
+			// off, and then the cart is the shopper's and is never released.
+			if (result.ok && !result.replayed && !result.session.handedOff) {
+				const cartId = result.session.cartId ?? before?.cartId;
 				if (cartId !== undefined) await releaseCart(ctx, cartId);
 			}
 			return writeAnswer(result, []);
@@ -396,6 +421,13 @@ export type AgenticRedeemResult =
 	| { ok: false; reason: "HANDOFF_NO_LINES"; messages: AgentMessage[] }
 	| Common;
 
+/** Every line's stock is still held for this cart (a live reservation). */
+function allHeld(cart: CartWire, nowIso: string): boolean {
+	return cart.lines.every(
+		(l) => l.reservationId !== null && (l.expiresAt === null || l.expiresAt > nowIso),
+	);
+}
+
 /** The cart holds exactly the session's lines, and can still be checked out. */
 function cartMatches(cart: CartWire, lines: readonly AgentSessionLine[]): boolean {
 	if (cart.state !== "active" || cart.orderId !== null) return false;
@@ -421,21 +453,47 @@ export function createAgenticHandoffRedeemHandler(): RouteHandler<unknown> {
 			if (!redeemed.ok) return { ok: false as const, reason: redeemed.reason };
 			const session = redeemed.session;
 			const client = await makeCommerceClient(ctx);
+			const requested = session.lines.map((l) => ({
+				productId: l.productId,
+				sku: l.sku,
+				quantity: l.quantity,
+			}));
+			// The same sellability check a rebuild makes, BEFORE any cart is touched:
+			// not one line sellable ⇒ HANDOFF_NO_LINES, no cookie, every cart as it was.
+			const screened = await screenAgentLines(client, session.currency, requested);
+			if (screened.accepted.length === 0) {
+				return {
+					ok: false as const,
+					reason: "HANDOFF_NO_LINES" as const,
+					messages: screened.messages,
+				};
+			}
 			let cartId: string | null = null;
 			let messages: AgentMessage[] = [];
-			if (session.cartId !== undefined) {
-				const existing = await client.getCart(session.cartId);
-				if (existing.ok && cartMatches(existing.cart, session.lines)) cartId = session.cartId;
+			const agentCart = session.cartId === undefined ? null : await client.getCart(session.cartId);
+			// Re-adopt only a cart that still holds exactly the session's lines, every
+			// one of them sellable and its stock still held.
+			if (
+				agentCart !== null &&
+				agentCart.ok &&
+				screened.messages.length === 0 &&
+				cartMatches(agentCart.cart, session.lines) &&
+				allHeld(agentCart.cart, deps.clock.now().toISOString())
+			) {
+				cartId = agentCart.cart.cartId;
 			}
 			if (cartId === null) {
-				// Single-use, so no replay to dedupe: a fresh cart each time.
+				// Rebuild with the sellable lines alone. The agent's cart is dead (the
+				// link is spent), so its holds are released first — its stock may be
+				// exactly what the rebuilt cart needs. Single-use, so no replay to
+				// dedupe: a fresh cart each time.
+				if (agentCart !== null && agentCart.ok && agentCart.cart.orderId === null) {
+					await releaseCart(ctx, agentCart.cart.cartId);
+				}
 				const { cartId: fresh } = await client.createCart(session.currency);
-				const added = await addAgentLines(
-					client,
-					fresh,
-					session.currency,
-					session.lines.map((l) => ({ productId: l.productId, sku: l.sku, quantity: l.quantity })),
-				);
+				// The whole request again, so each message keeps its own line index;
+				// the lines refused above are refused again, with no cart write.
+				const added = await addAgentLines(client, fresh, session.currency, requested);
 				messages = added.messages;
 				if (added.lines.length === 0) {
 					return { ok: false as const, reason: "HANDOFF_NO_LINES" as const, messages };

@@ -815,7 +815,9 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 			}
 			const client = await makeCommerceClient(ctx);
 			// ADR-0047: attribute a hand-off cart's order only while agentic checkout
-			// is on (fail-soft: a failed read is off, never a refused checkout).
+			// is on (fail-soft: a failed read is off, never a refused checkout). Off is
+			// passed too, so a cart redeemed while it was on is placed unattributed
+			// with its reason code logged.
 			const agentAttribution = await readAgenticEnabled(ctx);
 			const result = await placeOrRefuseUnconfigured(ctx, input.paymentMethod, () =>
 				client.createOrder(
@@ -835,7 +837,7 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 					input.idempotencyKey,
 					{
 						...(input.sessionToken !== undefined ? { sessionToken: input.sessionToken } : {}),
-						...(agentAttribution ? { agentAttribution } : {}),
+						agentAttribution,
 					},
 				),
 			);
