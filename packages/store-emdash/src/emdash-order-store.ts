@@ -1983,6 +1983,10 @@ export class EmdashOrderStore implements OrderStore {
 				: {}),
 			// ADR-0044: the indexed key the per-network cap counts by.
 			...(input.offlineClientKey !== undefined ? { offlineClientKey: input.offlineClientKey } : {}),
+			// ADR-0047: the frozen attribution and its indexed channel mirror.
+			...(input.attribution !== undefined
+				? { attribution: { ...input.attribution }, channel: input.attribution.channel }
+				: {}),
 			events: [],
 			emailOutbox: [],
 			payments: [],
@@ -3341,6 +3345,7 @@ function orderListBaseWhere(
 	if (filter.states !== undefined && filter.states.length > 0) {
 		where.state = { in: [...filter.states] };
 	}
+	if (filter.channel !== undefined) where.channel = filter.channel;
 	const range = createdAtRange(filter, cursor);
 	if (range !== null) where.createdAt = range;
 	return where;
@@ -3382,6 +3387,7 @@ function matchesOrderFilter(doc: OrderDoc, filter: OrderListFilter): boolean {
 	}
 	if (filter.from !== undefined && doc.createdAt < filter.from) return false;
 	if (filter.to !== undefined && doc.createdAt >= filter.to) return false; // EXCLUSIVE
+	if (filter.channel !== undefined && doc.channel !== filter.channel) return false;
 	const customer = filter.customer;
 	if (
 		customer !== undefined &&
@@ -3510,6 +3516,7 @@ function toOrder(doc: OrderDoc): Order {
 			? { buyerAddressRequired: doc.buyerAddressRequired }
 			: {}),
 		...(doc.paidProviderRef !== undefined ? { paidProviderRef: doc.paidProviderRef } : {}),
+		...(doc.attribution !== undefined ? { attribution: { ...doc.attribution } } : {}),
 		reconciliationFlag: doc.reconciliationFlag,
 		reconciliationResolution: doc.reconciliationResolution,
 		fulfillment: doc.fulfillment,
