@@ -906,3 +906,49 @@ export async function recordAgentSessionOrder(
 	}
 	return fail("WRITE_CONFLICT");
 }
+
+/**
+ * Point a redeemed session at the cart its hand-off built for the shopper (the
+ * redeem's "mark the cart", ADR-0047): the checkout that places that cart finds
+ * the session through `findByCartId` and attributes the order. Only a session
+ * that was handed off may be pointed (a session nobody redeemed has no shopper
+ * cart), and only while it is open with no order recorded. Not a keyed write (the
+ * agent's writes are refused after a hand-off; this is the redeem's own step);
+ * idempotent: the same cart again writes nothing. {@link recordAgentSessionOrder}
+ * then records the order placed from it.
+ */
+export async function recordAgentHandoffCart(
+	deps: Pick<AgentSessionDeps, "store" | "clock">,
+	input: { sessionId: AgentSessionId; cartId: string },
+): Promise<
+	| { ok: true; session: AgentSessionView }
+	| {
+			ok: false;
+			reason:
+				| "SESSION_NOT_FOUND"
+				| "HANDOFF_NOT_REDEEMED"
+				| "SESSION_CLOSED"
+				| "INVALID_REQUEST"
+				| "WRITE_CONFLICT";
+	  }
+> {
+	if (input.cartId.length === 0 || input.cartId.length > AGENT_SESSION_MAX_CART_ID_LENGTH) {
+		return { ok: false, reason: "INVALID_REQUEST" };
+	}
+	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+		const current = await deps.store.get(input.sessionId);
+		if (current === null) return { ok: false, reason: "SESSION_NOT_FOUND" };
+		if (!isAgentSessionHandedOff(current)) return { ok: false, reason: "HANDOFF_NOT_REDEEMED" };
+		if (current.cartId === input.cartId) return { ok: true, session: viewOf(current) };
+		// Once an order is recorded (or the agent canceled), the cart is settled.
+		if (current.orderId !== undefined || !isAgentSessionOpen(current.status)) {
+			return { ok: false, reason: "SESSION_CLOSED" };
+		}
+		const written = await deps.store.write(
+			{ ...current, cartId: input.cartId, updatedAt: deps.clock.now().toISOString() },
+			current.revision,
+		);
+		if (written.ok) return { ok: true, session: viewOf(written.session) };
+	}
+	return { ok: false, reason: "WRITE_CONFLICT" };
+}

@@ -16,6 +16,7 @@ import type {
 	FulfillmentKind,
 	Order,
 	OrderAddress,
+	OrderAttribution,
 	OrderNotice,
 	OrderState,
 	PaymentMethod,
@@ -1018,6 +1019,10 @@ export interface CreateOrderInput {
 	 *  (a one-way hash, never an address), for the per-network cap. Absent on
 	 *  every other order. */
 	offlineClientKey?: string;
+	/** ADR-0047: the order's channel attribution, written once in the creating
+	 *  insert ({@link Order.attribution}). Absent ⇒ the order carries none. A
+	 *  replay keeps the first write's. */
+	attribution?: OrderAttribution;
 	/**
 	 * The `order_totals` write. Phase 4 passed only `{ subtotal, total, currency }`
 	 * (the stub); Phase 6 passes the full computed breakdown. The extra fields are
@@ -1228,6 +1233,9 @@ export interface OrderListFilter {
 	/** The customer dimension (admin-UX Increment 1) — see `OrderCustomerKey`.
 	 *  ANDed with the other filters; UNION inside the key. */
 	customer?: OrderCustomerKey;
+	/** ADR-0047: only orders attributed to this channel (`Order.attribution`).
+	 *  ANDed with the other filters. Absent ⇒ every order, attributed or not. */
+	channel?: "agent";
 }
 
 /**

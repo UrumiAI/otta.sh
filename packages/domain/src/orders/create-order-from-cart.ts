@@ -38,7 +38,7 @@ import type { TaxCalculator } from "../pricing/tax-calculator.js";
 import { TAX_DISABLED_CALCULATOR_ID, type TaxTotalsDisplay } from "../pricing/tax-settings.js";
 import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
-import type { Order, OrderAddress, PaymentMethod } from "./model.js";
+import type { Order, OrderAddress, OrderAttribution, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
 import { buildOrderTaxSnapshot, type OrderTaxAddress } from "./order-tax-snapshot.js";
 import { gatewayForStored, isOfflinePaymentMethod } from "./payment-methods.js";
@@ -148,6 +148,12 @@ export interface CreateOrderCommand {
 		maxOpenPerClient?: number;
 		maxUnitsPerOrder?: number;
 	};
+	/**
+	 * ADR-0047: the order's channel attribution, when the CALLER knows the cart
+	 * came from a redeemed agent hand-off. Written once onto the order; a same-key
+	 * replay keeps the first write's. Absent ⇒ none.
+	 */
+	attribution?: OrderAttribution;
 }
 
 export type CreateOrderFromCartResult =
@@ -630,6 +636,7 @@ async function finalizeOrder(
 		...(isOfflinePaymentMethod(command.paymentMethod) && command.offline?.clientKey !== undefined
 			? { offlineClientKey: command.offline.clientKey }
 			: {}),
+		...(command.attribution !== undefined ? { attribution: { ...command.attribution } } : {}),
 		totals: {
 			subtotal: breakdown.subtotalCents,
 			total: breakdown.totalCents,

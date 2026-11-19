@@ -70,6 +70,32 @@ describe("createOrderFromCart", () => {
 		expect(res.order.state).toBe("pending");
 	});
 
+	test("ADR-0047: freezes the caller's agent attribution onto the order; none when absent", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 10,
+		});
+		const attribution = { channel: "agent", via: "handoff", sessionId: "cs_test" } as const;
+		const agentCart = await h.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		const agent = await createOrderFromCart(h.createDeps, {
+			...cmd(agentCart, "k-agent"),
+			attribution,
+		});
+		expect(agent.ok && agent.order.attribution).toEqual(attribution);
+
+		const plainCart = await h.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		const plain = await createOrderFromCart(h.createDeps, cmd(plainCart, "k-plain"));
+		expect(plain.ok).toBe(true);
+		if (plain.ok) expect(plain.order).not.toHaveProperty("attribution");
+	});
+
 	test("adopts a physical line's reservation via the guarded held→adopted flip (out of the Phase-3 sweep's scope)", async () => {
 		await h.seedPhysical({
 			productId: "p1",

@@ -14,6 +14,7 @@ import {
 	issueAgentHandoff,
 	orderId,
 	productId,
+	recordAgentHandoffCart,
 	recordAgentSessionOrder,
 	redeemAgentHandoff,
 	replaceAgentSession,
@@ -1465,5 +1466,48 @@ describe("redeem classification after a refused mark", () => {
 			await redeemAgentHandoff({ ...h.deps, store: racing }, { token: first.handoffToken ?? "" }),
 		).toEqual({ ok: false, reason: "HANDOFF_INCOMPLETE" });
 		expect((await stored(h, first.session.id)).handoffUsedAt).toBeUndefined();
+	});
+});
+
+describe("recordAgentHandoffCart (the redeem marks the shopper's cart)", () => {
+	test("refuses before redemption; after it, points the session at the cart once", async () => {
+		const h = harness();
+		const r = await created(h, content({ cartId: "cart-agent" }));
+		const id = r.session.id;
+		expect(await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-shopper" })).toEqual(
+			{ ok: false, reason: "HANDOFF_NOT_REDEEMED" },
+		);
+		if (r.handoffToken === undefined) throw new Error("no link");
+		expect((await redeemAgentHandoff(h.deps, { token: r.handoffToken })).ok).toBe(true);
+		const marked = await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-shopper" });
+		expect(marked.ok && marked.session.cartId).toBe("cart-shopper");
+		expect((await h.store.findByCartId("cart-shopper"))?.id).toBe(id);
+		const revision = (await h.store.get(id))?.revision;
+		await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-shopper" });
+		expect((await h.store.get(id))?.revision).toBe(revision);
+	});
+
+	test("the order placed from the marked cart completes the session; the cart is then settled", async () => {
+		const h = harness();
+		const r = await created(h);
+		const id = r.session.id;
+		if (r.handoffToken === undefined) throw new Error("no link");
+		expect((await redeemAgentHandoff(h.deps, { token: r.handoffToken })).ok).toBe(true);
+		expect((await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-1" })).ok).toBe(
+			true,
+		);
+		const placed = await recordAgentSessionOrder(h.deps, {
+			sessionId: id,
+			orderId: orderId("ord-1"),
+			cartId: "cart-1",
+		});
+		expect(placed.ok && placed.session.status).toBe("completed");
+		expect(await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "cart-2" })).toEqual({
+			ok: false,
+			reason: "SESSION_CLOSED",
+		});
+		expect(
+			await recordAgentHandoffCart(h.deps, { sessionId: id, cartId: "x".repeat(10_000) }),
+		).toEqual({ ok: false, reason: "INVALID_REQUEST" });
 	});
 });

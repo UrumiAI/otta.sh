@@ -289,6 +289,19 @@ export interface OrderTotals {
 	taxBreakdown: unknown | null;
 }
 
+/**
+ * Where an order came from, when it came from somewhere other than the shopper's
+ * own visit (ADR-0047): an AI agent built the cart in a checkout session and the
+ * shopper placed it through the session's hand-off link. Frozen by the creating
+ * write. ABSENT on every other order, and on every order placed before it existed.
+ */
+export interface OrderAttribution {
+	channel: "agent";
+	via: "handoff";
+	/** The agent checkout session (`cs_…`) whose hand-off built the cart. */
+	sessionId: string;
+}
+
 export interface Order {
 	id: OrderId;
 	cartId: string | null;
@@ -325,6 +338,9 @@ export interface Order {
 	 * gateway's own decision, as before.
 	 */
 	buyerAddressRequired?: boolean;
+	/** The order's channel attribution (ADR-0047), frozen at creation; absent on
+	 *  an order that came from no agent hand-off. */
+	attribution?: OrderAttribution;
 	/**
 	 * The payment whose settle WON the `pending → paid` flip, recorded by
 	 * `markPaid` in the flip's own write (#543). ABSENT on orders paid before it
