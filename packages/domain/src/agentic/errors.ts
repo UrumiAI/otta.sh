@@ -21,6 +21,13 @@ export type AgentSessionFailureReason =
 	| "IDEMPOTENCY_KEY_EXPIRED"
 	/** The request carried no `Idempotency-Key`. */
 	| "IDEMPOTENCY_KEY_MISSING"
+	/** A caller-supplied key is too long: `Idempotency-Key` over 255, network key
+	 *  or fingerprint over 128 characters. */
+	| "INVALID_REQUEST"
+	/** A re-derived secret does not match its stored hash (the server key changed
+	 *  since it was issued). Refused rather than handing out a secret that would
+	 *  not verify; see `AgentSessionSecrets` on key rotation. */
+	| "SECRET_KEY_MISMATCH"
 	/** The session has taken its lifetime maximum of keyed writes. */
 	| "WRITE_LIMIT_REACHED"
 	/** A concurrent writer kept winning the compare-and-set; the caller may retry. */
@@ -48,7 +55,8 @@ export type AgentHandoffFailureReason =
 	| "HANDOFF_EXPIRED"
 	| "HANDOFF_CANCELED"
 	| "HANDOFF_USED"
-	/** The session has no lines right now; the link itself stays valid. */
+	/** The session has no lines right now (checked again inside the atomic mark);
+	 *  the link itself stays valid. */
 	| "HANDOFF_INCOMPLETE";
 
 export type AgentHandoffFailure = { ok: false; reason: AgentHandoffFailureReason };

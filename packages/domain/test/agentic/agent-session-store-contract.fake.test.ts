@@ -9,4 +9,4 @@ agentSessionStoreContract(async () => ({ store: new InMemoryAgentSessionStore() 
 	dialect: "fake",
 });
 
-agentSessionSecretsContract(async () => new FakeSecrets(), { dialect: "fake" });
+agentSessionSecretsContract(async (serverKey) => new FakeSecrets(serverKey), { dialect: "fake" });

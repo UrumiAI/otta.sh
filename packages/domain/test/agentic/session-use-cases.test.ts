@@ -24,7 +24,7 @@ import {
 	type AgentSessionStore,
 } from "@urumi.ai/otta-domain";
 import { FixedClock, InMemoryAgentSessionStore } from "@urumi.ai/otta-domain/testing";
-import { FakeSecrets } from "./fake-secrets.js";
+import { FakeSecrets, TEST_SERVER_KEY } from "./fake-secrets.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -56,9 +56,9 @@ async function created(h: Harness, c: AgentSessionContent = content()) {
 	return r;
 }
 
-/** A keyed request on `sessionId` from net-a; the key doubles as the fingerprint. */
-function keyed(sessionId: AgentSessionId, key: string, networkKey = "net-a") {
-	return { sessionId, idempotencyKey: key, fingerprint: `fp-${key}`, networkKey };
+/** A keyed request on `sessionId`; the fingerprint is derived from the key. */
+function keyed(sessionId: AgentSessionId, key: string) {
+	return { sessionId, idempotencyKey: key, fingerprint: `fp-${key}` };
 }
 
 async function stored(h: Harness, id: AgentSessionId): Promise<AgentCheckoutSession> {
@@ -76,6 +76,8 @@ function staleLookup(store: AgentSessionStore, seen: AgentCheckoutSession): Agen
 		findByCartId: (cartId) => store.findByCartId(cartId),
 		getIdempotency: (networkKey, key) => store.getIdempotency(networkKey, key),
 		putIdempotency: (record) => store.putIdempotency(record),
+		extendIdempotencyPurge: (networkKey, key, purgeAt) =>
+			store.extendIdempotencyPurge(networkKey, key, purgeAt),
 		markHandoffUsed: (id, tokenHash, now) => store.markHandoffUsed(id, tokenHash, now),
 		countLive: (now) => store.countLive(now),
 		countCreatedSince: (networkKey, since) => store.countCreatedSince(networkKey, since),
@@ -95,11 +97,12 @@ describe("createAgentSession", () => {
 		expect(Date.parse(r.session.expiresAt) - T0.getTime()).toBe(DAY_MS);
 		expect(Date.parse(r.session.purgeAt) - T0.getTime()).toBe(30 * DAY_MS);
 		expect(r.session.linkGeneration).toBe(1);
-		expect(r.orderSecret).toBe(`order:${r.session.id}`);
-		expect(r.handoffToken).toBe(`link:${r.session.id}:1`);
-		expect(r.session.orderSecretHash).toBe(`h(${r.orderSecret})`);
-		expect(r.session.handoffTokenHash).toBe(`h(${r.handoffToken})`);
-		const doc = JSON.stringify(await stored(h, r.session.id));
+		expect(r.orderSecret).toBe(h.secrets.orderSecret(r.session.id));
+		expect(r.handoffToken).toBe(h.secrets.token(r.session.id, 1));
+		const s = await stored(h, r.session.id);
+		expect(s.orderSecretHash).toBe(`h(${r.orderSecret})`);
+		expect(s.handoffTokenHash).toBe(`h(${r.handoffToken})`);
+		const doc = JSON.stringify(s);
 		expect(doc).not.toContain(`"${r.orderSecret}"`);
 		expect(doc).not.toContain(`"${r.handoffToken}"`);
 	});
@@ -117,7 +120,7 @@ describe("createAgentSession", () => {
 		expect(r.session.status).toBe("incomplete");
 		expect(r.handoffToken).toBeUndefined();
 		expect(r.session.linkGeneration).toBe(0);
-		expect(r.session.handoffTokenHash).toBeUndefined();
+		expect((await stored(h, r.session.id)).handoffTokenHash).toBeUndefined();
 	});
 
 	test("an unquoted session has no quote; a full quote is kept verbatim", async () => {
@@ -266,7 +269,40 @@ describe("createAgentSession", () => {
 			content: content(),
 		});
 		expect(r.ok && !r.replayed && r.session.id).toBe(sessionId);
-		expect(r.ok && r.session.networkKey).toBe("net-a");
+		expect((await stored(h, sessionId)).networkKey).toBe("net-a");
+	});
+
+	test("finishing a crashed create late moves its record's purge out to the session's", async () => {
+		const h = harness();
+		const sessionId = agentSessionId("cs_crashed22222222222222");
+		await h.store.putIdempotency({
+			networkKey: "net-a",
+			key: "k-late",
+			fingerprint: "fp",
+			sessionId,
+			createdAt: T0.toISOString(),
+			purgeAt: new Date(T0.getTime() + 30 * DAY_MS).toISOString(),
+		});
+		h.clock.advance(2 * DAY_MS);
+		const r = await createAgentSession(h.deps, {
+			idempotencyKey: "k-late",
+			fingerprint: "fp",
+			networkKey: "net-a",
+			content: content(),
+		});
+		expect(r.ok && r.session.id).toBe(sessionId);
+		const session = await stored(h, sessionId);
+		expect(session.purgeAt).toBe(new Date(T0.getTime() + 32 * DAY_MS).toISOString());
+		expect((await h.store.getIdempotency("net-a", "k-late"))?.purgeAt).toBe(session.purgeAt);
+		// The sweep at the record's original purge time leaves it, so a retry still replays.
+		await h.store.purgeIdempotencyDue(new Date(T0.getTime() + 30 * DAY_MS).toISOString(), 10);
+		const retry = await createAgentSession(h.deps, {
+			idempotencyKey: "k-late",
+			fingerprint: "fp",
+			networkKey: "net-a",
+			content: content(),
+		});
+		expect(retry.ok && retry.replayed && retry.session.id).toBe(sessionId);
 	});
 
 	test("finishing a crashed create re-checks the caps", async () => {
@@ -443,9 +479,9 @@ describe("replaceAgentSession", () => {
 			content: content({ lines: [bowl] }),
 		});
 		expect(r.ok && r.session.linkGeneration).toBe(2);
-		expect(r.ok && r.handoffToken).toBe(`link:${first.session.id}:2`);
+		expect(r.ok && r.handoffToken).toBe(h.secrets.token(first.session.id, 2));
 		expect(r.ok && r.session.handoffUsedAt).toBeUndefined();
-		expect(r.ok && r.session.redeemedHandoffs).toEqual([
+		expect((await stored(h, first.session.id)).redeemedHandoffs).toEqual([
 			{
 				tokenHash: `h(${first.handoffToken})`,
 				usedAt: new Date(T0.getTime() + 1000).toISOString(),
@@ -497,20 +533,22 @@ describe("replaceAgentSession", () => {
 		).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
 	});
 
-	test("the same key from another network is a fresh write, not a replay of the first", async () => {
+	test("session writes are keyed by the session alone: a retry from another network replays", async () => {
 		const h = harness();
 		const first = await created(h);
-		await replaceAgentSession(h.deps, {
-			...keyed(first.session.id, "put-1"),
-			content: content({ lines: [bowl] }),
+		const put = { ...keyed(first.session.id, "put-1"), content: content({ lines: [bowl] }) };
+		// Even if the site passes its network key along, it plays no part in a session write.
+		const fromA = { ...put, networkKey: "net-a" };
+		const applied = await replaceAgentSession(h.deps, fromA);
+		const fromB = { ...put, networkKey: "net-b" };
+		const retried = await replaceAgentSession(h.deps, fromB);
+		expect(retried).toEqual({ ...applied, replayed: true });
+		const conflicting = { ...put, fingerprint: "fp-different", networkKey: "net-b" };
+		expect(await replaceAgentSession(h.deps, conflicting)).toEqual({
+			ok: false,
+			reason: "IDEMPOTENCY_KEY_REUSED",
 		});
-		const other = await replaceAgentSession(h.deps, {
-			...keyed(first.session.id, "put-1", "net-b"),
-			fingerprint: "fp-different",
-			content: content({ lines: [mug] }),
-		});
-		expect(other.ok && other.replayed).toBe(false);
-		expect(other.ok && other.session.lines).toEqual([mug]);
+		expect((await stored(h, first.session.id)).writes).toHaveLength(2);
 	});
 
 	test("a replay is answered even when today's limits would refuse its body", async () => {
@@ -556,7 +594,7 @@ describe("idempotency key lifetime", () => {
 		}
 		const s = await stored(h, first.session.id);
 		expect(s.writes).toHaveLength(AGENT_SESSION_MAX_WRITE_RECORDS);
-		expect(s.retiredWriteKeys).toContainEqual({ key: "put-early", networkKey: "net-a" });
+		expect(s.retiredWriteKeys).toContainEqual({ key: "put-early" });
 		expect(await replaceAgentSession(h.deps, early)).toEqual({
 			ok: false,
 			reason: "IDEMPOTENCY_KEY_EXPIRED",
@@ -575,7 +613,6 @@ describe("idempotency key lifetime", () => {
 		const s = await stored(h, first.session.id);
 		const fill = Array.from({ length: AGENT_SESSION_MAX_WRITES - s.writes.length }, (_, i) => ({
 			key: `old-${i}`,
-			networkKey: "net-a",
 		}));
 		const seeded = await h.store.write({ ...s, retiredWriteKeys: fill }, s.revision);
 		expect(seeded.ok).toBe(true);
@@ -585,6 +622,50 @@ describe("idempotency key lifetime", () => {
 				content: content(),
 			}),
 		).toEqual({ ok: false, reason: "WRITE_LIMIT_REACHED" });
+		expect(await issueAgentHandoff(h.deps, keyed(first.session.id, "issue"))).toEqual({
+			ok: false,
+			reason: "WRITE_LIMIT_REACHED",
+		});
+		// Cancel is exempt: a session at the cap can still be canceled and its link killed.
+		const c = await cancelAgentSession(h.deps, keyed(first.session.id, "cancel"));
+		expect(c.ok && c.session.status).toBe("canceled");
+		expect(await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).toEqual({
+			ok: false,
+			reason: "HANDOFF_CANCELED",
+		});
+	});
+});
+
+describe("caller-supplied key lengths", () => {
+	test("Idempotency-Key 1..255, network key and fingerprint at most 128, else INVALID_REQUEST", async () => {
+		const h = harness();
+		const make = (over: { idempotencyKey?: string; fingerprint?: string; networkKey?: string }) =>
+			createAgentSession(h.deps, { ...CREATE, ...over, content: content() });
+		expect((await make({ idempotencyKey: "k".repeat(255) })).ok).toBe(true);
+		expect((await make({ idempotencyKey: "j", networkKey: "n".repeat(128) })).ok).toBe(true);
+		expect((await make({ idempotencyKey: "i", fingerprint: "f".repeat(128) })).ok).toBe(true);
+		const invalid = { ok: false, reason: "INVALID_REQUEST" };
+		expect(await make({ idempotencyKey: "k".repeat(256) })).toEqual(invalid);
+		expect(await make({ idempotencyKey: "x", networkKey: "n".repeat(129) })).toEqual(invalid);
+		expect(await make({ idempotencyKey: "y", fingerprint: "f".repeat(129) })).toEqual(invalid);
+		expect(await make({ idempotencyKey: "" })).toEqual({
+			ok: false,
+			reason: "IDEMPOTENCY_KEY_MISSING",
+		});
+
+		const first = await created(h);
+		const put = (over: { idempotencyKey?: string; fingerprint?: string }) =>
+			replaceAgentSession(h.deps, {
+				...keyed(first.session.id, "p"),
+				...over,
+				content: content(),
+			});
+		expect(await put({ idempotencyKey: "k".repeat(256) })).toEqual(invalid);
+		expect(await put({ fingerprint: "f".repeat(129) })).toEqual(invalid);
+		expect(await cancelAgentSession(h.deps, keyed(first.session.id, "c".repeat(256)))).toEqual(
+			invalid,
+		);
+		expect((await stored(h, first.session.id)).writes).toHaveLength(1);
 	});
 });
 
@@ -607,7 +688,7 @@ describe("completeAgentSession", () => {
 		const first = await created(h);
 		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
 		const r = await completeAgentSession(h.deps, keyed(first.session.id, "done-2"));
-		expect(r.ok && r.handoffToken).toBe(`link:${first.session.id}:2`);
+		expect(r.ok && r.handoffToken).toBe(h.secrets.token(first.session.id, 2));
 	});
 
 	test("a session with no lines is SESSION_INCOMPLETE", async () => {
@@ -617,6 +698,27 @@ describe("completeAgentSession", () => {
 			ok: false,
 			reason: "SESSION_INCOMPLETE",
 		});
+	});
+
+	test("a completed session (an order was placed) refuses every write as SESSION_CLOSED", async () => {
+		const h = harness();
+		const first = await created(h);
+		const s = await stored(h, first.session.id);
+		const done = await h.store.write({ ...s, status: "completed" }, s.revision);
+		expect(done.ok).toBe(true);
+		const closed = { ok: false, reason: "SESSION_CLOSED" };
+		expect(
+			await replaceAgentSession(h.deps, {
+				...keyed(first.session.id, "put"),
+				content: content({ lines: [bowl] }),
+			}),
+		).toEqual(closed);
+		expect(await completeAgentSession(h.deps, keyed(first.session.id, "done"))).toEqual(closed);
+		expect(await issueAgentHandoff(h.deps, keyed(first.session.id, "issue"))).toEqual(closed);
+		expect(await cancelAgentSession(h.deps, keyed(first.session.id, "cancel"))).toEqual(closed);
+		const after = await stored(h, first.session.id);
+		expect(after.revision).toBe(s.revision + 1);
+		expect(after.linkGeneration).toBe(1);
 	});
 });
 
@@ -628,7 +730,7 @@ describe("issueAgentHandoff", () => {
 		expect(issued.ok && !issued.replayed).toBe(true);
 		if (!issued.ok) return;
 		expect(issued.session.linkGeneration).toBe(2);
-		expect(issued.handoffToken).toBe(`link:${first.session.id}:2`);
+		expect(issued.handoffToken).toBe(h.secrets.token(first.session.id, 2));
 		const replay = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
 		expect(replay.ok && replay.replayed && replay.handoffToken).toBe(issued.handoffToken);
 		expect((await stored(h, first.session.id)).linkGeneration).toBe(2);
@@ -637,6 +739,44 @@ describe("issueAgentHandoff", () => {
 			reason: "HANDOFF_INVALID",
 		});
 		expect((await redeemAgentHandoff(h.deps, { token: issued.handoffToken ?? "" })).ok).toBe(true);
+	});
+
+	test("a replay after a later issue answers its own stored session with the CURRENT link", async () => {
+		const h = harness();
+		const first = await created(h);
+		const one = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
+		const two = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-2"));
+		expect(two.ok && two.handoffToken).toBe(h.secrets.token(first.session.id, 3));
+		const replay = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
+		expect(replay.ok && replay.replayed).toBe(true);
+		if (!replay.ok || !one.ok) return;
+		// The stored answer is issue-1's (generation 2) ...
+		expect(replay.session).toEqual(one.session);
+		expect(replay.session.linkGeneration).toBe(2);
+		// ... but the token is the live generation-3 link: the site builds continue_url from it.
+		expect(replay.handoffToken).toBe(h.secrets.token(first.session.id, 3));
+		expect(replay.handoffToken).not.toBe(one.handoffToken);
+		expect(await redeemAgentHandoff(h.deps, { token: one.handoffToken ?? "" })).toEqual({
+			ok: false,
+			reason: "HANDOFF_INVALID",
+		});
+		expect((await redeemAgentHandoff(h.deps, { token: replay.handoffToken ?? "" })).ok).toBe(true);
+	});
+
+	test("a retry of issue_handoff from another network replays: no new generation, the link lives", async () => {
+		const h = harness();
+		const first = await created(h);
+		const fromA = { ...keyed(first.session.id, "issue-x"), networkKey: "net-a" };
+		const issued = await issueAgentHandoff(h.deps, fromA);
+		const fromB = { ...fromA, networkKey: "net-b" };
+		const retried = await issueAgentHandoff(h.deps, fromB);
+		expect(retried.ok && retried.replayed).toBe(true);
+		expect(retried.ok && retried.handoffToken).toBe(issued.ok && issued.handoffToken);
+		expect((await stored(h, first.session.id)).linkGeneration).toBe(2);
+		expect(
+			(await redeemAgentHandoff(h.deps, { token: issued.ok ? (issued.handoffToken ?? "") : "" }))
+				.ok,
+		).toBe(true);
 	});
 
 	test("refuses a missing key, an incomplete, expired or canceled session", async () => {
@@ -752,6 +892,26 @@ describe("redeemAgentHandoff", () => {
 		).toEqual({ ok: false, reason: "HANDOFF_USED" });
 	});
 
+	test("a session emptied after the lookup is refused by the mark: HANDOFF_INCOMPLETE, link not burned", async () => {
+		const h = harness();
+		const first = await created(h);
+		const withLines = await stored(h, first.session.id);
+		await replaceAgentSession(h.deps, {
+			...keyed(first.session.id, "put-empty"),
+			content: content({ lines: [] }),
+		});
+		const stale = staleLookup(h.store, withLines);
+		expect(
+			await redeemAgentHandoff({ ...h.deps, store: stale }, { token: first.handoffToken ?? "" }),
+		).toEqual({ ok: false, reason: "HANDOFF_INCOMPLETE" });
+		expect((await stored(h, first.session.id)).handoffUsedAt).toBeUndefined();
+		await replaceAgentSession(h.deps, {
+			...keyed(first.session.id, "put-refill"),
+			content: content({ lines: [bowl] }),
+		});
+		expect((await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" })).ok).toBe(true);
+	});
+
 	test("a session that expired after the lookup is refused by the mark, typed as expired", async () => {
 		const h = harness();
 		const first = await created(h);
@@ -812,5 +972,107 @@ describe("getAgentSession and verifyAgentOrderSecret", () => {
 		] as const) {
 			expect(await verifyAgentOrderSecret(h.deps, { sessionId, secret })).toEqual(invalid);
 		}
+	});
+});
+
+/** Swap the harness onto a different server key (a key rotation). */
+function rotated(h: Harness): FakeSecrets {
+	const secrets = new FakeSecrets(new Uint8Array(TEST_SERVER_KEY.length).fill(9));
+	h.deps.secrets = secrets;
+	return secrets;
+}
+
+describe("secrets re-derived for return are checked against their stored hashes", () => {
+	test("after a key change, replays and complete fail closed with SECRET_KEY_MISMATCH and write nothing", async () => {
+		const h = harness();
+		const first = await created(h);
+		const put = { ...keyed(first.session.id, "put-1"), content: content({ lines: [bowl] }) };
+		expect((await replaceAgentSession(h.deps, put)).ok).toBe(true);
+		const before = await stored(h, first.session.id);
+		rotated(h);
+		const mismatch = { ok: false, reason: "SECRET_KEY_MISMATCH" };
+		expect(await createAgentSession(h.deps, { ...CREATE, content: content() })).toEqual(mismatch);
+		expect(await replaceAgentSession(h.deps, put)).toEqual(mismatch);
+		expect(await completeAgentSession(h.deps, keyed(first.session.id, "done"))).toEqual(mismatch);
+		expect(
+			await replaceAgentSession(h.deps, {
+				...keyed(first.session.id, "put-2"),
+				content: content({ lines: [mug] }),
+			}),
+		).toEqual(mismatch);
+		expect(await stored(h, first.session.id)).toEqual(before);
+		// What a holder already has still verifies: verification compares hashes.
+		const verified = await verifyAgentOrderSecret(h.deps, {
+			sessionId: first.session.id,
+			secret: first.orderSecret,
+		});
+		expect(verified.ok).toBe(true);
+	});
+
+	test("after a key change, issue_handoff mints a link under the new key that redeems", async () => {
+		const h = harness();
+		const first = await created(h);
+		const secrets = rotated(h);
+		const issued = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
+		expect(issued.ok && issued.handoffToken).toBe(secrets.token(first.session.id, 2));
+		const replay = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
+		expect(replay.ok && replay.handoffToken).toBe(secrets.token(first.session.id, 2));
+		expect(
+			(await redeemAgentHandoff(h.deps, { token: issued.ok ? (issued.handoffToken ?? "") : "" }))
+				.ok,
+		).toBe(true);
+	});
+
+	test("a replay under the original key still answers the same secret and link", async () => {
+		const h = harness();
+		const first = await created(h);
+		h.deps.secrets = new FakeSecrets(TEST_SERVER_KEY);
+		const again = await createAgentSession(h.deps, { ...CREATE, content: content() });
+		expect(again.ok && again.orderSecret).toBe(first.orderSecret);
+		expect(again.ok && again.handoffToken).toBe(first.handoffToken);
+	});
+});
+
+describe("the public view", () => {
+	const HIDDEN = [
+		"writes",
+		"retiredWriteKeys",
+		"networkKey",
+		"orderSecretHash",
+		"handoffTokenHash",
+		"redeemedHandoffs",
+	];
+	function expectView(session: object | false | undefined) {
+		expect(session).toBeTruthy();
+		for (const field of HIDDEN) expect(session && field in session).toBe(false);
+	}
+
+	test("every result and every stored answer carries the view, never the document", async () => {
+		const h = harness();
+		const first = await created(h, content({ buyer: { email: "a@example.test" } }));
+		expectView(first.session);
+		const put = await replaceAgentSession(h.deps, {
+			...keyed(first.session.id, "put-1"),
+			content: content({ lines: [bowl] }),
+		});
+		expectView(put.ok && put.session);
+		const replay = await createAgentSession(h.deps, { ...CREATE, content: content() });
+		expectView(replay.ok && replay.session);
+		const got = await getAgentSession(h.deps, { sessionId: first.session.id });
+		expectView(got.ok && got.session);
+		expect(got.ok && got.session.buyer).toBeUndefined();
+		const verified = await verifyAgentOrderSecret(h.deps, {
+			sessionId: first.session.id,
+			secret: first.orderSecret,
+		});
+		expectView(verified.ok && verified.session);
+		const redeemed = await redeemAgentHandoff(h.deps, { token: first.handoffToken ?? "" });
+		expectView(redeemed.ok && redeemed.session);
+		expect(redeemed.ok && redeemed.session.lines).toEqual([bowl]);
+		const issued = await issueAgentHandoff(h.deps, keyed(first.session.id, "issue-1"));
+		expectView(issued.ok && issued.session);
+		const canceled = await cancelAgentSession(h.deps, keyed(first.session.id, "cancel-1"));
+		expectView(canceled.ok && canceled.session);
+		for (const w of (await stored(h, first.session.id)).writes) expectView(w.answer);
 	});
 });

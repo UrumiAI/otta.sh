@@ -54,8 +54,12 @@ export interface AgentSessionBuyer {
 
 /**
  * The last quote computed for the session, a PREVIEW only (ADR-0047 Decision 4):
- * the hand-off re-prices from scratch. Computed outside this module by the
- * store's quote code; stored here verbatim. A part that could not be computed
+ * the hand-off re-prices from scratch. It is the plugin's verbatim preview from
+ * the domain's own pricing code (the quote use-case), stored here UNCHECKED: this
+ * module never re-adds it, so it does not check `total` against subtotal -
+ * discount + fulfillment + tax + rounding, and accepts a `null` total even when
+ * every part is known. It refuses only what is malformed on its face: another
+ * currency, or a total beside an unknown part. A part that could not be computed
  * yet (no destination, so no shipping or tax) is `null`, never zero, and then
  * `total` is `null` too: a partial quote has no total.
  */
@@ -75,14 +79,37 @@ export interface AgentSessionQuote {
 
 export type AgentSessionOperation = "create" | "replace" | "cancel" | "complete" | "issue_handoff";
 
-/** The session as a write answered it: everything but the idempotency bookkeeping. */
-export type AgentSessionSnapshot = Omit<AgentCheckoutSession, "writes" | "retiredWriteKeys">;
+/**
+ * The public projection of a session: what every use-case result the site layer
+ * can see carries (get, create, replace, complete, cancel, issue_handoff and
+ * their replays, redeem, verifyOrderSecret). It leaves out the idempotency
+ * bookkeeping (`writes`, `retiredWriteKeys`), the creating `networkKey`, both
+ * secret hashes and the redeemed-link history, so serialising it leaks none of
+ * them. `linkGeneration` is informational only: build `continue_url` from the
+ * returned token, never from this.
+ */
+export type AgentSessionView = Omit<
+	AgentCheckoutSession,
+	| "writes"
+	| "retiredWriteKeys"
+	| "networkKey"
+	| "orderSecretHash"
+	| "handoffTokenHash"
+	| "redeemedHandoffs"
+>;
 
-/** An `Idempotency-Key` as one caller sent it. Keys are scoped to the caller's
- *  network: the same key from another network is a different request. */
+/** @deprecated The name before the public projection; use {@link AgentSessionView}. */
+export type AgentSessionSnapshot = AgentSessionView;
+
+/**
+ * An `Idempotency-Key` recorded on a session. Session-scoped writes are keyed by
+ * the session alone: the unguessable session id is already the bearer
+ * credential, so a retry from another egress network replays rather than
+ * applying twice. (Creates, which have no session yet, are keyed by network and
+ * key in the store's create index.)
+ */
 export interface AgentSessionWriteKey {
 	key: string;
-	networkKey: string;
 }
 
 /** A keyed write the session answered, kept so a replay returns the same answer. */
@@ -92,8 +119,13 @@ export interface AgentSessionWriteRecord extends AgentSessionWriteKey {
 	fingerprint: string;
 	/** The session revision the write produced. */
 	revision: number;
-	/** The session as of this write; a replay answers it (secrets are re-derived). */
-	answer: AgentSessionSnapshot;
+	/**
+	 * The session as of this write; a replay answers it (secrets are re-derived).
+	 * It is a historical copy: buyer and destination data a later write cleared
+	 * survive here until the whole session is purged (30 d). Any erasure must
+	 * therefore delete the whole session document, never just its current fields.
+	 */
+	answer: AgentSessionView;
 }
 
 /** An earlier hand-off link of the session that a shopper redeemed. */
@@ -135,7 +167,8 @@ export interface AgentCheckoutSession {
 	channel: AgentSessionChannel;
 	/**
 	 * The rate-limit key of the network that created the session (an opaque,
-	 * caller-derived value, e.g. a hash of the client IP). Never a raw address.
+	 * caller-derived value, e.g. a hash of the client IP, at most
+	 * {@link AGENT_SESSION_MAX_NETWORK_KEY_LENGTH} characters). Never a raw address.
 	 */
 	networkKey: string;
 	createdAt: string;
@@ -145,7 +178,8 @@ export interface AgentCheckoutSession {
 	/** createdAt + 30 d: the sweep deletes the session from here on. */
 	purgeAt: string;
 	/** Recent keyed writes with their answers, newest last, at most
-	 *  {@link AGENT_SESSION_MAX_WRITE_RECORDS}. */
+	 *  {@link AGENT_SESSION_MAX_WRITE_RECORDS}. Each answer holds a copy of the
+	 *  session's PII as of that write (see {@link AgentSessionWriteRecord}). */
 	writes: AgentSessionWriteRecord[];
 	/** Keys whose records were evicted from `writes`: a late replay of one is
 	 *  refused (`IDEMPOTENCY_KEY_EXPIRED`), never re-applied. */
@@ -160,8 +194,13 @@ export const AGENT_SESSION_MAX_LINES = 50;
 export const AGENT_SESSION_MAX_WRITE_RECORDS = 32;
 /** The most keyed writes one session accepts in its life (records plus retired
  *  keys); beyond it writes are refused `WRITE_LIMIT_REACHED`, so no key is ever
- *  forgotten while the session lives. */
+ *  forgotten while the session lives. Cancel is exempt, so a session at the cap
+ *  can still be canceled and its link killed. */
 export const AGENT_SESSION_MAX_WRITES = 512;
+/** Length caps (characters) on caller-supplied keys; longer is `INVALID_REQUEST`. */
+export const AGENT_SESSION_MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+export const AGENT_SESSION_MAX_NETWORK_KEY_LENGTH = 128;
+export const AGENT_SESSION_MAX_FINGERPRINT_LENGTH = 128;
 
 /** The status rule: no lines → `incomplete`; at least one → `requires_escalation`. */
 export function agentSessionStatusForLines(lines: readonly AgentSessionLine[]): AgentSessionStatus {

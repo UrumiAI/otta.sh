@@ -96,7 +96,8 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 					| "canceled"
 					| "completed"
 					| "expired"
-					| "already_used";
+					| "already_used"
+					| "incomplete";
 		  }
 	> {
 		const s = this.#sessions.get(id);
@@ -106,9 +107,16 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		if (s.status === "completed") return { ok: false, reason: "completed" };
 		if (s.handoffUsedAt !== undefined) return { ok: false, reason: "already_used" };
 		if (s.expiresAt <= now) return { ok: false, reason: "expired" };
+		if (s.lines.length === 0) return { ok: false, reason: "incomplete" };
 		const stored: AgentCheckoutSession = { ...s, handoffUsedAt: now, revision: s.revision + 1 };
 		this.#sessions.set(id, stored);
 		return { ok: true, session: structuredClone(stored) };
+	}
+
+	async extendIdempotencyPurge(networkKey: string, key: string, purgeAt: string): Promise<void> {
+		const id = idempotencyId(networkKey, key);
+		const r = this.#idempotency.get(id);
+		if (r !== undefined && r.purgeAt < purgeAt) this.#idempotency.set(id, { ...r, purgeAt });
 	}
 
 	async countLive(now: string): Promise<number> {

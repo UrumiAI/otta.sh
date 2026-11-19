@@ -6,7 +6,10 @@ import {
 } from "../agentic/model.js";
 import { currency } from "../money/cents.js";
 import { productId, sku } from "../money/ids.js";
-import type { AgentSessionSecrets } from "../agentic/secrets.js";
+import {
+	AGENT_SESSION_MIN_SERVER_KEY_BYTES,
+	type AgentSessionSecrets,
+} from "../agentic/secrets.js";
 import type {
 	AgentCreateIdempotencyRecord,
 	AgentSessionStore,
@@ -174,7 +177,6 @@ export function agentSessionStoreContract(
 					writes: [
 						{
 							key: "k",
-							networkKey: "net-a",
 							operation: "create",
 							fingerprint: "f",
 							revision: 1,
@@ -184,11 +186,8 @@ export function agentSessionStoreContract(
 								status: "incomplete",
 								currency: currency("USD"),
 								lines: [],
-								orderSecretHash: "o",
 								linkGeneration: 0,
-								redeemedHandoffs: [],
 								channel: "other",
-								networkKey: "net-a",
 								createdAt: T0,
 								updatedAt: T0,
 								expiresAt: at(DAY_MS),
@@ -196,7 +195,7 @@ export function agentSessionStoreContract(
 							},
 						},
 					],
-					retiredWriteKeys: [{ key: "old", networkKey: "net-a" }],
+					retiredWriteKeys: [{ key: "old" }],
 				}),
 			);
 			const read = await store.get(s.id);
@@ -375,6 +374,18 @@ export function agentSessionStoreContract(
 			expect((await store.markHandoffUsed(s.id, "h5", justBefore)).ok).toBe(true);
 		});
 
+		test("markHandoffUsed refuses a session with no lines, inside the mark", async () => {
+			const { store } = await makeHarness();
+			const s = await seed(store, sample("cs_m6", { handoffTokenHash: "h6", lines: [] }));
+			expect(await store.markHandoffUsed(s.id, "h6", at(1000))).toEqual({
+				ok: false,
+				reason: "incomplete",
+			});
+			const read = await store.get(s.id);
+			expect(read?.handoffUsedAt).toBeUndefined();
+			expect(read?.revision).toBe(s.revision);
+		});
+
 		test("countLive counts open, unexpired sessions", async () => {
 			const { store } = await makeHarness();
 			await seed(store, sample("cs_l1"));
@@ -434,6 +445,26 @@ export function agentSessionStoreContract(
 			expect(await store.purge(s.id, s.purgeAt)).toBe(false);
 		});
 
+		test("extendIdempotencyPurge moves a record's purge later, never earlier; a missing record is a no-op", async () => {
+			const { store } = await makeHarness();
+			const record = createRecord("idem-x", "cs_x");
+			await store.putIdempotency(record);
+			await store.extendIdempotencyPurge("net-a", "idem-x", at(31 * DAY_MS));
+			expect((await store.getIdempotency("net-a", "idem-x"))?.purgeAt).toBe(at(31 * DAY_MS));
+			await store.extendIdempotencyPurge("net-a", "idem-x", at(DAY_MS));
+			expect((await store.getIdempotency("net-a", "idem-x"))?.purgeAt).toBe(at(31 * DAY_MS));
+			// Scoped like every create record: another network's key is untouched.
+			await store.putIdempotency(createRecord("idem-x", "cs_y", { networkKey: "net-b" }));
+			await store.extendIdempotencyPurge("net-a", "idem-x", at(40 * DAY_MS));
+			expect((await store.getIdempotency("net-b", "idem-x"))?.purgeAt).toBe(at(30 * DAY_MS));
+			await store.extendIdempotencyPurge("net-a", "idem-none", at(40 * DAY_MS));
+			expect(await store.getIdempotency("net-a", "idem-none")).toBeNull();
+			// A sweep at the old purge time takes net-b's record but not the extended one.
+			expect(await store.purgeIdempotencyDue(at(30 * DAY_MS), 10)).toBe(1);
+			expect(await store.getIdempotency("net-a", "idem-x")).not.toBeNull();
+			expect(await store.getIdempotency("net-b", "idem-x")).toBeNull();
+		});
+
 		test("purgeIdempotencyDue sweeps due create records, orphans included, at most the limit", async () => {
 			const { store } = await makeHarness();
 			// Orphans: recorded creates whose session was never written.
@@ -454,28 +485,41 @@ export function agentSessionStoreContract(
 	});
 }
 
+/** Builds the adapter under `serverKey`; MUST throw (or reject) on an empty or short key. */
+export type AgentSessionSecretsFactory = (
+	serverKey: Uint8Array,
+) => AgentSessionSecrets | Promise<AgentSessionSecrets>;
+
+function serverKey(fill: number, bytes = AGENT_SESSION_MIN_SERVER_KEY_BYTES): Uint8Array {
+	return new Uint8Array(bytes).fill(fill);
+}
+
 /**
  * The `AgentSessionSecrets` behavioural spec: unguessable-shaped ids, derived
- * secrets that are deterministic and separated by purpose, session and
+ * secrets that are KEYED (two adapters under the same key agree, under different
+ * keys they differ for both purposes, and an empty or short key is refused at
+ * construction), deterministic and separated by purpose, session and
  * generation, a hash that never echoes its input, and a constant-time compare
- * that answers false (never throws) on a length mismatch.
+ * that answers false (never throws) on a length mismatch. A keyless derive, e.g.
+ * SHA-256(purpose, id, generation), fails it.
  */
 export function agentSessionSecretsContract(
-	makeSecrets: () => Promise<AgentSessionSecrets>,
+	makeSecrets: AgentSessionSecretsFactory,
 	options: AgentSessionStoreContractOptions,
 ): void {
 	describe(`AgentSessionSecrets contract [${options.dialect}]`, () => {
+		const a = agentSessionId("cs_aaaaaaaaaaaaaaaaaaaaaa");
+		const b = agentSessionId("cs_bbbbbbbbbbbbbbbbbbbbbb");
+
 		test("mintId: at least 22 base64url characters (128 bits), fresh each time", async () => {
-			const secrets = await makeSecrets();
+			const secrets = await makeSecrets(serverKey(1));
 			const ids = Array.from({ length: 20 }, () => secrets.mintId());
 			for (const id of ids) expect(id).toMatch(/^[A-Za-z0-9_-]{22,}$/);
 			expect(new Set(ids).size).toBe(ids.length);
 		});
 
 		test("derive is deterministic and separated by purpose, session and generation", async () => {
-			const secrets = await makeSecrets();
-			const a = agentSessionId("cs_aaaaaaaaaaaaaaaaaaaaaa");
-			const b = agentSessionId("cs_bbbbbbbbbbbbbbbbbbbbbb");
+			const secrets = await makeSecrets(serverKey(1));
 			const order = await secrets.derive("order", a);
 			expect(order.length).toBeGreaterThan(0);
 			expect(await secrets.derive("order", a)).toBe(order);
@@ -487,8 +531,43 @@ export function agentSessionSecretsContract(
 			expect(g1).not.toBe(order);
 		});
 
+		test("derive is keyed: the same key agrees across instances, a different key differs for both purposes", async () => {
+			const one = await makeSecrets(serverKey(1));
+			const same = await makeSecrets(serverKey(1));
+			const other = await makeSecrets(serverKey(2));
+			// Differs in its last byte only.
+			const near = serverKey(1);
+			near[near.length - 1] = 2;
+			const nearly = await makeSecrets(near);
+			expect(await same.derive("order", a)).toBe(await one.derive("order", a));
+			expect(await same.derive("handoff", a, 1)).toBe(await one.derive("handoff", a, 1));
+			for (const different of [other, nearly]) {
+				expect(await different.derive("order", a)).not.toBe(await one.derive("order", a));
+				expect(await different.derive("handoff", a, 1)).not.toBe(await one.derive("handoff", a, 1));
+			}
+		});
+
+		test("construction refuses an empty or short server key", async () => {
+			for (const bad of [new Uint8Array(0), serverKey(1, AGENT_SESSION_MIN_SERVER_KEY_BYTES - 1)]) {
+				await expect(Promise.resolve().then(() => makeSecrets(bad))).rejects.toThrow();
+			}
+			await expect(
+				Promise.resolve().then(() => makeSecrets(serverKey(1, AGENT_SESSION_MIN_SERVER_KEY_BYTES))),
+			).resolves.toBeDefined();
+		});
+
+		test("derive's types demand a generation for a hand-off token and refuse one for the order secret", () => {
+			const typeOnly = (secrets: AgentSessionSecrets): void => {
+				// @ts-expect-error a hand-off token needs its generation
+				void secrets.derive("handoff", a);
+				// @ts-expect-error the order secret has no generation
+				void secrets.derive("order", a, 1);
+			};
+			expect(typeof typeOnly).toBe("function");
+		});
+
 		test("hash is deterministic, distinct per input, and never the input", async () => {
-			const secrets = await makeSecrets();
+			const secrets = await makeSecrets(serverKey(1));
 			const h = await secrets.hash("token-1");
 			expect(await secrets.hash("token-1")).toBe(h);
 			expect(await secrets.hash("token-2")).not.toBe(h);
@@ -496,7 +575,7 @@ export function agentSessionSecretsContract(
 		});
 
 		test("constantTimeEqual: true on equal, false on differing, false (no throw) on a length mismatch", async () => {
-			const secrets = await makeSecrets();
+			const secrets = await makeSecrets(serverKey(1));
 			expect(secrets.constantTimeEqual("abcdef", "abcdef")).toBe(true);
 			expect(secrets.constantTimeEqual("abcdef", "abcdeg")).toBe(false);
 			expect(() => secrets.constantTimeEqual("abc", "abcdef")).not.toThrow();

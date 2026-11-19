@@ -47,9 +47,11 @@ export interface AgentSessionStore {
 	/**
 	 * Atomically mark the session's current hand-off link used, guarded on: the
 	 * session exists, its current token hash is `tokenHash`, it is open (not
-	 * canceled or completed), `expiresAt` is after `now`, and the link is not
-	 * already used. The mark stamps `handoffUsedAt = now` and bumps the revision.
-	 * Exactly one of any number of racing calls wins.
+	 * canceled or completed), the link is not already used, `expiresAt` is after
+	 * `now`, and it has at least one line (`incomplete` otherwise: a replace that
+	 * emptied the session after the caller's lookup must not burn the link). The
+	 * mark stamps `handoffUsedAt = now` and bumps the revision. Exactly one of any
+	 * number of racing calls wins.
 	 */
 	markHandoffUsed(
 		id: AgentSessionId,
@@ -65,9 +67,17 @@ export interface AgentSessionStore {
 					| "canceled"
 					| "completed"
 					| "expired"
-					| "already_used";
+					| "already_used"
+					| "incomplete";
 		  }
 	>;
+	/**
+	 * Move the create record for (`networkKey`, `key`) to purge no earlier than
+	 * `purgeAt`: it sets the record's `purgeAt` to the later of the two, never
+	 * earlier. A missing record is a no-op. Used when an orphaned create is
+	 * finished late, so its record outlives the session it now points at.
+	 */
+	extendIdempotencyPurge(networkKey: string, key: string, purgeAt: string): Promise<void>;
 	/** Sessions that are open and whose `expiresAt` is after `now`. */
 	countLive(now: string): Promise<number>;
 	/** Sessions created by `networkKey` at or after `since`. */
@@ -95,6 +105,7 @@ export interface AgentCreateIdempotencyRecord {
 	fingerprint: string;
 	sessionId: AgentSessionId;
 	createdAt: string;
-	/** createdAt + 30 d, as the session's own `purgeAt`. */
+	/** createdAt + 30 d, as the session's own `purgeAt`; never earlier than it
+	 *  (a create finished late extends it, {@link AgentSessionStore.extendIdempotencyPurge}). */
 	purgeAt: string;
 }
