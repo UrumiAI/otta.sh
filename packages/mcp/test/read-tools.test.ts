@@ -64,6 +64,7 @@ test("the read tools are all in the table", () => {
 		"reports_orders_by_status",
 		"reports_top_products",
 		"settings_get",
+		"audit_list",
 	]);
 	for (const tool of reads) {
 		expect(tool.destructive ?? false).toBe(false);

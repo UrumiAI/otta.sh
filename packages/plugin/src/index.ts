@@ -230,6 +230,13 @@ export {
 	type ShippingPageInput,
 } from "./admin/shipping-page.js";
 export { STORE_SETTINGS_PAGE } from "./admin/store-settings-page.js";
+// The MCP add-on's audit log (ADR-0046): its collection and page, as data, for the
+// descriptor to declare when a site opts in to `mcp`. See the module doc.
+export {
+	MCP_AUDIT_COLLECTION,
+	MCP_AUDIT_PAGE,
+	MCP_AUDIT_STORAGE_COLLECTIONS,
+} from "./mcp-audit-declaration.js";
 export {
 	couponDiscountSummary,
 	couponUsesSummary,
@@ -687,6 +694,7 @@ export type {
 	KvAccess,
 	PluginContext,
 	RouteCaller,
+	RouteRequestMeta,
 	RouteEntry,
 	RouteHandler,
 	SandboxedPlugin,

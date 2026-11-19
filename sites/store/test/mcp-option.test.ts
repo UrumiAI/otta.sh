@@ -101,10 +101,22 @@ describe("otta({ mcp }) through the setup hook", () => {
 	test("true: the otta-mcp entry is registered and bundled with the plugin; nothing else moves", () => {
 		const unset = runSetup(undefined);
 		const on = runSetup(true);
+		// The entry, and the audit log's collection and page (pinned in
+		// otta-plugin-descriptor.test.ts).
 		expect(on.descriptor).toEqual({
 			...unset.descriptor,
 			entrypoint: "@urumi.ai/otta-mcp/trusted",
+			storage: on.descriptor?.storage,
+			adminPages: on.descriptor?.adminPages,
 		});
+		expect(Object.keys(on.descriptor?.storage ?? {})).toEqual([
+			...Object.keys(unset.descriptor?.storage ?? {}),
+			"mcp_audit",
+		]);
+		expect(on.descriptor?.adminPages?.map((p) => p.path)).toEqual([
+			...(unset.descriptor?.adminPages ?? []).map((p) => p.path),
+			"/mcp-audit",
+		]);
 		// Bundled for the plugin's own reason: it imports @urumi.ai/otta-plugin, and
 		// an externalized copy would load a second plugin without the build defines.
 		expect(on.noExternal).toEqual([...unset.noExternal, "@urumi.ai/otta-mcp"]);

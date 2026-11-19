@@ -6,6 +6,8 @@ import {
 	type SandboxedPlugin,
 } from "@urumi.ai/otta-plugin";
 import type { z } from "zod";
+import { createAuditPageHandler, isAuditPageInteraction } from "./audit-page.js";
+import { beginAudit, finishAudit, pruneAudit, type AuditOutcome } from "./audit.js";
 import { toolFailure } from "./errors.js";
 import type { McpToolDef } from "./tool.js";
 import { OTTA_MCP_TOOLS } from "./tools/index.js";
@@ -173,26 +175,62 @@ function toolRoute(def: McpToolDef<z.ZodTypeAny>): McpRouteEntry {
 		methods: ["POST"],
 		request: { body: "json" },
 		async handler(routeCtx, ctx) {
-			const parsed = def.input.safeParse(routeCtx.input);
-			if (!parsed.success) {
-				const { message, issues } = describeIssues(parsed.error, def.sensitiveInput === true);
-				toolFailure("INVALID_INPUT", message, { issues });
+			// Logged BEFORE anything runs: a call the log cannot record is refused
+			// here (AUDIT_UNAVAILABLE), input refusals included.
+			const entry = await beginAudit(ctx, routeCtx, def);
+			let input: unknown = routeCtx.input;
+			let outcome: AuditOutcome;
+			try {
+				const parsed = def.input.safeParse(routeCtx.input);
+				if (!parsed.success) {
+					const { message, issues } = describeIssues(parsed.error, def.sensitiveInput === true);
+					toolFailure("INVALID_INPUT", message, { issues });
+				}
+				input = parsed.data;
+				const clients = await makeAdminClients(ctx);
+				outcome = {
+					kind: "returned",
+					result: await def.run({
+						ctx,
+						clients,
+						input: parsed.data,
+						operator: operatorName(routeCtx.user),
+					}),
+				};
+			} catch (error) {
+				outcome = { kind: "threw", error };
 			}
-			const clients = await makeAdminClients(ctx);
-			return def.run({
-				ctx,
-				clients,
-				input: parsed.data,
-				operator: operatorName(routeCtx.user),
-			});
+			// Neither of these throws: the tool's own answer goes back unchanged.
+			await finishAudit(ctx, entry, def, input, outcome);
+			await pruneAudit(ctx);
+			if (outcome.kind === "threw") throw outcome.error;
+			return outcome.result;
 		},
 	};
+}
+
+/** EmDash renders every plugin admin page through this one route key. */
+const ADMIN_ROUTE = "admin";
+
+/**
+ * The plugin's `admin` route with the Audit log page added: that page's
+ * interactions go to its handler, every other one to the plugin's own handler,
+ * unchanged. The entry's other fields (public, permission) are kept.
+ */
+function withAuditPage(entry: RouteEntry, tools: readonly string[]): RouteEntry {
+	const own: RouteHandler = typeof entry === "function" ? entry : entry.handler;
+	const page = createAuditPageHandler(tools);
+	const handler: RouteHandler = (routeCtx, ctx) =>
+		isAuditPageInteraction(routeCtx.input) ? page(routeCtx, ctx) : own(routeCtx, ctx);
+	return typeof entry === "function" ? handler : { ...entry, handler };
 }
 
 /**
  * The plugin with the tool table added: per tool, a route `mcp/<name>` and an
  * `mcp.tools[<name>]` entry, under the plugin's own id (its storage is private to
- * that id, so the tools have to run inside it).
+ * that id, so the tools have to run inside it). Every tool call is written to the
+ * audit log (`audit.ts`), and the plugin's `admin` route also serves the Audit
+ * log page (`audit-page.ts`).
  *
  * Returns a NEW object; `plugin` is not touched. Throws when a tool's route
  * would replace an existing route, when two tools share a name, when a name
@@ -226,6 +264,11 @@ export function withMcp(
 			input: def.input,
 			destructive: def.destructive ?? false,
 		};
+	}
+
+	const admin = routes[ADMIN_ROUTE];
+	if (admin !== undefined) {
+		routes[ADMIN_ROUTE] = withAuditPage(admin, Object.keys(mcpTools));
 	}
 
 	return { ...plugin, routes, mcp: { tools: mcpTools } };

@@ -1,6 +1,7 @@
 /**
  * A real plugin context for driving MCP tool routes: the plugin's declared
- * commerce collections over in-memory SQLite, built by the adapter package's own
+ * commerce collections, plus the MCP audit log's (which a site that opts in to
+ * `mcp` declares too), over in-memory SQLite, built by the adapter package's own
  * dialect harness (the host's migrations, so the revision triggers a guarded
  * write compares against exist). Real databases, never mocks.
  *
@@ -9,6 +10,7 @@
  */
 import {
 	COMMERCE_STORAGE_COLLECTIONS,
+	MCP_AUDIT_STORAGE_COLLECTIONS,
 	type KvAccess,
 	type PluginContext,
 } from "@urumi.ai/otta-plugin";
@@ -26,16 +28,18 @@ function copy(index: string | readonly string[]): string | string[] {
 	return typeof index === "string" ? index : [...index];
 }
 
-/** The plugin's declared collections, in the shape the dialect harness takes. */
+/** The declared collections, in the shape the dialect harness takes. */
 function storageLayout(): StorageLayout {
 	return Object.fromEntries(
-		Object.entries(COMMERCE_STORAGE_COLLECTIONS).map(([name, declaration]) => [
-			name,
-			{
-				indexes: (declaration.indexes ?? []).map(copy),
-				uniqueIndexes: (declaration.uniqueIndexes ?? []).map(copy),
-			},
-		]),
+		Object.entries({ ...COMMERCE_STORAGE_COLLECTIONS, ...MCP_AUDIT_STORAGE_COLLECTIONS }).map(
+			([name, declaration]) => [
+				name,
+				{
+					indexes: (declaration.indexes ?? []).map(copy),
+					uniqueIndexes: (declaration.uniqueIndexes ?? []).map(copy),
+				},
+			],
+		),
 	);
 }
 

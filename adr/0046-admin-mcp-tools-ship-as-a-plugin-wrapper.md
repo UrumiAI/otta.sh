@@ -87,3 +87,29 @@ asks for.
   `@urumi.ai/otta-store`. The template's Dependabot group (`@urumi.ai/*`) keeps the two together.
 - Product content (create, delete, title, images) stays with EmDash's own `content_*` tools. The
   Otta tools cover the commerce side only.
+
+## Amendment: audit log (2026-11-19)
+
+Every Otta MCP tool call is logged by `withMcp`, in the plugin's own storage (collection
+`mcp_audit`): who called (EmDash's verified `ctx.user`, never the input), the IP and user agent,
+the tool, its input (a `sensitiveInput` tool's values are recorded as `"[redacted]"`; over 8 KB
+the input is truncated), how it ended (`ok`, `refused` with its code, `needs_confirmation`,
+`error`), what it touched, and when. EmDash's own `audit_logs` row per call is left as it is; it
+has no parameters, no Otta code and no screen.
+
+- **Nothing runs unlogged.** The `started` entry is written before the tool runs, and a failed
+  write refuses the call with `AUDIT_UNAVAILABLE`. A failed final update leaves the tool's answer
+  unchanged and the entry `started` ("outcome unknown").
+- **Read** through the read-only `audit_list` tool (the 47th) or the "Audit log" admin page.
+  Nothing edits or deletes an entry, except retention.
+- **Retention is one year.** Up to 20 expired entries are pruned after each logged call, using
+  the `at` index. That keeps the work per call bounded, and a site with the add-on off never runs
+  it. The cron sweep was not used: it belongs to the plugin, which has no audit collection when
+  the add-on is off.
+- **The descriptor declares it.** EmDash reads a plugin's collections and admin pages from its
+  descriptor only, so with `mcp` on, `@urumi.ai/otta-store` adds the collection and the page. The
+  declaration is exported as data by `@urumi.ai/otta-plugin`, since the store cannot import its
+  optional peer. The page is served by `withMcp`, which wraps the plugin's `admin` route and passes
+  every other interaction through.
+- **Limitation:** EmDash passes a plugin the user, not the token, so two agents sharing one user
+  cannot be told apart. The recommendation is one EmDash user per agent.

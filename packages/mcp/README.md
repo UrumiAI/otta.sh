@@ -33,11 +33,23 @@ The template contract stays 1. Without the package installed, the build fails wi
 `otta({ mcp: true }) needs @urumi.ai/otta-mcp installed`.
 
 **A site with its own Otta descriptor:** point the descriptor's entrypoint at this package's
-trusted entry. Nothing else in the descriptor changes.
+trusted entry, and declare the [audit log](#audit-log)'s collection and page. EmDash takes a
+plugin's collections and admin pages from its descriptor only. Without the collection, every tool
+call is refused with `AUDIT_UNAVAILABLE`.
 
 ```ts
+import {
+	COMMERCE_STORAGE_COLLECTIONS,
+	MCP_AUDIT_PAGE,
+	MCP_AUDIT_STORAGE_COLLECTIONS,
+} from "@urumi.ai/otta-plugin";
+
 entrypoint: "@urumi.ai/otta-mcp/trusted", // was "@urumi.ai/otta-plugin/trusted"
+storage: { ...COMMERCE_STORAGE_COLLECTIONS, ...MCP_AUDIT_STORAGE_COLLECTIONS },
+adminPages: [/* the Otta pages you list today */ MCP_AUDIT_PAGE],
 ```
+
+`otta({ mcp: true })` declares both for you.
 
 Deploy. The tools exist now, but they stay off until an admin turns them on.
 
@@ -111,3 +123,68 @@ starts `Input validation error`, with **no** `_meta.code`. Only a direct call to
 The two payment-secret tools never echo what was sent. On the route, their schema refusals name
 only each problem's field and kind. On the MCP path, zod's messages name the allowed options or the
 received type, never a submitted value, and their unknown-key refusal does not name the key.
+
+## Audit log
+
+Otta keeps its own log of every Otta MCP tool call, reads included. It lives in the plugin's
+storage, in the `mcp_audit` collection. EmDash also writes one row per call to its own
+`audit_logs` (actor, IP, tool, success or failure). That row carries no parameters or Otta code,
+and EmDash has no screen for it. Otta leaves it as it is.
+
+### What is recorded
+
+Each entry holds:
+
+- `id`, a time-ordered id, and `at`, the time of the call (ISO, UTC).
+- `actor`: the EmDash user the call ran as (`id`, `email`, `name`, `role`), as EmDash verified
+  it. It is never read from the input. A call with no user is logged with `actor: null`.
+- `ip` and `userAgent`, from EmDash's request metadata.
+- `tool`: the bare name, such as `orders_refund`.
+- `input`: the parameters as sent, redacted (see below). A serialized input over 8 KB is stored
+  as `{truncated: true, bytes, preview}`: its byte length and its first 1,024 characters.
+- `status`: `started`, `ok`, `refused`, `needs_confirmation` or `error`.
+- `code`: the refusal code when `refused`, or `INTERNAL_ERROR` for an unexpected failure.
+- `affected`: when there are any, the ids the call named or created (order, product, coupon id
+  or code, zone, method, rate, tax class) and any `amountCents` and `currency` it sent (a
+  refund's amount, for example).
+- `finishedAt`.
+
+The `started` entry is written before the tool runs. If it cannot be written, the call is refused
+with `AUDIT_UNAVAILABLE` (HTTP 503 on the route) and the tool does not run, so no call goes
+unlogged. The entry is updated once the tool has answered. If that update fails, the tool's answer
+still goes back unchanged, because the action already happened. The entry then stays `started`,
+which means "outcome unknown": check the order, coupon or setting itself.
+
+A schema refusal through `/_emdash/api/mcp` (see [Errors](#errors)) comes from the MCP SDK
+before the tool's route runs, so Otta never sees that call and does not log it. EmDash's own
+row records it.
+
+### Redaction
+
+The two payment-secret tools (`payments_set_secret`, `payments_clear_secret`) are recorded as
+their keys only, every value `"[redacted]"`. An unknown key sent to them is counted, never named.
+No other tool takes a secret: every input field of the 47 tools was checked, and a test fails if a
+secret-like field is ever added to a tool that is not redacted. Notes, reasons and other free text
+are recorded as sent.
+
+### Retention
+
+Entries are kept for one year (365 days). Nothing else deletes one, and no tool edits or deletes
+entries. After each logged call, up to 20 expired entries are deleted, oldest first. A failed
+prune is a warning and never fails the call.
+
+### Reading it
+
+- **The `audit_list` tool**: read-only. Optional filters `tool`, `actorId`, `status`, `since`
+  (inclusive) and `until` (exclusive, ISO instants), plus `limit` (1 to 100, default 50) and
+  `cursor`. Newest first, with `nextCursor` when there is more. A cursor works only with the
+  filters it came from.
+- **The Audit log page** in the Otta admin (`/_emdash/admin/plugins/otta/mcp-audit`): a table of
+  time, user email, tool, status and code, and a short input summary, with the same filters and
+  paging. It is listed only on a site with the MCP tools on.
+
+### One EmDash user per agent
+
+EmDash passes a plugin the user a token belongs to, not the token itself. Two agents whose tokens
+belong to the same user look the same in the log. To tell agents apart, give each agent its own
+EmDash user (an Admin, since the tools need `plugins:manage`) and mint its token as that user.

@@ -84,8 +84,8 @@ export interface StagingEmdashOptions {
  *   the fail-closed "no provider" state of ADR-0031.
  *
  * @param options.mcp register the Otta plugin with its admin MCP tools
- *   (`otta({ mcp: true })`, ADR-0046). Default off; only the Otta descriptor's
- *   entrypoint changes.
+ *   (`otta({ mcp: true })`, ADR-0046). Default off; only the Otta descriptor
+ *   changes (its entrypoint, plus the audit log's collection and page).
  */
 export function buildEmdashOptions(
 	egress: InProcessEgressUrls = {},

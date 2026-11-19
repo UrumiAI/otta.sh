@@ -77,7 +77,15 @@ describe("withMcp — the route and tool table", () => {
 		const wrapped = withMcp(base, [echo]);
 
 		expect(wrapped).not.toBe(base);
-		for (const key of keysBefore) expect(wrapped.routes[key]).toBe(routesBefore[key]);
+		// Every route kept as it is, but `admin`, which is wrapped to serve the
+		// Audit log page too (audit-page.test.ts pins that it delegates the rest).
+		for (const key of keysBefore.filter((k) => k !== "admin")) {
+			expect(wrapped.routes[key]).toBe(routesBefore[key]);
+		}
+		expect(Object.keys(wrapped.routes)).toEqual([...keysBefore, "mcp/x"]);
+		const admin = wrapped.routes["admin"] as { handler: unknown; public?: boolean };
+		expect(admin.handler).not.toBe((routesBefore["admin"] as { handler: unknown }).handler);
+		expect(admin.public).toBe(false);
 		expect(Object.keys(base.routes ?? {})).toEqual(keysBefore);
 		expect(base.routes).toEqual(routesBefore);
 		expect("mcp" in base).toBe(false);

@@ -1,11 +1,17 @@
 /**
  * The `mcp` opt-in on the Otta plugin descriptor (ADR-0046). Off by default, and
- * when it is off the descriptor is exactly today's. On, the one change is the
- * entrypoint: the same plugin, wrapped by `@urumi.ai/otta-mcp`, under the same
- * id, storage, capabilities and allowed hosts. The rest of the descriptor is
+ * when it is off the descriptor is exactly today's. On, the entrypoint is the
+ * same plugin wrapped by `@urumi.ai/otta-mcp`, and the add-on's audit log is
+ * declared (its collection and its page); the id, capabilities and allowed hosts
+ * stay the same. The rest of the descriptor is
  * pinned field by field in `sites/staging/test/site-config.test.ts`.
  */
 import { OTTA_MCP_TOOLS } from "@urumi.ai/otta-mcp";
+import {
+	COMMERCE_STORAGE_COLLECTIONS,
+	MCP_AUDIT_PAGE,
+	MCP_AUDIT_STORAGE_COLLECTIONS,
+} from "@urumi.ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { buildEmdashOptions } from "../src/emdash-options.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
@@ -23,12 +29,21 @@ describe("ottaPluginDescriptor's mcp option", () => {
 		);
 	});
 
-	test("true: only the entrypoint differs, and it names the otta-mcp trusted entry", () => {
+	test("true: the otta-mcp entry, plus the audit log's collection and page; nothing else differs", () => {
 		const egress = { extraAllowedHosts: "x.example.com" };
 		const plain = ottaPluginDescriptor({ egress });
 		const withMcp = ottaPluginDescriptor({ egress, mcp: true });
 		expect(withMcp.entrypoint).toBe(MCP_ENTRY);
-		expect(withMcp).toEqual({ ...plain, entrypoint: MCP_ENTRY });
+		expect(withMcp).toEqual({
+			...plain,
+			entrypoint: MCP_ENTRY,
+			storage: { ...COMMERCE_STORAGE_COLLECTIONS, ...MCP_AUDIT_STORAGE_COLLECTIONS },
+			adminPages: [...(plain.adminPages ?? []), MCP_AUDIT_PAGE],
+		});
+		// The audit collection is new: it shadows no commerce collection.
+		for (const name of Object.keys(MCP_AUDIT_STORAGE_COLLECTIONS)) {
+			expect(Object.hasOwn(COMMERCE_STORAGE_COLLECTIONS, name), name).toBe(false);
+		}
 	});
 
 	test("the otta-mcp entry is the Otta plugin's trusted entry, with the MCP tools added", async () => {
@@ -39,11 +54,14 @@ describe("ottaPluginDescriptor's mcp option", () => {
 		};
 		const wrapped = (await import("@urumi.ai/otta-mcp/trusted")).default as Entry;
 		const plain = (await import("@urumi.ai/otta-plugin/trusted")).default as Entry;
-		// The same plugin: its hooks unchanged, every route of its own kept as it is.
+		// The same plugin: its hooks unchanged, every route of its own kept as it is
+		// but `admin`, which also serves the Audit log page.
 		expect(wrapped.hooks).toBe(plain.hooks);
 		for (const [name, route] of Object.entries(plain.routes ?? {})) {
+			if (name === "admin") continue;
 			expect(wrapped.routes?.[name], name).toBe(route);
 		}
+		expect(wrapped.routes?.["admin"]).toBeDefined();
 		// Plus one tool per table entry, each on its own private route.
 		expect(Object.keys(wrapped.mcp?.tools ?? {}).toSorted()).toEqual(
 			OTTA_MCP_TOOLS.map((tool) => tool.name).toSorted(),

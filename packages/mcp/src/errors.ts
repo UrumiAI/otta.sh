@@ -20,6 +20,9 @@
 const STATUS_BY_CODE: Readonly<Record<string, number>> = {
 	NOT_FOUND: 404,
 	CONFLICT: 409,
+	/** The audit log could not record the call, so the tool did not run (a host
+	 *  storage failure, not the caller's input): retry later. */
+	AUDIT_UNAVAILABLE: 503,
 };
 
 export class ToolError extends Error {

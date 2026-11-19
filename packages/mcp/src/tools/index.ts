@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { McpToolDef } from "../tool.js";
+import { AUDIT_TOOLS } from "./audit.js";
 import { COUPON_WRITE_TOOLS } from "./coupon-writes.js";
 import { COUPON_TOOLS } from "./coupons.js";
 import { ORDER_WRITE_TOOLS } from "./order-writes.js";
@@ -33,4 +34,5 @@ export const OTTA_MCP_TOOLS: readonly McpToolDef<z.ZodTypeAny>[] = [
 	...REPORT_TOOLS,
 	...SETTINGS_TOOLS,
 	...SETTINGS_WRITE_TOOLS,
+	...AUDIT_TOOLS,
 ] as readonly McpToolDef<z.ZodTypeAny>[];
