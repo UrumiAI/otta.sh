@@ -272,6 +272,48 @@ describe("an update that throws after building its cart", () => {
 	});
 });
 
+describe("a retry after the detach-and-retry path threw", () => {
+	test("the last unit re-added under :retry counts as added: the same-key retry writes it, priced, with no OUT_OF_STOCK", async () => {
+		const c = ctx();
+		const created = await call(createAgenticSessionCreateHandler(), c, {
+			idempotencyKey: "retry-create",
+			lines: [{ productId: LAST.id, quantity: 1 }],
+		});
+		expect(created).toMatchObject({ ok: true, messages: [] });
+		const id = (created["session"] as { id: string }).id;
+		const body = {
+			sessionId: id,
+			idempotencyKey: "retry-update",
+			lines: [{ productId: LAST.id, quantity: 1 }],
+			destination: AGENT_ADDRESS,
+			shippingMethodId: F.methodId,
+		};
+		let writes = 0;
+		let thrown = false;
+		before = async (collection, method) => {
+			if (collection !== AGENT_SESSIONS_COLLECTION || method !== "compareAndSet") return;
+			writes++;
+			// 1st: the detach (the old cart held the last unit); 2nd: the replace.
+			if (writes !== 2) return;
+			thrown = true;
+			throw new Error("injected storage failure");
+		};
+		const failed = await call(createAgenticSessionUpdateHandler(), c, body).catch(() => ({
+			ok: false,
+		}));
+		before = null;
+		expect(thrown).toBe(true);
+		expect(failed["ok"]).toBe(false);
+
+		const retried = await call(createAgenticSessionUpdateHandler(), c, body);
+		expect(retried).toMatchObject({ ok: true, replayed: false, messages: [] });
+		const session = retried["session"] as Record<string, unknown>;
+		expect(session["lines"]).toEqual([{ productId: LAST.id, sku: LAST.sku, quantity: 1 }]);
+		expect(session["quote"]).toMatchObject({ subtotal: 4000, fulfillment: 599 });
+		expect((session["quote"] as { total: number | null }).total).not.toBeNull();
+	});
+});
+
 describe("acceptedSelection", () => {
 	const input = {
 		address: {

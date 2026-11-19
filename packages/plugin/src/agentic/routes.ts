@@ -20,10 +20,12 @@ import {
 	detachAgentSessionCart,
 	getAgentSession,
 	precheckAgentSessionCreate,
+	productId as toProductId,
 	precheckAgentSessionReplace,
 	recordAgentHandoffCart,
 	redeemAgentHandoff,
 	replaceAgentSession,
+	sku as toSku,
 	verifyAgentOrderSecret,
 	type AgentSessionContent,
 	type AgentSessionDeps,
@@ -320,22 +322,36 @@ function createAnswer(result: Awaited<ReturnType<typeof createAgentSession>>): A
 
 /**
  * Whether a refusal after the keyed cart was built is FINAL for this key and body:
- * the key is recorded for another body (a retry answers the same refusal, never
- * rebuilds), or the session can never take the write (handed off, closed,
- * expired). Only then is the built cart released. Anything else — a throw, a
- * WRITE_CONFLICT, a cap race, any refusal that leaves the key unrecorded — keeps
- * it: a same-key retry gets the SAME cart back and replays its completed line
- * keys, which answer from the cart's lines, so emptying it would make that retry
- * write a session with no lines. Hold expiry reclaims a cart nobody retries.
+ * the key is recorded (a retry answers the refusal, never rebuilds), the session
+ * can never take the write, or the domain refused the content itself (the same
+ * body is refused again). Only then is the built cart released. Anything else — a
+ * throw, a WRITE_CONFLICT, a cap race — keeps it: a same-key, same-body retry
+ * rebuilds into that SAME keyed cart, whose completed line keys replay from the
+ * lines it still holds, so emptying it would make the retry write a session with
+ * no lines. Hold expiry reclaims a cart nobody retries.
  */
 function isFinalRefusal(reason: string): boolean {
-	return (
-		reason === "IDEMPOTENCY_KEY_REUSED" ||
-		reason === "SESSION_HANDED_OFF" ||
-		reason === "SESSION_CLOSED" ||
-		reason === "SESSION_EXPIRED"
-	);
+	return FINAL_REFUSALS.has(reason);
 }
+
+const FINAL_REFUSALS: ReadonlySet<string> = new Set([
+	// The key is (or was) recorded: a retry answers the refusal, never rebuilds.
+	"IDEMPOTENCY_KEY_REUSED",
+	"IDEMPOTENCY_KEY_EXPIRED",
+	// The session can never take this write.
+	"SESSION_HANDED_OFF",
+	"SESSION_CLOSED",
+	"SESSION_EXPIRED",
+	"SESSION_NOT_FOUND",
+	"WRITE_LIMIT_REACHED",
+	// The domain's content checks: the same body is refused the same way again.
+	"TOO_MANY_LINES",
+	"INVALID_QUANTITY",
+	"DUPLICATE_SKU",
+	"INVALID_REQUEST",
+	"QUOTE_CURRENCY_MISMATCH",
+	"QUOTE_PARTIAL_TOTAL",
+]);
 
 /** Release a cart this request built for a write the domain then refused. */
 async function releaseBuilt(ctx: PluginContext, cartId: string | undefined): Promise<void> {
@@ -413,8 +429,9 @@ export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
  *
  * The new cart is released only on a FINAL refusal ({@link isFinalRefusal}),
  * re-checked against the session (never a cart a same-body twin attached). A
- * throw or a retryable refusal keeps it for the same-key retry, which gets it
- * back. A session a failure left detached shows NO cart and NO quote (the detach
+ * throw or a retryable refusal leaves it holding its lines: a same-key, same-body
+ * retry rebuilds into that same keyed cart (its line keys replay; a line it holds
+ * under a refused base key is counted from the cart, see `alreadyInCart`). A session a failure left detached shows NO cart and NO quote (the detach
  * drops both), never totals no cart holds; its lines rebuild at redeem.
  */
 async function replaceWithNewCart(
@@ -435,8 +452,10 @@ async function replaceWithNewCart(
 	const newCartId = started.cartId;
 	let oldReleased = false;
 	const added = await addAgentLines(client, newCartId, started.currency, input.lines);
-	let lines = added.lines;
-	let messages = added.messages;
+	// A same-key retry of an update whose earlier attempt took the retry path:
+	// that line's base key replays its consumed OUT_OF_STOCK, but the cart holds
+	// the line (added under `:retry`). The session must match the cart.
+	let { lines, messages } = await alreadyInCart(client, newCartId, input.lines, added);
 	const retry = await heldByOldCart(client, oldCartId, input.lines, messages, deps);
 	if (retry.length > 0) {
 		const detached = await detachAgentSessionCart(deps, request);
@@ -553,6 +572,41 @@ async function retryLines(
 		lines: next.toSorted((a, b) => at(a.productId) - at(b.productId)),
 		messages: kept.toSorted((a, b) => messageLineIndex(a) - messageLineIndex(b)),
 	};
+}
+
+/**
+ * Lines refused OUT_OF_STOCK that the cart nevertheless holds (an earlier attempt
+ * under this cart's key re-added them): counted as added, their messages dropped,
+ * with the cart's own sku and quantity, so the session says what the cart holds.
+ */
+async function alreadyInCart(
+	client: CommerceClient,
+	cartId: string,
+	requested: AgentSessionInput["lines"],
+	added: { lines: AgentSessionLine[]; messages: AgentMessage[] },
+): Promise<{ lines: AgentSessionLine[]; messages: AgentMessage[] }> {
+	const refused = added.messages.filter(
+		(m) => m.code === "OUT_OF_STOCK" && messageLineIndex(m) !== Number.MAX_SAFE_INTEGER,
+	);
+	if (refused.length === 0) return added;
+	const cart = await client.getCart(cartId);
+	if (!cart.ok) return added;
+	const lines = [...added.lines];
+	let messages = [...added.messages];
+	for (const message of refused) {
+		const want = requested[messageLineIndex(message)];
+		const held = cart.cart.lines.find((l) => want !== undefined && l.productId === want.productId);
+		if (want === undefined || held === undefined) continue;
+		lines.push({
+			productId: toProductId(want.productId),
+			sku: toSku(held.sku),
+			quantity: held.qty,
+		});
+		messages = messages.filter((m) => m !== message);
+	}
+	const order = new Map(requested.map((l, i) => [l.productId, i]));
+	const at = (productId: string): number => order.get(productId) ?? Number.MAX_SAFE_INTEGER;
+	return { lines: lines.toSorted((a, b) => at(a.productId) - at(b.productId)), messages };
 }
 
 /** A message's line index; non-line messages sort last. */
