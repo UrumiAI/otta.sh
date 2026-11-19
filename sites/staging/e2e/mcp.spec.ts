@@ -16,14 +16,37 @@
  *
  * The error contract: an Otta-raised refusal (`coupons_get` of a code that is
  * not there) arrives as `isError` with `_meta.code: "NOT_FOUND"`, end to end.
+ *
+ * The audit log: `audit_list` through the same endpoint shows the coupon's
+ * create and delete under the token user's email, and the admin's Audit log
+ * page renders them.
  */
 import { setupClaimHeaders } from "../../store/scripts/setup-claim-cookie.js";
 import { adminHeaders } from "./admin-rules.js";
-import { E2E_BASE_URL, expect, skipWithoutSite, test } from "./harness.js";
+import { MCP_AUDIT_PAGE, OTTA_PLUGIN_ID } from "@urumi.ai/otta-plugin";
+import {
+	ADMIN_BASE_PATH,
+	ADMIN_SHELL_TIMEOUT_MS,
+	dismissWelcomeDialog,
+	E2E_BASE_URL,
+	expect,
+	skipWithoutSite,
+	test,
+} from "./harness.js";
 
 const MCP = `${E2E_BASE_URL}/_emdash/api/mcp`;
 const PLUGIN_MCP = `${E2E_BASE_URL}/_emdash/api/admin/plugins/otta/mcp`;
 const API_TOKENS = `${E2E_BASE_URL}/_emdash/api/admin/api-tokens`;
+const ME = `${E2E_BASE_URL}/_emdash/api/auth/me`;
+
+/** One audit log entry, as far as this spec reads it. */
+interface AuditRow {
+	tool: string;
+	status: string;
+	code?: string;
+	input: Record<string, unknown>;
+	actor: { email: string | null } | null;
+}
 
 /** The JSON-RPC envelope an MCP response carries. */
 interface RpcResponse {
@@ -142,9 +165,15 @@ function expectRefusal(result: ToolResult, code: string): void {
 test.describe("otta-mcp through /_emdash/api/mcp", () => {
 	test.slow();
 
-	test("an admin enables the tools, and a scoped token runs them; an unscoped one is refused", async () => {
+	test("an admin enables the tools, and a scoped token runs them; an unscoped one is refused", async ({
+		adminPage,
+	}) => {
 		await skipWithoutSite(test.info());
 		const headers = await adminHeaders();
+		// The user the tokens act as: the audit log must name them.
+		const meRes = await fetch(ME, { headers });
+		expect(meRes.status).toBe(200);
+		const me = ((await meRes.json()) as { data: { email: string } }).data;
 
 		// 1. Enable + consent (the admin switch's own API call).
 		const enable = await fetch(PLUGIN_MCP, {
@@ -216,6 +245,35 @@ test.describe("otta-mcp through /_emdash/api/mcp", () => {
 				await callTool(scoped.token, "otta__coupons_get", { code: `NOPE-${stamp}` }),
 				"NOT_FOUND",
 			);
+
+			// 6b. The audit log, through the same endpoint: the create and the delete
+			// are there under the token user's email, both ok; the second delete is
+			// the refusal, with its code.
+			const createEntries = (
+				toolData(
+					await callTool(scoped.token, "otta__audit_list", { tool: "coupons_create", limit: 100 }),
+				)["entries"] as AuditRow[]
+			).filter((e) => e.input["code"] === code);
+			expect(createEntries).toHaveLength(1);
+			expect(createEntries[0]).toMatchObject({ status: "ok", actor: { email: me.email } });
+			const deletes = (
+				toolData(
+					await callTool(scoped.token, "otta__audit_list", { tool: "coupons_delete", limit: 100 }),
+				)["entries"] as AuditRow[]
+			).filter((e) => e.input["couponId"] === couponId);
+			expect(deletes.map((e) => e.status).toSorted()).toEqual(["ok", "refused"]);
+			expect(deletes.every((e) => e.actor?.email === me.email)).toBe(true);
+			expect(deletes.find((e) => e.status === "refused")?.code).toBe("NOT_FOUND");
+
+			// 6c. The Audit log admin page renders those rows.
+			await adminPage.goto(`${ADMIN_BASE_PATH}/plugins/${OTTA_PLUGIN_ID}${MCP_AUDIT_PAGE.path}`);
+			await expect(adminPage.getByRole("heading", { name: "Audit log", exact: true })).toBeVisible({
+				timeout: ADMIN_SHELL_TIMEOUT_MS,
+			});
+			await dismissWelcomeDialog(adminPage);
+			await expect(
+				adminPage.getByRole("row").filter({ hasText: "coupons_delete" }).first(),
+			).toBeVisible();
 
 			// 7. Review Focus 5: `admin` is not `mcp:tools:otta`.
 			await initialize(unscoped.token);
