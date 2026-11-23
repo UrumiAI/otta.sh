@@ -28,8 +28,11 @@ export const withOpen = (d: OrderDoc): OrderDoc => {
 		d.attention === null
 			? 1
 			: 0;
-	// The buyer tag only serves the open-order cap: it does not outlive the open order.
-	return { ...d, open, prunable, ipTag: open === 1 ? d.ipTag : null };
+	// The buyer tag only serves the per-buyer cap on checkouts awaiting payment: it goes as soon
+	// as the order stops being pending, even while its stock is still being released, so a buyer
+	// is never refused for orders that are already canceled or expired (a race loser whose release
+	// the sweep has not finished yet). The store-wide cap still counts those orders through `open`.
+	return { ...d, open, prunable, ipTag: d.status === "pending" ? d.ipTag : null };
 };
 
 /**

@@ -1,5 +1,6 @@
 /** End-to-end flow tests for Otta Core: real storage, fake Stripe, real webhook route. */
 import { afterEach, describe, expect, it } from "vitest";
+import { stockSet } from "../src/admin.js";
 import { placeOrder } from "../src/checkout.js";
 import { sweep } from "../src/sweep.js";
 import {
@@ -562,5 +563,33 @@ describe("K. webhook HTTP status mapping", () => {
 		const mac = await crypto.subtle.sign("HMAC", k, new TextEncoder().encode(`${t}.${text}`));
 		const sig = `t=${t},v1=${[...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 		expect((await deliver(s.ctx, { body: new TextEncoder().encode(text), sig })).status).toBe(200);
+	});
+});
+
+describe("OVERSOLD: a held sale paid after the merchant lowered stock below the holds", () => {
+	it("commits to a negative on-hand and flags the order for the merchant", async () => {
+		const s = await shop(nProducts(1, 3));
+		expect((await place(s, 1, [{ productId: "p1", qty: 2 }])).ok).toBe(true);
+		expect(
+			((await stockSet({ productId: "p1", onHand: 1, expectedOnHand: 3 }, s.ctx)) as any).ok,
+		).toBe(true);
+		const sess = s.stripe.only();
+		s.stripe.complete(sess.id);
+		expect(
+			(await deliver(s.ctx, await s.stripe.event("checkout.session.completed", sess.id))).status,
+		).toBe(200);
+		expect(await s.stock("p1")).toMatchObject({ onHand: -1, holds: {} });
+		expect(await s.order(orderKey(1))).toMatchObject({ status: "paid", attention: "OVERSOLD" });
+	});
+	it("a paid order that stays within stock is not flagged", async () => {
+		const s = await shop(nProducts(1, 3));
+		expect((await place(s, 1, [{ productId: "p1", qty: 2 }])).ok).toBe(true);
+		const sess = s.stripe.only();
+		s.stripe.complete(sess.id);
+		expect(
+			(await deliver(s.ctx, await s.stripe.event("checkout.session.completed", sess.id))).status,
+		).toBe(200);
+		expect(await s.stock("p1")).toMatchObject({ onHand: 1 });
+		expect((await s.order(orderKey(1))).attention).toBeNull();
 	});
 });

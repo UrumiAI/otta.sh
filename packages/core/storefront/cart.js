@@ -14,6 +14,8 @@ const REFUSAL_SLOT = "otta-refusals"; // { [productId]: { code, qty, title? } } 
 const HOLD_MS = 40 * 60 * 1000; // a Stripe Checkout Session (and Core's stock hold) lasts 40 minutes
 const RETRY_MS = 1500; // PAYMENT_UNAVAILABLE is retried once after this
 const MAX_LINES = 8; // distinct products per order
+// Failures after which the order may still be open: checkout() keeps the key so a retry resumes it.
+const KEEPS_KEY = new Set(["PAYMENT_UNAVAILABLE", "NETWORK", "ERROR", "CONFLICT"]);
 
 /**
  * Where the browser's currency data (CLDR) and Core's money table (ISO 4217) disagree on
@@ -398,8 +400,10 @@ export function createCart({
 		 * Show `text` (or buyerMessage(code)) to the buyer, never `message`.
 		 * Key rules: one key per exact set of lines (and email); a retry of the same lines reuses it.
 		 * It is kept after an ok answer (a buyer who comes back from Stripe and pays again gets the
-		 * SAME Checkout URL and no new hold), after PAYMENT_UNAVAILABLE and after NETWORK. It is
-		 * dropped after every other failure. done() forgets all keys once the order is paid.
+		 * SAME Checkout URL and no new hold), after PAYMENT_UNAVAILABLE, NETWORK, ERROR and CONFLICT:
+		 * those do not say the order is closed (an ERROR can come after the order and its holds
+		 * exist), and a retry with the same key finishes that order instead of starting a second
+		 * one that its holds would block. It is dropped after every other failure. done() forgets all keys once the order is paid.
 		 * PAYMENT_UNAVAILABLE is retried once, after about 1.5 s, with the same key (safe: a replay
 		 * takes no new hold). A refusal that names a product (OUT_OF_STOCK, PRODUCT_UNAVAILABLE with
 		 * `productId`) gets `text` naming it, and for the cart it is kept for refusals().
@@ -480,7 +484,7 @@ export function createCart({
 					},
 				});
 			}
-			if (out.code !== "PAYMENT_UNAVAILABLE" && out.code !== "NETWORK") dropKey(slot);
+			if (!KEEPS_KEY.has(out.code)) dropKey(slot);
 			return out;
 		},
 

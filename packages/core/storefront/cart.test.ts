@@ -138,6 +138,17 @@ describe("checkout key rules", () => {
 		expect(bodies[1].key).toBe(bodies[0].key);
 	});
 
+	it.each(["ERROR", "CONFLICT"])(
+		"keeps the key after %s, so the retry resumes the order that may already hold stock",
+		async (code) => {
+			const { cart, bodies } = setup([fail(code), ok]);
+			cart.add("a");
+			expect((await cart.checkout()).code).toBe(code);
+			await cart.checkout();
+			expect(bodies[1].key).toBe(bodies[0].key);
+		},
+	);
+
 	it.each([
 		"INVALID_LINES",
 		"PRODUCT_UNAVAILABLE",

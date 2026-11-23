@@ -1,6 +1,7 @@
 /** Per-buyer cap (hashed, salted, IPv6 /64) and the order page's Stripe lookup cooldown. */
 import { describe, expect, it } from "vitest";
 import { placeOrder } from "../src/checkout.js";
+import { updateOrder } from "../src/orders.js";
 import { ensureIpSalt } from "../src/settings.js";
 import { buyerAddress } from "../src/util.js";
 import { callRoute, linesFor, makeShop, nProducts, orderKey } from "./fixtures.js";
@@ -39,6 +40,23 @@ describe("per-buyer open-checkout cap", () => {
 		expect((await buy(4, "203.0.113.9")).ok).toBe(true);
 		// A retry of an existing order is never refused by the cap.
 		expect((await buy(1, "2001:db8:1:2::10")).ok).toBe(true);
+	});
+	it("an order that is no longer pending stops counting against its buyer, even while its stock is still being released", async () => {
+		const s = await makeShop(nProducts(1, 50));
+		s.kv.seedSettings({ ...SALT, maxOpenPerBuyer: 1 });
+		const buy = (n: number) =>
+			placeOrder({ key: orderKey(n), lines: linesFor(1) }, s.ctx, { ip: "203.0.113.9" });
+		expect((await buy(1)).ok).toBe(true);
+		expect(await buy(2)).toMatchObject({ ok: false, code: "BUSY_BUYER" });
+		// A race loser: canceled, its release not finished yet (the sweep finishes it).
+		await updateOrder(s.ctx, orderKey(1), (d) => ({
+			...d,
+			status: "canceled",
+			stock: "releasing",
+			stockPending: 1,
+		}));
+		expect(await s.order(orderKey(1))).toMatchObject({ open: 1, ipTag: null });
+		expect((await buy(3)).ok).toBe(true);
 	});
 	it("stores a salted tag, never the address", async () => {
 		const s = await makeShop(nProducts(1, 50));

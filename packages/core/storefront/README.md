@@ -78,8 +78,9 @@ checkout id. `checkout()` handles it for you:
   the same order and never creates a second one. Different lines get a different key.
 - The key is **kept after an ok answer**. A buyer who goes to Stripe, comes back and pays again
   gets the same order and the same Checkout URL, with no second stock hold. It is also kept after
-  `PAYMENT_UNAVAILABLE` and after a network error (`NETWORK`), because the order may already exist
-  and a retry should continue it. It is dropped after every other failure.
+  `PAYMENT_UNAVAILABLE`, a network error (`NETWORK`), `ERROR` and `CONFLICT`, because the order
+  may already exist and hold stock, and a retry should continue it. It is dropped after every
+  other failure.
 - Call `cart.done()` on the success page once the order is paid (section 5). It empties the cart
   and forgets every key, so the buyer's next purchase is a new order.
 - If the buyer comes back after the Stripe session ended (40 minutes) or paid without reaching the
