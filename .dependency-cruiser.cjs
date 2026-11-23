@@ -147,13 +147,45 @@ module.exports = {
 			severity: "error",
 			from: {
 				path: "^packages/",
-				pathNot: "^packages/(admin-react|store-emdash)/|^packages/mcp/test/",
+				pathNot: "^packages/(admin-react|store-emdash|core)/|^packages/mcp/test/",
 			},
 			to: {
 				// Same both-forms shape as the rules above: a resolved node_modules
 				// path (direct or pnpm-store) or a bare specifier left unresolved by
 				// pnpm's strict isolation.
 				path: "(node_modules/(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$)|^(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$))",
+			},
+		},
+		{
+			name: "core-is-sandbox-clean",
+			comment:
+				"packages/core (Otta Core) is a sandboxed EmDash plugin shipped through the " +
+				"registry as ONE bundled backend.js, so it is the FOURTH exemption from " +
+				"console-react-is-quarantined, and this rule is what replaces it for `src`. " +
+				"The runtime may name `emdash/plugin` (types, plus the `pluginRoute` / " +
+				"`pluginResponse` helpers it bundles) and nothing else from the host; no " +
+				"React or component library; no DB driver, Node built-in or HTTP client " +
+				"(the sandbox has none; egress is ctx.http); and no workspace package " +
+				"except the one pure module it shares with the domain " +
+				"(packages/domain/src/money/currencies.ts), imported as the subpath " +
+				"`@urumi.ai/otta-domain/money/currencies` (a devDependency: the registry " +
+				"bundle inlines it). `test/` is free: the harness " +
+				"runs the host's own storage, migrations and dialects.",
+			severity: "error",
+			from: { path: "^packages/core/src" },
+			to: {
+				path: "(node_modules/(react|react-dom|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react|pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@urumi\\.ai/(?!otta-domain/src/money/currencies\\.ts$)|^(react|react-dom|@emdash-cms/[^/]+|pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@urumi\\.ai/(?!otta-domain/money/currencies$)|^(emdash$|emdash/(?!plugin$))|node_modules/emdash/(?!dist/plugin)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm|path|crypto)(/|$)|^packages/(?!core/|domain/src/money/currencies\\.ts$))",
+			},
+		},
+		{
+			name: "nothing-imports-core",
+			comment:
+				"Otta Core is private and registry-only: no workspace package or site may " +
+				"import it, so it can never enter the store's (or any published package's) graph.",
+			severity: "error",
+			from: { path: "^(packages/(?!core/)|sites/)" },
+			to: {
+				path: "(^packages/core/|node_modules/@urumi\\.ai/otta-core(/|$)|^@urumi\\.ai/otta-core(/|$))",
 			},
 		},
 		{

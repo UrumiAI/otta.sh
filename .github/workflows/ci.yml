@@ -51,6 +51,19 @@ jobs:
       # (sites/* run `astro check`).
       - run: pnpm typecheck
       - run: pnpm -r build
+      # Otta Core registry size gate: builds the real registry bundle with
+      # `emdash-plugin bundle` (which also validates it) and fails when backend.js
+      # is over 72 KiB or the bundle total (backend.js + manifest.json + README.md)
+      # is over 128 KiB. The registry's own caps are 128 KiB per file, 256 KiB total.
+      - run: pnpm -C packages/core size
+      # Otta Core's real-sandbox tier (packages/core/test/workerd): rebuilds the
+      # registry bundle with `emdash-plugin bundle` into a temp dir, loads its
+      # backend.js through EmDash's own Worker Loader runner and PluginBridge
+      # (@emdash-cms/cloudflare/sandbox) in miniflare/workerd over local D1, and
+      # drives install, settings, a product publish, checkout against a fake Stripe
+      # behind the allowlist, a signed webhook, the order lookup and a cron sweep,
+      # each held to the 30-call bridge budget. No account or network; ~20 s.
+      - run: pnpm -C packages/core test:sandbox
       # Pack-and-consume type test (#510): packs the published packages from the
       # build above, installs the tarballs into a scratch consumer (no registry,
       # no peers) and type-checks a site's TaxCalculator against createOttaPlugin.
@@ -85,6 +98,19 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The service database is throwaway, so durability buys nothing: turn off
+      # fsync, synchronous commit and full-page writes (reload-time settings, no
+      # restart). The Otta Core harness creates a fresh database per test
+      # (CREATE DATABASE ... TEMPLATE), which otherwise spends most of its time in fsync.
+      - name: Make the throwaway Postgres fast
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d otta_test -v ON_ERROR_STOP=1 \
+            -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
       # Scoped to the files that actually touch Postgres (scripts/pg-test-files.sh) —
       # the sqlite/fake-only suite already ran in `unit`, no need to redo it here.
       - run: pnpm test:pg

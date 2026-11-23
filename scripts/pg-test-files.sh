@@ -12,3 +12,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 grep -rlE 'process\.env\.PG_CONNECTION_STRING|describe-each-dialect' \
 	packages/*/test sites/*/test --include='*.test.ts'
+# packages/core (Otta Core) has its own harness: test/harness.ts picks EmDash's
+# Postgres dialect when PG_CONNECTION_STRING is set, and test/fixtures.ts builds
+# on it, so every core test file that imports either one runs against Postgres.
+grep -lE 'from "\./(harness|fixtures)\.js"' packages/core/test/*.test.ts
