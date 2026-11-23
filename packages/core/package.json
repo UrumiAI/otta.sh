@@ -1,0 +1,30 @@
+{
+	"name": "@urumi.ai/otta-core",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Otta Core: the sandboxed, registry-sized Otta kernel. Products from EmDash content, a browser cart, Stripe hosted Checkout, stock holds, orders. Block Kit Orders and Setup pages; settings from the manifest's settingsSchema; MCP tools.",
+	"license": "MIT",
+	"type": "module",
+	"exports": {
+		".": "./src/plugin.ts"
+	},
+	"scripts": {
+		"size": "rm -rf dist && emdash-plugin bundle && node scripts/size-gate.mjs",
+		"test": "vitest run",
+		"test:sandbox": "vitest run --config vitest.sandbox.config.ts",
+		"typecheck": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@emdash-cms/plugin-cli": "0.13.5",
+		"@types/better-sqlite3": "catalog:",
+		"@urumi.ai/otta-domain": "workspace:*",
+		"better-sqlite3": "catalog:",
+		"emdash": "1.5.0",
+		"kysely": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	},
+	"peerDependencies": {
+		"emdash": "^1.5.0"
+	}
+}

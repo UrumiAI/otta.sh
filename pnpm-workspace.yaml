@@ -73,6 +73,18 @@ overrides:
   # because astro's optional `^0.35.4` dependency would otherwise keep the locked
   # 0.35.4 copy. Drop once miniflare pins >= 0.35.5.
   sharp: 0.35.5
+  # Not a security pin: the EmDash train. `@emdash-cms/plugin-cli@0.13.5` (Otta
+  # Core's dev-only registry bundler) pins the 1.4-era train EXACTLY
+  # (plugin-types 0.6.0, registry-client 0.7.1, registry-lexicons 0.7.0,
+  # registry-verification 0.3.4), which put a second copy of each next to the
+  # 1.5.0 train below. Aligned to that train, scoped to the CLI; verified by
+  # `pnpm -C packages/core size` (bundle + validation) and
+  # `sites/staging/test/host-pin.test.ts`. Drop once a plugin-cli release pins
+  # these versions or later.
+  "@emdash-cms/plugin-cli>@emdash-cms/plugin-types": 0.6.1
+  "@emdash-cms/plugin-cli>@emdash-cms/registry-client": 0.7.2
+  "@emdash-cms/plugin-cli>@emdash-cms/registry-lexicons": 0.7.1
+  "@emdash-cms/plugin-cli>@emdash-cms/registry-verification": 0.3.5
 
 allowBuilds:
   better-sqlite3: true
@@ -149,3 +161,6 @@ minimumReleaseAgeExclude:
   - "@emdash-cms/registry-lexicons@0.7.1"
   - "@emdash-cms/registry-moderation@0.2.0"
   - "@emdash-cms/registry-verification@0.3.5"
+  # Otta Core's registry bundler (dev only); its own EmDash deps are aligned to
+  # the train above by the scoped overrides.
+  - "@emdash-cms/plugin-cli@0.13.5"
