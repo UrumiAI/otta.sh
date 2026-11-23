@@ -49,3 +49,19 @@ describe("toMinor: decimal parsing, never float arithmetic", () => {
 		expect(toMinor("1000000", "USD")).toBeNull();
 	});
 });
+
+describe("toMinor: trailing zeros", () => {
+	it("trims any number of trailing zeros, exactly as before", () => {
+		expect(toMinor(`1.5${"0".repeat(20)}`, "USD")).toBe(150);
+		expect(toMinor("19.990", "USD")).toBe(1999);
+		expect(toMinor("7.000", "JPY")).toBe(7);
+		expect(toMinor("2.", "USD")).toBeNull();
+		expect(toMinor("1.0001", "USD")).toBeNull();
+	});
+	it("a long run of zeros followed by a digit is refused fast (no quadratic scan)", () => {
+		const s = `1.${"0".repeat(200_000)}1`;
+		const t0 = performance.now();
+		expect(toMinor(s, "USD")).toBeNull();
+		expect(performance.now() - t0).toBeLessThan(50);
+	});
+});

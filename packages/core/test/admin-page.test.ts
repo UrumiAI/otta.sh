@@ -690,7 +690,7 @@ describe("setup & health", () => {
 		expect(rows(await load(s, "/setup"))["Sweep"]).toMatchObject({
 			status: "PASS",
 			detail: expect.stringMatching(
-				new RegExp(`^Last run ${t.replace(/[.]/g, "\\.")} \\(\\d+ min ago\\)\\.$`),
+				new RegExp(`^Last run ${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(\\d+ min ago\\)\\.$`),
 			),
 		});
 		// a garbage stamp counts as absent

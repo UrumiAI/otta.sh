@@ -144,6 +144,15 @@ function sandboxHeaders(request, declared) {
 	return out;
 }
 
+/**
+ * The failure the spec reports: the error's own text, never its stack. The stack
+ * goes to the worker's console, which miniflare prints in the test output.
+ */
+function failure(error) {
+	console.error(error?.stack ?? error);
+	return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
 /** Run one plugin invocation and report its result with its own bridge-call count. */
 async function invocation(run) {
 	takeCalls();
@@ -151,7 +160,7 @@ async function invocation(run) {
 		const result = await run();
 		return json({ result: result ?? null, calls: takeCalls() });
 	} catch (error) {
-		return json({ error: String(error?.stack ?? error), calls: takeCalls() });
+		return json({ error: failure(error), calls: takeCalls() });
 	}
 }
 
@@ -160,7 +169,7 @@ export default {
 		try {
 			return await handle(request, env);
 		} catch (error) {
-			return json({ error: String(error?.stack ?? error) }, 500);
+			return json({ error: failure(error) }, 500);
 		}
 	},
 };

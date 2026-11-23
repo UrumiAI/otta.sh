@@ -179,7 +179,12 @@ export function toMinor(v: unknown, currency: string): number | null {
 	if (!m) return null;
 	const digits = currencyDigits(currency);
 	if (digits === undefined) return null;
-	const frac = (m[2] ?? "").replace(/0+$/, "");
+	// Trailing zeros carry no value ("1.50" is 1.5). A loop, not /0+$/: that regex
+	// is quadratic on a long run of zeros followed by another digit.
+	let frac = m[2] ?? "";
+	let end = frac.length;
+	while (end > 0 && frac.charCodeAt(end - 1) === 48) end--;
+	frac = frac.slice(0, end);
 	if (frac.length > digits) return null;
 	const minor = Number(m[1]) * 10 ** digits + Number(frac.padEnd(digits, "0") || "0");
 	return Number.isSafeInteger(minor) &&
