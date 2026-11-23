@@ -3,7 +3,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"lint": "oxlint && depcruise --config .dependency-cruiser.cjs packages",
+		"lint": "oxlint && depcruise --config .dependency-cruiser.cjs packages sites",
 		"typecheck": "tsc -b && tsc -p tsconfig.e2e.json && pnpm -r --if-present typecheck",
 		"test": "vitest run",
 		"test:pg": "vitest run $(./scripts/pg-test-files.sh)",

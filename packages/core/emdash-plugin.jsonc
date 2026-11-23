@@ -1,0 +1,117 @@
+{
+	"$schema": "https://emdashcms.com/schemas/emdash-plugin.schema.json",
+
+	// Its own slug, so a registry install never clashes with the native
+	// `otta` plugin from npm.
+	"slug": "otta-core",
+	// Placeholder: set by the publisher at release (the DID of the publishing account).
+	"publisher": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+
+	"name": "Otta Core",
+	"description": "Sell products from your EmDash content with Stripe Checkout. Stock is held while each buyer pays. Orders page, setup check, MCP tools.",
+	"keywords": ["ecommerce", "store", "checkout", "stripe", "stock"],
+
+	"license": "MIT",
+	"author": { "name": "Urumi", "url": "https://otta.sh" },
+	// TODO(unconfirmed): a role address; the maintainers confirm or replace it
+	// before the first publish.
+	"security": { "email": "security@urumi.ai" },
+	"repo": "https://github.com/UrumiAI/otta.sh",
+
+	// Trust contract, shown to the site operator at install.
+	//   content:read     receive product content hooks (they are skipped without it)
+	//   network:request  call the Stripe API, api.stripe.com only
+	"capabilities": ["content:read", "network:request"],
+	"allowedHosts": ["api.stripe.com"],
+
+	// Must match COLLECTIONS in src/model.ts.
+	"storage": {
+		"products": { "indexes": ["productId", "active", "sku"] },
+		"stock": { "indexes": [] },
+		"orders": {
+			"indexes": [
+				"status",
+				"createdAt",
+				"stripeSessionId",
+				"stockPending",
+				"open",
+				["open", "ipTag"],
+				["prunable", "expiresAt"],
+				"paymentIntentId",
+				["status", "expiresAt"],
+			],
+		},
+	},
+
+	"admin": {
+		// Block Kit pages, rendered by the private `admin` route (src/admin-page.ts).
+		// Standard format: no adminEntry (React is for native plugins only).
+		"pages": [
+			{ "path": "/orders", "label": "Orders", "icon": "list", "group": "Otta Core" },
+			{ "path": "/setup", "label": "Setup & health", "icon": "plug", "group": "Otta Core" },
+		],
+		// EmDash renders this form itself.
+		"settingsSchema": {
+			"stripeSecretKey": { "type": "secret", "label": "Stripe secret key" },
+			"stripeWebhookSecret": { "type": "secret", "label": "Stripe webhook signing secret" },
+			"currency": { "type": "string", "label": "Store currency (ISO 4217)", "default": "USD" },
+			"successUrl": {
+				"type": "string",
+				"label": "Success URL ({ORDER_ID} and {ORDER_KEY} are filled in)",
+				"default": "/checkout/success?order={ORDER_ID}#key={ORDER_KEY}",
+			},
+			"cancelUrl": { "type": "string", "label": "Cancel URL", "default": "/cart" },
+			"shippingCountries": {
+				"type": "string",
+				"label": "Ship to (2-letter country codes, comma separated; empty = no shipping address)",
+				"default": "",
+			},
+			"flatShipping": {
+				"type": "number",
+				"label": "Flat shipping, in minor units (0 = free)",
+				"default": 0,
+				"min": 0,
+			},
+			"productsCollection": {
+				"type": "string",
+				"label": "Products collection",
+				"default": "products",
+			},
+			"maxQtyPerLine": {
+				"type": "number",
+				"label": "Most units of one product per order (1-99)",
+				"default": 99,
+				"min": 1,
+				"max": 99,
+			},
+			"allowPromotionCodes": {
+				"type": "boolean",
+				"label": "Let buyers enter Stripe promotion codes at checkout",
+				"default": false,
+			},
+			"maxNewCheckouts": {
+				"type": "number",
+				"label": "Refuse new checkouts once this many were started in the last 10 minutes",
+				"default": 300,
+				"min": 1,
+				"max": 100000,
+			},
+			"maxOpenPerBuyer": {
+				"type": "number",
+				"label": "Refuse a buyer with this many checkouts awaiting payment (counted per network address)",
+				"default": 5,
+				"min": 1,
+				"max": 1000,
+			},
+			"maxOpenCheckouts": {
+				"type": "number",
+				"label": "Refuse new checkouts while this many are awaiting payment",
+				"default": 100,
+				"min": 1,
+				"max": 10000,
+			},
+		},
+	},
+
+	"release": { "requires": { "env:emdash": ">=1.5.0 <2.0.0" } },
+}

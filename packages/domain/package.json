@@ -21,6 +21,7 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
+		"./money/currencies": "./src/money/currencies.ts",
 		"./subdivision-names": "./src/pricing/subdivision-names.ts",
 		"./testing": "./src/testing/index.ts"
 	},

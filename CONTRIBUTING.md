@@ -75,6 +75,7 @@ Pick the tag for the area your change touches:
 | `@urumi.ai/otta-domain` (ports, use-cases, invariants) | `[Domain]` |
 | Store/client/payment **adapters** (store-emdash, payments-stripe, payments-cod) | `[Adapters]` |
 | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
+| `packages/core` (Otta Core, the registry edition: the sandboxed EmDash plugin) | `[Core]` |
 | `sites/*` (`@urumi.ai/otta-store`, the storefront integration, and the reference site `staging`) | `[Site]` |
 | Shared test/contract packages | `[Test]` |
 | CI / tooling / build | `[CI]` |
