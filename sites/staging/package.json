@@ -43,7 +43,7 @@
 		"wrangler": "catalog:"
 	},
 	"engines": {
-		"node": ">=22.16"
+		"node": ">=22.23.4"
 	},
 	"emdash": {
 		"seed": "node_modules/@urumi.ai/otta-store/seed/seed.json"

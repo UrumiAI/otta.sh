@@ -59,7 +59,7 @@
  * `env/vite-plugin-import-meta-env.js`). `_` is a substring of nearly every
  * module, so the shell's `_` (the path of the binary that started the build,
  * e.g. `/home/runner/setup-pnpm/node_modules/.bin/pnpm`) was baked into eight
- * chunks; `NODE` and `EDITOR` were too. No Astro 7.3.6 option narrows this:
+ * chunks; `NODE` and `EDITOR` were too. No Astro 7.4 option narrows this:
  * `vite.envPrefix` only names PUBLIC prefixes, `env.schema` only adds secrets,
  * and `envDir` only moves the `.env` files. So the integration drops the shell's
  * own path variables ({@link SHELL_PATH_ENV_KEYS}) from `process.env` in
