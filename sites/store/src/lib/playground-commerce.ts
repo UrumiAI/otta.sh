@@ -28,7 +28,7 @@ import {
 	restockBody,
 	shouldPrice,
 	type DemoRow,
-} from "../../scripts/seed-demo-commerce.js";
+} from "./demo-commerce.js";
 
 /** Query flag on the boot interstitial. The loading page always lands on
  *  the admin; while this is present we are still pricing, and once pricing
