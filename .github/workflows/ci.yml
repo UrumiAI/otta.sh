@@ -34,6 +34,7 @@ concurrency:
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -55,7 +56,8 @@ jobs:
       # no account) and fail on a 5xx from `/` or an error in its log. `astro
       # dev` and `pack-build` never load the bundle, so a module that throws at
       # Worker load (the bundle has no `import.meta.url`) is caught only here.
-      - run: pnpm test:built-worker
+      - name: Serve the built staging worker
+        run: pnpm test:built-worker
       # Otta Core registry size gate: builds the real registry bundle with
       # `emdash-plugin bundle` (which also validates it) and fails when backend.js
       # is over 72 KiB or the bundle total (backend.js + manifest.json + README.md)

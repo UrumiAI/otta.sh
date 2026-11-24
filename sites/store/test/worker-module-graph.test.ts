@@ -121,9 +121,14 @@ describe("the Worker's module graph (#732)", () => {
 		expect(outside).toEqual([]);
 	});
 
-	test("no reachable module uses import.meta.url", () => {
+	// `dirname`, `filename` and `resolve` are as unusable in the bundled Worker as `url`.
+	test("no reachable module uses import.meta.url (or dirname, filename, resolve)", () => {
 		const offenders = [...graph.keys()]
-			.filter((file) => stripComments(readFileSync(file, "utf8")).includes("import.meta.url"))
+			.filter((file) =>
+				/import\.meta\.(url|dirname|filename|resolve)\b/.test(
+					stripComments(readFileSync(file, "utf8")),
+				),
+			)
 			.map((file) => chain(graph, file));
 		expect(offenders).toEqual([]);
 	});

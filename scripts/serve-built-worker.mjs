@@ -10,21 +10,25 @@
  * 500 and is invisible to every other test.
  *
  * This runs `wrangler dev` on `sites/staging/dist/server/wrangler.json` (local
- * workerd and miniflare: no account, token or network), requests `/`, and
- * fails if the answer is a 5xx or the Worker logged an error. Run it after
- * `pnpm -r build`.
+ * workerd and miniflare: no account, token or network), waits for ITS ready
+ * line (so another server on the port can never answer for it), then requests
+ * `/` (must be 200) and a few lazily loaded page routes (each must be below
+ * 500; a missing product's 404 still loads the product page's chunk), and
+ * fails on any other answer or an error in the Worker's log. Run it after
+ * `pnpm -r build`. It serves the D1 build only, not the playground build.
  *
  *   node scripts/serve-built-worker.mjs
  *
  * `OTTA_SERVE_DIST` serves another copy of the build output (default
- * `sites/staging/dist`). `OTTA_SERVE_PORT` / `OTTA_SERVE_INSPECTOR_PORT` set the ports (default 8787
- * and 9229); `OTTA_SERVE_TIMEOUT_MS` the wait for the first answer (default
- * 120000).
+ * `sites/staging/dist`). `OTTA_SERVE_PORT` / `OTTA_SERVE_INSPECTOR_PORT` set the ports (default:
+ * free ports picked at start); `OTTA_SERVE_TIMEOUT_MS` the wait for wrangler to
+ * be ready (default 120000).
  */
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,11 +37,27 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SITE = path.join(ROOT, "sites", "staging");
 const DIST = path.resolve(process.env.OTTA_SERVE_DIST ?? path.join(SITE, "dist"));
 const CONFIG = path.join(DIST, "server", "wrangler.json");
-const PORT = Number(process.env.OTTA_SERVE_PORT ?? 8787);
-const INSPECTOR_PORT = Number(process.env.OTTA_SERVE_INSPECTOR_PORT ?? 9229);
+/** A port nothing listens on right now (the OS picks it). */
+function freePort() {
+	return new Promise((resolve, reject) => {
+		const server = createServer();
+		server.on("error", reject);
+		server.listen(0, "localhost", () => {
+			const address = server.address();
+			server.close(() => resolve(typeof address === "object" && address ? address.port : 0));
+		});
+	});
+}
+
+const PORT = Number(process.env.OTTA_SERVE_PORT ?? (await freePort()));
+const INSPECTOR_PORT = Number(process.env.OTTA_SERVE_INSPECTOR_PORT ?? (await freePort()));
 const TIMEOUT_MS = Number(process.env.OTTA_SERVE_TIMEOUT_MS ?? 120_000);
 const ORIGIN = `http://localhost:${String(PORT)}`;
 
+/** Page routes whose chunks load lazily: each must answer below 500. */
+const PAGES = ["/products", "/cart", "/products/serve-built-worker-missing"];
+/** wrangler's own ready line for THIS port. */
+const READY = new RegExp(`Ready on http://localhost:${String(PORT)}\\b`);
 /** What in the Worker's log means it failed, even behind a non-5xx answer. */
 const LOG_FAILURES = [/Invalid URL/, /\[ERROR\]/, /Uncaught/];
 
@@ -91,45 +111,77 @@ for (const stream of [child.stdout, child.stderr]) {
 	});
 }
 let exited = false;
-child.on("exit", () => {
-	exited = true;
+const exit = new Promise((resolve) => {
+	child.on("exit", () => {
+		exited = true;
+		resolve();
+	});
 });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function stop() {
+/** Stop wrangler's whole process group (SIGKILL after 5 s), then drop its state. */
+async function stop() {
 	if (!exited && child.pid !== undefined) {
-		try {
-			process.kill(-child.pid, "SIGTERM");
-		} catch {
-			// already gone
+		const kill = (signal) => {
+			try {
+				process.kill(-child.pid, signal);
+			} catch {
+				// already gone
+			}
+		};
+		kill("SIGTERM");
+		await Promise.race([exit, sleep(5000)]);
+		if (!exited) {
+			kill("SIGKILL");
+			await Promise.race([exit, sleep(5000)]);
 		}
 	}
-	rmSync(state, { recursive: true, force: true });
+	try {
+		rmSync(state, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+	} catch (error) {
+		console.warn(`[serve-built-worker] could not remove ${state}: ${String(error)}`);
+	}
+}
+for (const signal of ["SIGINT", "SIGTERM"]) {
+	process.on(signal, () => {
+		void stop().finally(() => process.exit(1));
+	});
 }
 
-async function firstAnswer() {
+async function ready() {
 	const deadline = Date.now() + TIMEOUT_MS;
-	while (Date.now() < deadline) {
-		if (exited) throw new Error("wrangler dev exited before the Worker answered");
-		try {
-			return await fetch(`${ORIGIN}/`, {
-				redirect: "manual",
-				signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
-			});
-		} catch {
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+	while (!READY.test(log)) {
+		if (exited) throw new Error("wrangler dev exited before it was ready");
+		if (Date.now() > deadline) {
+			throw new Error(
+				`wrangler dev was not ready on port ${String(PORT)} within ${String(TIMEOUT_MS)} ms`,
+			);
 		}
+		await sleep(250);
 	}
-	throw new Error(`no answer from ${ORIGIN}/ within ${String(TIMEOUT_MS)} ms`);
+}
+
+async function get(pathname) {
+	const res = await fetch(`${ORIGIN}${pathname}`, {
+		redirect: "manual",
+		signal: AbortSignal.timeout(60_000),
+	});
+	await res.text();
+	console.info(`[serve-built-worker] GET ${pathname} answered ${String(res.status)}`);
+	return res.status;
 }
 
 let failure;
 try {
-	const res = await firstAnswer();
-	await res.text();
+	await ready();
+	const home = await get("/");
+	if (home !== 200) failure = `GET / answered ${String(home)}, not 200`;
+	for (const page of PAGES) {
+		const status = await get(page);
+		if (failure === undefined && status >= 500) failure = `GET ${page} answered ${String(status)}`;
+	}
 	// Give the Worker's error log a moment to reach us.
-	await new Promise((resolve) => setTimeout(resolve, 1000));
-	console.info(`\n[serve-built-worker] GET / answered ${String(res.status)}`);
-	if (res.status >= 500) failure = `GET / answered ${String(res.status)}`;
+	await sleep(1000);
 	const logged = LOG_FAILURES.find((re) => re.test(log));
 	if (failure === undefined && logged !== undefined) {
 		failure = `the Worker logged an error (${String(logged)})`;
@@ -137,11 +189,12 @@ try {
 } catch (error) {
 	failure = error instanceof Error ? error.message : String(error);
 } finally {
-	stop();
+	await stop();
 }
 
 if (failure !== undefined) {
 	console.error(`[serve-built-worker] FAILED: ${failure}`);
 	process.exit(1);
 }
-console.info("[serve-built-worker] ok: the built Worker loads and serves /");
+console.info("[serve-built-worker] ok: the built Worker loads and serves its pages");
+process.exit(0);
