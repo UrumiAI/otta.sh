@@ -86,6 +86,8 @@
  *    copy of `dist/` (an artifact, a cache, a tarball) would otherwise carry
  *    the local secrets. Deleting rather than failing keeps the documented dev
  *    setup (a dev-only `EMDASH_ENCRYPTION_KEY` in `.env`) buildable;
+ *  - `astro:build:done` deletes `<server>/.vite/manifest.json`
+ *    ({@link removeServerViteManifest}): Vite keys it by absolute module path;
  *  - `astro:build:done` then FAILS the build, and deletes the server bundle so
  *    a careless `wrangler deploy` has nothing to ship, if any secret VALUE is
  *    still in it: the values dropped from the shell plus the secrets Astro
@@ -102,7 +104,7 @@
  *    (a release id or a build hash is not a secret). A secret-shaped name, or a
  *    value with URL credentials ({@link hasUrlCredentials}), fails the build.
  */
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -110,6 +112,28 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AstroIntegration } from "astro";
 
 export const BUILD_PATH_SCRUB_INTEGRATION = "otta:build-path-scrub";
+
+/**
+ * Deletes `<server>/.vite/manifest.json`, then `.vite` itself if nothing else is in it.
+ * Vite keys that manifest by module id, so a module outside the project root
+ * (a `node_modules/.pnpm/…` stylesheet) appears under the builder's ABSOLUTE
+ * path. Astro up to 7.4.10 removed the whole `.vite` folder after the build;
+ * from 7.4.11 (withastro/astro#18686) it removes only the manifests it enabled
+ * itself, and the server environment's is not one of them. Nothing reads it
+ * after the build: `wrangler deploy` uploads only the `.js`/`.mjs` modules
+ * named in `wrangler.json`. Other files Vite writes there (`build.license`
+ * output) stay, as Astro keeps them.
+ */
+export function removeServerViteManifest(server: string): void {
+	const vite = path.join(server, ".vite");
+	rmSync(path.join(vite, "manifest.json"), { force: true });
+	try {
+		rmdirSync(vite);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+	}
+}
 
 /** Whether `dir` holds an npm or yarn workspace root: a package.json with `workspaces`. */
 function isNpmWorkspaceRoot(dir: string): boolean {
@@ -792,6 +816,7 @@ export function buildPathScrub(rootOption?: string): AstroIntegration {
 				if (serverDir === undefined || !existsSync(serverDir)) return;
 				const server = fileURLToPath(serverDir);
 				rmSync(path.join(server, ".dev.vars"), { force: true });
+				removeServerViteManifest(server);
 				if (droppedSecrets !== undefined) {
 					const secrets = new Map(droppedSecrets);
 					const random = new Map(randomValues);

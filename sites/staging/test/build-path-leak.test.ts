@@ -613,6 +613,28 @@ describe("astro:build:done fails the build on a leaked secret (#584)", () => {
 			expect(existsSync(path.join(server, "entry.mjs"))).toBe(true);
 		}));
 
+	test("deletes dist/server/.vite/manifest.json, which keys modules by the builder's absolute paths, and keeps other .vite files", () =>
+		withTempDir(async (dir) => {
+			const server = path.join(dir, "server");
+			mkdirSync(path.join(server, ".vite"), { recursive: true });
+			writeFileSync(
+				path.join(server, ".vite", "manifest.json"),
+				JSON.stringify({ [`${dir}/node_modules/x/styles.css`]: { file: "chunks/x.css" } }),
+			);
+			writeFileSync(path.join(server, "entry.mjs"), "export {};");
+			const { failure } = await runHooks("build", { serverDir: server });
+			expect(failure).toBeUndefined();
+			expect(existsSync(path.join(server, ".vite"))).toBe(false);
+			expect(existsSync(path.join(server, "entry.mjs"))).toBe(true);
+
+			mkdirSync(path.join(server, ".vite"));
+			writeFileSync(path.join(server, ".vite", "manifest.json"), "{}");
+			writeFileSync(path.join(server, ".vite", "license.md"), "MIT");
+			await runHooks("build", { serverDir: server });
+			expect(existsSync(path.join(server, ".vite", "manifest.json"))).toBe(false);
+			expect(existsSync(path.join(server, ".vite", "license.md"))).toBe(true);
+		}));
+
 	test("the builder's PATH in the bundle fails it: a bare import.meta.env inlined the WHOLE env", () =>
 		withTempDir(async (dir) => {
 			const server = path.join(dir, "server");
