@@ -7,7 +7,7 @@ full depth; this file only summarizes what you need to open a PR.
 
 ## Prereqs
 
-- Node 22.16 or newer (the EmDash host declares `engines.node >= 22.16`)
+- Node 22.23.4 or newer (Astro 7.4, which the storefront builds with, refuses older Node 22 releases; the EmDash host itself declares `engines.node >= 22.16`)
 - pnpm — the workspace pins `packageManager: pnpm@11.10.0` in the root `package.json`; use
   that version (via Corepack) rather than whatever `pnpm` you have globally.
 

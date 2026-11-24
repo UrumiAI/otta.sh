@@ -68,6 +68,14 @@ overrides:
   # fast-uri 3.x < 3.1.9 (Dependabot #106-#109), via `ajv@8` (MCP SDK,
   # yaml-language-server).
   "fast-uri@>=3.0.0 <3.1.9": 3.1.9
+  # hono < 4.13.16 (Dependabot #123-#127) and @hono/node-server 2.x < 2.1.6
+  # (Dependabot #121, #122), via `@modelcontextprotocol/sdk` (emdash's MCP route;
+  # `hono ^4.11.4`, `@hono/node-server ^1.19.9 || ^2.0.5`).
+  "hono@>=4.0.0 <4.13.16": 4.13.16
+  "@hono/node-server@>=2.0.0 <2.1.6": 2.1.6
+  # seroval < 1.6.11 (Dependabot #118, #119), via `@tanstack/router-core`
+  # (`^1.4.2`) in `@emdash-cms/admin`.
+  "seroval@>=1.0.0 <1.6.11": 1.6.11
   # sharp < 0.35.5 (GHSA-wq5f-xc86-pv6w, GHSA-rgj7-g3m4-5g8c, GHSA-f88m-g3jw-g9cj).
   # Every miniflare release pins sharp exactly (4.x 0.34.5, 5.x 0.35.4); unscoped
   # because astro's optional `^0.35.4` dependency would otherwise keep the locked
