@@ -145,12 +145,14 @@ function sandboxHeaders(request, declared) {
 }
 
 /**
- * The failure the spec reports: the error's own text, never its stack. The stack
- * goes to the worker's console, which miniflare prints in the test output.
+ * The failure the spec reports: a fixed marker, never anything taken from the
+ * error (its message can carry a stack or host internals). The full error and
+ * its stack go to the worker's console, which miniflare prints in the test
+ * output next to the failing spec.
  */
 function failure(error) {
 	console.error(error?.stack ?? error);
-	return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+	return "the invocation threw (see the worker console output above)";
 }
 
 /** Run one plugin invocation and report its result with its own bridge-call count. */
