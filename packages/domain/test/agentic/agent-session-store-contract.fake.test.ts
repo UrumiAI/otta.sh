@@ -18,6 +18,7 @@ agentSessionStoreContract(
 			crashInsertBeforeSessionWrite: (session, capacity) =>
 				store.insertCrashingBeforeSessionWrite(session, capacity),
 			countSessionDocuments: () => store.countSessionDocuments(),
+			parkInsertAfterSlots: (session, capacity) => store.insertParkedAfterSlots(session, capacity),
 		};
 	},
 	{ dialect: "fake" },
@@ -31,7 +32,7 @@ async function providedHook(): Promise<number> {
 
 describe("contract harness hooks", () => {
 	test("the crash hooks are required: a harness without them does not typecheck", () => {
-		// @ts-expect-error crashInsertBeforeLanding, crashInsertBeforeSessionWrite and countSessionDocuments are required
+		// @ts-expect-error the crash, count and parking hooks are required
 		const missing: AgentSessionStoreHarness = { store: new InMemoryAgentSessionStore() };
 		expect(missing.store).toBeDefined();
 	});

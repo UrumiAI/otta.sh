@@ -38,6 +38,19 @@ export interface AgentSessionStoreHarness {
 	/** REQUIRED: how many session documents are stored, admitted or not (the
 	 *  storage bound counts hidden ones too). Same skip rule. */
 	countSessionDocuments: (() => Promise<number>) | { skip: string };
+	/**
+	 * REQUIRED storage parking: start an insert of `session` and resolve once it
+	 * has compare-and-set its slots and is paused before writing the session
+	 * (or once it finished without reaching that point). `resume` lets it go on
+	 * and answers its result. Makes the release/insert race deterministic on any
+	 * adapter. Same skip rule.
+	 */
+	parkInsertAfterSlots:
+		| ((
+				session: AgentCheckoutSession,
+				capacity: AgentSessionCapacity,
+		  ) => Promise<{ resume: () => Promise<Awaited<ReturnType<AgentSessionStore["insert"]>>> }>)
+		| { skip: string };
 }
 
 /** The test context's visible skip (vitest's `ctx.skip(note)`). */
@@ -713,26 +726,29 @@ export function agentSessionStoreContract(
 				);
 			});
 
-			test("a release racing the record's session insert (interleaving callers): busy while the insert holds its slot", async () => {
-				const outcomes = new Set<string>();
-				for (let delay = 0; delay < 40; delay++) {
-					const { store } = await makeHarness();
-					await store.putIdempotency(createRecord("fly", "cs_fly"));
-					const [inserted, released] = await Promise.all([
-						store.insert(sample("cs_fly"), { now: at(1000), ...ROOMY }),
-						(async () => {
-							for (let i = 0; i < delay; i++) await Promise.resolve();
-							return store.releaseIdempotency("net-a", "fly", "attempt-1", at(1000));
-						})(),
-					]);
-					expect(inserted.ok).toBe(true);
-					outcomes.add(released);
-					if (released === "busy")
-						expect(await store.getIdempotency("net-a", "fly")).not.toBeNull();
-				}
-				// Early enough the release wins; once the insert holds a slot (landed or
-				// not) it is busy. Both happen across the delays.
-				expect([...outcomes].toSorted()).toEqual(["busy", "released"]);
+			test("a release while the record's session insert is parked after its slot CAS is busy; before the insert, released", async (ctx) => {
+				const h = await makeHarness();
+				const park = requiredHarnessHook(h.parkInsertAfterSlots, ctx);
+				const { store } = h;
+				await store.putIdempotency(createRecord("fly", "cs_fly"));
+				// The insert holds its slots and has not written the session yet.
+				const parked = await park(sample("cs_fly"), { now: at(1000), ...ROOMY });
+				expect(await store.releaseIdempotency("net-a", "fly", "attempt-1", at(1000))).toBe("busy");
+				expect(await store.getIdempotency("net-a", "fly")).not.toBeNull();
+				expect((await parked.resume()).ok).toBe(true);
+				// Landed: still busy.
+				expect(await store.releaseIdempotency("net-a", "fly", "attempt-1", at(2000))).toBe("busy");
+				expect(await store.getIdempotency("net-a", "fly")).not.toBeNull();
+
+				// Before the insert starts: nothing holds a slot, so the release wins and
+				// the insert that follows still succeeds.
+				const { store: fresh } = await makeHarness();
+				await fresh.putIdempotency(createRecord("fly2", "cs_fly2"));
+				expect(await fresh.releaseIdempotency("net-a", "fly2", "attempt-1", at(1000))).toBe(
+					"released",
+				);
+				expect(await fresh.getIdempotency("net-a", "fly2")).toBeNull();
+				expect((await fresh.insert(sample("cs_fly2"), { now: at(1000), ...ROOMY })).ok).toBe(true);
 			});
 		});
 

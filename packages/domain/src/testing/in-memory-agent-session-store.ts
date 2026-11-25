@@ -55,6 +55,15 @@ function networkPool(networkKey: string): string {
 	return `net:${JSON.stringify(networkKey)}`;
 }
 
+/** A promise and the function that resolves it. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	const handle: { promise?: Promise<void>; resolve: () => void } = { resolve: () => {} };
+	handle.promise = new Promise<void>((resolve) => {
+		handle.resolve = resolve;
+	});
+	return handle as { promise: Promise<void>; resolve: () => void };
+}
+
 /** Yield to every other pending caller, so a read and the write after it interleave. */
 async function interleave(): Promise<void> {
 	for (let i = 0; i < 3; i++) await Promise.resolve();
@@ -161,10 +170,35 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		return this.#insert(session, capacity, null);
 	}
 
+	/**
+	 * Test hook: start an insert that parks right after its slot compare-and-sets,
+	 * before the session is written. Resolves once parked (or once the insert
+	 * finished without getting there); `resume` lets it go on and answers it.
+	 */
+	async insertParkedAfterSlots(
+		session: AgentCheckoutSession,
+		capacity: AgentSessionCapacity,
+	): Promise<{ resume: () => Promise<Result<"insert">> }> {
+		const parked = deferred();
+		const gate = deferred();
+		const result = this.#insert(session, capacity, null, async () => {
+			parked.resolve();
+			await gate.promise;
+		});
+		await Promise.race([parked.promise, result]);
+		return {
+			resume: async () => {
+				gate.resolve();
+				return result;
+			},
+		};
+	}
+
 	async #insert(
 		session: AgentCheckoutSession,
 		capacity: AgentSessionCapacity,
 		crash: "before_write" | "before_landing" | null,
+		park?: () => Promise<void>,
 	): Promise<Result<"insert">> {
 		const stored: AgentCheckoutSession = structuredClone({ ...session, revision: 1 });
 		for (;;) {
@@ -193,6 +227,7 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 				await this.#slots.cas(net.id, net.version, null);
 				return { ok: false, reason: "capacity" };
 			}
+			if (park !== undefined) await park();
 			if (crash === "before_write") return { ok: true, session: structuredClone(stored) };
 			const written = await this.#sessions.cas(session.id, null, {
 				session: stored,
