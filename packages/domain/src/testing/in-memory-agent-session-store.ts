@@ -228,7 +228,10 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 			(next) => ({ ok: true, session: next }),
 		);
 		if (written.ok && written.session.status === "completed") {
+			// An order: the session's slots free at once, and its create records
+			// follow it to its (longer) retention.
 			await this.#freeSlotsOf(session.id);
+			await this.#retainRecords(session.id, written.session.purgeAt);
 		}
 		return written;
 	}
@@ -386,7 +389,6 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		);
 		if (finalized.ok) {
 			// Also on a replay, so a crash right after the session write is repaired.
-			await this.#freeSlotsOf(id);
 			await this.#retainRecords(id, finalize.retainUntil);
 		}
 		return finalized;

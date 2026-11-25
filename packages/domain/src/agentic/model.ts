@@ -147,7 +147,7 @@ export interface AgentSessionWriteRecord extends AgentSessionWriteKey {
 	/**
 	 * The session as of this write; a replay answers it (secrets are re-derived).
 	 * It is a historical copy: buyer and destination data a later write cleared
-	 * survive here until the whole session is purged (30 d). Any erasure must
+	 * survive here until the whole session is purged (at most 30 d). Any erasure must
 	 * therefore delete the whole session document, never just its current fields.
 	 */
 	answer: AgentSessionView;
@@ -245,8 +245,9 @@ export interface AgentCheckoutSession {
 	/** createdAt + 24 h: the session, and every hand-off link it issues, dies here. */
 	expiresAt: string;
 	/** The sweep deletes the session from here on: expiresAt + 1 h
-	 *  ({@link AGENT_SESSION_UNREDEEMED_RETENTION_MS}) until a hand-off finalizes,
-	 *  then createdAt + 30 d; a cancel sets it back to max(now, expiresAt) + 1 h. */
+	 *  ({@link AGENT_SESSION_UNREDEEMED_RETENTION_MS}), handed off or not, until an
+	 *  order is recorded (before `expiresAt`), then createdAt + 30 d; a cancel of a
+	 *  session never handed off sets max(now, expiresAt) + 1 h. */
 	purgeAt: string;
 	/** Recent keyed writes with their answers, newest last, at most
 	 *  {@link AGENT_SESSION_MAX_WRITE_RECORDS}. Each answer holds a copy of the

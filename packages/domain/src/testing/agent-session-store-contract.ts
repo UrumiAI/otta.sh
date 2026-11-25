@@ -1040,28 +1040,37 @@ export function agentSessionStoreContract(
 		});
 
 		describe("live slots", () => {
-			test("a finalized hand-off frees the session's slots at once", async () => {
+			test("a finalized hand-off keeps the session's slots; completing it frees them and moves its records to its purge", async () => {
 				const { store } = await makeHarness();
 				const a = await store.insert(
 					sample("cs_sf1", { handoffTokenHash: "h" }),
 					oneSlot(at(1000)),
 				);
 				if (!a.ok) throw new Error("insert failed");
+				await store.putIdempotency(createRecord("idem-sf1", "cs_sf1", { purgeAt: at(DAY_MS) }));
 				expect((await store.claimHandoff(a.session.id, CLAIM())).ok).toBe(true);
-				expect(await store.insert(sample("cs_sf2"), oneSlot(at(1500)))).toEqual({
-					ok: false,
-					reason: "capacity",
-				});
 				const fin = {
 					claimId: "claim-1",
 					cartId: "cart-s",
 					now: at(2000),
-					retainUntil: at(30 * DAY_MS),
+					retainUntil: at(DAY_MS),
 				};
-				expect((await store.finalizeHandoff(a.session.id, fin)).ok).toBe(true);
-				expect((await store.insert(sample("cs_sf3"), oneSlot(at(3000)))).ok).toBe(true);
+				const done = await store.finalizeHandoff(a.session.id, fin);
+				if (!done.ok) throw new Error("finalize failed");
+				expect(await store.insert(sample("cs_sf2"), oneSlot(at(3000)))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				const completed = {
+					...done.session,
+					status: "completed" as const,
+					orderId: orderId("o-1"),
+					purgeAt: at(30 * DAY_MS),
+				};
+				expect((await store.write(completed, done.session.revision)).ok).toBe(true);
+				expect((await store.getIdempotency("net-a", "idem-sf1"))?.purgeAt).toBe(at(30 * DAY_MS));
+				expect((await store.insert(sample("cs_sf3"), oneSlot(at(4000)))).ok).toBe(true);
 			});
-
 			test("a write that completes the session frees its slots; one that cancels it does not", async () => {
 				const { store } = await makeHarness();
 				const a = await store.insert(sample("cs_sc1"), oneSlot(at(1000)));
@@ -1081,7 +1090,7 @@ export function agentSessionStoreContract(
 				).toBe(true);
 			});
 
-			test("occupiedSlots counts the store's and the network's held slots, canceled included, expired and finalized not", async () => {
+			test("occupiedSlots counts the store's and the network's held slots, canceled and handed-off included, expired not", async () => {
 				const { store } = await makeHarness();
 				const cap = { now: at(1000), maxLive: 10, maxLivePerNetwork: 10 };
 				const a = await store.insert(sample("cs_o1"), cap);
@@ -1098,7 +1107,8 @@ export function agentSessionStoreContract(
 					retainUntil: at(30 * DAY_MS),
 				};
 				expect((await store.finalizeHandoff(c.session.id, fin)).ok).toBe(true);
-				expect(await store.occupiedSlots("net-a", at(3000))).toEqual({ store: 2, network: 1 });
+				// A hand-off keeps its slots (only an order frees them).
+				expect(await store.occupiedSlots("net-a", at(3000))).toEqual({ store: 3, network: 2 });
 				expect(await store.occupiedSlots("net-a", a.session.expiresAt)).toEqual({
 					store: 0,
 					network: 0,

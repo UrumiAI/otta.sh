@@ -1370,15 +1370,26 @@ describe("recordAgentSessionOrder", () => {
 		expect(await record(first.session.id)).toEqual({ ok: false, reason: "SESSION_CLOSED" });
 	});
 
-	test("allowed past expiresAt: the shopper may pay after the agent's 24 h", async () => {
+	test("refused at or after expiresAt (attribution is for orders within the 24 h); a replay still answers", async () => {
 		const h = harness();
 		const first = await redeemed(h);
-		h.clock.advance(2 * DAY_MS);
-		const r = await recordAgentSessionOrder(h.deps, {
+		const ok = await recordAgentSessionOrder(h.deps, {
 			sessionId: first.session.id,
 			orderId: orderId("ord-1"),
 		});
-		expect(r.ok && r.session.status).toBe("completed");
+		expect(ok.ok && ok.session.status).toBe("completed");
+		h.clock.advance(DAY_MS);
+		const replay = await recordAgentSessionOrder(h.deps, {
+			sessionId: first.session.id,
+			orderId: orderId("ord-1"),
+		});
+		expect(replay.ok && replay.replayed).toBe(true);
+		const h2 = harness();
+		const s2 = await redeemed(h2);
+		h2.clock.advance(DAY_MS);
+		expect(
+			await recordAgentSessionOrder(h2.deps, { sessionId: s2.session.id, orderId: orderId("o") }),
+		).toEqual({ ok: false, reason: "SESSION_EXPIRED" });
 	});
 
 	test("compare-and-set: racing records of two orders, exactly one wins", async () => {
@@ -2377,7 +2388,7 @@ describe("review round 2", () => {
 		expect((await stored(h, first.session.id)).shopperCartId).toBe("cart-placed");
 	});
 
-	test("C: unredeemed sessions purge an hour after expiry; a finalized hand-off keeps 30 days, also when canceled", async () => {
+	test("C: unredeemed and handed-off sessions purge an hour after expiry, also when canceled", async () => {
 		const h = harness();
 		const a = await created(h);
 		expect((await stored(h, a.session.id)).purgeAt).toBe(
@@ -2388,13 +2399,14 @@ describe("review round 2", () => {
 		);
 		await redeemAs(h, a.handoffToken ?? "", BROWSER);
 		expect((await stored(h, a.session.id)).purgeAt).toBe(
-			new Date(T0.getTime() + 30 * DAY_MS).toISOString(),
+			new Date(T0.getTime() + DAY_MS + HOUR_MS).toISOString(),
 		);
-		h.clock.advance(2 * DAY_MS);
+		h.clock.advance(HOUR_MS);
 		expect((await cancelAgentSession(h.deps, keyed(a.session.id, "c"))).ok).toBe(true);
 		expect((await stored(h, a.session.id)).purgeAt).toBe(
-			new Date(T0.getTime() + 30 * DAY_MS).toISOString(),
+			new Date(T0.getTime() + DAY_MS + HOUR_MS).toISOString(),
 		);
+		h.clock.advance(2 * DAY_MS - HOUR_MS);
 		const b = await createAgentSession(h.deps, {
 			...CREATE,
 			idempotencyKey: "k-b",
@@ -2611,21 +2623,23 @@ describe("review round 4", () => {
 			content: content(),
 		});
 
-	test("2: a finalized hand-off frees its live slots at once; a cancel does not", async () => {
+	test("2: a hand-off keeps its live slots; only a recorded order frees them; a cancel does not", async () => {
 		const h = harness({ maxLiveSessions: 1, maxLivePerNetwork: 1 });
 		const first = await created(h);
 		expect(await other(h, "net-a", "k-2")).toEqual({ ok: false, reason: "TOO_MANY_SESSIONS" });
 		await redeem(h, first.handoffToken ?? "");
-		const second = await other(h, "net-a", "k-3");
-		expect(second.ok && !second.replayed).toBe(true);
+		expect(await other(h, "net-a", "k-3")).toEqual({ ok: false, reason: "TOO_MANY_SESSIONS" });
 		expect(
 			(
-				await cancelAgentSession(
-					h.deps,
-					keyed(second.ok ? second.session.id : first.session.id, "c"),
-				)
+				await recordAgentSessionOrder(h.deps, {
+					sessionId: first.session.id,
+					orderId: orderId("o-1"),
+				})
 			).ok,
 		).toBe(true);
+		const second = await other(h, "net-a", "k-4");
+		if (!second.ok) throw new Error("create after order failed");
+		expect((await cancelAgentSession(h.deps, keyed(second.session.id, "c"))).ok).toBe(true);
 		expect(await other(h, "net-b")).toEqual({ ok: false, reason: "TOO_MANY_SESSIONS" });
 	});
 
@@ -2671,18 +2685,49 @@ describe("review round 4", () => {
 		expect(inserts).toBe(0);
 	});
 
-	test("5: the create record's retention follows the session's to 30 days at finalize", async () => {
+	test("5: a hand-off with no order keeps the short retention; a recorded order moves session and record to 30 days", async () => {
 		const h = harness();
 		const first = await created(h);
 		await redeem(h, first.handoffToken ?? "");
-		const s = await stored(h, first.session.id);
-		expect(s.purgeAt).toBe(new Date(T0.getTime() + 30 * DAY_MS).toISOString());
-		expect((await h.store.getIdempotency("net-a", CREATE.idempotencyKey))?.purgeAt).toBe(s.purgeAt);
+		const short = new Date(T0.getTime() + DAY_MS + HOUR_MS).toISOString();
+		expect((await stored(h, first.session.id)).purgeAt).toBe(short);
+		expect((await h.store.getIdempotency("net-a", CREATE.idempotencyKey))?.purgeAt).toBe(short);
+		h.clock.advance(HOUR_MS);
+		expect(
+			(
+				await recordAgentSessionOrder(h.deps, {
+					sessionId: first.session.id,
+					orderId: orderId("o-1"),
+				})
+			).ok,
+		).toBe(true);
+		const long = new Date(T0.getTime() + 30 * DAY_MS).toISOString();
+		expect((await stored(h, first.session.id)).purgeAt).toBe(long);
+		expect((await h.store.getIdempotency("net-a", CREATE.idempotencyKey))?.purgeAt).toBe(long);
 		// So the record survives the short sweep and the create still replays.
 		h.clock.advance(2 * DAY_MS);
 		await h.store.purgeIdempotencyDue(h.clock.now().toISOString(), 100);
 		const again = await createAgentSession(h.deps, { ...CREATE, content: content() });
 		expect(again.ok && again.replayed).toBe(true);
+	});
+
+	test("5: an order is attributed only before the session expires; re-entry ends at expiry too", async () => {
+		const h = harness();
+		const first = await created(h);
+		const token = first.handoffToken ?? "";
+		h.clock.advance(DAY_MS - 5 * 60 * 1000);
+		await redeem(h, token);
+		h.clock.advance(5 * 60 * 1000); // at expiresAt, inside the 15-minute re-entry window
+		expect(await claimAgentHandoff(h.deps, { token, redeemer: BROWSER })).toEqual({
+			ok: false,
+			reason: "HANDOFF_EXPIRED",
+		});
+		expect(
+			await recordAgentSessionOrder(h.deps, {
+				sessionId: first.session.id,
+				orderId: orderId("o-late"),
+			}),
+		).toEqual({ ok: false, reason: "SESSION_EXPIRED" });
 	});
 
 	test("6: a release refused busy (another attempt's insert is in flight) answers retryable WRITE_CONFLICT", async () => {
@@ -2722,12 +2767,13 @@ describe("review round 4", () => {
 		expect(await h.store.get(sessionId)).toBeNull();
 	});
 
-	test("7: cancel after a hand-off keeps the 30-day retention (attribution survives)", async () => {
+	test("7: cancel after a hand-off never moves its purge (expiresAt + 1 h), even after expiry", async () => {
 		const h = harness();
 		const first = await created(h);
 		await redeem(h, first.handoffToken ?? "");
 		const before = (await stored(h, first.session.id)).purgeAt;
-		h.clock.advance(HOUR_MS);
+		expect(before).toBe(new Date(T0.getTime() + DAY_MS + HOUR_MS).toISOString());
+		h.clock.advance(DAY_MS + 30 * 60 * 1000);
 		expect((await cancelAgentSession(h.deps, keyed(first.session.id, "c"))).ok).toBe(true);
 		const after = await stored(h, first.session.id);
 		expect(after.status).toBe("canceled");

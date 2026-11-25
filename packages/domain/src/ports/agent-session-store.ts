@@ -24,9 +24,9 @@ import type { AgentCheckoutSession, AgentSessionId } from "../agentic/model.js";
  *  - {@link insert} admits a session only while it can hold a live slot in the
  *    store-wide pool (`maxLive`) and in its network's pool
  *    (`maxLivePerNetwork`). A slot is held until the session's `expiresAt`,
- *    unless the session is handed off ({@link finalizeHandoff}) or completed (a
- *    {@link write} to `completed`), which free its slots at once. Canceling
- *    frees nothing (so a create-cancel loop cannot outrun the cap).
+ *    unless it is completed (a {@link write} to `completed`, i.e. an order),
+ *    which frees its slots at once. A hand-off and a cancel free nothing, so
+ *    neither a create-cancel nor a create-redeem loop can outrun the cap.
  *  - Slot documents are deleted by version when their session is purged
  *    ({@link purge}), freed, or by {@link purgeSlotsDue} once expired or
  *    abandoned, so they never accumulate as network keys rotate.
@@ -66,7 +66,9 @@ export interface AgentSessionStore {
 	 * winner is stored with `revision` = expected + 1 and returned; a stale or
 	 * missing session answers `conflict` with the current document (null if
 	 * none); an over-weight one `too_large`, storing nothing. The passed
-	 * `revision` is ignored.
+	 * `revision` is ignored. A winning write to `completed` (an order) then frees
+	 * the session's live slots and moves its create records to `purgeAt` no
+	 * earlier than the session's.
 	 */
 	write(
 		session: AgentCheckoutSession,
@@ -171,8 +173,8 @@ export interface AgentSessionStore {
 	 * cartId` and `purgeAt = retainUntil`, keeps the claim, bumps the revision.
 	 * Exactly one of any number of racing finalizes of one claim writes. After
 	 * the write (and again on a replay, so a crash in between is repaired) it
-	 * frees the session's live slots and moves every create record of the
-	 * session to `purgeAt` no earlier than `retainUntil`.
+	 * moves every create record of the session to `purgeAt` no earlier than
+	 * `retainUntil`. It frees no slot.
 	 */
 	finalizeHandoff(
 		id: AgentSessionId,

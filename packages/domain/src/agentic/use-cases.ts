@@ -903,7 +903,8 @@ export async function cancelAgentSession(
 		if (session.status === "completed") return fail("SESSION_CLOSED");
 		if (session.status === "canceled") return { ok: true, unchanged: true };
 		// A canceled session keeps only the short retention, unless it was handed
-		// off: then the 30-day retention stays, so order attribution survives.
+		// off: then its purge (expiresAt + 1 h; there is no order, else it could
+		// not be canceled) is kept as it is.
 		const from = now > session.expiresAt ? now : session.expiresAt;
 		const purgeAt =
 			session.handoffUsedAt !== undefined
@@ -991,11 +992,17 @@ async function precheckRedeem(
 	if (session.handoffUsedAt !== undefined) {
 		const reentry =
 			sameBrowser &&
+			!isExpired(session, now) &&
 			session.status !== "completed" &&
 			session.orderId === undefined &&
 			session.shopperCartId !== undefined &&
 			Date.parse(now) < Date.parse(session.handoffUsedAt) + AGENT_HANDOFF_REENTRY_WINDOW_MS;
-		return reentry ? { ok: true, reentered: session } : { ok: false, reason: "HANDOFF_USED" };
+		if (reentry) return { ok: true, reentered: session };
+		// The finalizing browser past expiry: the session is over (no order can be
+		// attributed any more); anyone else: the link is used.
+		return sameBrowser && isExpired(session, now)
+			? { ok: false, reason: "HANDOFF_EXPIRED" }
+			: { ok: false, reason: "HANDOFF_USED" };
 	}
 	if (session.status === "completed") return { ok: false, reason: "HANDOFF_USED" };
 	if (isExpired(session, now)) return { ok: false, reason: "HANDOFF_EXPIRED" };
@@ -1040,7 +1047,7 @@ export type ClaimAgentHandoffResult =
  * random nonce (an httpOnly cookie the site sets at claim time); the domain
  * stores and compares only its hash. The link is single-use PER BROWSER: any
  * browser may claim it again after a lapsed, unfinalized claim, but only the
- * browser that finalized it may re-open it, for
+ * browser that finalized it may re-open it, before `expiresAt` and for
  * {@link AGENT_HANDOFF_REENTRY_WINDOW_MS}; nobody else may
  * (see `precheckRedeem` for every answer). Every refusal leaves the session as
  * it was. The store's atomic claim re-checks; if it refuses, the answer comes
@@ -1122,8 +1129,9 @@ const CLAIM_REFUSAL = {
 /**
  * Step 2: FINALIZE a claimed hand-off once the shopper's cart holds its lines.
  * One compare-and-set stamps the link used, records the shopper's cart
- * (`shopperCartId`, never shown to the agent) and moves the session to the
- * 30-day retention, so from here the shopper owns the session. Idempotent: the
+ * (`shopperCartId`, never shown to the agent); from here the shopper owns the
+ * session. Its retention stays short (expiresAt + 1 h) and its live slots stay
+ * held: only an order recorded before `expiresAt` extends it to 30 days. Idempotent: the
  * same claim and cart again answers `replayed: true`. Refused (nothing written):
  * `HANDOFF_CLAIM_LOST` when the claim is no longer the session's or its lease
  * lapsed more than `AGENT_HANDOFF_FINALIZE_GRACE_MS` ago, `HANDOFF_EXPIRED`
@@ -1151,7 +1159,8 @@ export async function finalizeAgentHandoff(
 		claimId: input.claimId,
 		cartId: input.cartId,
 		now,
-		retainUntil: new Date(Date.parse(session.createdAt) + AGENT_SESSION_RETENTION_MS).toISOString(),
+		// A hand-off alone keeps the short retention; only a recorded order extends it.
+		retainUntil: session.purgeAt,
 	});
 	if (done.ok) {
 		return {
@@ -1225,7 +1234,10 @@ export type RecordAgentSessionOrderResult =
  * construction. The same order again answers `replayed: true` and writes
  * nothing; a different order is `ORDER_ALREADY_RECORDED`; a session nobody
  * redeemed is `HANDOFF_NOT_REDEEMED`; a canceled one is `SESSION_CLOSED`.
- * Allowed past `expiresAt`: the shopper may pay after the agent's 24 h window.
+ * Attribution is for orders placed before `expiresAt`: from then on a new order
+ * is `SESSION_EXPIRED` (a replay of the recorded one still answers). The order
+ * moves the session (and its create records) to the 30-day retention and frees
+ * its live slots.
  */
 export async function recordAgentSessionOrder(
 	deps: Pick<AgentSessionDeps, "store" | "clock">,
@@ -1249,11 +1261,17 @@ export async function recordAgentSessionOrder(
 		}
 		if (!isAgentSessionOpen(current.status)) return fail("SESSION_CLOSED");
 		if (!isAgentSessionHandedOff(current)) return fail("HANDOFF_NOT_REDEEMED");
+		// Attribution covers orders placed while the session is unexpired (24 h).
+		const now = deps.clock.now().toISOString();
+		if (isExpired(current, now)) return fail("SESSION_EXPIRED");
 		const next: AgentCheckoutSession = {
 			...current,
 			status: "completed",
 			orderId: input.orderId,
-			updatedAt: deps.clock.now().toISOString(),
+			updatedAt: now,
+			// An order keeps the session (and, in the store, its create records) for
+			// the 30-day retention, and frees its live slots.
+			purgeAt: new Date(Date.parse(current.createdAt) + AGENT_SESSION_RETENTION_MS).toISOString(),
 		};
 		if (input.cartId !== undefined) next.shopperCartId = input.cartId;
 		const written = await deps.store.write(next, current.revision);
