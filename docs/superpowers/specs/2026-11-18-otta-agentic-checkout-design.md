@@ -207,9 +207,11 @@ false, every agent route and `/.well-known/ucp` answer 404.
 ### Privacy
 
 - Sessions are swept 30 days after creation (cron, bounded per tick like `prune-carts`).
-- Account data export and erasure (`privacy` paths) include sessions matching the email.
-  Erasure deletes the whole session document: its kept write answers hold earlier copies of the
-  buyer and address until the session is purged.
+- No account data export or erasure path exists for sessions yet; the 30-day purge sweep is the
+  only deletion today. An export and erasure path covering sessions (found by buyer email) is a
+  precondition for enabling the merchant switch (`agentic.enabled`) on any store. When it lands,
+  erasure must delete the whole session document: its kept write answers hold earlier copies of
+  the buyer and address until the session is purged.
 - Logs carry session ids and outcome codes only.
 
 ## Delivery (one PR each, in order, each merges before the next starts)

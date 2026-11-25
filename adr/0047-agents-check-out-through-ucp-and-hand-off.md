@@ -70,10 +70,13 @@ Options considered:
 - New public write endpoints. They join the rate-limit and origin-guard route maps (their
   default-deny tests force it), and a store that has not opted in exposes nothing.
 - Agent checkout sessions hold shopper contact and address data. They are kept for at most 30 days
-  and are covered by the account data export and erasure paths.
+  and no account data export or erasure path exists for them yet: the 30-day purge sweep is the
+  only deletion today. An export and erasure path that covers agent sessions is a precondition
+  for enabling the merchant switch (`agentic.enabled`) on any store.
   Each session also keeps up to 32 earlier write answers for idempotent replay, and those are
   historical copies: a buyer or address a later update cleared survives in them until the session
-  is purged. Erasure therefore deletes the whole session document, never only its current fields.
+  is purged. That future erasure must therefore delete the whole session document, never only its
+  current fields.
 - Session secrets are derived, not stored: the `order_secret` and each hand-off token are
   HMAC-SHA256 of the session id (and link generation) under a server key of at least 32 bytes,
   and the session keeps only their hashes. Rotating that key changes every derived secret.
