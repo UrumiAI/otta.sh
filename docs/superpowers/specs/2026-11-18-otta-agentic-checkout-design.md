@@ -245,10 +245,13 @@ no shopper data is returned.
   and makes the session visible. A slot is free when absent, expired, or ABANDONED: never
   landed, taken more than 60 s ago, and its session document absent. Probes read a session only
   for such an old unlanded slot; landed slots skip the read. A slot whose session was written is
-  therefore never retaken, whether its insert stalled or crashed between the write and the
-  marks; a replay of the create, or the slot sweep, lands the marks later. Only a slot taken
-  before its session was written can be lost; that insert drops its never-visible session and
-  answers `capacity`, so no caller ever saw a session that is then deleted.
+  therefore never retaken before its expiry, whether its insert stalled or crashed between the
+  write and the marks; a replay of the create, or the slot sweep, lands the marks later. Only a
+  slot taken before its session was written can be lost; that insert drops its never-visible
+  session and answers `capacity`, so no caller ever saw a session that is then deleted. A hidden
+  session stranded past expiry (no replay, no sweep) is deleted by the probe that retakes its
+  slot, and otherwise by the session purge at its `purgeAt`, so it never escapes the storage
+  bound.
   A slot is held until the session's `expiresAt`, EXCEPT that a recorded order frees it at
   once; a hand-off and a cancel free nothing, so neither a create-cancel nor a create-redeem
   loop can outrun the cap. A refused create is `TOO_MANY_SESSIONS` and leaves no create record behind.
@@ -265,9 +268,12 @@ no shopper data is returned.
   with no order, since their slots recycle only at expiry. Only a recorded order frees a slot
   early, so only placed orders can push throughput past that, and see the trade-off below.
 - **Per-create cost and why 500, not 5,000:** an early refusal is one count of occupied slot
-  documents (an indexed count in an adapter). An admitted insert probes slot documents from a
-  hashed offset, about 1/(1 − occupancy) reads per pool, worst case 50 + 500 slot reads, then
-  two slot compare-and-sets, the session write and two `landed` marks; it reads no session. At
+  documents (an indexed count in an adapter). An admitted insert reads its own session id once
+  (exists?), probes slot documents from a hashed offset, about 1/(1 − occupancy) reads per pool,
+  worst case 50 + 500 slot reads, then does two slot compare-and-sets, the hidden session write,
+  two `landed` marks (each a read and a compare-and-set) and the admitting compare-and-set. A
+  probe also reads a session for each unlanded slot older than 60 s it meets (rare: only a
+  crashed or stalled insert leaves one), and deletes it if it retakes an expired one. At
   5,000 the worst case would be ten times that for every create near a full pool; 500
   concurrent unexpired agent checkouts is far above what a store on this stack sees, and the
   limit is tunable per store.
