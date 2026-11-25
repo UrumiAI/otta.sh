@@ -220,4 +220,43 @@ describeEachDialect("EmdashAgentSessionStore repairs (#712 round 3)", (ctx) => {
 		expect(await store.purgeSlotsDue("2026-03-02T00:00:00.000Z", 5)).toBe(1);
 		expect(await slots.count()).toBe(0);
 	});
+
+	test(`an order frees a slot that names its session though its list does not (a same-id race leftover) [${ctx.dialect}]`, async () => {
+		const clock = new FixedClock(T0);
+		const { id } = await handedOff(clock, "unlisted-settle");
+		const slots = bound.collection<Record<string, unknown>>(AGENT_SESSION_SLOTS_COLLECTION);
+		await slots.put("live:7", {
+			pool: "live",
+			sessionId: id,
+			expiresAt: new Date(T0.getTime() + DAY).toISOString(),
+			claimedAt: T0.toISOString(),
+			state: "landed",
+		});
+		expect(await slots.count()).toBe(3);
+		const ordered = await recordAgentSessionOrder(deps(clock), {
+			sessionId: id,
+			orderId: orderId("order-unlisted"),
+		});
+		expect(ordered.ok).toBe(true);
+		expect(await slots.count()).toBe(0);
+	});
+
+	test(`the sweep deletes a taken slot its (admitted) session does not list [${ctx.dialect}]`, async () => {
+		const clock = new FixedClock(T0);
+		const { id } = await handedOff(clock, "unlisted-sweep");
+		const slots = bound.collection<Record<string, unknown>>(AGENT_SESSION_SLOTS_COLLECTION);
+		await slots.put("live:8", {
+			pool: "live",
+			sessionId: id,
+			expiresAt: new Date(T0.getTime() + DAY).toISOString(),
+			claimedAt: T0.toISOString(),
+			state: "taken",
+		});
+		clock.advance(HOUR);
+		const store = new EmdashAgentSessionStore({ storage: bound.storage });
+		expect(await store.purgeSlotsDue(clock.now().toISOString(), 5)).toBe(1);
+		expect(await slots.get("live:8")).toBeNull();
+		// The session's own (listed, landed) slots are untouched.
+		expect(await slots.count()).toBe(2);
+	});
 });

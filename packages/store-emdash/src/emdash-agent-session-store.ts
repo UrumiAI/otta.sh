@@ -84,18 +84,29 @@ const MAX_POOL_PAGES = 200;
 /** A slot whose session was never written is free this long after it was taken. */
 export const AGENT_SESSION_ABANDONED_SLOT_MS = 60 * 1000;
 
+/** `purgeIdempotencyDue`'s fixed page reads: due create records, due pointers. */
+export const AGENT_SESSION_KEY_SWEEP_ENTRY_CALLS = 2;
+/**
+ * `purgeIdempotencyDue`'s worst case per UNIT of its limit (it takes up to
+ * `limit` create records AND up to `limit` pointers), measured in the plugin's
+ * cron-leg-costs test: a record's versioned read and delete (2), and a
+ * pointer's versioned read, its session's read, and its delete or raise (3).
+ */
+export const AGENT_SESSION_KEY_SWEEP_UNIT_CALLS = 5;
+
 /** `purgeSlotsDue`'s fixed page reads: pending orders, expired slots, unlanded slots. */
 export const AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS = 3;
 /**
  * `purgeSlotsDue`'s worst case for ONE candidate (no CAS retries), measured in
- * the plugin's cron-leg-costs test. Two paths tie at 9:
- *  - a pending order: its read, two slots each read and deleted, its create
- *    record page plus that record's read and update, and the mark's clear;
- *  - an unlanded slot whose hidden session lost its other slot: the slot read,
- *    the session read, a failed and a won landing (1 + 2), the session's delete,
- *    then both slots read and the still-held one deleted (1 + 2).
+ * the plugin's cron-leg-costs test:
+ *  - a pending order, 10: its read, its slot lookup page, two slots each read
+ *    and deleted, its create record page plus that record's read and update,
+ *    and the mark's clear;
+ *  - an unlanded slot whose hidden session lost its other slot, 9: the slot
+ *    read, the session read, a failed and a won landing (1 + 2), the session's
+ *    delete, then both slots read and the still-held one deleted (1 + 2).
  */
-export const AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS = 9;
+export const AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS = 10;
 
 const OPEN_STATUSES = ["incomplete", "requires_escalation"];
 const ADMITTED = "admitted";
@@ -345,7 +356,9 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 	async #settle(sessionId: AgentSessionId): Promise<number> {
 		const doc = await this.#sessions.getVersioned(sessionId);
 		if (doc === null || doc.value.settle === undefined) return 0;
-		const freed = await this.#freeSlots(sessionId, doc.value.slots ?? []);
+		// Its listed slots and any other slot naming it (a same-id race leftover).
+		const slotIds = new Set([...(doc.value.slots ?? []), ...(await this.#slotIdsOf(sessionId))]);
+		const freed = await this.#freeSlots(sessionId, [...slotIds]);
 		await this.#retainRecords(sessionId, doc.value.purgeAt);
 		let current: Versioned<AgentSessionDoc> | null = doc;
 		await this.#cas<undefined>("settleAgentSession", async () => {
@@ -702,7 +715,10 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 			// One read decides: no session document ⇒ abandoned, delete; a stored
 			// one ⇒ its insert stopped before landing, finish it from this read.
 			const session = await this.#sessions.getVersioned(value.sessionId);
-			if (session === null) {
+			// No session document, or one that does not list this slot (a crash
+			// leftover of another insert under the same id): nothing will ever land
+			// it, so it is deleted rather than left stalling the batch's head.
+			if (session === null || !(session.value.slots ?? []).includes(id)) {
 				if ((await this.#slots.compareAndDelete(id, slot.revision)).applied) deleted++;
 				continue;
 			}
