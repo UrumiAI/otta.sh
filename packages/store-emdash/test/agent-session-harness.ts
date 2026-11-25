@@ -9,8 +9,15 @@
  *    document throws instead of running, after both slots were taken;
  *  - before landing: that create-if-absent runs, then the first update on a
  *    slot document (the landing mark) throws instead of running.
+ *
+ * The parking hook pauses (does not crash) a real insert at that same point:
+ * right before its session create-if-absent, after both slot compare-and-sets.
  */
-import type { AgentCheckoutSession, AgentSessionCapacity } from "@urumi.ai/otta-domain";
+import type {
+	AgentCheckoutSession,
+	AgentSessionCapacity,
+	AgentSessionStore,
+} from "@urumi.ai/otta-domain";
 import type { AgentSessionStoreHarness } from "@urumi.ai/otta-domain/testing";
 import {
 	AGENT_SESSION_COLLECTIONS,
@@ -105,6 +112,64 @@ export function crashBeforeLanding(
 	};
 }
 
+type InsertResult = Awaited<ReturnType<AgentSessionStore["insert"]>>;
+
+/** A promise and its resolve (ES2023 has no `Promise.withResolvers`). */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	const settle: { resolve?: () => void } = {};
+	const promise = new Promise<void>((done) => {
+		settle.resolve = done;
+	});
+	return {
+		promise,
+		resolve: () => {
+			settle.resolve?.();
+		},
+	};
+}
+
+/**
+ * Start an insert of `session` that PARKS right before its session document's
+ * create-if-absent (both slots already compare-and-set), and resolve once it is
+ * parked, or once the insert finished without getting there (a capacity
+ * refusal). `resume` lets it go on and answers its result.
+ */
+export function parkInsertAfterSlots(
+	storage: StorageAccess,
+): (
+	session: AgentCheckoutSession,
+	capacity: AgentSessionCapacity,
+) => Promise<{ resume: () => Promise<InsertResult> }> {
+	return async (session, capacity) => {
+		const sessions = storage[AGENT_SESSIONS_COLLECTION];
+		if (sessions === undefined) throw new Error("sessions collection missing");
+		const parked = deferred();
+		const gate = deferred();
+		let held = false;
+		const wrapped = wrap(sessions, async (id, expected, data) => {
+			if (!held && id === session.id && expected === null) {
+				held = true;
+				parked.resolve();
+				await gate.promise;
+			}
+			return sessions.compareAndSet(id, expected, data);
+		});
+		const store = new EmdashAgentSessionStore({
+			storage: { ...storage, [AGENT_SESSIONS_COLLECTION]: wrapped },
+		});
+		const result = store.insert(session, capacity);
+		// A rejection is answered by `resume`, never left unhandled meanwhile.
+		result.catch(() => {});
+		await Promise.race([parked.promise, result.then(() => undefined)]);
+		return {
+			resume: () => {
+				gate.resolve();
+				return result;
+			},
+		};
+	};
+}
+
 /**
  * Empty every agent-session collection. The contract calls its harness factory
  * several times inside ONE test (its interleaving loops), and the tiers reset
@@ -132,7 +197,8 @@ export async function freshEmdashAgentSessionHarness(
 	return emdashAgentSessionHarness(storage);
 }
 
-/** The full harness: the store, both crash hooks, and the hidden-inclusive count. */
+/** The full harness: the store, both crash hooks, the hidden-inclusive count and
+ *  the parked insert. */
 export function emdashAgentSessionHarness(storage: StorageAccess): AgentSessionStoreHarness {
 	const sessions = storage[AGENT_SESSIONS_COLLECTION];
 	if (sessions === undefined) throw new Error("sessions collection missing");
@@ -141,5 +207,6 @@ export function emdashAgentSessionHarness(storage: StorageAccess): AgentSessionS
 		crashInsertBeforeLanding: crashBeforeLanding(storage),
 		crashInsertBeforeSessionWrite: crashBeforeSessionWrite(storage),
 		countSessionDocuments: () => sessions.count(),
+		parkInsertAfterSlots: parkInsertAfterSlots(storage),
 	};
 }
