@@ -45,14 +45,18 @@ const ENTRY_POINTS = [
 	...filesUnder(path.join(SRC, "pages")),
 ];
 
-/** Relative specifiers in `import … from`, `export … from` and `import(…)`. */
+/** Relative specifiers in `import … from`, `export … from`, `import "…"` and
+ *  `import(…)`, read with comments removed: so `import(/* @vite-ignore *\/ "./x")`
+ *  is followed and a commented-out import is not. A template literal counts
+ *  when it has no `${…}`; one that interpolates can't be resolved statically. */
 function relativeImports(source: string): string[] {
+	const code = stripComments(source);
 	const specs: string[] = [];
 	const patterns = [
-		/\bfrom\s+["'](\.{1,2}\/[^"']+)["']/g,
-		/\bimport\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g,
+		/\bfrom\s*(["'`])(\.{1,2}\/[^"'`$\n]+)\1/g,
+		/\bimport\s*\(?\s*(["'`])(\.{1,2}\/[^"'`$\n]+)\1/g,
 	];
-	for (const re of patterns) for (const m of source.matchAll(re)) specs.push(m[1]!);
+	for (const re of patterns) for (const m of code.matchAll(re)) specs.push(m[2]!);
 	return specs;
 }
 
@@ -70,8 +74,44 @@ function resolveSpecifier(from: string, spec: string): string | undefined {
 	return candidates.find((c) => /\.(ts|tsx|astro)$/.test(c) && existsSync(c));
 }
 
+/**
+ * The source with its comments removed and its string and template literals
+ * kept, so a `/*` or `//` inside a string (`"/_emdash/*"`, `"https://…"`) is
+ * not taken for a comment. A quoted string ends at its line's end at the
+ * latest, which keeps a stray apostrophe in an `.astro` template's text from
+ * swallowing the rest of the file. Regex literals are not recognised (none of
+ * the Worker's modules has one containing a comment marker).
+ */
 function stripComments(source: string): string {
-	return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+	let out = "";
+	let i = 0;
+	while (i < source.length) {
+		const c = source[i]!;
+		const next = source[i + 1];
+		if (c === "/" && next === "*") {
+			const end = source.indexOf("*/", i + 2);
+			i = end === -1 ? source.length : end + 2;
+			continue;
+		}
+		if (c === "/" && next === "/") {
+			const end = source.indexOf("\n", i);
+			i = end === -1 ? source.length : end;
+			continue;
+		}
+		if (c === '"' || c === "'" || c === "`") {
+			const quote = c;
+			let j = i + 1;
+			for (; j < source.length; j += source[j] === "\\" ? 2 : 1) {
+				if (source[j] === quote || (quote !== "`" && source[j] === "\n")) break;
+			}
+			out += source.slice(i, j + 1);
+			i = j + 1;
+			continue;
+		}
+		out += c;
+		i += 1;
+	}
+	return out;
 }
 
 /** Every module reachable from the entry points, with the import that first
@@ -104,6 +144,34 @@ function chain(graph: Map<string, string | undefined>, file: string): string {
 	}
 	return links.join(" -> ");
 }
+
+describe("the scanner's own edge cases (#734)", () => {
+	test("a `/*` inside a string literal does not start a comment", () => {
+		const source = 'const route = "/_emdash/*";\nconst at = import.meta.url;\n/* a real comment */';
+		expect(stripComments(source)).toContain("import.meta.url");
+		expect(stripComments(source)).not.toContain("a real comment");
+	});
+
+	test("a `//` inside a string or template literal does not start a comment", () => {
+		const source = "const a = '//x'; const b = `//y`; const at = import.meta.url; // gone";
+		expect(stripComments(source)).toContain("import.meta.url");
+		expect(stripComments(source)).not.toContain("gone");
+	});
+
+	test("a dynamic import with a comment before its specifier is followed", () => {
+		expect(relativeImports('await import(/* @vite-ignore */ "./x.js");')).toEqual(["./x.js"]);
+	});
+
+	test("a template-literal dynamic import without interpolation is followed", () => {
+		expect(relativeImports("await import(`./y.js`);")).toEqual(["./y.js"]);
+	});
+
+	test("a commented-out import is not followed", () => {
+		expect(
+			relativeImports('// import { a } from "./gone.js";\n/* import("./gone2.js") */'),
+		).toEqual([]);
+	});
+});
 
 describe("the Worker's module graph (#732)", () => {
 	const graph = workerModuleGraph();

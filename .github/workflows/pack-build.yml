@@ -2,8 +2,10 @@ name: Pack build
 
 # Builds the template from the PACKED packages (scripts/pack-build.mjs, ADR-0045):
 # pnpm pack of every publishable package, npm install in a copy of the template
-# repository, astro build, then assertions on dist/. Nothing else tests the form
-# merchants install (dist/integration.mjs from node_modules).
+# repository, astro build, assertions on dist/, then `wrangler dev` on the built
+# Worker with the template's own wrangler (scripts/serve-built-worker.mjs, #734).
+# Nothing else tests the form merchants install (dist/integration.mjs from
+# node_modules) or loads the Worker they deploy.
 #
 # Not a required check: it is its own workflow (not a step of `unit`), so it only
 # gates merges if "Pack build / pack-build" is added to the branch protection
@@ -45,6 +47,7 @@ on:
       - ".nvmrc"
       - "scripts/pack-build.mjs"
       - "scripts/pack-build-peers.mjs"
+      - "scripts/serve-built-worker.mjs"
       - ".github/workflows/pack-build.yml"
   # On a branch other than main only (the job condition below refuses main).
   workflow_dispatch:

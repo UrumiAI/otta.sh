@@ -19,6 +19,13 @@
  * the output, source maps included (the scrub guard's concern: the builder's
  * PATH, the scratch dir). It logs the template commit it built.
  *
+ * SERVES the build (#734): `serve-built-worker.mjs` runs the template's own
+ * wrangler on its `dist/` (local workerd, no account) and requires `/` to
+ * answer 200 and the page routes to stay below 500. This is the Worker
+ * merchants deploy, so a crash at Worker load that only the packed form or
+ * `otta({ template: 1 })` pulls in is caught here, not by a 0.2.x user.
+ * `--no-serve` skips it.
+ *
  * Needs the registry (emdash, astro, ... at the template's pins), unlike
  * `pack-consume-types.mjs`.
  *
@@ -35,13 +42,13 @@
  * The template's package-lock.json locks the old train, so it is then set aside
  * and npm resolves the whole tree.
  *
- *   node scripts/pack-build.mjs [--keep] [--template <dir>]
+ *   node scripts/pack-build.mjs [--keep] [--no-serve] [--template <dir>]
  *
  * `OTTA_TEMPLATE_DIR` also sets the template (default ~/otta-store-template);
  * `OTTA_PACK_BUILD_TMP` sets the temp root (default the OS temp dir).
  */
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	appendFileSync,
 	cpSync,
@@ -62,6 +69,7 @@ import { alignPeerPins, pinsRefusedByPeers } from "./pack-build-peers.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const keep = args.includes("--keep");
+const serve = !args.includes("--no-serve");
 const templateArg = args.indexOf("--template");
 const TEMPLATE =
 	(templateArg >= 0 ? args[templateArg + 1] : undefined) ||
@@ -361,6 +369,30 @@ try {
 	step(
 		`OK — packed build passed its guards; ${photos.length} sample photo(s), the seed and public scripts ship from node_modules`,
 	);
+
+	// 5. Serve the built Worker with the template's own wrangler (#734).
+	if (serve) {
+		step("serve the built Worker (scripts/serve-built-worker.mjs)");
+		const served = spawnSync(
+			process.execPath,
+			[path.join(ROOT, "scripts", "serve-built-worker.mjs")],
+			{
+				stdio: "inherit",
+				env: {
+					...process.env,
+					OTTA_SERVE_SITE: site,
+					OTTA_SERVE_DIST: path.join(site, "dist"),
+				},
+			},
+		);
+		if (served.status !== 0) {
+			console.error(
+				"pack-build: FAILED — the packed template's built Worker did not serve its pages",
+			);
+			throw Object.assign(new Error("serve failed"), { reported: true });
+		}
+		step("OK — the packed template's built Worker loads and serves its pages");
+	}
 } catch (error) {
 	failed = true;
 	if (!error.reported) console.error(error);
