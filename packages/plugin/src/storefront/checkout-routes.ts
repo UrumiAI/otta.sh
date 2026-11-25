@@ -24,6 +24,7 @@
  * — which is why Stripe's script host appears NOWHERE in this package, a
  * property `sandbox-clean-guard.test.ts` asserts by scanning `src/`.
  */
+import { readAgenticEnabled } from "../agentic/settings.js";
 import { BUYER_REF_MAX, isIdToken } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
@@ -813,6 +814,11 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				}
 			}
 			const client = await makeCommerceClient(ctx);
+			// ADR-0047: attribute a hand-off cart's order only while agentic checkout
+			// is on (fail-soft: a failed read is off, never a refused checkout). Off is
+			// passed too, so a cart redeemed while it was on is placed unattributed
+			// with its reason code logged.
+			const agentAttribution = await readAgenticEnabled(ctx);
 			const result = await placeOrRefuseUnconfigured(ctx, input.paymentMethod, () =>
 				client.createOrder(
 					{
@@ -829,7 +835,10 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 							: {}),
 					},
 					input.idempotencyKey,
-					input.sessionToken !== undefined ? { sessionToken: input.sessionToken } : {},
+					{
+						...(input.sessionToken !== undefined ? { sessionToken: input.sessionToken } : {}),
+						agentAttribution,
+					},
 				),
 			);
 			if (result === STRIPE_NOT_CONFIGURED) {

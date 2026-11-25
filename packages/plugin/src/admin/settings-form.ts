@@ -5,6 +5,7 @@ import {
 	validateBackgroundWork,
 	WORKERS_FREE_MAX_QUERY_BUDGET,
 } from "../cron/background-work-setting.js";
+import { AGENTIC_ENABLED_KEY } from "../agentic/settings.js";
 import {
 	RECONCILE_REPAIRS_PER_DAY_FREE,
 	reconcileRepairsDailyCap,
@@ -157,6 +158,9 @@ export { STORE_DISPLAY_NAME_KEY };
 const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
 /** ADR-0044: the cash-on-delivery toggle and its buyer instructions, one form. */
 export const SAVE_CASH_ON_DELIVERY_ACTION = "save-cash-on-delivery";
+
+/** ADR-0047: the agentic-checkout toggle's form submit. */
+export const SAVE_AGENTIC_CHECKOUT_ACTION = "save-agentic-checkout";
 
 /** B flag 4: the confirm step's button, shown when a COD save LOWERS the
  *  auto-cancel window so that open unpaid orders fall inside it (the next sweep
@@ -421,6 +425,9 @@ interface SettingsPageState {
 	/** ADR-0044: cash on delivery's toggle and instructions, or `null` when the
 	 *  read failed (the form is then left out, so a save cannot write a blank). */
 	cashOnDelivery: CashOnDeliveryState | null;
+	/** ADR-0047: whether agentic checkout is on, or `null` when the read failed
+	 *  (its form is then left out, so a save cannot write over it). */
+	agenticEnabled: boolean | null;
 }
 
 /** Read the non-secret payment/email settings. FAIL-SOFT per key, for the
@@ -475,6 +482,7 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		emailReport,
 		stripeWebhookLastVerified,
 		cashOnDelivery,
+		agenticEnabled,
 	] = await Promise.all([
 		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
 		// a kv blip on it must not deny the operator the secret forms below.
@@ -511,6 +519,11 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 			}),
 			() => null,
 		),
+		// ADR-0047: the raw read, so a failure hides the form rather than reading "off".
+		ctx.kv.get<unknown>(AGENTIC_ENABLED_KEY).then(
+			(stored) => stored === true,
+			() => null,
+		),
 	]);
 	return {
 		backgroundWork,
@@ -524,6 +537,7 @@ async function readPageState(ctx: PluginContext, peekCountry = false): Promise<S
 		paymentSecrets,
 		encryptionKey: encryptionKeyStatus(),
 		cashOnDelivery,
+		agenticEnabled,
 	};
 }
 
@@ -572,6 +586,7 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	SAVE_BACKGROUND_WORK_ACTION,
 	SAVE_CASH_ON_DELIVERY_ACTION,
 	CONFIRM_COD_AUTO_CANCEL_ACTION,
+	SAVE_AGENTIC_CHECKOUT_ACTION,
 	SAVE_STORE_CURRENCY_ACTION,
 	CONFIRM_STORE_CURRENCY_ACTION,
 	// INC-C3: the payment secrets, from the one table that also builds
@@ -825,6 +840,24 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			return {
 				...page,
 				toast: { message: "Cash on delivery saved", type: "success" },
+			} satisfies BlockResponse;
+		}
+
+		// -- Agentic checkout (ADR-0047): NOT YET SWITCHABLE ------------------------
+		// The switch is hidden and its save REFUSED, whatever it carries, and
+		// nothing is written: the ADR makes a buyer-data export and erasure path a
+		// precondition for turning it on, and neither exists yet. A crafted submit
+		// of the old action lands here.
+		if (action === SAVE_AGENTIC_CHECKOUT_ACTION) {
+			const page = await renderPage(ctx, client, {
+				variant: "error",
+				title: "Agentic checkout can't be switched yet",
+				description:
+					"It becomes available once buyer data from agent checkouts can be exported and erased. Nothing was changed.",
+			});
+			return {
+				...page,
+				toast: { message: "Agentic checkout not saved", type: "error" },
 			} satisfies BlockResponse;
 		}
 
@@ -1464,6 +1497,7 @@ function buildSettingsBlocks(args: {
 	/** #497: whether a payment key typed below could be stored encrypted. */
 	encryptionKey: EncryptionKeyStatus;
 	cashOnDelivery: CashOnDeliveryState | null;
+	agenticEnabled: boolean | null;
 	notice?: Notice;
 	paymentRefusal?: PaymentRefusal;
 	/** #447: the switch waiting on a confirm, rendered under the notice. */
@@ -1497,6 +1531,7 @@ function buildSettingsBlocks(args: {
 			args.paymentRefusal,
 		),
 		...cashOnDeliveryGroup(args.cashOnDelivery),
+		...agenticCheckoutGroup(args.agenticEnabled),
 	);
 	return blocks;
 }
@@ -1582,6 +1617,26 @@ function cashOnDeliveryGroup(state: CashOnDeliveryState | null): Block[] {
 							},
 						}),
 					]),
+		],
+	});
+}
+
+/**
+ * "Agentic checkout" (ADR-0047): its state only. The switch is NOT rendered (and
+ * its save is refused) until buyer-data export and erasure exist — the ADR's
+ * precondition for turning it on. While off, every agentic route answers
+ * not-found.
+ */
+function agenticCheckoutGroup(enabled: boolean | null): Block[] {
+	const status = enabled === null ? "couldn't be loaded" : enabled ? "on" : "off";
+	return section({
+		blockId: "settings:agentic",
+		title: `Agentic checkout — ${status}`,
+		blocks: [
+			{
+				type: "context",
+				text: "Lets AI shopping agents build a cart and hand the buyer a link to finish checkout here. Not available yet: it can be switched on once buyer data from agent checkouts can be exported and erased.",
+			},
 		],
 	});
 }

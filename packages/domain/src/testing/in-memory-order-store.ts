@@ -217,6 +217,7 @@ export class InMemoryOrderStore implements OrderStore {
 			...(input.buyerAddressRequired !== undefined
 				? { buyerAddressRequired: input.buyerAddressRequired }
 				: {}),
+			...(input.attribution !== undefined ? { attribution: { ...input.attribution } } : {}),
 			reconciliationFlag: null,
 			reconciliationResolution: null,
 			fulfillment: null,
@@ -948,6 +949,8 @@ export class InMemoryOrderStore implements OrderStore {
 		}
 		if (filter.from !== undefined && o.createdAt < filter.from) return false; // inclusive lower
 		if (filter.to !== undefined && o.createdAt >= filter.to) return false; // EXCLUSIVE upper
+		// ADR-0047: the channel dimension, an equality on the frozen attribution.
+		if (filter.channel !== undefined && o.attribution?.channel !== filter.channel) return false;
 		if (filter.search !== undefined) {
 			// Order-id PREFIX, buyer_ref SUBSTRING or an EXACT line sku, all sides
 			// folded (port doc). The fake's stand-in for the adapter's `lower(col)
@@ -1372,6 +1375,7 @@ export class InMemoryOrderStore implements OrderStore {
 			shippingAddress: cloneAddress(order.shippingAddress),
 			fulfillment: order.fulfillment === null ? null : { ...order.fulfillment },
 			cancellation: order.cancellation === null ? null : { ...order.cancellation },
+			...(order.attribution !== undefined ? { attribution: { ...order.attribution } } : {}),
 		};
 	}
 }

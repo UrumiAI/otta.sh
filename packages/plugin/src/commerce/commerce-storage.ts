@@ -24,6 +24,7 @@
  */
 
 import {
+	AGENT_SESSION_COLLECTIONS,
 	CART_COLLECTIONS,
 	COUPON_COLLECTIONS,
 	ENTITLEMENT_COLLECTIONS,
@@ -80,6 +81,8 @@ export const COMMERCE_STORAGE_COLLECTIONS: CommerceStorageLayout = Object.freeze
 	...PAYMENT_EVENT_COLLECTIONS,
 	...SETTINGS_COLLECTIONS,
 	...REPORTING_COLLECTIONS,
+	// ADR-0047: agent checkout sessions, their hand-off link pointers and create keys.
+	...AGENT_SESSION_COLLECTIONS,
 });
 
 /** The collection names, for a caller that needs the list rather than the map. */

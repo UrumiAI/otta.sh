@@ -69,6 +69,20 @@ describe("codRequestFacts", () => {
 		expect(clientNetwork(null)).toBeNull();
 	});
 
+	test("the agentic rule (ADR-0047): IPv6 by /64, everything else as the COD rule", () => {
+		expect(clientNetwork("2001:db8:1:2:aaaa::1", 64)).toBe("2001:db8:1:2::/64");
+		// One host's /64: every address in it is one network.
+		expect(clientNetwork("2001:db8:1:2:ffff:ffff:ffff:ffff", 64)).toBe(
+			clientNetwork("2001:db8:1:2::9", 64),
+		);
+		// The next /64 is another network (the /48 rule would merge them).
+		expect(clientNetwork("2001:db8:1:3::9", 64)).not.toBe(clientNetwork("2001:db8:1:2::9", 64));
+		expect(clientNetwork("2001:db8:1:3::9")).toBe(clientNetwork("2001:db8:1:2::9"));
+		expect(clientNetwork("198.51.100.9", 64)).toBe("198.51.100.9");
+		expect(clientNetwork("::ffff:192.0.2.1", 64)).toBe("192.0.2.1");
+		expect(clientNetwork(null, 64)).toBeNull();
+	});
+
 	/**
 	 * #678: one host often holds a whole /48, so it can move between /64s at will.
 	 * The cap's network is the /48: every /64 inside it is the same network, and

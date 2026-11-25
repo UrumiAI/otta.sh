@@ -34,7 +34,11 @@ describe("storefront/checkout/place — the session", () => {
 		await place({ ...BASE, sessionToken: "sess-1" });
 		expect(createOrder).toHaveBeenCalledTimes(1);
 		expect(createOrder.mock.calls[0]?.[1]).toBe("checkout:cart-1");
-		expect(createOrder.mock.calls[0]?.[2]).toEqual({ sessionToken: "sess-1" });
+		// ADR-0047: the agentic switch rides along (off here: the store never saved it).
+		expect(createOrder.mock.calls[0]?.[2]).toEqual({
+			sessionToken: "sess-1",
+			agentAttribution: false,
+		});
 		// Never as a field of the order request itself.
 		expect(createOrder.mock.calls[0]?.[0]).not.toHaveProperty("sessionToken");
 	});
@@ -43,6 +47,6 @@ describe("storefront/checkout/place — the session", () => {
 		await place(BASE);
 		await place({ ...BASE, sessionToken: "" });
 		expect(createOrder).toHaveBeenCalledTimes(2);
-		for (const call of createOrder.mock.calls) expect(call[2]).toEqual({});
+		for (const call of createOrder.mock.calls) expect(call[2]).toEqual({ agentAttribution: false });
 	});
 });

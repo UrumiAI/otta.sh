@@ -151,6 +151,22 @@ export interface AgentSessionWriteRecord extends AgentSessionWriteKey {
 	 * therefore delete the whole session document, never just its current fields.
 	 */
 	answer: AgentSessionView;
+	/**
+	 * The caller's typed messages about this write's request (refused lines, a
+	 * dropped coupon), replayed with it. Codes and paths only — never request
+	 * values — bounded by {@link AGENT_SESSION_MAX_MESSAGES}. Absent when none.
+	 */
+	messages?: AgentSessionMessage[];
+}
+
+/**
+ * A typed message about one refused part of a request (UCP `messages[]`): `code`
+ * is an upper-case token, `path` names the request field (`lines[2]`,
+ * `couponCode`). Never English, never a request value, never shopper data.
+ */
+export interface AgentSessionMessage {
+	code: string;
+	path: string;
 }
 
 /** A shopper's lease on the current hand-off link (see {@link AgentCheckoutSession.handoffClaim}). */
@@ -336,6 +352,18 @@ export const AGENT_SESSION_MAX_ADDRESS_FIELD_LENGTH = 256;
 export const AGENT_SESSION_MAX_COUPON_CODE_LENGTH = 64;
 export const AGENT_SESSION_MAX_SHIPPING_METHOD_ID_LENGTH = 128;
 export const AGENT_SESSION_MAX_CART_ID_LENGTH = 128;
+/** Messages one write may record (every line plus the selection fields). */
+export const AGENT_SESSION_MAX_MESSAGES = 64;
+const MESSAGE_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+const MESSAGE_PATH = /^[A-Za-z][A-Za-z0-9_]{0,31}(?:\[\d{1,4}\])?$/;
+
+/** Whether `messages` is a bounded list of token-shaped codes and paths. */
+export function isAgentSessionMessageList(messages: readonly AgentSessionMessage[]): boolean {
+	return (
+		messages.length <= AGENT_SESSION_MAX_MESSAGES &&
+		messages.every((m) => MESSAGE_CODE.test(m.code) && MESSAGE_PATH.test(m.path))
+	);
+}
 
 /** The status rule: no lines → `incomplete`; at least one → `requires_escalation`. */
 export function agentSessionStatusForLines(lines: readonly AgentSessionLine[]): AgentSessionStatus {

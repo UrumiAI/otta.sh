@@ -4,6 +4,11 @@
 - Note (2026-10-14): the one-time purges of the retired email and x402 keys named in
   Decision 1 were removed (issue #455). Those keys are still not encrypted or migrated;
   nothing reads them.
+- Note (2026-11-25, ADR-0047): a fourth key, the agentic checkout server key
+  (`agenticServerKey`), is declared `secret` the same way through
+  `AGENTIC_SECRET_SETTINGS_SCHEMA`. "The three keys" below means the three payment keys; the
+  agentic key is covered by Decision 1 and 3 and by the Settings-gear consequence, not by the
+  re-save in Decision 2 (see the end of Consequences).
 - Date: 2026-10-08
 - Supersedes: the acceptance in [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md)
   §2 and its Consequences that these credentials may be stored as plain values, for the three
@@ -107,3 +112,18 @@ path — so no new write path or crypto is needed.
 - A custom site must declare the schema (`PAYMENT_SECRET_SETTINGS_SCHEMA` in its descriptor
   `settingsSchema`) before upgrading. If it was added later, enter the three keys again in
   Settings, or delete `state:paymentSecretsEncrypted` so the re-save runs again.
+- **The agentic server key (ADR-0047).** `agenticServerKey` is declared `secret` by
+  `AGENTIC_SECRET_SETTINGS_SCHEMA`, which the reference site's descriptor spreads next to
+  `PAYMENT_SECRET_SETTINGS_SCHEMA` (pinned by `sites/store/test/payment-secrets-at-rest.test.ts`).
+  Otta generates it on first use; no admin enters it, and Otta's Settings page never shows it.
+  It is not part of the Decision 2 re-save: it is written only by an agentic route, which answers
+  `NOT_FOUND` before reading it while the switch is off, and the switch has never been offered
+  on, so no store holds it in plain text. Decision 3 applies: a stored value that is not a
+  base64url key of at least the minimum length is never used (the agentic routes answer as
+  unavailable) and never replaced.
+- **Follow-up (admin-only key in the gear).** Declaring it makes the key a field in EmDash's
+  Settings gear, where an admin could overwrite it. EmDash 1.5.0's setting fields take only
+  `type`, `label` and `description`: there is no hidden or read-only flag. Until EmDash offers
+  one, its description says it is generated and must not be edited; overwriting it with a valid
+  key invalidates every outstanding hand-off link and cart key (as a rotation would), and an
+  invalid value fails closed as above. Hide or lock the field once the host supports it.

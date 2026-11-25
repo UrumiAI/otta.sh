@@ -64,6 +64,7 @@ import type {
 import type { RouteHandler } from "../types.js";
 import { buildCartPricing, DEGRADED_CART_PRICING, type CartPricingWire } from "./cart-pricing.js";
 import { commerceLoaderFor, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
+import { isAgenticCartKey } from "../agentic/cart-key.js";
 import { isRenderedAddToCartKey } from "./rendered-add-key.js";
 import { sanitizeLocale } from "./route-input.js";
 
@@ -104,7 +105,7 @@ export interface CartCookieDescriptor {
 	maxAgeSeconds: number;
 }
 
-function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
+export function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
 	return {
 		name: CART_COOKIE_NAME,
 		value: cartId,
@@ -379,7 +380,14 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 			// its cart to whoever sends it — so it keys nothing. Unkeyed rather than
 			// refused: a theme that forwards the slot's key still gets a cart, exactly
 			// as before keys existed.
-			const createKey = key !== undefined && !isRenderedAddToCartKey(key) ? key : undefined;
+			// An `agentic:` key is the agent-session namespace (ADR-0047): those carts are
+			// keyed by an HMAC under the agentic server key, and a public caller must
+			// never be able to name one, even holding a key — so it keys nothing here
+			// either, exactly like `pdp:`.
+			const createKey =
+				key !== undefined && !isRenderedAddToCartKey(key) && !isAgenticCartKey(key)
+					? key
+					: undefined;
 			const client = await makeCommerceClient(ctx);
 			const { cartId } = await client.createCart(raw as string | undefined, createKey);
 			return { ok: true as const, cartId, cookie: cartCookieDescriptor(cartId) };

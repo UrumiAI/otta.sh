@@ -142,6 +142,8 @@ describe("the sweep's schedule and timeout are pinned", () => {
 				"order-sku-index",
 				"product-orphans",
 				"prune-carts",
+				// ADR-0047: agent sessions 30 days on — retention, not a deadline.
+				"prune-agent-sessions",
 				"product-reconcile",
 				"prune-challenges",
 				"reporting-heal",

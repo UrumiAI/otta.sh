@@ -12,12 +12,14 @@
  * `OptionsRepository` and the encryption are the host's own code.
  */
 import {
+	AGENTIC_SERVER_KEY_KEY,
 	COMMERCE_STORAGE_COLLECTIONS,
 	createSettingsFormHandler,
 	encryptStoredPaymentSecrets,
 	ENCRYPTED_PAYMENT_SECRET_KEYS,
 	OTTA_PLUGIN_ID,
 	PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY,
+	readAgenticServerKey,
 	readPaymentSecrets,
 	readSecret,
 	resetPaymentSecretEncryptionForTesting,
@@ -328,5 +330,22 @@ describe("payment keys at rest, through this site's descriptor (ADR-0037)", () =
 		expect(await readSecret(ctx, WEBHOOK_EDGE_TOKEN_KEY)).toEqual({ state: "invalid" });
 		expect(await readSecret(ctx, STRIPE_SECRET_KEY_KEY)).toEqual({ state: "invalid" });
 		expect((await readPaymentSecrets(ctx)).stripeSecretKey).toBeUndefined();
+	});
+});
+
+describe("the agentic checkout server key at rest, through this site's descriptor (ADR-0037, ADR-0047)", () => {
+	test("the descriptor declares it secret", () => {
+		expect(SCHEMA).toHaveProperty("agenticServerKey");
+		expect((SCHEMA as Record<string, { type?: string }>)["agenticServerKey"]?.type).toBe("secret");
+	});
+
+	test("created on first use as ciphertext; read back as the same key", async () => {
+		const ctx = hostCtx(keyA);
+		const first = await readAgenticServerKey(ctx);
+		expect(first).not.toBeNull();
+		const stored = await rawValue(AGENTIC_SERVER_KEY_KEY);
+		expect(isEncryptedPluginSetting(stored), "stored encrypted").toBe(true);
+		expect(await rawDump()).not.toContain(Buffer.from(first ?? []).toString("base64url"));
+		expect(await readAgenticServerKey(hostCtx(keyA))).toEqual(first);
 	});
 });

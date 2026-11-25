@@ -1,0 +1,619 @@
+/**
+ * ADR-0047 route races, over SQLite with an injectable step between two storage
+ * calls: what a sandbox run cannot pin deterministically.
+ *  - the cart key carries the body's fingerprint (two bodies under one key never
+ *    share a cart);
+ *  - a create the domain refuses AFTER its cart was built (a racer took the key
+ *    with another body) releases that cart's holds;
+ *  - cancel decides whether to release the agent's cart on the session the cancel
+ *    LEFT, so a redeem landing between its first read and its write keeps the
+ *    shopper's cart whole;
+ *  - which carts count as still held (a digital line does; a lapsed hold does not).
+ */
+import {
+	claimAgentHandoff,
+	createAgentSession,
+	currency,
+	finalizeAgentHandoff,
+	type AgentSessionDeps,
+} from "@urumi.ai/otta-domain";
+import {
+	AGENT_SESSIONS_COLLECTION,
+	AGENT_SESSION_CREATE_KEYS_COLLECTION,
+	CARTS_COLLECTION,
+	EmdashAgentSessionStore,
+	randomBase64Url,
+	systemClock,
+	WebCryptoAgentSessionSecrets,
+	base64UrlDecode,
+	hashToken,
+	type StorageAccess,
+} from "@urumi.ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import {
+	acceptedSelection,
+	agentCartKey,
+	allHeld,
+	createAgenticHandoffRedeemHandler,
+	createAgenticSessionCancelHandler,
+	createAgenticSessionCreateHandler,
+	createAgenticSessionUpdateHandler,
+} from "../src/agentic/routes.js";
+import { fingerprintOf, parseAgentSessionInput } from "../src/agentic/input.js";
+import { agenticCartKey } from "../src/agentic/cart-key.js";
+import { AGENTIC_ENABLED_KEY, AGENTIC_SERVER_KEY_KEY } from "../src/agentic/settings.js";
+import { makeCommerceClient } from "../src/commerce/make-commerce-client.js";
+import type { PluginContext } from "../src/types.js";
+import { sweepContext } from "./cron-sweep-fixtures.js";
+import {
+	AGENT_ADDRESS,
+	agenticFixture,
+	cartLines,
+	seedAgenticStore,
+	seedProduct,
+} from "./helpers/agentic-sandbox.js";
+import { commerceStorageLayout } from "./sandbox/storage-layout.js";
+
+const F = agenticFixture("aru");
+const [MUG] = F.products;
+/** One unit on hand. */
+const LAST = { id: "prod-aru-last", sku: "SKU-ARU-LAST", amount: 4000 };
+/** Two units on hand: the hand-over ordering case. */
+const PAIR = { id: "prod-aru-pair", sku: "SKU-ARU-PAIR", amount: 2500 };
+const SERVER_KEY = randomBase64Url(32);
+const SERVER_KEY_BYTES = base64UrlDecode(SERVER_KEY) as Uint8Array;
+const REQUEST = {
+	method: "POST",
+	url: "https://shop.test/",
+	headers: { "cf-connecting-ip": "198.51.100.40" },
+};
+
+let base: StorageAccess;
+/** Run (once, uncounted) before the named collection call; cleared by the test. */
+let before: ((collection: string, method: string, args: unknown[]) => Promise<void>) | null = null;
+
+/** `base`, with {@link before} run ahead of every collection call. */
+function hooked(): StorageAccess {
+	const wrapped: StorageAccess = {};
+	for (const [name, collection] of Object.entries(base)) {
+		wrapped[name] = new Proxy(collection, {
+			get(target, prop, receiver) {
+				const value: unknown = Reflect.get(target, prop, receiver);
+				if (typeof value !== "function") return value;
+				return async (...args: unknown[]) => {
+					if (before !== null) await before(name, String(prop), args);
+					return (value as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			},
+		});
+	}
+	return wrapped;
+}
+
+function ctx(): PluginContext {
+	return sweepContext(hooked(), undefined, {
+		[AGENTIC_ENABLED_KEY]: true,
+		[AGENTIC_SERVER_KEY_KEY]: SERVER_KEY,
+	});
+}
+
+/** Domain deps over the UNHOOKED store, for the injected peer. */
+function peerDeps(): AgentSessionDeps {
+	const key = base64UrlDecode(SERVER_KEY);
+	if (key === null) throw new Error("bad key");
+	return {
+		store: new EmdashAgentSessionStore({ storage: base }),
+		clock: systemClock,
+		secrets: new WebCryptoAgentSessionSecrets(key),
+	};
+}
+
+async function call(
+	handler: ReturnType<typeof createAgenticSessionCreateHandler>,
+	c: PluginContext,
+	input: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	return (await handler({ input, request: REQUEST } as never, c)) as Record<string, unknown>;
+}
+
+const BODY = { idempotencyKey: "race-1", lines: [{ productId: MUG.id, quantity: 1 }] };
+
+beforeEach(async () => {
+	({ storage: base } = await makeSqliteStorage(commerceStorageLayout()));
+	await seedAgenticStore(base, F);
+	await seedProduct(base, LAST, 1, { stock: 1 });
+	await seedProduct(base, PAIR, 1, { stock: 2 });
+	before = null;
+	vi.spyOn(console, "warn").mockImplementation(() => {});
+	vi.spyOn(console, "error").mockImplementation(() => {});
+}, 120_000);
+
+describe("the agent cart key", () => {
+	const K = SERVER_KEY_BYTES;
+	test("carries the body's fingerprint: two bodies under one key get two carts; one body, one", async () => {
+		const a = await agentCartKey(K, "create", "net", "k-1", "fp-a");
+		const b = await agentCartKey(K, "create", "net", "k-1", "fp-b");
+		expect(a).not.toBe(b);
+		expect(await agentCartKey(K, "create", "net", "k-1", "fp-a")).toBe(a);
+		expect(await agentCartKey(K, "replace", "net", "k-1", "fp-a")).not.toBe(a);
+	});
+
+	test("is an HMAC under the server key: another key, another cart key; never the plain digest", async () => {
+		const a = await agentCartKey(K, "create", "net", "k-1", "fp-a");
+		const other = new Uint8Array(32).fill(7);
+		expect(await agentCartKey(other, "create", "net", "k-1", "fp-a")).not.toBe(a);
+		expect(a.startsWith("agentic:create:")).toBe(true);
+		// d0cc4f60's key: a SHA-256 of inputs the agent knows. Never that again.
+		expect(a).not.toBe(`agentic:create:${await hashToken("net\u0000k-1\u0000fp-a")}`);
+	});
+});
+
+describe("the network key (ADR-0047)", () => {
+	async function storedNetwork(
+		c: PluginContext,
+		ip: string,
+		key: string,
+	): Promise<string | undefined> {
+		const created = (await createAgenticSessionCreateHandler()(
+			{
+				input: { idempotencyKey: key, lines: [{ productId: MUG.id, quantity: 1 }] },
+				request: { ...REQUEST, headers: { "cf-connecting-ip": ip } },
+			} as never,
+			c,
+		)) as Record<string, unknown>;
+		expect(created["ok"]).toBe(true);
+		const id = (created["session"] as { id: string }).id;
+		return (await new EmdashAgentSessionStore({ storage: base }).get(id as never))?.networkKey;
+	}
+
+	test("IPv6 aggregates to the /64: one /64 is one network, the next /64 another", async () => {
+		// One store: one network-key secret.
+		const store = ctx();
+		const a = await storedNetwork(store, "2001:db8:7:1::1", "net-a");
+		const b = await storedNetwork(store, "2001:db8:7:1:ffff:ffff:ffff:fffe", "net-b");
+		const c = await storedNetwork(store, "2001:db8:7:2::1", "net-c");
+		expect(a).toBeDefined();
+		expect(b).toBe(a);
+		expect(c).not.toBe(a);
+	});
+});
+
+describe("a write refused after its cart was built", () => {
+	test("a racer takes the key with another body mid-build: IDEMPOTENCY_KEY_REUSED, and this body's cart is released", async () => {
+		const c = ctx();
+		let createKeyReads = 0;
+		let raced = false;
+		// The racer: the same network and key, another body, written straight
+		// through the domain. Its network key is the one the route derives, read
+		// off a probe session this request's network created.
+		const created = await call(createAgenticSessionCreateHandler(), c, {
+			idempotencyKey: "probe",
+			lines: [{ productId: MUG.id, quantity: 1 }],
+		});
+		expect(created["ok"]).toBe(true);
+		const networkKey = (
+			await new EmdashAgentSessionStore({ storage: base }).get(
+				(created["session"] as { id: string }).id as never,
+			)
+		)?.networkKey;
+		if (networkKey === undefined) throw new Error("no network key");
+		createKeyReads = 0;
+		before = async (collection, method) => {
+			if (raced || collection !== AGENT_SESSION_CREATE_KEYS_COLLECTION || method !== "get") return;
+			createKeyReads++;
+			if (createKeyReads < 2) return;
+			raced = true;
+			const racer = await createAgentSession(peerDeps(), {
+				networkKey,
+				idempotencyKey: BODY.idempotencyKey,
+				fingerprint: "the-racer's-body",
+				content: { currency: currency("USD"), lines: [] },
+			});
+			expect(racer.ok).toBe(true);
+		};
+		const refused = await call(createAgenticSessionCreateHandler(), c, BODY);
+		expect(raced).toBe(true);
+		expect(refused).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		// The cart this body built (found by its own key) holds nothing now.
+		const client = await makeCommerceClient(sweepContext(base));
+		const input = parseAgentSessionInput(BODY);
+		if (input === null) throw new Error("bad body");
+		const cartKey = await agentCartKey(
+			SERVER_KEY_BYTES,
+			"create",
+			networkKey,
+			BODY.idempotencyKey,
+			await fingerprintOf(input, "create"),
+		);
+		const { cartId } = await client.createCart(undefined, cartKey);
+		expect(await cartLines(base, cartId)).toEqual({});
+	});
+});
+
+describe("a redeem landing mid-update", () => {
+	test("the last unit: the agent's cart hands it to the shopper's own cart; the update is SESSION_HANDED_OFF and its cart released", async () => {
+		const c = ctx();
+		const created = await call(createAgenticSessionCreateHandler(), c, {
+			idempotencyKey: "mid-create",
+			lines: [{ productId: LAST.id, quantity: 1 }],
+		});
+		expect(created).toMatchObject({ ok: true, messages: [] });
+		const id = (created["session"] as { id: string }).id;
+		const agentCart = (await new EmdashAgentSessionStore({ storage: base }).get(id as never))
+			?.cartId;
+		if (agentCart === undefined) throw new Error("no cart");
+
+		let redeemed: Record<string, unknown> | null = null;
+		before = async (collection) => {
+			// The update's first stock call: its new cart is being filled right now.
+			if (redeemed !== null || collection !== "inventory") return;
+			redeemed = {};
+			const shopper = sweepContext(base, undefined, {
+				[AGENTIC_ENABLED_KEY]: true,
+				[AGENTIC_SERVER_KEY_KEY]: SERVER_KEY,
+			});
+			redeemed = await call(createAgenticHandoffRedeemHandler(), shopper, {
+				token: created["handoffToken"],
+				redeemer: "browser-mid",
+			});
+		};
+		const body = {
+			sessionId: id,
+			idempotencyKey: "mid-update",
+			lines: [{ productId: LAST.id, quantity: 1 }],
+			couponCode: "NOPE",
+		};
+		const updated = await call(createAgenticSessionUpdateHandler(), c, body);
+		before = null;
+
+		expect(redeemed).toMatchObject({ ok: true, messages: [] });
+		const shopperCart = (redeemed as unknown as { cartId: string }).cartId;
+		expect(shopperCart).not.toBe(agentCart);
+		expect(Object.keys((await cartLines(base, shopperCart)) ?? {})).toEqual([LAST.sku]);
+		expect(await cartLines(base, agentCart)).toEqual({});
+		expect(updated).toEqual({ ok: false, reason: "SESSION_HANDED_OFF" });
+		const input = parseAgentSessionInput(body);
+		if (input === null) throw new Error("bad body");
+		const client = await makeCommerceClient(sweepContext(base));
+		const { cartId: built } = await client.createCart(
+			undefined,
+			await agentCartKey(
+				SERVER_KEY_BYTES,
+				"replace",
+				id,
+				body.idempotencyKey,
+				await fingerprintOf(input, "replace"),
+			),
+		);
+		expect(built).not.toBe(agentCart);
+		expect(await cartLines(base, built)).toEqual({});
+	});
+});
+
+describe("an update that throws after building its cart", () => {
+	test("keeps the keyed cart: the same-key, same-body retry writes a session with its lines and a priced quote", async () => {
+		const c = ctx();
+		const created = await call(createAgenticSessionCreateHandler(), c, {
+			idempotencyKey: "throw-create",
+			lines: [{ productId: MUG.id, quantity: 1 }],
+		});
+		expect(created["ok"]).toBe(true);
+		const id = (created["session"] as { id: string }).id;
+		const body = {
+			sessionId: id,
+			idempotencyKey: "throw-update",
+			lines: [{ productId: MUG.id, quantity: 2 }],
+			destination: AGENT_ADDRESS,
+			shippingMethodId: F.methodId,
+		};
+		let thrown = false;
+		before = async (collection, method) => {
+			// The update's session write, after its new cart was built and quoted.
+			if (thrown || collection !== AGENT_SESSIONS_COLLECTION || method !== "compareAndSet") return;
+			thrown = true;
+			throw new Error("injected storage failure");
+		};
+		const failed = await call(createAgenticSessionUpdateHandler(), c, body).catch(() => ({
+			ok: false,
+			error: "THROWN",
+		}));
+		before = null;
+		expect(thrown).toBe(true);
+		expect(failed["ok"]).toBe(false);
+
+		const retried = await call(createAgenticSessionUpdateHandler(), c, body);
+		expect(retried).toMatchObject({ ok: true, replayed: false, messages: [] });
+		const session = retried["session"] as Record<string, unknown>;
+		expect(session["lines"]).toEqual([{ productId: MUG.id, sku: MUG.sku, quantity: 2 }]);
+		expect(session["quote"]).toMatchObject({ subtotal: 3000, fulfillment: 599 });
+		expect((session["quote"] as { total: number | null }).total).not.toBeNull();
+	});
+});
+
+describe("a retry after the detach-and-retry path threw", () => {
+	test("the last unit re-added under :retry counts as added: the same-key retry writes it, priced, with no OUT_OF_STOCK", async () => {
+		const c = ctx();
+		const created = await call(createAgenticSessionCreateHandler(), c, {
+			idempotencyKey: "retry-create",
+			lines: [{ productId: LAST.id, quantity: 1 }],
+		});
+		expect(created).toMatchObject({ ok: true, messages: [] });
+		const id = (created["session"] as { id: string }).id;
+		const body = {
+			sessionId: id,
+			idempotencyKey: "retry-update",
+			lines: [{ productId: LAST.id, quantity: 1 }],
+			destination: AGENT_ADDRESS,
+			shippingMethodId: F.methodId,
+		};
+		let writes = 0;
+		let thrown = false;
+		before = async (collection, method) => {
+			if (collection !== AGENT_SESSIONS_COLLECTION || method !== "compareAndSet") return;
+			writes++;
+			// 1st: the detach (the old cart held the last unit); 2nd: the replace.
+			if (writes !== 2) return;
+			thrown = true;
+			throw new Error("injected storage failure");
+		};
+		const failed = await call(createAgenticSessionUpdateHandler(), c, body).catch(() => ({
+			ok: false,
+		}));
+		before = null;
+		expect(thrown).toBe(true);
+		expect(failed["ok"]).toBe(false);
+
+		const retried = await call(createAgenticSessionUpdateHandler(), c, body);
+		expect(retried).toMatchObject({ ok: true, replayed: false, messages: [] });
+		const session = retried["session"] as Record<string, unknown>;
+		expect(session["lines"]).toEqual([{ productId: LAST.id, sku: LAST.sku, quantity: 1 }]);
+		expect(session["quote"]).toMatchObject({ subtotal: 4000, fulfillment: 599 });
+		expect((session["quote"] as { total: number | null }).total).not.toBeNull();
+	});
+});
+
+describe("acceptedSelection", () => {
+	const input = {
+		address: {
+			name: "A",
+			line1: "1 Main St",
+			city: "Springfield",
+			region: "IL",
+			postalCode: "62701",
+			country: "US",
+		},
+		shippingMethodId: "ship",
+		couponCode: "SAVE",
+	} as never;
+	test("only what the quote positively accepted; nothing when no quote was made", () => {
+		// A refused coupon, then the quote failed for another reason: no `applied`.
+		expect(acceptedSelection(input, {})).toEqual({});
+		expect(acceptedSelection(input, { applied: {} })).toEqual({});
+		const all = acceptedSelection(input, {
+			applied: { destination: { country: "US" }, shippingMethodId: "ship", couponCode: "SAVE" },
+		});
+		expect(all).toMatchObject({ shippingMethodId: "ship", couponCode: "SAVE" });
+		expect(all.destination).toMatchObject({ country: "US", postalCode: "62701" });
+	});
+});
+
+describe("cancel decides on the session it LEFT", () => {
+	test("a redeem between cancel's first read and its write: the shopper's cart is not released", async () => {
+		const c = ctx();
+		const created = await call(createAgenticSessionCreateHandler(), c, {
+			idempotencyKey: "cancel-race",
+			lines: [{ productId: MUG.id, quantity: 2 }],
+		});
+		expect(created["ok"]).toBe(true);
+		const id = (created["session"] as { id: string }).id;
+		const cartId = (await new EmdashAgentSessionStore({ storage: base }).get(id as never))?.cartId;
+		if (cartId === undefined) throw new Error("no cart");
+		const lines = await cartLines(base, cartId);
+		expect(Object.keys(lines ?? {})).toEqual([MUG.sku]);
+
+		let reads = 0;
+		before = async (collection, method) => {
+			if (collection !== AGENT_SESSIONS_COLLECTION || method !== "get") return;
+			reads++;
+			if (reads !== 2) return;
+			// The shopper's hand-off finalizes right here.
+			const claimed = await claimAgentHandoff(peerDeps(), {
+				token: created["handoffToken"] as string,
+				redeemer: "browser-cancel",
+			});
+			if (!claimed.ok || claimed.status !== "claimed") throw new Error("not claimed");
+			const done = await finalizeAgentHandoff(peerDeps(), {
+				sessionId: claimed.session.id,
+				claimId: claimed.claimId,
+				cartId: "cart-shopper",
+			});
+			expect(done.ok).toBe(true);
+		};
+		const canceled = await call(createAgenticSessionCancelHandler(), c, {
+			sessionId: id,
+			idempotencyKey: "cancel-1",
+		});
+		before = null;
+		expect(reads).toBeGreaterThanOrEqual(2);
+		expect(canceled).toMatchObject({ ok: true, session: { status: "canceled", handedOff: true } });
+		expect(await cartLines(base, cartId)).toEqual(lines);
+	});
+});
+
+/** A cart line with only the hold fields varying. */
+function line(reservationId: string | null, expiresAt: string | null) {
+	return { lineId: "l", sku: "S", productId: "p", qty: 1, reservationId, expiresAt };
+}
+
+describe("allHeld", () => {
+	const NOW = "2026-10-01T12:00:00.000Z";
+	test("a live hold and a digital line are held; a lapsed hold and a lost reservation are not", () => {
+		expect(allHeld({ lines: [line("r", "2026-10-01T12:15:00.000Z")] }, NOW)).toBe(true);
+		expect(allHeld({ lines: [line(null, null)] }, NOW)).toBe(true);
+		expect(allHeld({ lines: [line("r", "2026-10-01T11:59:00.000Z")] }, NOW)).toBe(false);
+		expect(allHeld({ lines: [line(null, "2026-10-01T12:15:00.000Z")] }, NOW)).toBe(false);
+		expect(allHeld({ lines: [line(null, null), line("r", "2026-10-01T11:00:00.000Z")] }, NOW)).toBe(
+			false,
+		);
+	});
+});
+
+describe("the redeem (#712 round 3)", () => {
+	async function session(key: string, productId: string) {
+		const created = await call(createAgenticSessionCreateHandler(), ctx(), {
+			idempotencyKey: key,
+			lines: [{ productId, quantity: 1 }],
+		});
+		expect(created).toMatchObject({ ok: true, messages: [] });
+		const view = created["session"] as { id: string; currency: string };
+		const stored = await new EmdashAgentSessionStore({ storage: base }).get(view.id as never);
+		if (stored?.cartId === undefined) throw new Error("no agent cart");
+		return {
+			id: view.id,
+			currency: view.currency,
+			token: created["handoffToken"] as string,
+			agentCart: stored.cartId,
+		};
+	}
+	const redeem = (c: PluginContext, token: string, redeemer: string) =>
+		call(createAgenticHandoffRedeemHandler(), c, { token, redeemer });
+
+	test("the commerce client failing after the claim releases the claim", async () => {
+		const s = await session("client-throws", MUG.id);
+		const c = ctx();
+		let claimed = false;
+		before = async (collection, method) => {
+			if (collection === AGENT_SESSIONS_COLLECTION && method === "compareAndSet") claimed = true;
+		};
+		// The client's stores are built from `ctx.storage` the moment it is made:
+		// fail that, once the claim is written.
+		const real = c.storage;
+		Object.defineProperty(c, "storage", {
+			get() {
+				if (claimed) throw new Error("injected client failure");
+				return real;
+			},
+		});
+		expect(await redeem(c, s.token, "browser-kv")).toEqual({ ok: false, error: "RENDER_FAILED" });
+		before = null;
+		expect(claimed).toBe(true);
+		const after = await new EmdashAgentSessionStore({ storage: base }).get(s.id as never);
+		expect(after?.handoffClaim).toBeUndefined();
+	});
+
+	test("a line another claim's add raced into the cart is capped at the session's quantity", async () => {
+		const s = await session("cap-race", MUG.id);
+		const peer = await makeCommerceClient(sweepContext(base));
+		const shopperCart = (
+			await peer.createCart(
+				s.currency,
+				await agenticCartKey(SERVER_KEY_BYTES, "shopper", [s.id, s.token]),
+			)
+		).cartId;
+		let raced = false;
+		before = async (collection) => {
+			// The redeem's first stock call: an overlapping claim adds the same line.
+			if (raced || collection !== "inventory") return;
+			raced = true;
+			const added = await peer.addCartLine(shopperCart, MUG.sku, MUG.id, 1, "other-claim:add");
+			expect(added.ok).toBe(true);
+		};
+		const redeemed = await redeem(ctx(), s.token, "browser-cap");
+		before = null;
+		expect(raced).toBe(true);
+		expect(redeemed).toMatchObject({ ok: true, cartId: shopperCart });
+		expect(await cartLines(base, shopperCart)).toEqual({ [MUG.sku]: { qty: 1 } });
+	});
+
+	/**
+	 * A redeem whose cap step is raced: an overlapping claim doubles the line, and
+	 * each of the first `refusals` cap writes finds the line replaced under it
+	 * (removed and re-added doubled by the peer), so that adjust is refused.
+	 */
+	async function cappedRedeem(key: string, refusals: number) {
+		const s = await session(key, MUG.id);
+		const peer = await makeCommerceClient(sweepContext(base));
+		const shopperCart = (
+			await peer.createCart(
+				s.currency,
+				await agenticCartKey(SERVER_KEY_BYTES, "shopper", [s.id, s.token]),
+			)
+		).cartId;
+		let raced = false;
+		let refused = 0;
+		const capKeys = new Set<string>();
+		before = async (collection, method, args) => {
+			if (!raced && collection === "inventory") {
+				raced = true;
+				expect((await peer.addCartLine(shopperCart, MUG.sku, MUG.id, 1, `${key}:peer`)).ok).toBe(
+					true,
+				);
+				return;
+			}
+			if (collection !== CARTS_COLLECTION || method !== "compareAndSet" || refused >= refusals)
+				return;
+			if (args[0] !== shopperCart) return;
+			// Only a write that carries a cap key never seen before: the cap's own.
+			const fresh = (
+				JSON.stringify(args[2]).match(/agentic:[^"]*:cap(?:-retry)?:[^"]*/g) ?? []
+			).filter((k) => !capKeys.has(k));
+			if (fresh.length === 0) return;
+			for (const k of fresh) capKeys.add(k);
+			refused++;
+			const lines = await peer.getCart(shopperCart);
+			const current = lines.ok ? lines.cart.lines[0] : undefined;
+			if (current === undefined) throw new Error("no line to replace");
+			await peer.removeCartLine(shopperCart, current.lineId, `${key}:rm:${String(refused)}`);
+			await peer.addCartLine(shopperCart, MUG.sku, MUG.id, 2, `${key}:readd:${String(refused)}`);
+		};
+		const redeemed = await redeem(ctx(), s.token, `browser-${key}`);
+		before = null;
+		return { s, shopperCart, redeemed, refused };
+	}
+
+	test("a refused cap is retried once against the re-read cart", async () => {
+		const { shopperCart, redeemed, refused } = await cappedRedeem("clamp-once", 1);
+		expect(refused).toBe(1);
+		expect(redeemed).toMatchObject({ ok: true, cartId: shopperCart });
+		expect(await cartLines(base, shopperCart)).toEqual({ [MUG.sku]: { qty: 1 } });
+	});
+
+	test("a cap refused twice fails the attempt: no hand-off, the claim released", async () => {
+		const { s, redeemed, refused } = await cappedRedeem("clamp-twice", 2);
+		expect(refused).toBe(2);
+		expect(redeemed).toEqual({ ok: false, error: "RENDER_FAILED" });
+		const after = await new EmdashAgentSessionStore({ storage: base }).get(s.id as never);
+		expect(after?.handoffClaim).toBeUndefined();
+		expect(after?.shopperCartId).toBeUndefined();
+	});
+
+	test("the out-of-stock hand-over adds to the shopper's cart BEFORE taking the agent's line", async () => {
+		const s = await session("handover-order", PAIR.id);
+		// The other unit is held by a stranger's cart, so the shopper's first add is
+		// refused; it frees just as the hand-over starts.
+		const peer = await makeCommerceClient(sweepContext(base));
+		const stranger = (await peer.createCart(s.currency, "stranger-cart")).cartId;
+		const held = await peer.addCartLine(stranger, PAIR.sku, PAIR.id, 1, "stranger:add");
+		if (!held.ok) throw new Error("stranger add failed");
+		let freed = false;
+		const writes: string[] = [];
+		before = async (collection, method, args) => {
+			if (collection !== CARTS_COLLECTION) return;
+			if (!freed && method === "get" && args[0] === s.agentCart) {
+				freed = true;
+				await peer.removeCartLine(stranger, held.line.lineId, "stranger:remove");
+				return;
+			}
+			if (freed && method === "compareAndSet") writes.push(String(args[0]));
+		};
+		const redeemed = await redeem(ctx(), s.token, "browser-handover");
+		before = null;
+		expect(freed).toBe(true);
+		expect(redeemed).toMatchObject({ ok: true, messages: [] });
+		const shopperCart = redeemed["cartId"] as string;
+		expect(await cartLines(base, shopperCart)).toEqual({ [PAIR.sku]: { qty: 1 } });
+		expect(writes[0]).toBe(shopperCart);
+		expect(writes.indexOf(s.agentCart)).toBeGreaterThan(0);
+	});
+});

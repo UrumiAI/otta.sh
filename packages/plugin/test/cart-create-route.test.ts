@@ -12,6 +12,7 @@ import {
 	orderId as toOrderId,
 } from "@urumi.ai/otta-domain";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
+import { isAgenticCartKey } from "../src/agentic/cart-key.js";
 import {
 	createCartCreateRouteHandler,
 	createCartLineAddRouteHandler,
@@ -215,6 +216,20 @@ describe("storefront/cart/create — under the caller's idempotency key", () => 
 		if (!visitorA.ok || !visitorB.ok) throw new Error("create refused");
 		expect(visitorB.cartId).not.toBe(visitorA.cartId);
 		expect(visitorB.cookie.value).not.toBe(visitorA.cookie.value);
+	});
+
+	// ADR-0047: agent-session carts are keyed `agentic:...` server-side. A public
+	// create under such a key must never answer that cart (it is a bearer id).
+	test("an `agentic:` key never keys a create: it does not answer the agent's cart", async () => {
+		const agentKey = "agentic:create:some-key-a-caller-learned";
+		expect(isAgenticCartKey(agentKey)).toBe(true);
+		const { cartId: agents } = await harness.client.createCart("USD", agentKey);
+		const first = await create({ idempotencyKey: agentKey });
+		const second = await create({ idempotencyKey: agentKey });
+		if (!first.ok || !second.ok) throw new Error("create refused");
+		expect(first.cartId).not.toBe(agents);
+		expect(second.cartId).not.toBe(agents);
+		expect(second.cartId).not.toBe(first.cartId);
 	});
 
 	test("the add-line route's key guard still accepts a rendered (marked) key", async () => {

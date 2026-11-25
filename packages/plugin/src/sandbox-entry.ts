@@ -44,6 +44,7 @@
  * against a REAL `workerd` binary (the public `workerd` npm package), not a
  * simulation.
  */
+import { AGENTIC_ENABLED_KEY } from "./agentic/settings.js";
 import { ALLOWED_HOSTS } from "./manifest.js";
 import { ENCRYPTED_PAYMENT_SECRET_KEYS } from "./payment-secrets.js";
 import plugin from "./plugin.js";
@@ -375,6 +376,23 @@ export function createSandboxWorker(
 						return jsonResponse({ error: "only cron:sweep: keys may be deleted" }, 403);
 					}
 					return jsonResponse({ result: await ctx.kv.delete(key) }, 200);
+				}
+
+				// TEST HOOKS ONLY, as narrow again: write the agentic-checkout switch
+				// (ADR-0047). The Settings form refuses to turn it on until buyer-data
+				// export and erasure exist, so a suite that exercises the agentic routes
+				// sets it here, exactly as a stored value — never the production entry.
+				if (
+					options.testHooks === true &&
+					request.method === "PUT" &&
+					url.pathname === `/kv/${encodeURIComponent(AGENTIC_ENABLED_KEY)}`
+				) {
+					const value: unknown = await request.json();
+					if (typeof value !== "boolean") {
+						return jsonResponse({ error: "a boolean is required" }, 400);
+					}
+					await ctx.kv.set(AGENTIC_ENABLED_KEY, value);
+					return jsonResponse({ result: value }, 200);
 				}
 
 				return jsonResponse({ error: "not found" }, 404);
