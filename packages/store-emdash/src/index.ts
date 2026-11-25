@@ -486,6 +486,8 @@ export {
 } from "./agent-session-documents.js";
 export {
 	AGENT_SESSION_ABANDONED_SLOT_MS,
+	AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
+	AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS,
 	EmdashAgentSessionStore,
 	type EmdashAgentSessionStoreOptions,
 } from "./emdash-agent-session-store.js";

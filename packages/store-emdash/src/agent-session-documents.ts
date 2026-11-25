@@ -48,7 +48,8 @@ export interface AgentSessionCollectionIndexDeclaration {
 /**
  * The four collections the agent-session store owns, with every field it
  * queries:
- *  - sessions, always behind `admission`: `status` + `expiresAt` (`countLive`),
+ *  - sessions: `settle` alone (an order's unfinished follow-up, `purgeSlotsDue`);
+ *    the rest always behind `admission`: `status` + `expiresAt` (`countLive`),
  *    `networkKey` + `createdAt` (the per-network create count), `cartId` +
  *    `createdAt` and `shopperCartId` (`findByCartId`); and `purgeAt` alone
  *    (`listPurgeDue`, hidden documents included);
@@ -70,6 +71,7 @@ export const AGENT_SESSION_COLLECTIONS: Readonly<
 			"networkKey",
 			"createdAt",
 			"purgeAt",
+			"settle",
 			["admission", "status", "expiresAt"],
 			["admission", "networkKey", "createdAt"],
 			["admission", "cartId", "createdAt"],
@@ -95,6 +97,10 @@ export type AgentSessionDoc = AgentCheckoutSession & {
 	admission: AgentSessionAdmission;
 	/** The slot document ids the insert took (network pool, then store-wide). */
 	slots: string[];
+	/** `pending` from an order's write until its slots are freed and its create
+	 *  records retained (two follow-up steps a crash could skip); the sweep finds
+	 *  a pending document by this field and finishes it. Absent otherwise. */
+	settle?: "pending";
 };
 
 /** A live-cap slot. Its document id is `<pool>:<index>`. */
@@ -145,14 +151,16 @@ export function toAgentSessionDoc(
 	const {
 		admission: _a,
 		slots: _s,
+		settle: _p,
 		...plain
-	} = session as AgentCheckoutSession & Partial<Pick<AgentSessionDoc, "admission" | "slots">>;
+	} = session as AgentCheckoutSession &
+		Partial<Pick<AgentSessionDoc, "admission" | "slots" | "settle">>;
 	return JSON.parse(JSON.stringify({ ...plain, admission, slots })) as AgentSessionDoc;
 }
 
 /** The domain session a stored document holds: the adapter's fields dropped. */
 export function normalizeAgentSessionDoc(doc: AgentSessionDoc): AgentCheckoutSession {
-	const { admission: _admission, slots: _slots, ...session } = doc;
+	const { admission: _admission, slots: _slots, settle: _settle, ...session } = doc;
 	return {
 		...session,
 		lines: session.lines ?? [],

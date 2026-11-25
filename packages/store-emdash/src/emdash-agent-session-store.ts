@@ -84,6 +84,19 @@ const MAX_POOL_PAGES = 200;
 /** A slot whose session was never written is free this long after it was taken. */
 export const AGENT_SESSION_ABANDONED_SLOT_MS = 60 * 1000;
 
+/** `purgeSlotsDue`'s fixed page reads: pending orders, expired slots, unlanded slots. */
+export const AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS = 3;
+/**
+ * `purgeSlotsDue`'s worst case for ONE candidate (no CAS retries), measured in
+ * the plugin's cron-leg-costs test. Two paths tie at 9:
+ *  - a pending order: its read, two slots each read and deleted, its create
+ *    record page plus that record's read and update, and the mark's clear;
+ *  - an unlanded slot whose hidden session lost its other slot: the slot read,
+ *    the session read, a failed and a won landing (1 + 2), the session's delete,
+ *    then both slots read and the still-held one deleted (1 + 2).
+ */
+export const AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS = 9;
+
 const OPEN_STATUSES = ["incomplete", "requires_escalation"];
 const ADMITTED = "admitted";
 
@@ -218,9 +231,12 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 	 * safe to race (insert, replay, adoption and the sweep all call it). Answers
 	 * whether the session is admitted.
 	 */
-	#complete(sessionId: AgentSessionId): Promise<boolean> {
+	#complete(sessionId: AgentSessionId, preread?: Versioned<AgentSessionDoc>): Promise<boolean> {
+		let first = preread;
 		return this.#cas<boolean>("completeAgentSessionInsert", async () => {
-			const doc = await this.#sessions.getVersioned(sessionId);
+			// The caller's own read serves the first attempt only; a retry re-reads.
+			const doc = first ?? (await this.#sessions.getVersioned(sessionId));
+			first = undefined;
 			if (doc === null) return casDone(false);
 			if (doc.value.admission === ADMITTED) return casDone(true);
 			let lost = false;
@@ -302,14 +318,45 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 		return null;
 	}
 
-	/** Delete, by version, each of `ids` still held for `sessionId`. */
-	async #freeSlots(sessionId: AgentSessionId, ids: readonly string[]): Promise<void> {
+	/** Delete, by version, each of `ids` still held for `sessionId`; a version
+	 *  miss (the slot was re-stored in between) re-reads and retries rather than
+	 *  leaving the slot behind. Answers how many it deleted. */
+	async #freeSlots(sessionId: AgentSessionId, ids: readonly string[]): Promise<number> {
+		let freed = 0;
 		for (const id of ids) {
-			const slot = await this.#slots.getVersioned(id);
-			if (slot !== null && slot.value.sessionId === sessionId) {
-				await this.#slots.compareAndDelete(id, slot.revision);
-			}
+			const deleted = await this.#cas<boolean>("freeAgentSessionSlot", async () => {
+				const slot = await this.#slots.getVersioned(id);
+				if (slot === null || slot.value.sessionId !== sessionId) return casDone(false);
+				const gone = await this.#slots.compareAndDelete(id, slot.revision);
+				return gone.applied ? casDone(true) : CAS_RETRY;
+			});
+			if (deleted) freed++;
 		}
+		return freed;
+	}
+
+	/**
+	 * Finish an order's follow-up (the document is marked `settle: "pending"` by
+	 * the order's own write): free the session's slots, move its create records
+	 * to its retention, then clear the mark. Idempotent, so a crash anywhere in
+	 * it is finished by the next call (the write path, or `purgeSlotsDue`).
+	 * Answers how many slots it deleted.
+	 */
+	async #settle(sessionId: AgentSessionId): Promise<number> {
+		const doc = await this.#sessions.getVersioned(sessionId);
+		if (doc === null || doc.value.settle === undefined) return 0;
+		const freed = await this.#freeSlots(sessionId, doc.value.slots ?? []);
+		await this.#retainRecords(sessionId, doc.value.purgeAt);
+		let current: Versioned<AgentSessionDoc> | null = doc;
+		await this.#cas<undefined>("settleAgentSession", async () => {
+			current ??= await this.#sessions.getVersioned(sessionId);
+			if (current === null || current.value.settle === undefined) return casDone(undefined);
+			const { settle: _settled, ...rest } = current.value;
+			const cleared = await this.#sessions.compareAndSet(sessionId, current.revision, rest);
+			current = null;
+			return cleared.applied ? casDone(undefined) : CAS_RETRY;
+		});
+		return freed;
 	}
 
 	/** Every slot document naming `sessionId` (a session takes two). */
@@ -344,12 +391,14 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 				return { next: { ...session, revision: expectedRevision + 1 } };
 			},
 			(next) => ({ ok: true, session: next }),
+			session.status === "completed",
 		);
 		if (written.ok && written.session.status === "completed") {
 			// An order: the session's slots free at once, and its create records
-			// follow it to its (longer) retention.
-			await this.#freeSlots(session.id, await this.#slotIdsOf(session.id));
-			await this.#retainRecords(session.id, written.session.purgeAt);
+			// follow it to its (longer) retention. The write marked the document
+			// `settle: "pending"` first, so a crash before this finishes is found
+			// and finished by `purgeSlotsDue`.
+			await this.#settle(session.id);
 		}
 		return written;
 	}
@@ -602,34 +651,62 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 		return this.#slots.count();
 	}
 
+	/**
+	 * At most `limit` CANDIDATES are processed, whatever each turns out to be:
+	 * an order whose follow-up a crash cut short (finished: its slots freed),
+	 * then expired slots (deleted outright, before anything else is read), then
+	 * unlanded ones (a landing one is skipped, an abandoned one deleted, one whose
+	 * session document is stored lands that session). Cost: three page reads,
+	 * then at most `AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS` calls per candidate.
+	 */
 	async purgeSlotsDue(now: string, limit: number): Promise<number> {
 		requirePositiveLimit("purgeSlotsDue", limit);
 		const page = Math.min(limit, PAGE_SIZE);
-		const candidates = new Set<string>();
-		// Expired slots, and every unlanded one: an abandoned one is deleted, one
-		// whose session document is stored (its insert stopped before landing, or
-		// is landing right now) is landed instead.
-		const wheres: WhereClause[] = [{ expiresAt: { lte: now } }, { state: "taken" }];
-		for (const where of wheres) {
-			const result = await this.#slots.query({ where, orderBy: { claimedAt: "asc" }, limit: page });
-			for (const { id } of result.items) candidates.add(id);
-		}
+		const pending = await this.#sessions.query({ where: { settle: "pending" }, limit: page });
+		const expired = await this.#slots.query({
+			where: { expiresAt: { lte: now } },
+			orderBy: { claimedAt: "asc" },
+			limit: page,
+		});
+		const taken = await this.#slots.query({
+			where: { state: "taken" },
+			orderBy: { claimedAt: "asc" },
+			limit: page,
+		});
+		let processed = 0;
 		let deleted = 0;
-		for (const id of candidates) {
-			if (deleted >= limit) break;
+		for (const { id } of pending.items) {
+			if (processed >= limit) return deleted;
+			processed++;
+			deleted += await this.#settle(id as AgentSessionId);
+		}
+		const seen = new Set<string>();
+		for (const { id } of [...expired.items, ...taken.items]) {
+			if (seen.has(id)) continue;
+			seen.add(id);
+			if (processed >= limit) break;
+			processed++;
 			const slot = await this.#slots.getVersioned(id);
 			if (slot === null) continue;
-			// An unlanded slot whose session document is stored (an insert that
-			// stopped before landing): finish that session instead.
-			if (
-				slot.value.state !== "landed" &&
-				(await this.#sessions.get(slot.value.sessionId)) !== null
-			) {
-				await this.#complete(slot.value.sessionId);
+			const { value } = slot;
+			// Expired: free whatever its session says (a crash leftover never stalls
+			// the batch on a session read or a landing).
+			if (value.expiresAt <= now) {
+				if ((await this.#slots.compareAndDelete(id, slot.revision)).applied) deleted++;
 				continue;
 			}
-			if (await this.#slotHeld(slot.value, now)) continue;
-			if ((await this.#slots.compareAndDelete(id, slot.revision)).applied) deleted++;
+			if (value.state === "landed") continue;
+			if (Date.parse(value.claimedAt) + AGENT_SESSION_ABANDONED_SLOT_MS > Date.parse(now)) {
+				continue; // still landing
+			}
+			// One read decides: no session document ⇒ abandoned, delete; a stored
+			// one ⇒ its insert stopped before landing, finish it from this read.
+			const session = await this.#sessions.getVersioned(value.sessionId);
+			if (session === null) {
+				if ((await this.#slots.compareAndDelete(id, slot.revision)).applied) deleted++;
+				continue;
+			}
+			await this.#complete(value.sessionId, session);
 		}
 		return deleted;
 	}
@@ -678,13 +755,32 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 			if ((await this.#createKeys.compareAndDelete(id, r.revision)).applied) deleted++;
 		}
 		// Orphan pointers (a session write that never landed) ride the same bound;
-		// they are not create records, so they are not counted.
+		// they are not create records, so they are not counted. Each is re-read by
+		// version and deleted only if no stored session still answers for it; one
+		// whose session does (its retention grew after the pointer was written) is
+		// raised to the session's instead.
 		const links = await this.#links.query({
 			where: { purgeAt: { lte: now } },
 			orderBy: { purgeAt: "asc" },
 			limit: Math.min(limit, PAGE_SIZE),
 		});
-		for (const { id } of links.items) await this.#links.delete(id);
+		for (const { id } of links.items) {
+			const link = await this.#links.getVersioned(id);
+			if (link === null || link.value.purgeAt > now) continue;
+			const owner = await this.#sessions.get(link.value.sessionId as AgentSessionId);
+			const answers =
+				owner !== null &&
+				owner.purgeAt > now &&
+				agentSessionTokenHashes(normalizeAgentSessionDoc(owner)).includes(id);
+			if (answers) {
+				await this.#links.compareAndSet(id, link.revision, {
+					...link.value,
+					purgeAt: owner.purgeAt,
+				});
+			} else {
+				await this.#links.compareAndDelete(id, link.revision);
+			}
+		}
 		return deleted;
 	}
 
@@ -702,6 +798,8 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 			current: AgentCheckoutSession | null,
 		) => { refuse: R } | { next: AgentCheckoutSession },
 		won: (stored: AgentCheckoutSession) => R,
+		/** Mark the written document `settle: "pending"` (an order's write). */
+		settle = false,
 	): Promise<R | TooLarge> {
 		return this.#cas<R | TooLarge>("updateAgentSession", async () => {
 			const current: Versioned<AgentSessionDoc> | null = await this.#sessions.getVersioned(id);
@@ -716,17 +814,27 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 				return casDone<TooLarge>({ ok: false, reason: "too_large" });
 			}
 			const doc = toAgentSessionDoc(decided.next, ADMITTED, current.value.slots ?? []);
+			// A pending follow-up stays pending until `#settle` clears it.
+			if (settle || current.value.settle !== undefined) doc.settle = "pending";
 			await this.#pointLinks(decided.next);
 			const written = await this.#sessions.compareAndSet(id, current.revision, doc);
 			return written.applied ? casDone(won(normalizeAgentSessionDoc(doc))) : CAS_RETRY;
 		});
 	}
 
-	/** Write a pointer for every hash the session answers for that has none yet. */
+	/** Write a pointer for every hash the session answers for that has none yet,
+	 *  and raise one whose retention is shorter than the session's (an order
+	 *  moves the session to 30 days; its pointers must follow it). */
 	async #pointLinks(session: AgentCheckoutSession): Promise<void> {
 		for (const tokenHash of agentSessionTokenHashes(session)) {
 			const existing = await this.#links.get(tokenHash);
-			if (existing !== null && existing.sessionId === session.id) continue;
+			if (
+				existing !== null &&
+				existing.sessionId === session.id &&
+				existing.purgeAt >= session.purgeAt
+			) {
+				continue;
+			}
 			await this.#links.put(tokenHash, {
 				tokenHash,
 				sessionId: session.id,

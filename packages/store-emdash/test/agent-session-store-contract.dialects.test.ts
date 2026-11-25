@@ -114,8 +114,11 @@ describeEachDialect("EmdashAgentSessionStore", (ctx) => {
 		expect(await h.store.findByHandoffTokenHash("h-hidden")).toBeNull();
 		expect(await h.store.countLive(createdAt)).toBe(0);
 		expect(await h.store.countCreatedSince("net-hidden", createdAt)).toBe(0);
-		// The sweep lands it; from then on every lookup answers it.
+		// Past the landing window, the sweep lands it; from then on every lookup
+		// answers it. (Inside the window it is left to its own insert.)
 		await h.store.purgeSlotsDue(createdAt, 100);
+		expect((await sessions.get("cs_hidden_idx"))?.admission).toBe("hidden");
+		await h.store.purgeSlotsDue("2026-01-01T00:02:00.000Z", 100);
 		expect((await sessions.get("cs_hidden_idx"))?.admission).toBe("admitted");
 		expect((await h.store.findByCartId("cart-hidden-shopper"))?.id).toBe("cs_hidden_idx");
 		expect(await h.store.countLive(createdAt)).toBe(1);
