@@ -153,6 +153,29 @@ export interface AgentSessionWriteRecord extends AgentSessionWriteKey {
 	answer: AgentSessionView;
 }
 
+/** A shopper's lease on the current hand-off link (see {@link AgentCheckoutSession.handoffClaim}). */
+export interface AgentHandoffClaim {
+	/** The link the claim is on: the session's `handoffTokenHash` when claimed. */
+	tokenHash: string;
+	/** Unguessable, minted per claim; finalize and release must present it. */
+	claimId: string;
+	claimedAt: string;
+	/** claimedAt + {@link AGENT_HANDOFF_CLAIM_LEASE_MS}. */
+	leaseUntil: string;
+}
+
+/** Whether `session` carries an unfinalized claim whose lease is still running at `now`. */
+export function isAgentHandoffClaimLive(
+	session: Pick<AgentCheckoutSession, "handoffClaim" | "handoffUsedAt">,
+	now: string,
+): boolean {
+	return (
+		session.handoffUsedAt === undefined &&
+		session.handoffClaim !== undefined &&
+		session.handoffClaim.leaseUntil > now
+	);
+}
+
 /** An earlier hand-off link of the session that a shopper redeemed. */
 export interface AgentSessionRedeemedHandoff {
 	tokenHash: string;
@@ -183,9 +206,19 @@ export interface AgentCheckoutSession {
 	linkGeneration: number;
 	/** Hash of the current generation's token; absent while `linkGeneration` is 0. */
 	handoffTokenHash?: string;
-	/** When the current link was redeemed (single use). From then on agent
+	/** When the current link was redeemed (single use): the hand-off was
+	 *  FINALIZED (the store's `finalizeHandoff`). From then on agent
 	 *  writes other than cancel are refused `SESSION_HANDED_OFF`. */
 	handoffUsedAt?: string;
+	/**
+	 * The shopper's claim on the current link while the redeem does its cart
+	 * work: a lease, not a use. While `leaseUntil` is after now, agent writes are
+	 * refused `HANDOFF_IN_PROGRESS` and a second claim is refused `claimed`; once
+	 * it lapses the same token may claim again. A finalized hand-off keeps the
+	 * claim that finalized it (so a repeated finalize replays). Absent until the
+	 * first claim.
+	 */
+	handoffClaim?: AgentHandoffClaim;
 	/** Earlier links that were redeemed, oldest first. Never cleared, so a used
 	 *  link still answers "already used". Since a redeemed session takes no new
 	 *  link, the use-cases leave it empty; kept so stores can index it. */
@@ -215,6 +248,53 @@ export interface AgentCheckoutSession {
 
 export const AGENT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 export const AGENT_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/** How long a shopper's claim on a link holds off other claims and agent writes. */
+export const AGENT_HANDOFF_CLAIM_LEASE_MS = 60 * 1000;
+/** After a finalized hand-off, the same link re-enters its cart (double click,
+ *  second tab) for this long while no order is recorded; then it is used. */
+export const AGENT_HANDOFF_REENTRY_WINDOW_MS = 15 * 60 * 1000;
+/**
+ * The most a stored session document may weigh: UTF-8 bytes of its JSON
+ * ({@link agentSessionDocumentBytes}). The store refuses a larger insert or
+ * write (`too_large`); the use-cases keep every keyed write at least
+ * {@link AGENT_SESSION_DOCUMENT_RESERVE_BYTES} under it by evicting the oldest
+ * write records (their keys retire), so a cancel and the store's own hand-off
+ * marks always fit.
+ */
+export const AGENT_SESSION_MAX_DOCUMENT_BYTES = 128 * 1024;
+/** Headroom keyed writes leave under the document cap (see above). */
+export const AGENT_SESSION_DOCUMENT_RESERVE_BYTES = 4 * 1024;
+/** The most a session's content (its public view) may weigh, UTF-8 bytes of
+ *  its JSON; heavier is `CONTENT_TOO_LARGE`. */
+export const AGENT_SESSION_MAX_CONTENT_BYTES = 32 * 1024;
+/** Length cap (characters) on a line's product id and sku. */
+export const AGENT_SESSION_MAX_LINE_ID_LENGTH = 128;
+/** Length cap (characters) on a recorded order id. */
+export const AGENT_SESSION_MAX_ORDER_ID_LENGTH = 128;
+
+/** UTF-8 byte length of `text` (lone surrogates count 3, as an encoder replaces them). */
+export function utf8ByteLength(text: string): number {
+	let bytes = 0;
+	for (let i = 0; i < text.length; i++) {
+		const c = text.charCodeAt(i);
+		if (c < 0x80) bytes += 1;
+		else if (c < 0x800) bytes += 2;
+		else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length) {
+			const next = text.charCodeAt(i + 1);
+			if (next >= 0xdc00 && next <= 0xdfff) {
+				bytes += 4;
+				i++;
+			} else bytes += 3;
+		} else bytes += 3;
+	}
+	return bytes;
+}
+
+/** The weight a store measures a session document by: UTF-8 bytes of its JSON. */
+export function agentSessionDocumentBytes(session: AgentCheckoutSession): number {
+	return utf8ByteLength(JSON.stringify(session));
+}
+
 /** UCP / spec cap on lines per session. */
 export const AGENT_SESSION_MAX_LINES = 50;
 /** How many keyed writes a session keeps full answers for. */

@@ -34,6 +34,12 @@ export type AgentSessionFailureReason =
 	/** A shopper has redeemed the session's hand-off link and now owns the cart:
 	 *  the agent may only cancel it (or read it). For changes, create a new session. */
 	| "SESSION_HANDED_OFF"
+	/** A shopper's claim on the hand-off link is live (the redeem is building the
+	 *  cart): agent writes are refused until it finalizes or its short lease
+	 *  lapses. Retryable. */
+	| "HANDOFF_IN_PROGRESS"
+	/** The content's serialized weight is over `AGENT_SESSION_MAX_CONTENT_BYTES`. */
+	| "CONTENT_TOO_LARGE"
 	/** `recordAgentSessionOrder` on a session whose hand-off link was never redeemed. */
 	| "HANDOFF_NOT_REDEEMED"
 	/** `recordAgentSessionOrder` with an order other than the one already recorded. */
@@ -65,11 +71,30 @@ export type AgentHandoffFailureReason =
 	| "HANDOFF_EXPIRED"
 	| "HANDOFF_CANCELED"
 	| "HANDOFF_USED"
-	/** The session has no lines right now (checked again inside the atomic mark);
+	/** The session has no lines right now (checked again inside the atomic claim);
 	 *  the link itself stays valid. */
-	| "HANDOFF_INCOMPLETE";
+	| "HANDOFF_INCOMPLETE"
+	/** Another redeem of this link holds a live claim. Retryable: once that claim
+	 *  finalizes the link re-enters its cart, and if it lapses the link claims again. */
+	| "HANDOFF_IN_PROGRESS";
 
 export type AgentHandoffFailure = { ok: false; reason: AgentHandoffFailureReason };
 
 /** One answer for an unknown session and a wrong secret: no existence oracle. */
 export type AgentOrderSecretFailure = { ok: false; reason: "ORDER_SECRET_INVALID" };
+
+/**
+ * Why {@link finalizeAgentHandoff} refused. `HANDOFF_CLAIM_LOST`: the claim is no
+ * longer the session's (it lapsed and another redeem re-claimed, or an agent
+ * write after the lapse cleared it); the caller must not hand the shopper the
+ * cart it built. Nothing is written on any failure.
+ */
+export type AgentHandoffFinalizeFailure = {
+	ok: false;
+	reason:
+		| "SESSION_NOT_FOUND"
+		| "HANDOFF_CLAIM_LOST"
+		| "HANDOFF_CANCELED"
+		| "HANDOFF_USED"
+		| "INVALID_REQUEST";
+};
