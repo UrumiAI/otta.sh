@@ -95,18 +95,20 @@ Options considered:
   bearer credential, so its retries replay from any network and never mint a second link.
 - Redeeming a link is claim-then-finalize: a short lease (60 s) while the cart is built, then
   one compare-and-set that marks the link used and records the shopper's cart. The link is
-  single-use PER BROWSER: the claim binds it to a hash of a random nonce the site keeps in an
-  httpOnly cookie. The redeeming browser may claim again after a lapsed lease (a transient
-  failure never kills the link) and may reopen the finalized link for 15 minutes before any
-  order; nobody else may (they get `HANDOFF_USED`). While a claim is live every redeem, the same
+  single-use PER BROWSER: the site sets a random nonce in an httpOnly cookie on the landing page,
+  before any claim, and the domain keeps only its hash. Until finalized nothing binds the link: a
+  claim that lapsed unfinalized may be claimed again by any browser (a transient failure, or a
+  move from an in-app webview to another browser, never kills it). Once finalized only that
+  browser may reopen it, for 15 minutes before any order; anyone else gets `HANDOFF_USED`. While a claim is live every redeem, the same
   browser's included, gets `HANDOFF_IN_PROGRESS` and the site waits and retries. Agent writes
   other than cancel wait while a claim is live; cancel always wins, and the claim's finalize
   then fails. No cart id is ever shown to the agent.
-- Session storage is bounded by live slots taken at insert (500 per store, 20 per network key),
-  using per-document compare-and-set only (ADR-0019). Race-safety is REQUIRED of every adapter
-  and proven by the contract suite's interleaving tests, which the EmDash adapter must pass;
-  the stored total follows from the slots and the retention, and the per-document cap is
-  128 KiB (older replay answers evicted first). See the design spec's "Limits and abuse",
+- Live agent sessions are bounded by slots taken at insert (500 per store, 50 per network key),
+  using per-document compare-and-set only (ADR-0019); a hand-off or completed order frees its
+  slot, a cancel does not. Race-safety is REQUIRED of every adapter and proven by the contract
+  suite's interleaving tests, which the EmDash adapter must pass. Sessions never handed off are
+  purged an hour after expiry; handed-off ones keep 30 days and are bounded only by rate limits,
+  not a hard cap. The per-document cap is 128 KiB (older replay answers evicted first). See the design spec's "Limits and abuse",
   including the accepted residual denial of service and the IPv6 /64 network-key requirement.
 - Hand-off is terminal for the agent. Once a shopper redeems a link the shopper owns the cart:
   update, complete and issue-link are refused (`SESSION_HANDED_OFF`), so no second link can be

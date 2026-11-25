@@ -94,7 +94,8 @@ AgentCheckoutSession {
   quote?           // last computed totals, a preview only
   orderSecretHash; handoffTokenHash?; handoffUsedAt?; orderId?
   channel: "other"; createdAt; expiresAt (createdAt + 24 h)
-  purgeAt          // expiresAt + 1 h; createdAt + 30 d once handed off; max(now, expiresAt) + 1 h on cancel
+  purgeAt          // expiresAt + 1 h; createdAt + 30 d once handed off (kept on a later cancel);
+                   // max(now, expiresAt) + 1 h on cancel of a session never handed off
 }
 ```
 
@@ -109,7 +110,11 @@ AgentCheckoutSession {
   (create, update, complete, cancel, issue-link) is `idempotency_key_reused` too. A refused write
   records nothing, so its key may be retried with a corrected body. Keys live as long as the
   session's retention: a session or create record at or past `purgeAt` replays nothing
-  (`IDEMPOTENCY_KEY_EXPIRED`, never a re-create), and once the sweep deleted it the key is fresh. A create's key is scoped to the caller's network key (no session exists
+  (`IDEMPOTENCY_KEY_EXPIRED`, never a re-create), and once the sweep deleted it the key is fresh.
+  A create record follows its session's retention: it is moved out to 30 days when the hand-off
+  finalizes. A create racing another create of the same key whose insert is still in flight
+  answers the retryable `WRITE_CONFLICT` (the store will not release or adopt a record whose
+  session holds a live slot); its retry replays. A create's key is scoped to the caller's network key (no session exists
   yet), so a create retried from another egress IP may duplicate the session (accepted, ADR-0047);
   every later write is scoped to the session id alone and replays from any network.
 - **Public view:** every result the site sees carries `AgentSessionView`, an allowlist projection:
@@ -138,7 +143,8 @@ AgentCheckoutSession {
   `continue_url` (UCP `buyer_handoff_required` message).
 - **cancel** releases the cart's holds and marks the session canceled; a canceled session's link
   is dead. Cancel is always allowed, also while a hand-off claim is live; that claim's finalize
-  then fails `HANDOFF_CANCELED`. A canceled session purges an hour after it expires.
+  then fails `HANDOFF_CANCELED`. A canceled session never handed off purges an hour after it
+  expires; a handed-off one keeps its 30-day retention, so order attribution survives.
 - **get_order**: `{id, checkout_id, status, updated_at}` for the session's order, requiring the
   `order_secret` (header `Urumi-Order-Secret` or MCP `order_secret`), compared in constant time.
 
@@ -152,13 +158,16 @@ AgentCheckoutSession {
   fresh update or complete whose unused link no longer re-derives mints a new link under the new
   key in the same write and returns it. The `order_secret` is never re-issued: rotation strands it
   for any open session whose agent lost its create response (one it holds still verifies).
-- `GET /checkout/handoff` is a static, cookieless, `no-store` page. An inline script keeps only the
+- `GET /checkout/handoff` is a static, `no-store` page. It sets the browser's **redeemer nonce**
+  cookie (random, httpOnly, `SameSite=Lax`, `Secure`) if absent, BEFORE any claim, so a lost
+  response to the first POST never strands the link. An inline script keeps only the
   leading token characters of the fragment (agents and chat apps append `?utm_…`, `&…` or a
   trailing period: lesson from WooCommerce #4588), clears the fragment with `replaceState`, and on
   "Continue" POSTs the token same-origin.
 - `POST /checkout/handoff` (site) calls plugin `agentic/handoff/redeem` with the token and the
-  browser's **redeemer nonce**: a random value the site keeps in an httpOnly, `SameSite=Lax`
-  cookie (set on first redeem if absent). The domain stores and compares only the nonce's hash.
+  redeemer nonce from that cookie; the domain stores and compares only the nonce's hash. A POST
+  without the cookie (blocked or cleared cookies) is refused `HANDOFF_REDEEMER_MISSING`
+  (retryable): the site reloads the landing page, which sets it, and the shopper continues.
   The plugin CLAIMS the link with a 60 s lease (`claimAgentHandoff({token, redeemer})`; the link
   is not used yet; the answer carries the agent's `agentCartId` to reuse), then:
   1. reuses the agent's cart if it is still active with the same lines; otherwise creates a new
@@ -173,11 +182,12 @@ AgentCheckoutSession {
      (`HANDOFF_CLAIM_LOST`) once the claim was replaced or its lease lapsed more than 30 s ago,
      and (`HANDOFF_EXPIRED`) at or after `expiresAt`; the plugin then does not hand that cart
      over.
-  **The link is single-use per browser.** The redeeming browser (same nonce) may claim again
-  after a lapsed lease, and may reopen a finalized link for 15 minutes, before any order:
-  `claimAgentHandoff` answers `reentered` with `shopperCartId` and `handoffUsedAt` and writes
-  nothing. Nobody else may: any other holder of the token (the agent included) gets
-  `HANDOFF_USED` once the link is finalized or bound to a lapsed claim. While a claim is live
+  **The link is single-use per browser.** Until it is finalized nothing binds it: a claim that
+  lapsed without finalizing (a lost response, a crash, a move from an in-app webview to Safari)
+  may be claimed again by ANY browser. Once finalized, only the browser that finalized it (same
+  nonce) may reopen it, for 15 minutes and before any order: `claimAgentHandoff` answers
+  `reentered` with `shopperCartId` and `handoffUsedAt` and writes nothing. Any other holder of
+  the token (the agent included) gets `HANDOFF_USED`. While a claim is live
   EVERY redeem, the claiming browser's included (double click, second tab), answers
   `HANDOFF_IN_PROGRESS`: the site shows a short wait and retries (e.g. after 2 s, up to the
   lease). On `reentered` the plugin MUST check that `shopperCartId` has not already been
@@ -227,31 +237,50 @@ no shopper data is returned.
 - Per-store caps on live sessions, enforced by the store at insert with per-document
   compare-and-set only (ADR-0019: no transactions, no counters). The store keeps **live slots**:
   a cap of N is N slot documents; an insert compare-and-sets a free slot in its network's pool
-  (default **20 per network key**) and then in the store-wide pool (default **500**), and only
-  then writes the session; a refused or lost insert gives its slots back by version. A slot is
-  held until the session's `expiresAt` whatever its status (canceling frees nothing, so a
-  create-cancel loop cannot outrun the cap); a slot whose session never landed frees 60 s after
-  it was taken. A refused create is `TOO_MANY_SESSIONS` and leaves no create record behind.
-  Per-network creates (default 60 per hour) stay a soft count. All are tunable limits.
+  (default **50 per network key**) and then in the store-wide pool (default **500**), writes the
+  session, then compare-and-sets a `landed` mark onto both slots. A slot is free when absent,
+  expired, or never landed and taken more than 60 s ago (abandoned); probes read slot documents
+  only. If a `landed` mark loses (the insert stalled past 60 s and its slot was retaken), the
+  insert deletes its own session by version and answers `capacity`, so a stall cannot overshoot.
+  A slot is held until the session's `expiresAt`, EXCEPT that a hand-off (finalize) or a
+  completed order frees it at once; canceling frees nothing, so a create-cancel loop cannot
+  outrun the cap. A refused create is `TOO_MANY_SESSIONS` and leaves no create record behind.
+  Before probing, `createAgentSession` refuses early from the count of OCCUPIED slots (canceled
+  sessions' included), so a full pool costs no probe. Per-network creates (default 60 per hour)
+  stay a soft count. All are tunable limits.
   **Race-safety is required of every adapter, not assumed:** the contract suite runs its racing
-  inserts, claims and finalizes against a store whose every read and write yields to the other
-  callers, and a check-then-insert store fails it (shown in the review evidence). The EmDash
-  adapter in #712 must pass that suite before it merges.
-- **Why 500, not 5,000:** with the pool nearly full an insert may probe every slot (one read
-  each, plus a compare-and-set), so N is also the worst-case cost of one create. At 5,000 an
-  attacker buys up to 5,000 storage reads per refused create; at 500 it is bounded at a cost an
-  edge worker can afford. 500 concurrent unexpired agent checkouts is far above what a store on
-  this stack sees, and the limit is tunable per store.
-- **Retention follows from the caps** (there is no separate stored cap): a session never handed
-  off, and a canceled one, purges 1 h after it expires; only a handed-off session keeps 30 days
-  from creation. Live slots recycle every 24 h, so at most about 31 × 500 ≈ 15,500 sessions can
-  be stored at once (worst case, all handed off; ≈ 1.9 GiB at the 128 KiB document cap), and
-  about 2 × 500 if none is handed off. A typical session is a few KiB.
-- **Residual denial of service (accepted, documented):** about 25 network keys (500 / 20) can
-  hold every live slot for 24 h, refusing new agent checkouts store-wide. Shoppers and the normal
-  storefront are unaffected. The per-network cap only means something if a network key is hard
-  to multiply: **#712 must aggregate IPv6 clients to their /64 when deriving `networkKey`**
-  (one host typically owns a whole /64), and IPv4 to the address.
+  inserts, claims, finalizes, releases and stalled inserts against a store whose every read and
+  write yields to the other callers, and a check-then-insert store fails it (shown in the review
+  evidence). The EmDash adapter in #712 must pass that suite before it merges.
+- **The real ceilings.** Concurrently: at most 500 sessions store-wide (50 per network key) that
+  are unexpired and neither handed off nor completed, canceled ones included. Per rolling 24 h:
+  at most 500 abandoned or canceled sessions store-wide (50 per network key), since their slots
+  recycle only at expiry. Sessions that are handed off or completed free their slot at once, so
+  their throughput is NOT bounded by the slots, only by the soft create count (60 per network
+  key per hour) and the site's write rate limit; a hand-off needs a browser POST to the store.
+- **Per-create cost and why 500, not 5,000:** an early refusal is one count of occupied slot
+  documents (an indexed count in an adapter). An admitted insert probes slot documents from a
+  hashed offset, about 1/(1 − occupancy) reads per pool, worst case 50 + 500 slot reads, then
+  two slot compare-and-sets, the session write and two `landed` marks; it reads no session. At
+  5,000 the worst case would be ten times that for every create near a full pool; 500
+  concurrent unexpired agent checkouts is far above what a store on this stack sees, and the
+  limit is tunable per store.
+- **Lowering a cap** takes effect at once for the early refusal (it counts occupied slots at any
+  index) and within 24 h for the atomic check: slots at or beyond the new size are no longer
+  probed and expire with their sessions.
+- **Storage bound (what is actually true):** sessions never handed off are purged 1 h after
+  expiry, so at most about 2 × 500 are stored at once (≈ 125 MiB at the 128 KiB cap). Handed-off
+  sessions keep 30 days and free their slot, so their number is bounded only by the hand-off
+  rate above (rate limits, not a hard cap): at the soft create limit one network key could
+  leave up to 60 × 24 × 30 ≈ 43,000 handed-off sessions in 30 days. Slot documents are deleted
+  by version when their session is purged or handed off, and by the sweep (`purgeSlotsDue`, run
+  from the same cron as the session purge) once expired or abandoned, so they stay at about
+  2 × 500 held plus those expired since the last sweep, however network keys rotate.
+- **Residual denial of service (accepted, documented):** 10 network keys (500 / 50) can hold
+  every live slot, refusing new agent checkouts store-wide, for 24 h per round of creates.
+  Shoppers and the normal storefront are unaffected. The per-network cap only means something if
+  a network key is hard to multiply: **#712 must aggregate IPv6 clients to their /64 when
+  deriving `networkKey`** (one host typically owns a whole /64), and IPv4 to the address.
 - Per-session storage is bounded: 50 lines; product id and sku at most 128 characters each; the
   content (the public view) at most 32 KiB as UTF-8 JSON (`CONTENT_TOO_LARGE`); order id at most
   128 characters; and the whole stored document at most 128 KiB (UTF-8 JSON, the store refuses
