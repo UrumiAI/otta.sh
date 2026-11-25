@@ -2,6 +2,7 @@ import { cents as toCents, currency as toCurrency, idempotencyKey } from "@urumi
 import {
 	EmdashSettingsStore,
 	EmdashShippingRulesStore,
+	EmdashTaxRulesStore,
 	SETTINGS_COLLECTION,
 	systemClock,
 	type StorageAccess,
@@ -2279,6 +2280,30 @@ describe("admin Shipping console — pinned write outcomes (admin operations)", 
 			name: "Canada",
 			regions: ["CA"],
 		});
+	});
+
+	// #741: a zone a tax rate still names is refused, and the banner names both
+	// things that have to go first — the rates live on another screen.
+	test("delete: a zone a tax rate still names is refused, naming tax rates; nothing is written", async () => {
+		await seedShipping();
+		const taxRules = new EmdashTaxRulesStore({ storage, clock: systemClock });
+		await taxRules.createClass({ id: "standard", name: "Standard" });
+		await taxRules.createRate({
+			id: "empty-std",
+			taxClassId: "standard",
+			zoneId: "empty",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		const blocks = await clickButton("shipping:delete-zone", { zoneId: "empty" });
+		expect(noticeOf(blocks)).toEqual({
+			variant: "error",
+			title: "Zone not deleted",
+			description:
+				"This zone still has shipping methods or tax rates — delete its methods here and its rates on the Tax page, then retry.",
+		});
+		expect(await shippingRules.getZone("empty")).not.toBeNull();
+		expect((await taxRules.listRatesForZone("empty")).map((r) => r.id)).toEqual(["empty-std"]);
 	});
 
 	test("save: a zone deleted since the form loaded is 'Zone not found'", async () => {

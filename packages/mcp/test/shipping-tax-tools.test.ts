@@ -229,6 +229,29 @@ describe("shipping_zone_delete", () => {
 		expect(await call("shipping_zone_delete", { zoneId: "us" })).toEqual({ status: "deleted" });
 		expect((await failure("shipping_zone_delete", { zoneId: "us" })).code).toBe("NOT_FOUND");
 	});
+
+	// #741: a zone a tax rate still names was deleted, leaving the rate behind with
+	// no zone (unlistable, and blocking its class's delete).
+	test("a zone a tax rate still names is ZONE_IN_USE, writing nothing; once the rate is gone it deletes", async () => {
+		await seedZone("us", "US");
+		await call("tax_class_create", { id: "standard", name: "Standard" });
+		await call("tax_rate_create", {
+			id: "us-std",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 725,
+		});
+		const refused = await failure("shipping_zone_delete", { zoneId: "us" });
+		expect(refused.code).toBe("ZONE_IN_USE");
+		expect(refused.message).toMatch(/tax_rate_delete/);
+		// Nothing was written: the zone is still listed, and so is its rate.
+		expect((await zones()).map((z) => z.id)).toContain("us");
+		const rates = await call("tax_rates_list", { zoneId: "us" });
+		expect(rates.items.map((r: { id: string }) => r.id)).toEqual(["us-std"]);
+
+		await call("tax_rate_delete", { rateId: "us-std" });
+		expect(await call("shipping_zone_delete", { zoneId: "us" })).toEqual({ status: "deleted" });
+	});
 });
 
 describe("shipping methods", () => {
