@@ -8,12 +8,23 @@ import type {
 } from "../ports/agent-session-store.js";
 import type {
 	AgentHandoffFailure,
+	AgentHandoffFinalizeFailure,
 	AgentOrderSecretFailure,
 	AgentSessionFailure,
 	AgentSessionFailureReason,
 } from "./errors.js";
 import {
 	isAgentSessionMessageList,
+	AGENT_HANDOFF_CLAIM_LEASE_MS,
+	AGENT_HANDOFF_REENTRY_WINDOW_MS,
+	AGENT_SESSION_DOCUMENT_RESERVE_BYTES,
+	AGENT_SESSION_MAX_CONTENT_BYTES,
+	AGENT_SESSION_MAX_DOCUMENT_BYTES,
+	AGENT_SESSION_MAX_LINE_ID_LENGTH,
+	AGENT_SESSION_MAX_ORDER_ID_LENGTH,
+	agentSessionDocumentBytes,
+	isAgentHandoffClaimLive,
+	utf8ByteLength,
 	AGENT_SESSION_ID_PREFIX,
 	AGENT_SESSION_MAX_ADDRESS_FIELD_LENGTH,
 	AGENT_SESSION_MAX_BUYER_FIELD_LENGTH,
@@ -28,6 +39,7 @@ import {
 	AGENT_SESSION_MAX_WRITES,
 	AGENT_SESSION_RETENTION_MS,
 	AGENT_SESSION_TTL_MS,
+	AGENT_SESSION_UNREDEEMED_RETENTION_MS,
 	agentSessionId,
 	agentSessionStatusForLines,
 	isAgentSessionHandedOff,
@@ -69,20 +81,40 @@ import type { AgentSessionSecrets } from "./secrets.js";
  * {@link issueAgentHandoff}, or by a fresh replace or complete whose unused
  * link no longer re-derives under the current server key (a key rotation).
  *
- * Hand-off is terminal for the agent: once a shopper redeems a link, replace,
+ * Redeeming a link is two steps, so a failure in between never kills it:
+ * {@link claimAgentHandoff} leases the link (agent writes and other redeems wait
+ * `HANDOFF_IN_PROGRESS`), the caller builds the shopper's cart, then
+ * {@link finalizeAgentHandoff} records use and cart in one compare-and-set (or
+ * {@link releaseAgentHandoffClaim} gives the claim up). A lapsed lease lets the
+ * same token claim again; a finalized link re-enters its cart for a short window.
+ *
+ * Hand-off is terminal for the agent: once a shopper's claim finalizes, replace,
  * complete and issue_handoff are refused `SESSION_HANDED_OFF` (the shopper owns
  * the cart; a second link could be paid twice). Cancel stays, and the checkout
  * that places the order calls {@link recordAgentSessionOrder}.
+ *
+ * Retention: a session (or create record) at or past its `purgeAt` answers
+ * nothing — not found to reads and writes, `IDEMPOTENCY_KEY_EXPIRED` to a create
+ * replay — even before the sweep deletes it. After the sweep a create key is
+ * fresh again.
  */
 
 export interface AgentSessionLimits {
 	/**
-	 * Store-wide cap on open, unexpired sessions: a tuning knob against storage
-	 * exhaustion, sized well above what the per-network cap lets a few networks
-	 * reach. SOFT: checked before the insert, so racing creates can overshoot it.
+	 * Store-wide live slots: a session holds one from its insert until its
+	 * `expiresAt` (canceled or handed off included), unless a recorded order
+	 * frees it earlier. HARD: the store takes the slot by compare-and-set before
+	 * it writes the session ({@link AgentSessionStore.insert}); adapters must keep
+	 * it race-safe, as the contract's interleaving and crash tests prove. Each
+	 * insert may probe every slot when the pool is nearly full, so the slot count
+	 * is also a per-create read cost (see the spec).
 	 */
 	maxLiveSessions: number;
-	/** Creates one network may make within `createWindowMs`. SOFT, as above. */
+	/** Live slots one network key may hold at once: HARD, like `maxLiveSessions`,
+	 *  so one network can never take the whole store-wide pool. */
+	maxLivePerNetwork: number;
+	/** Creates one network may make within `createWindowMs`. SOFT: counted
+	 *  before the insert, so racing creates from one network can overshoot it. */
 	maxCreatesPerNetwork: number;
 	createWindowMs: number;
 	/** Per-line quantity cap (the plugin passes its `CART_LINE_MAX_QTY`). */
@@ -91,6 +123,7 @@ export interface AgentSessionLimits {
 
 export const DEFAULT_AGENT_SESSION_LIMITS: AgentSessionLimits = {
 	maxLiveSessions: 500,
+	maxLivePerNetwork: 50,
 	maxCreatesPerNetwork: 60,
 	createWindowMs: 60 * 60 * 1000,
 	maxLineQuantity: 10_000,
@@ -188,6 +221,14 @@ function validateContent(
 	const skus = new Set<string>();
 	for (const line of content.lines) {
 		if (
+			line.productId.length === 0 ||
+			line.sku.length === 0 ||
+			longerThan(line.productId, AGENT_SESSION_MAX_LINE_ID_LENGTH) ||
+			longerThan(line.sku, AGENT_SESSION_MAX_LINE_ID_LENGTH)
+		) {
+			return fail("INVALID_REQUEST");
+		}
+		if (
 			!Number.isSafeInteger(line.quantity) ||
 			line.quantity < 1 ||
 			line.quantity > limits.maxLineQuantity
@@ -198,6 +239,9 @@ function validateContent(
 		skus.add(line.sku);
 	}
 	if (contentTooLong(content)) return fail("INVALID_REQUEST");
+	if (utf8ByteLength(JSON.stringify(content)) > AGENT_SESSION_MAX_CONTENT_BYTES) {
+		return fail("CONTENT_TOO_LARGE");
+	}
 	const quote = content.quote;
 	if (quote !== undefined) {
 		if (quote.currency !== content.currency) return fail("QUOTE_CURRENCY_MISMATCH");
@@ -281,7 +325,6 @@ function viewOf(session: AgentCheckoutSession | AgentSessionView): AgentSessionV
 	if (session.destination !== undefined) view.destination = session.destination;
 	if (session.shippingMethodId !== undefined) view.shippingMethodId = session.shippingMethodId;
 	if (session.couponCode !== undefined) view.couponCode = session.couponCode;
-	if (session.cartId !== undefined) view.cartId = session.cartId;
 	if (session.quote !== undefined) view.quote = session.quote;
 	if (session.orderId !== undefined) view.orderId = session.orderId;
 	return structuredClone(view);
@@ -354,6 +397,21 @@ function isExpired(session: { expiresAt: string }, now: string): boolean {
 	return now >= session.expiresAt;
 }
 
+/** Whether retention is over: the sweep may delete it any moment, so nothing answers from it. */
+function isPurgeDue(item: { purgeAt: string }, now: string): boolean {
+	return now >= item.purgeAt;
+}
+
+/** The session, or null when there is none or its retention is over (purge-due). */
+async function readSession(
+	store: AgentSessionStore,
+	id: AgentSessionId,
+	now: string,
+): Promise<AgentCheckoutSession | null> {
+	const session = await store.get(id);
+	return session === null || isPurgeDue(session, now) ? null : session;
+}
+
 /** Whether a re-derived `secret` hashes to `storedHash` (it would verify). */
 async function matchesStored(
 	deps: Pick<AgentSessionDeps, "secrets">,
@@ -403,7 +461,8 @@ async function rederivedOrderSecret(
 	return { ok: true, secret };
 }
 
-/** The per-network and store-wide create caps. Both SOFT (check-then-insert). */
+/** The per-network create cap (SOFT) and an early count of the live cap (the
+ *  store enforces the live and stored caps again, atomically, at insert). */
 async function admitCreate(
 	deps: AgentSessionDeps,
 	networkKey: string,
@@ -414,7 +473,11 @@ async function admitCreate(
 	if ((await deps.store.countCreatedSince(networkKey, since)) >= limits.maxCreatesPerNetwork) {
 		return fail("RATE_LIMITED");
 	}
-	if ((await deps.store.countLive(now.toISOString())) >= limits.maxLiveSessions) {
+	// An early refusal from the slots actually held (canceled sessions' and
+	// over-cap ones' included), so a full pool costs no slot probe. The insert
+	// re-checks atomically.
+	const held = await deps.store.occupiedSlots(networkKey, now.toISOString());
+	if (held.store >= limits.maxLiveSessions || held.network >= limits.maxLivePerNetwork) {
 		return fail("TOO_MANY_SESSIONS");
 	}
 	return null;
@@ -450,8 +513,7 @@ function recorded(input: AgentSessionMessagesInput): { messages?: AgentSessionMe
  * session as created, with the same `order_secret` and the current live link.
  * A create whose key was recorded but whose session was never written (a crash
  * in between) is finished by its replay, under the recorded id, after the same
- * validation and caps as a fresh create; its record's purge is moved out to the
- * session's own.
+ * validation and caps as a fresh create, after it adopts the record.
  *
  * Accepted hazard (ADR-0047): the create key is scoped to the caller's network,
  * so a create retried from a different egress network is a fresh create and may
@@ -471,6 +533,8 @@ export async function createAgentSession(
 	if (malformed !== null) return malformed;
 	const record = await deps.store.getIdempotency(input.networkKey, input.idempotencyKey);
 	if (record !== null) return createFromRecord(deps, input, record);
+	// (A replay must not be refused by today's content rules, so validation
+	// comes after the record lookup.)
 
 	const refused = validateContent(input.content, limitsOf(deps));
 	if (refused !== null) return refused;
@@ -479,16 +543,18 @@ export async function createAgentSession(
 	if (capped !== null) return capped;
 
 	const id = agentSessionId(`${AGENT_SESSION_ID_PREFIX}${deps.secrets.mintId()}`);
+	const attemptId = deps.secrets.mintId();
 	const put = await deps.store.putIdempotency({
 		networkKey: input.networkKey,
 		key: input.idempotencyKey,
 		fingerprint: input.fingerprint,
 		sessionId: id,
 		createdAt: now.toISOString(),
-		purgeAt: new Date(now.getTime() + AGENT_SESSION_RETENTION_MS).toISOString(),
+		attemptId,
+		purgeAt: unredeemedPurgeAt(now),
 	});
 	if (!put.stored) return createFromRecord(deps, input, put.existing);
-	return insertCreated(deps, input, id, now);
+	return insertCreated(deps, input, id, now, attemptId);
 }
 
 /** Answer a create whose key is already recorded: replay, refuse, or finish an orphan. */
@@ -498,21 +564,46 @@ async function createFromRecord(
 	record: AgentCreateIdempotencyRecord,
 ): Promise<CreateAgentSessionResult> {
 	if (record.fingerprint !== input.fingerprint) return fail("IDEMPOTENCY_KEY_REUSED");
+	const now = deps.clock.now();
+	// Retention is over for the record (and so for any session it made): it
+	// answers no replay and finishes no orphan until the sweep deletes it.
+	if (isPurgeDue(record, now.toISOString())) return fail("IDEMPOTENCY_KEY_EXPIRED");
 	const existing = await deps.store.get(record.sessionId);
-	if (existing !== null) return replayCreate(deps, existing, input);
+	if (existing !== null) {
+		return isPurgeDue(existing, now.toISOString())
+			? fail("IDEMPOTENCY_KEY_EXPIRED")
+			: replayCreate(deps, existing, input);
+	}
 	const refused = validateContent(input.content, limitsOf(deps));
 	if (refused !== null) return refused;
-	const now = deps.clock.now();
+	// Adopt the record first: from here only this attempt may release it (so a
+	// racer whose insert was refused cannot delete it under our session), and its
+	// purge moves out to the session's own. Lost to a release or another adopter:
+	// retryable, and the retry starts from what is stored then. Adopting BEFORE
+	// the early cap refusal lets a replay of a create whose insert crashed before
+	// landing (its session written, its slots counted) land it instead of being
+	// refused TOO_MANY_SESSIONS by its own slots.
+	const attemptId = deps.secrets.mintId();
+	const adopted = await deps.store.adoptIdempotency(record.networkKey, record.key, {
+		sessionId: record.sessionId,
+		attemptId,
+		purgeAt: unredeemedPurgeAt(now),
+		now: now.toISOString(),
+	});
+	// Lost, or busy (another attempt's insert of this session is in flight, or
+	// a crashed one the adoption just landed).
+	if (adopted !== "adopted") return fail("WRITE_CONFLICT");
 	const capped = await admitCreate(deps, record.networkKey, now);
+	// Refused: the record stays (adopted, nothing inserted), so a later replay
+	// still finishes the create under the recorded id.
 	if (capped !== null) return capped;
-	// The session will purge at now + 30 d, later than the record would; move the
-	// record out first, so a sweep can never drop it while its session lives.
-	await deps.store.extendIdempotencyPurge(
-		record.networkKey,
-		record.key,
-		new Date(now.getTime() + AGENT_SESSION_RETENTION_MS).toISOString(),
+	return insertCreated(
+		deps,
+		{ ...input, networkKey: record.networkKey },
+		record.sessionId,
+		now,
+		attemptId,
 	);
-	return insertCreated(deps, { ...input, networkKey: record.networkKey }, record.sessionId, now);
 }
 
 async function replayCreate(
@@ -537,12 +628,26 @@ async function replayCreate(
 	return result;
 }
 
-/** Insert the created session under `id`, or replay it if a racer inserted first. */
+/** A never-handed-off session's purge time: its expiry plus the short retention. */
+function unredeemedPurgeAt(createdAt: Date): string {
+	return new Date(
+		createdAt.getTime() + AGENT_SESSION_TTL_MS + AGENT_SESSION_UNREDEEMED_RETENTION_MS,
+	).toISOString();
+}
+
+/**
+ * Insert the created session under `id`, or replay it if a racer inserted first.
+ * The store admits it under the live caps; a refused insert releases the create
+ * record by `attemptId` (the attempt that put or adopted it), so the key is free
+ * again and no orphan record is left behind. A record another attempt adopted
+ * in between is not this attempt's to release, and stays.
+ */
 async function insertCreated(
 	deps: AgentSessionDeps,
 	input: CreateInput,
 	id: AgentSessionId,
 	now: Date,
+	attemptId: string,
 ): Promise<CreateAgentSessionResult> {
 	const nowIso = now.toISOString();
 	const orderSecret = await deps.secrets.derive("order", id);
@@ -560,7 +665,7 @@ async function insertCreated(
 		createdAt: nowIso,
 		updatedAt: nowIso,
 		expiresAt: new Date(now.getTime() + AGENT_SESSION_TTL_MS).toISOString(),
-		purgeAt: new Date(now.getTime() + AGENT_SESSION_RETENTION_MS).toISOString(),
+		purgeAt: unredeemedPurgeAt(now),
 		writes: [],
 		retiredWriteKeys: [],
 	};
@@ -575,12 +680,37 @@ async function insertCreated(
 			...recorded(input),
 		},
 	];
-	const written = await deps.store.write(session, null);
+	const limits = limitsOf(deps);
+	const written = await deps.store.insert(session, {
+		now: nowIso,
+		maxLive: limits.maxLiveSessions,
+		maxLivePerNetwork: limits.maxLivePerNetwork,
+	});
 	if (!written.ok) {
-		return written.current === null
-			? fail("WRITE_CONFLICT")
-			: replayCreate(deps, written.current, input);
+		if (written.reason === "exists") return replayCreate(deps, written.current, input);
+		const released = await deps.store.releaseIdempotency(
+			input.networkKey,
+			input.idempotencyKey,
+			attemptId,
+			nowIso,
+		);
+		// Busy: another attempt's insert of this session is in flight, so the key
+		// may yet answer a session; retry rather than report the refusal.
+		if (released === "busy") return fail("WRITE_CONFLICT");
+		return fail(written.reason === "capacity" ? "TOO_MANY_SESSIONS" : "CONTENT_TOO_LARGE");
 	}
+	// The record may have been released before this insert took its slot (so the
+	// release saw nothing in flight): put it back, insert-if-absent, so a replay of
+	// the key answers this session. If another create took the key since, it keeps it.
+	await deps.store.putIdempotency({
+		networkKey: input.networkKey,
+		key: input.idempotencyKey,
+		fingerprint: input.fingerprint,
+		sessionId: id,
+		attemptId,
+		createdAt: nowIso,
+		purgeAt: written.session.purgeAt,
+	});
 	const link = await liveHandoffToken(deps, written.session, nowIso);
 	if (!link.ok) return link;
 	const result: CreateAgentSessionResult = {
@@ -630,9 +760,9 @@ async function keyedWrite(
 	const malformed = refuseRequest(request) ?? refuseMessages(messages);
 	if (malformed !== null) return malformed;
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
-		const current = await deps.store.get(sessionId);
-		if (current === null) return fail("SESSION_NOT_FOUND");
 		const now = deps.clock.now().toISOString();
+		const current = await readSession(deps.store, sessionId, now);
+		if (current === null) return fail("SESSION_NOT_FOUND");
 		const prior = current.writes.find((w) => sameKey(w, request));
 		if (prior !== undefined) {
 			if (prior.operation !== operation || prior.fingerprint !== request.fingerprint) {
@@ -642,6 +772,12 @@ async function keyedWrite(
 		}
 		if (current.retiredWriteKeys.some((k) => sameKey(k, request))) {
 			return fail("IDEMPOTENCY_KEY_EXPIRED");
+		}
+		// A shopper is redeeming the link right now: every agent write waits.
+		// A shopper is redeeming the link right now: agent writes wait, except a
+		// cancel (always allowed: the claim's finalize then fails `canceled`).
+		if (operation !== "cancel" && isAgentHandoffClaimLive(current, now)) {
+			return fail("HANDOFF_IN_PROGRESS");
 		}
 		const atCap =
 			current.writes.length + current.retiredWriteKeys.length >= AGENT_SESSION_MAX_WRITES;
@@ -655,6 +791,10 @@ async function keyedWrite(
 			...("unchanged" in mutated ? current : mutated.session),
 			revision,
 		};
+		// A lapsed, unfinalized claim dies with any agent write except a cancel (a
+		// cancel already makes its finalize fail): its redeem can no longer
+		// finalize a cart built from the session as it was.
+		if (next.handoffUsedAt === undefined && operation !== "cancel") delete next.handoffClaim;
 		let link = await liveHandoffToken(deps, next, now);
 		if (!link.ok) {
 			// The unused link no longer re-derives (the key rotated): replace it.
@@ -670,11 +810,11 @@ async function keyedWrite(
 			answer: viewOf(next),
 			...recorded(messages),
 		};
-		const writes = [...current.writes, record];
-		const evicted = writes.splice(0, Math.max(0, writes.length - AGENT_SESSION_MAX_WRITE_RECORDS));
-		next.writes = writes;
-		next.retiredWriteKeys = [...current.retiredWriteKeys, ...evicted.map((w) => ({ key: w.key }))];
+		const fitted = withRecord(next, current, record, operation === "cancel");
+		if (fitted === null) return fail("WRITE_LIMIT_REACHED");
+		next = fitted;
 		const written = await deps.store.write(next, current.revision);
+		if (!written.ok && written.reason === "too_large") return fail("WRITE_LIMIT_REACHED");
 		if (written.ok) {
 			const result: AgentSessionWriteResult = {
 				ok: true,
@@ -687,6 +827,43 @@ async function keyedWrite(
 		}
 	}
 	return fail("WRITE_CONFLICT");
+}
+
+/**
+ * `next` with `record` appended to the kept write records, evicting the oldest
+ * (their keys retire, so a late replay is `IDEMPOTENCY_KEY_EXPIRED`) past
+ * {@link AGENT_SESSION_MAX_WRITE_RECORDS}, and then while the document is over
+ * its byte budget: {@link AGENT_SESSION_MAX_DOCUMENT_BYTES} less the reserve, or
+ * the full cap for a cancel (the reserve exists so a cancel always fits). The
+ * newest record is never evicted; null when even it alone does not fit.
+ */
+function withRecord(
+	next: AgentCheckoutSession,
+	current: AgentCheckoutSession,
+	record: AgentSessionWriteRecord,
+	isCancel: boolean,
+): AgentCheckoutSession | null {
+	const budget = isCancel
+		? AGENT_SESSION_MAX_DOCUMENT_BYTES
+		: AGENT_SESSION_MAX_DOCUMENT_BYTES - AGENT_SESSION_DOCUMENT_RESERVE_BYTES;
+	const writes = [...current.writes, record];
+	const retired = [...current.retiredWriteKeys];
+	const evict = (): void => {
+		const oldest = writes.shift();
+		if (oldest !== undefined) retired.push({ key: oldest.key });
+	};
+	while (writes.length > AGENT_SESSION_MAX_WRITE_RECORDS) evict();
+	const build = (): AgentCheckoutSession => ({
+		...next,
+		writes: [...writes],
+		retiredWriteKeys: [...retired],
+	});
+	let fitted = build();
+	while (agentSessionDocumentBytes(fitted) > budget && writes.length > 1) {
+		evict();
+		fitted = build();
+	}
+	return agentSessionDocumentBytes(fitted) > budget ? null : fitted;
 }
 
 /** Answer `shown` (the session as some write left it) with `current`'s live link. */
@@ -773,12 +950,25 @@ export async function precheckAgentSessionCreate(
 		if (record.fingerprint !== input.fingerprint) {
 			return { proceed: false, result: fail("IDEMPOTENCY_KEY_REUSED") };
 		}
+		const now = deps.clock.now().toISOString();
+		// Mirrors createFromRecord: a purge-due record (or session) answers no replay.
+		if (isPurgeDue(record, now)) {
+			return { proceed: false, result: fail("IDEMPOTENCY_KEY_EXPIRED") };
+		}
 		const existing = await deps.store.get(record.sessionId);
 		if (existing !== null) {
-			return { proceed: false, result: await replayCreate(deps, existing, input) };
+			return {
+				proceed: false,
+				result: isPurgeDue(existing, now)
+					? fail("IDEMPOTENCY_KEY_EXPIRED")
+					: await replayCreate(deps, existing, input),
+			};
 		}
+		// An orphan (record, no session): its create adopts the record before any
+		// cap check, so a crashed insert's own slots never refuse its replay.
+		return { proceed: true };
 	}
-	const capped = await admitCreate(deps, record?.networkKey ?? input.networkKey, deps.clock.now());
+	const capped = await admitCreate(deps, input.networkKey, deps.clock.now());
 	return capped === null ? { proceed: true } : { proceed: false, result: capped };
 }
 
@@ -795,9 +985,9 @@ export async function precheckAgentSessionReplace(
 ): Promise<AgentSessionPrecheck<AgentSessionWriteResult>> {
 	const malformed = refuseRequest(input);
 	if (malformed !== null) return { proceed: false, result: malformed };
-	const current = await deps.store.get(input.sessionId);
-	if (current === null) return { proceed: false, result: fail("SESSION_NOT_FOUND") };
 	const now = deps.clock.now().toISOString();
+	const current = await readSession(deps.store, input.sessionId, now);
+	if (current === null) return { proceed: false, result: fail("SESSION_NOT_FOUND") };
 	const prior = current.writes.find((w) => sameKey(w, input));
 	if (prior !== undefined) {
 		if (prior.operation !== "replace" || prior.fingerprint !== input.fingerprint) {
@@ -807,6 +997,9 @@ export async function precheckAgentSessionReplace(
 	}
 	if (current.retiredWriteKeys.some((k) => sameKey(k, input))) {
 		return { proceed: false, result: fail("IDEMPOTENCY_KEY_EXPIRED") };
+	}
+	if (isAgentHandoffClaimLive(current, now)) {
+		return { proceed: false, result: fail("HANDOFF_IN_PROGRESS") };
 	}
 	if (current.writes.length + current.retiredWriteKeys.length >= AGENT_SESSION_MAX_WRITES) {
 		return { proceed: false, result: fail("WRITE_LIMIT_REACHED") };
@@ -825,9 +1018,10 @@ export async function getAgentSession(
 	deps: Pick<AgentSessionDeps, "store" | "clock" | "secrets">,
 	input: { sessionId: AgentSessionId },
 ): Promise<{ ok: true; session: AgentSessionView; handoffToken?: string } | AgentSessionFailure> {
-	const session = await deps.store.get(input.sessionId);
+	const now = deps.clock.now().toISOString();
+	const session = await readSession(deps.store, input.sessionId, now);
 	if (session === null) return fail("SESSION_NOT_FOUND");
-	const link = await liveHandoffToken(deps, session, deps.clock.now().toISOString());
+	const link = await liveHandoffToken(deps, session, now);
 	const result: { ok: true; session: AgentSessionView; handoffToken?: string } = {
 		ok: true,
 		session: viewOf(session),
@@ -851,7 +1045,15 @@ export async function cancelAgentSession(
 	return keyedWrite(deps, input.sessionId, input, "cancel", async (session, now) => {
 		if (session.status === "completed") return fail("SESSION_CLOSED");
 		if (session.status === "canceled") return { ok: true, unchanged: true };
-		return { ok: true, session: { ...session, status: "canceled", updatedAt: now } };
+		// A canceled session keeps only the short retention, unless it was handed
+		// off: then its purge (expiresAt + 1 h; there is no order, else it could
+		// not be canceled) is kept as it is.
+		const from = now > session.expiresAt ? now : session.expiresAt;
+		const purgeAt =
+			session.handoffUsedAt !== undefined
+				? session.purgeAt
+				: new Date(Date.parse(from) + AGENT_SESSION_UNREDEEMED_RETENTION_MS).toISOString();
+		return { ok: true, session: { ...session, status: "canceled", updatedAt: now, purgeAt } };
 	});
 }
 
@@ -897,59 +1099,167 @@ export async function issueAgentHandoff(
 	});
 }
 
-/** Why a link for `tokenHash` cannot be redeemed on `session` now, or null if it can. */
-function refuseRedeem(
+/** The longest redeemer nonce a claim accepts (characters). */
+const MAX_REDEEMER_LENGTH = 256;
+
+/** A claim's pre-check: a refusal, a re-entry for the same browser, or null to claim. */
+type RedeemPrecheck = AgentHandoffFailure | { ok: true; reentered: AgentCheckoutSession } | null;
+
+/**
+ * How a redeem of `tokenHash` by `redeemerHash` stands on `session` at `now`:
+ *  - a finalized link re-enters ONLY for the browser that redeemed it (same
+ *    redeemer), within {@link AGENT_HANDOFF_REENTRY_WINDOW_MS}, while open and
+ *    with no order; anyone else (the agent holds the token) gets `HANDOFF_USED`;
+ *  - a live claim answers `HANDOFF_IN_PROGRESS` to everyone, the claiming
+ *    browser included (a second tab or a double click: retry shortly);
+ *  - a lapsed, unfinalized claim binds nobody: any browser may claim again (a
+ *    lost response, or a move from an in-app webview to Safari, never kills it).
+ */
+async function precheckRedeem(
+	deps: Pick<AgentSessionDeps, "secrets">,
 	session: AgentCheckoutSession | null,
 	tokenHash: string,
+	redeemerHash: string,
 	now: string,
-): AgentHandoffFailure | null {
-	if (session === null) return { ok: false, reason: "HANDOFF_INVALID" };
+): Promise<RedeemPrecheck> {
+	if (session === null || isPurgeDue(session, now)) return { ok: false, reason: "HANDOFF_INVALID" };
 	if (session.handoffTokenHash !== tokenHash) {
 		return session.redeemedHandoffs.some((r) => r.tokenHash === tokenHash)
 			? { ok: false, reason: "HANDOFF_USED" }
 			: { ok: false, reason: "HANDOFF_INVALID" };
 	}
 	if (session.status === "canceled") return { ok: false, reason: "HANDOFF_CANCELED" };
-	if (session.status === "completed" || session.handoffUsedAt !== undefined) {
-		return { ok: false, reason: "HANDOFF_USED" };
+	const claim = session.handoffClaim;
+	const sameBrowser =
+		claim !== undefined && deps.secrets.constantTimeEqual(claim.redeemerHash, redeemerHash);
+	if (session.handoffUsedAt !== undefined) {
+		const reentry =
+			sameBrowser &&
+			!isExpired(session, now) &&
+			session.status !== "completed" &&
+			session.orderId === undefined &&
+			session.shopperCartId !== undefined &&
+			Date.parse(now) < Date.parse(session.handoffUsedAt) + AGENT_HANDOFF_REENTRY_WINDOW_MS;
+		if (reentry) return { ok: true, reentered: session };
+		// The finalizing browser past expiry: the session is over (no order can be
+		// attributed any more); anyone else: the link is used.
+		return sameBrowser && isExpired(session, now)
+			? { ok: false, reason: "HANDOFF_EXPIRED" }
+			: { ok: false, reason: "HANDOFF_USED" };
 	}
+	if (session.status === "completed") return { ok: false, reason: "HANDOFF_USED" };
 	if (isExpired(session, now)) return { ok: false, reason: "HANDOFF_EXPIRED" };
 	if (session.lines.length === 0) return { ok: false, reason: "HANDOFF_INCOMPLETE" };
+	if (isAgentHandoffClaimLive(session, now)) return { ok: false, reason: "HANDOFF_IN_PROGRESS" };
 	return null;
 }
 
+/** A {@link claimAgentHandoff} answer. Never shown to the agent: it carries cart ids. */
+export type ClaimAgentHandoffResult =
+	| {
+			ok: true;
+			/** A fresh claim: build the shopper's cart, then {@link finalizeAgentHandoff}
+			 *  with `claimId` (or {@link releaseAgentHandoffClaim} if that fails). */
+			status: "claimed";
+			claimId: string;
+			/** The claim holds off other redeems and agent writes until here. */
+			leaseUntil: string;
+			session: AgentSessionView;
+			/** The agent's cart, for the redeem to reuse when it still matches. */
+			agentCartId?: string;
+	  }
+	| {
+			ok: true;
+			/** The SAME browser re-opened a link it finalized moments ago, with no
+			 *  order recorded yet: hand it `shopperCartId` again. Writes nothing. The
+			 *  caller MUST still check that this cart has not been converted to an
+			 *  order (a checkout may have placed it before the order was recorded
+			 *  here); if it has, treat the link as used. */
+			status: "reentered";
+			session: AgentSessionView;
+			shopperCartId: string;
+			/** When the hand-off finalized (the re-entry window runs from here). */
+			handoffUsedAt: string;
+	  }
+	| AgentHandoffFailure;
+
 /**
- * Redeem a hand-off link, once. On success the caller rebuilds the cart from the
- * returned view (lines, buyer, destination, shipping method, coupon, cartId),
- * re-reading prices and stock. Every failure leaves the session as it was. The
- * store's atomic mark re-checks status, use, expiry and lines; if it refuses,
- * the reason comes from re-reading the session, so the pre-check and the mark
- * always classify a session the same way.
+ * Step 1 of redeeming a hand-off link (ADR-0047): CLAIM it with a short lease
+ * ({@link AGENT_HANDOFF_CLAIM_LEASE_MS}) instead of burning it, so a failure in
+ * the cart work that follows never kills the link. `redeemer` is the browser's
+ * random nonce (an httpOnly cookie the site sets on the landing page, before any
+ * claim; without it the claim is `HANDOFF_REDEEMER_MISSING`); the domain
+ * stores and compares only its hash. The link is single-use PER BROWSER: any
+ * browser may claim it again after a lapsed, unfinalized claim, but only the
+ * browser that finalized it may re-open it, before `expiresAt` and for
+ * {@link AGENT_HANDOFF_REENTRY_WINDOW_MS}; nobody else may
+ * (see `precheckRedeem` for every answer). Every refusal leaves the session as
+ * it was. The store's atomic claim re-checks; if it refuses, the answer comes
+ * from re-reading the session, so the pre-check and the claim always agree.
  */
-export async function redeemAgentHandoff(
+export async function claimAgentHandoff(
 	deps: Pick<AgentSessionDeps, "store" | "clock" | "secrets">,
-	input: { token: string },
-): Promise<{ ok: true; session: AgentSessionView } | AgentHandoffFailure> {
-	if (input.token.length === 0) return { ok: false, reason: "HANDOFF_INVALID" };
+	input: { token: string; redeemer: string },
+): Promise<ClaimAgentHandoffResult> {
+	// No nonce cookie: retryable; the site reloads its landing page, which sets it.
+	if (input.redeemer.length === 0) return { ok: false, reason: "HANDOFF_REDEEMER_MISSING" };
+	if (input.token.length === 0 || input.redeemer.length > MAX_REDEEMER_LENGTH) {
+		return { ok: false, reason: "HANDOFF_INVALID" };
+	}
 	const tokenHash = await deps.secrets.hash(input.token);
+	const redeemerHash = await deps.secrets.hash(input.redeemer);
 	const session = await deps.store.findByHandoffTokenHash(tokenHash);
-	const now = deps.clock.now().toISOString();
-	const refused = refuseRedeem(session, tokenHash, now);
-	if (refused !== null || session === null)
-		return refused ?? { ok: false, reason: "HANDOFF_INVALID" };
-	const marked = await deps.store.markHandoffUsed(session.id, tokenHash, now);
-	if (marked.ok) return { ok: true, session: viewOf(marked.session) };
-	return (
-		refuseRedeem(await deps.store.get(session.id), tokenHash, now) ?? {
-			ok: false,
-			reason: MARK_REFUSAL[marked.reason],
-		}
+	const now = deps.clock.now();
+	const nowIso = now.toISOString();
+	const pre = await precheckRedeem(deps, session, tokenHash, redeemerHash, nowIso);
+	if (pre !== null) return reentryOr(pre);
+	if (session === null) return { ok: false, reason: "HANDOFF_INVALID" };
+	const leaseUntil = new Date(now.getTime() + AGENT_HANDOFF_CLAIM_LEASE_MS).toISOString();
+	const claimId = deps.secrets.mintId();
+	const claimed = await deps.store.claimHandoff(session.id, {
+		tokenHash,
+		claimId,
+		redeemerHash,
+		now: nowIso,
+		leaseUntil,
+	});
+	if (claimed.ok) {
+		const result: ClaimAgentHandoffResult = {
+			ok: true,
+			status: "claimed",
+			claimId,
+			leaseUntil,
+			session: viewOf(claimed.session),
+		};
+		if (claimed.session.cartId !== undefined) result.agentCartId = claimed.session.cartId;
+		return result;
+	}
+	if (claimed.reason === "too_large") return { ok: false, reason: "HANDOFF_UNAVAILABLE" };
+	const again = await precheckRedeem(
+		deps,
+		await deps.store.get(session.id),
+		tokenHash,
+		redeemerHash,
+		nowIso,
 	);
+	return again !== null ? reentryOr(again) : { ok: false, reason: CLAIM_REFUSAL[claimed.reason] };
 }
 
-/** The mark's own reason, used when a re-read no longer shows why it refused
- *  (e.g. the session was emptied and refilled between the mark and the read). */
-const MARK_REFUSAL = {
+function reentryOr(pre: Exclude<RedeemPrecheck, null>): ClaimAgentHandoffResult {
+	if (!pre.ok) return pre;
+	const s = pre.reentered;
+	return {
+		ok: true,
+		status: "reentered",
+		session: viewOf(s),
+		shopperCartId: s.shopperCartId ?? "",
+		handoffUsedAt: s.handoffUsedAt ?? "",
+	};
+}
+
+/** The claim's own reason, used when a re-read no longer shows why it refused
+ *  (e.g. the session was emptied and refilled between the claim and the read). */
+const CLAIM_REFUSAL = {
 	not_found: "HANDOFF_INVALID",
 	token_mismatch: "HANDOFF_INVALID",
 	canceled: "HANDOFF_CANCELED",
@@ -957,18 +1267,95 @@ const MARK_REFUSAL = {
 	already_used: "HANDOFF_USED",
 	expired: "HANDOFF_EXPIRED",
 	incomplete: "HANDOFF_INCOMPLETE",
+	claimed: "HANDOFF_IN_PROGRESS",
 } as const satisfies Record<string, AgentHandoffFailure["reason"]>;
+
+/**
+ * Step 2: FINALIZE a claimed hand-off once the shopper's cart holds its lines.
+ * One compare-and-set stamps the link used, records the shopper's cart
+ * (`shopperCartId`, never shown to the agent); from here the shopper owns the
+ * session. Its retention stays short (expiresAt + 1 h) and its live slots stay
+ * held: only an order recorded before `expiresAt` extends it to 30 days. Idempotent: the
+ * same claim and cart again answers `replayed: true`. Refused (nothing written):
+ * `HANDOFF_CLAIM_LOST` when the claim is no longer the session's or its lease
+ * lapsed more than `AGENT_HANDOFF_FINALIZE_GRACE_MS` ago, `HANDOFF_EXPIRED`
+ * past `expiresAt`, `HANDOFF_CANCELED` after an agent cancel. Do not hand that
+ * cart over then. A failed or empty cart attempt must NOT call this (release).
+ */
+export async function finalizeAgentHandoff(
+	deps: Pick<AgentSessionDeps, "store" | "clock">,
+	input: { sessionId: AgentSessionId; claimId: string; cartId: string },
+): Promise<
+	| { ok: true; replayed: boolean; session: AgentSessionView; shopperCartId: string }
+	| AgentHandoffFinalizeFailure
+> {
+	if (
+		input.claimId.length === 0 ||
+		input.cartId.length === 0 ||
+		input.cartId.length > AGENT_SESSION_MAX_CART_ID_LENGTH
+	) {
+		return { ok: false, reason: "INVALID_REQUEST" };
+	}
+	const now = deps.clock.now().toISOString();
+	const session = await readSession(deps.store, input.sessionId, now);
+	if (session === null) return { ok: false, reason: "SESSION_NOT_FOUND" };
+	const done = await deps.store.finalizeHandoff(input.sessionId, {
+		claimId: input.claimId,
+		cartId: input.cartId,
+		now,
+		// A hand-off alone keeps the short retention; only a recorded order extends it.
+		retainUntil: session.purgeAt,
+	});
+	if (done.ok) {
+		return {
+			ok: true,
+			replayed: done.replayed,
+			session: viewOf(done.session),
+			shopperCartId: done.session.shopperCartId ?? input.cartId,
+		};
+	}
+	return { ok: false, reason: FINALIZE_REFUSAL[done.reason] };
+}
+
+const FINALIZE_REFUSAL = {
+	not_found: "SESSION_NOT_FOUND",
+	claim_lost: "HANDOFF_CLAIM_LOST",
+	lease_lapsed: "HANDOFF_CLAIM_LOST",
+	canceled: "HANDOFF_CANCELED",
+	completed: "HANDOFF_USED",
+	already_used: "HANDOFF_USED",
+	expired: "HANDOFF_EXPIRED",
+	too_large: "HANDOFF_UNAVAILABLE",
+} as const satisfies Record<string, AgentHandoffFinalizeFailure["reason"]>;
+
+/**
+ * Give up a claim before its lease lapses (the cart work failed, or no line
+ * could be added): the link may be claimed again at once and agent writes
+ * resume. Only that claim, only before it finalized, and never on a session
+ * past its retention; `released: false` otherwise (nothing written).
+ */
+export async function releaseAgentHandoffClaim(
+	deps: Pick<AgentSessionDeps, "store" | "clock">,
+	input: { sessionId: AgentSessionId; claimId: string },
+): Promise<{ ok: true; released: boolean }> {
+	const session = await readSession(deps.store, input.sessionId, deps.clock.now().toISOString());
+	if (session === null) return { ok: true, released: false };
+	return {
+		ok: true,
+		released: await deps.store.releaseHandoffClaim(input.sessionId, input.claimId),
+	};
+}
 
 /**
  * Check an `order_secret` against the session's stored hash, in constant time.
  * An unknown session and a wrong secret get the same answer.
  */
 export async function verifyAgentOrderSecret(
-	deps: Pick<AgentSessionDeps, "store" | "secrets">,
+	deps: Pick<AgentSessionDeps, "store" | "secrets" | "clock">,
 	input: { sessionId: AgentSessionId; secret: string },
 ): Promise<{ ok: true; session: AgentSessionView } | AgentOrderSecretFailure> {
 	const hash = await deps.secrets.hash(input.secret);
-	const session = await deps.store.get(input.sessionId);
+	const session = await readSession(deps.store, input.sessionId, deps.clock.now().toISOString());
 	if (session === null || input.secret.length === 0) {
 		return { ok: false, reason: "ORDER_SECRET_INVALID" };
 	}
@@ -986,12 +1373,15 @@ export type RecordAgentSessionOrderResult =
  * Record the order a redeemed hand-off placed, and complete the session
  * (ADR-0047, the plugin increment's precondition). One compare-and-set moves an
  * open session that has had a link redeemed to `completed` with `orderId` (and
- * `cartId`, the cart the order was placed from, when given). Not a keyed write:
+ * `shopperCartId`, the cart the order was placed from, when given). Not a keyed write:
  * the checkout that placed the order calls it, and it is idempotent by
  * construction. The same order again answers `replayed: true` and writes
  * nothing; a different order is `ORDER_ALREADY_RECORDED`; a session nobody
  * redeemed is `HANDOFF_NOT_REDEEMED`; a canceled one is `SESSION_CLOSED`.
- * Allowed past `expiresAt`: the shopper may pay after the agent's 24 h window.
+ * Attribution is for orders placed before `expiresAt`: from then on a new order
+ * is `SESSION_EXPIRED` (a replay of the recorded one still answers). The order
+ * moves the session (and its create records) to the 30-day retention and frees
+ * its live slots.
  */
 export async function recordAgentSessionOrder(
 	deps: Pick<AgentSessionDeps, "store" | "clock">,
@@ -999,13 +1389,14 @@ export async function recordAgentSessionOrder(
 ): Promise<RecordAgentSessionOrderResult> {
 	if (
 		input.orderId.length === 0 ||
+		input.orderId.length > AGENT_SESSION_MAX_ORDER_ID_LENGTH ||
 		(input.cartId !== undefined &&
 			(input.cartId.length === 0 || input.cartId.length > AGENT_SESSION_MAX_CART_ID_LENGTH))
 	) {
 		return fail("INVALID_REQUEST");
 	}
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
-		const current = await deps.store.get(input.sessionId);
+		const current = await readSession(deps.store, input.sessionId, deps.clock.now().toISOString());
 		if (current === null) return fail("SESSION_NOT_FOUND");
 		if (current.orderId !== undefined) {
 			return current.orderId === input.orderId
@@ -1014,63 +1405,24 @@ export async function recordAgentSessionOrder(
 		}
 		if (!isAgentSessionOpen(current.status)) return fail("SESSION_CLOSED");
 		if (!isAgentSessionHandedOff(current)) return fail("HANDOFF_NOT_REDEEMED");
+		// Attribution covers orders placed while the session is unexpired (24 h).
+		const now = deps.clock.now().toISOString();
+		if (isExpired(current, now)) return fail("SESSION_EXPIRED");
 		const next: AgentCheckoutSession = {
 			...current,
 			status: "completed",
 			orderId: input.orderId,
-			updatedAt: deps.clock.now().toISOString(),
+			updatedAt: now,
+			// An order keeps the session (and, in the store, its create records) for
+			// the 30-day retention, and frees its live slots.
+			purgeAt: new Date(Date.parse(current.createdAt) + AGENT_SESSION_RETENTION_MS).toISOString(),
 		};
-		if (input.cartId !== undefined) next.cartId = input.cartId;
+		if (input.cartId !== undefined) next.shopperCartId = input.cartId;
 		const written = await deps.store.write(next, current.revision);
 		if (written.ok) return { ok: true, replayed: false, session: viewOf(written.session) };
+		if (written.reason === "too_large") return fail("WRITE_LIMIT_REACHED");
 	}
 	return fail("WRITE_CONFLICT");
-}
-
-/**
- * Point a redeemed session at the cart its hand-off built for the shopper (the
- * redeem's "mark the cart", ADR-0047): the checkout that places that cart finds
- * the session through `findByCartId` and attributes the order. Only a session
- * that was handed off may be pointed (a session nobody redeemed has no shopper
- * cart), and only while it is open with no order recorded. Not a keyed write (the
- * agent's writes are refused after a hand-off; this is the redeem's own step);
- * idempotent: the same cart again writes nothing. {@link recordAgentSessionOrder}
- * then records the order placed from it.
- */
-export async function recordAgentHandoffCart(
-	deps: Pick<AgentSessionDeps, "store" | "clock">,
-	input: { sessionId: AgentSessionId; cartId: string },
-): Promise<
-	| { ok: true; session: AgentSessionView }
-	| {
-			ok: false;
-			reason:
-				| "SESSION_NOT_FOUND"
-				| "HANDOFF_NOT_REDEEMED"
-				| "SESSION_CLOSED"
-				| "INVALID_REQUEST"
-				| "WRITE_CONFLICT";
-	  }
-> {
-	if (input.cartId.length === 0 || input.cartId.length > AGENT_SESSION_MAX_CART_ID_LENGTH) {
-		return { ok: false, reason: "INVALID_REQUEST" };
-	}
-	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
-		const current = await deps.store.get(input.sessionId);
-		if (current === null) return { ok: false, reason: "SESSION_NOT_FOUND" };
-		if (!isAgentSessionHandedOff(current)) return { ok: false, reason: "HANDOFF_NOT_REDEEMED" };
-		if (current.cartId === input.cartId) return { ok: true, session: viewOf(current) };
-		// Once an order is recorded (or the agent canceled), the cart is settled.
-		if (current.orderId !== undefined || !isAgentSessionOpen(current.status)) {
-			return { ok: false, reason: "SESSION_CLOSED" };
-		}
-		const written = await deps.store.write(
-			{ ...current, cartId: input.cartId, updatedAt: deps.clock.now().toISOString() },
-			current.revision,
-		);
-		if (written.ok) return { ok: true, session: viewOf(written.session) };
-	}
-	return { ok: false, reason: "WRITE_CONFLICT" };
 }
 
 /**
@@ -1097,19 +1449,20 @@ export async function detachAgentSessionCart(
 				| "SESSION_NOT_FOUND"
 				| "SESSION_HANDED_OFF"
 				| "SESSION_CLOSED"
+				| "HANDOFF_IN_PROGRESS"
 				| "IDEMPOTENCY_KEY_REUSED"
 				| "WRITE_CONFLICT";
 	  }
 > {
 	for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
-		const current = await deps.store.get(input.sessionId);
+		const now = deps.clock.now().toISOString();
+		const current = await readSession(deps.store, input.sessionId, now);
 		if (current === null) return { ok: false, reason: "SESSION_NOT_FOUND" };
 		const prior = current.writes.find((w) => sameKey(w, input));
 		if (prior !== undefined) {
 			if (prior.operation !== "replace" || prior.fingerprint !== input.fingerprint) {
 				return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 			}
-			const now = deps.clock.now().toISOString();
 			return {
 				ok: true,
 				detached: false,
@@ -1118,13 +1471,14 @@ export async function detachAgentSessionCart(
 		}
 		if (isAgentSessionHandedOff(current)) return { ok: false, reason: "SESSION_HANDED_OFF" };
 		if (!isAgentSessionOpen(current.status)) return { ok: false, reason: "SESSION_CLOSED" };
+		// A shopper's redeem is reusing this cart right now: never pull it away.
+		if (isAgentHandoffClaimLive(current, now)) {
+			return { ok: false, reason: "HANDOFF_IN_PROGRESS" };
+		}
 		const cartId = current.cartId;
 		if (cartId === undefined) return { ok: true, detached: true };
 		const { cartId: _cart, quote: _quote, ...rest } = current;
-		const written = await deps.store.write(
-			{ ...rest, updatedAt: deps.clock.now().toISOString() },
-			current.revision,
-		);
+		const written = await deps.store.write({ ...rest, updatedAt: now }, current.revision);
 		if (written.ok) return { ok: true, detached: true, cartId };
 	}
 	return { ok: false, reason: "WRITE_CONFLICT" };
