@@ -92,6 +92,14 @@ Options considered:
   egress IP, normal for cloud agents, is a fresh create and may leave a duplicate session (it
   expires unused). Every later write is scoped to the session id alone, which is already the
   bearer credential, so its retries replay from any network and never mint a second link.
+- Redeeming a link is claim-then-finalize: a short lease (60 s) while the cart is built, then
+  one compare-and-set that marks the link used and records the shopper's cart. A transient
+  failure in between never kills the link (the lease lapses and the same token claims again), a
+  double click re-enters the finalized cart for 15 minutes before any order, and agent writes
+  wait while a claim is live.
+- Session storage is capped by the store itself, atomically at insert (live and stored session
+  counts), and per document (128 KiB, with older replay answers evicted first); see the design
+  spec's "Limits and abuse".
 - Hand-off is terminal for the agent. Once a shopper redeems a link the shopper owns the cart:
   update, complete and issue-link are refused (`SESSION_HANDED_OFF`), so no second link can be
   minted for the same session and the shopper cannot be sent to pay twice. Only cancel (and reads)

@@ -103,7 +103,11 @@ AgentCheckoutSession {
   else `requires_escalation`, and the response carries `continue_url`.
 - **Idempotency:** every write requires `Idempotency-Key` (1–255 characters); the same key and
   body replay the stored answer, a different body is `409 idempotency_key_reused` (UCP semantics,
-  and Otta's own rule). A create's key is scoped to the caller's network key (no session exists
+  and Otta's own rule). A key is bound to its operation: reusing it for another operation
+  (create, update, complete, cancel, issue-link) is `idempotency_key_reused` too. A refused write
+  records nothing, so its key may be retried with a corrected body. Keys live as long as the
+  session's retention: a session or create record at or past `purgeAt` replays nothing
+  (`IDEMPOTENCY_KEY_EXPIRED`, never a re-create), and once the sweep deleted it the key is fresh. A create's key is scoped to the caller's network key (no session exists
   yet), so a create retried from another egress IP may duplicate the session (accepted, ADR-0047);
   every later write is scoped to the session id alone and replays from any network.
 - **Public view:** every result the site sees carries `AgentSessionView`, an allowlist projection:
@@ -147,14 +151,21 @@ AgentCheckoutSession {
   leading token characters of the fragment (agents and chat apps append `?utm_…`, `&…` or a
   trailing period: lesson from WooCommerce #4588), clears the fragment with `replaceState`, and on
   "Continue" POSTs the token same-origin.
-- `POST /checkout/handoff` (site) calls plugin `agentic/handoff/redeem`, which atomically marks the
-  link used (single use), then:
+- `POST /checkout/handoff` (site) calls plugin `agentic/handoff/redeem`, which CLAIMS the link
+  with a 60 s lease (`claimAgentHandoff`; the link is not used yet), then:
   1. reuses the session's cart if it is still active with the same lines; otherwise creates a new
      cart and re-adds the lines (prices and stock re-read);
-  2. if **no** line can be added, leaves the shopper's existing cart cookie untouched and shows
-     why (lesson from #4596);
-  3. returns the cart cookie descriptor plus the pre-fill (email, phone, address, shipping
-     method, coupon).
+  2. if **no** line can be added, releases the claim (`releaseAgentHandoffClaim`, the link stays
+     redeemable), leaves the shopper's existing cart cookie untouched and shows why (lesson from
+     #4596);
+  3. otherwise FINALIZES (`finalizeAgentHandoff`): one compare-and-set marks the link used and
+     records the shopper's `cartId`, then returns the cart cookie descriptor plus the pre-fill
+     (email, phone, address, shipping method, coupon).
+  A failure between claim and finalize never kills the link: once the lease lapses the same token
+  claims again. While a claim is live a second redeem and every agent write answer the retryable
+  `HANDOFF_IN_PROGRESS`; an agent write after a lapse clears the stale claim, whose late finalize
+  is then `HANDOFF_CLAIM_LOST`. Re-redeeming a finalized link within 15 minutes, before any order,
+  re-enters the same cart (double click, second tab); after that it is `HANDOFF_USED`.
   The site sets `otta_cart`, writes `otta_checkout_draft`, and 303s to `/checkout?coupon=…&country=…
   &region=…&method=…` (the selection params `/checkout` already reads).
 - Pre-fill never overwrites what a signed-in customer already has on their account, and the link's
@@ -193,8 +204,19 @@ no shopper data is returned.
 - New site routes join `SITE_ROUTES` on the existing bindings: reads on a new `RATE_LIMIT_READS`
   binding (or exempt if the binding is unavailable on Workers Free; decide in the site PR), writes
   on `RATE_LIMIT_WRITES`, keyed per IP.
-- Per-store cap on open sessions (default 500 live sessions) and per-IP session creates
-  (default 60 per hour), enforced in the plugin from storage counts.
+- Per-store caps, enforced BY THE STORE atomically with the insert (`AgentSessionStore.insert`),
+  so racing creates cannot overshoot them: 500 live sessions (open and unexpired) and 10,000
+  stored sessions (every status, until the 30-day purge; canceled and expired sessions still
+  occupy storage). A refused create is `TOO_MANY_SESSIONS` and leaves no create record behind.
+  Per-IP creates (default 60 per hour) stay a soft count. All four are tunable limits.
+- Per-session storage is bounded: 50 lines; product id and sku at most 128 characters each; the
+  content (the public view) at most 32 KiB as UTF-8 JSON (`CONTENT_TOO_LARGE`); order id at most
+  128 characters; and the whole stored document at most 128 KiB (UTF-8 JSON, the store refuses
+  heavier, `too_large`). Keyed writes keep 4 KiB under that by evicting their oldest kept write
+  answers early (the evicted keys retire: a late replay is `IDEMPOTENCY_KEY_EXPIRED`), so a
+  cancel and the hand-off marks always fit; a write that cannot fit even alone is
+  `WRITE_LIMIT_REACHED`. At most 32 kept answers and 512 keyed writes per session. Worst case:
+  10,000 × 128 KiB ≈ 1.25 GiB of sessions per store; a typical session is a few KiB.
 - Body cap 64 KiB; at most 50 lines, quantity 1–`CART_LINE_MAX_QTY`.
 - Every agent-created cart holds stock for the normal hold TTL only; abandoned sessions cost no
   stock after that.
