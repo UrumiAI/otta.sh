@@ -20,6 +20,9 @@ describe("deleteShippingZone (delete-in-use guard over the in-memory fakes)", ()
 		shippingRules = new InMemoryShippingRulesStore();
 		taxRules = new InMemoryTaxRulesStore();
 		await shippingRules.createZone({ id: "z-us", name: "US", regions: ["US"] });
+		await shippingRules.createZone({ id: "z-eu", name: "EU", regions: ["FR"] });
+		await taxRules.createClass({ id: "standard", name: "Standard" });
+		await taxRules.createClass({ id: "reduced", name: "Reduced" });
 	});
 
 	const rate = (id: string, zoneId: string, taxClassId = "standard") =>

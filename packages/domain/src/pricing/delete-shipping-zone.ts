@@ -39,12 +39,15 @@ export type DeleteShippingZoneOutcome =
  * `deleteTaxClass` accepts for products: the methods guard is atomic because the
  * methods live IN the zone document the delete is conditioned on, but a tax rate
  * lives in its CLASS document, so no single compare-and-delete can see both. A
- * rate created in that gap is left naming a deleted zone. It is inert at checkout
- * while no zone has that id (a deleted zone never matches an address), but a zone
- * later created with the SAME id picks it up, and the merchant clears it with a
- * rate delete by id. Accepted for a rare admin maintenance action rather than a
- * cross-document lock; the same window exists today for any rate created naming
- * a zone that does not exist, since a rate create does not check its zone.
+ * rate created in that gap is left naming a deleted zone, exactly as every zone
+ * delete left its rates before #741. It is inert at checkout (a deleted zone never
+ * matches an address), but it is not harmless: no list shows it (the Tax page and
+ * `tax_rates_list` read only existing zones) and it blocks deleting its tax class
+ * (`in_use_by_rates`). The way out is to create a zone with the same id, whose
+ * rate list then shows it, delete the rate, then delete the zone. Accepted for a
+ * rare admin maintenance action rather than a cross-document lock; a rate create
+ * naming a zone that does not exist reaches the same state, since a rate create
+ * does not check its zone.
  */
 export async function deleteShippingZone(
 	deps: DeleteShippingZoneDeps,
