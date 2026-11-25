@@ -10,10 +10,7 @@
  *  - before landing: that create-if-absent runs, then the first update on a
  *    slot document (the landing mark) throws instead of running.
  */
-import type {
-	AgentCheckoutSession,
-	AgentSessionCapacity,
-} from "@urumi.ai/otta-domain";
+import type { AgentCheckoutSession, AgentSessionCapacity } from "@urumi.ai/otta-domain";
 import type { AgentSessionStoreHarness } from "@urumi.ai/otta-domain/testing";
 import {
 	AGENT_SESSION_COLLECTIONS,

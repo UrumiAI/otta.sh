@@ -71,12 +71,7 @@ import {
 	type CasStep,
 } from "./cas-retry.js";
 import { collectionOf } from "./collection-of.js";
-import type {
-	StorageAccess,
-	StorageCollection,
-	Versioned,
-	WhereClause,
-} from "./storage-access.js";
+import type { StorageAccess, StorageCollection, Versioned, WhereClause } from "./storage-access.js";
 
 /** The page size every walk below reads in (the host's ceiling). */
 const PAGE_SIZE = 100;
@@ -614,10 +609,8 @@ export class EmdashAgentSessionStore implements AgentSessionStore {
 		// Expired slots, and every unlanded one: an abandoned one is deleted, one
 		// whose session document is stored (its insert stopped before landing, or
 		// is landing right now) is landed instead.
-		for (const where of [
-			{ expiresAt: { lte: now } },
-			{ state: "taken" },
-		] satisfies WhereClause[]) {
+		const wheres: WhereClause[] = [{ expiresAt: { lte: now } }, { state: "taken" }];
+		for (const where of wheres) {
 			const result = await this.#slots.query({ where, orderBy: { claimedAt: "asc" }, limit: page });
 			for (const { id } of result.items) candidates.add(id);
 		}

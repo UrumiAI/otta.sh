@@ -49,8 +49,8 @@ export interface AgentSessionCollectionIndexDeclaration {
  * The four collections the agent-session store owns, with every field it
  * queries:
  *  - sessions, always behind `admission`: `status` + `expiresAt` (`countLive`),
- *    `networkKey` + `createdAt` (the per-network create count), `cartId` /
- *    `shopperCartId` + `createdAt` (`findByCartId`); and `purgeAt` alone
+ *    `networkKey` + `createdAt` (the per-network create count), `cartId` +
+ *    `createdAt` and `shopperCartId` (`findByCartId`); and `purgeAt` alone
  *    (`listPurgeDue`, hidden documents included);
  *  - slots: `pool` (`occupiedSlots`), `sessionId` (a session's slots),
  *    `expiresAt` and `state` + `claimedAt` (`purgeSlotsDue`);
@@ -73,7 +73,10 @@ export const AGENT_SESSION_COLLECTIONS: Readonly<
 			["admission", "status", "expiresAt"],
 			["admission", "networkKey", "createdAt"],
 			["admission", "cartId", "createdAt"],
-			["admission", "shopperCartId", "createdAt"],
+			// No `createdAt` here: a shopper's cart is recorded on one session, and
+			// `idx_plugin_otta_agent_sessions_admission_shopperCartId_createdAt` is 64
+			// characters, past the 63 an EmDash index name keeps readable.
+			["admission", "shopperCartId"],
 		],
 	},
 	[AGENT_SESSION_SLOTS_COLLECTION]: {
@@ -139,8 +142,11 @@ export function toAgentSessionDoc(
 	admission: AgentSessionAdmission,
 	slots: readonly string[],
 ): AgentSessionDoc {
-	const { admission: _a, slots: _s, ...plain } = session as AgentCheckoutSession &
-		Partial<Pick<AgentSessionDoc, "admission" | "slots">>;
+	const {
+		admission: _a,
+		slots: _s,
+		...plain
+	} = session as AgentCheckoutSession & Partial<Pick<AgentSessionDoc, "admission" | "slots">>;
 	return JSON.parse(JSON.stringify({ ...plain, admission, slots })) as AgentSessionDoc;
 }
 

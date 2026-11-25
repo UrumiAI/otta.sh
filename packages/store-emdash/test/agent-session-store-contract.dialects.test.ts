@@ -25,7 +25,10 @@ import {
 	WebCryptoAgentSessionSecrets,
 } from "../src/index.js";
 import { AGENT_SESSION_LAYOUT } from "./agent-session-collections.js";
-import { emdashAgentSessionHarness, freshEmdashAgentSessionHarness } from "./agent-session-harness.js";
+import {
+	emdashAgentSessionHarness,
+	freshEmdashAgentSessionHarness,
+} from "./agent-session-harness.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 
 const SERVER_KEY = new Uint8Array(32).fill(7);
