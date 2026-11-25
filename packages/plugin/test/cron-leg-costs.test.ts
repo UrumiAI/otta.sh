@@ -44,6 +44,10 @@ import {
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway, FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
+	AGENT_SESSION_CREATE_KEYS_COLLECTION,
+	AGENT_SESSION_KEY_SWEEP_ENTRY_CALLS,
+	AGENT_SESSION_KEY_SWEEP_UNIT_CALLS,
+	AGENT_SESSION_LINKS_COLLECTION,
 	AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
 	AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS,
 	AGENT_SESSION_SLOTS_COLLECTION,
@@ -95,7 +99,9 @@ import {
 	holdIntentCost,
 	PRUNE_CART_CALLS,
 	AGENT_SESSION_PURGE_CALLS,
+	AGENT_SESSION_KEY_PURGE_BATCH,
 	AGENT_SESSION_SLOT_PURGE_BATCH,
+	agentSessionKeyBatch,
 	agentSessionSlotBatch,
 	pruneAbandonedCart,
 	releaseStrandedOnSku,
@@ -958,6 +964,62 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["prune-agent-sessions"].unit);
 	});
 
+	// #712 round 4: purgeIdempotencyDue's cost per UNIT (one create record and one
+	// orphan pointer), measured, and the leg's batch sized from it.
+	describe("prune-agent-sessions key sweep (purgeIdempotencyDue)", () => {
+		const NOW = "2026-06-01T12:00:00.000Z";
+		const OLD = "2026-05-01T12:00:00.000Z";
+		test("each unit costs at most the measured ceiling: two record calls, three pointer calls", async () => {
+			for (const name of [AGENT_SESSION_CREATE_KEYS_COLLECTION, AGENT_SESSION_LINKS_COLLECTION]) {
+				const c = collectionOf(storage, name);
+				for (const { id } of (await c.query({ limit: 100 })).items) await c.delete(id);
+			}
+			const keys = collectionOf<Record<string, unknown>>(
+				storage,
+				AGENT_SESSION_CREATE_KEYS_COLLECTION,
+			);
+			const links = collectionOf<Record<string, unknown>>(storage, AGENT_SESSION_LINKS_COLLECTION);
+			for (const i of [0, 1]) {
+				await keys.put(`key-sweep-${String(i)}`, {
+					networkKey: "net-sweep",
+					idempotencyKey: `k-${String(i)}`,
+					sessionId: `cs_gone_${String(i)}`,
+					purgeAt: OLD,
+				});
+				await links.put(`hash-sweep-${String(i)}`, {
+					tokenHash: `hash-sweep-${String(i)}`,
+					sessionId: `cs_gone_${String(i)}`,
+					purgeAt: OLD,
+				});
+			}
+			const used = await cost(async () => {
+				await new EmdashAgentSessionStore({ storage: wrappedStorage() }).purgeIdempotencyDue(
+					NOW,
+					2,
+				);
+			});
+			expect(await keys.count()).toBe(0);
+			expect(await links.count()).toBe(0);
+			expect(used, `measured ${String(used)}`).toBe(
+				AGENT_SESSION_KEY_SWEEP_ENTRY_CALLS + 2 * AGENT_SESSION_KEY_SWEEP_UNIT_CALLS,
+			);
+		});
+
+		test("the leg sizes the key batch so its worst case fits the room it has", () => {
+			for (const room of [0, 2, 6, 7, 12, 20, 27, 50]) {
+				const batch = agentSessionKeyBatch(room);
+				if (batch > 0) {
+					expect(
+						AGENT_SESSION_KEY_SWEEP_ENTRY_CALLS + batch * AGENT_SESSION_KEY_SWEEP_UNIT_CALLS,
+					).toBeLessThanOrEqual(room);
+				}
+			}
+			expect(agentSessionKeyBatch(6)).toBe(0);
+			expect(agentSessionKeyBatch(7)).toBe(1);
+			expect(agentSessionKeyBatch(200)).toBe(AGENT_SESSION_KEY_PURGE_BATCH);
+		});
+	});
+
 	// #712 round 3: purgeSlotsDue's cost is bounded per CANDIDATE, whatever the
 	// candidate turns out to be, and the two worst paths are measured here.
 	describe("prune-agent-sessions slot sweep (purgeSlotsDue)", () => {
@@ -1012,7 +1074,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			);
 		});
 
-		test("an unlanded slot whose hidden session lost its other slot costs the same ceiling", async () => {
+		test("an unlanded slot whose hidden session lost its other slot stays within the ceiling", async () => {
 			await clearSweepState();
 			await sessions().put("cs_sweep_lost", {
 				id: "cs_sweep_lost",
@@ -1039,7 +1101,9 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			const used = await sweep(1);
 			expect(await sessions().get("cs_sweep_lost")).toBeNull();
 			expect(await slots().get("live:0")).toBeNull();
-			expect(used, `measured ${String(used)}`).toBe(
+			// 9 measured: one under the pending-order path that sets the ceiling.
+			expect(used, `measured ${String(used)}`).toBe(AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS + 9);
+			expect(used).toBeLessThanOrEqual(
 				AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS + AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
 			);
 		});
@@ -1095,8 +1159,8 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 					).toBeLessThanOrEqual(room);
 				}
 			}
-			expect(agentSessionSlotBatch(11)).toBe(0);
-			expect(agentSessionSlotBatch(12)).toBe(1);
+			expect(agentSessionSlotBatch(12)).toBe(0);
+			expect(agentSessionSlotBatch(13)).toBe(1);
 			expect(agentSessionSlotBatch(200)).toBe(AGENT_SESSION_SLOT_PURGE_BATCH);
 		});
 	});

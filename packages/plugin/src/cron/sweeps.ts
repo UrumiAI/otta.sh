@@ -191,6 +191,8 @@ import {
 	COUPONS_COLLECTION,
 	EmdashReportingStore,
 	isScanPageLimitError,
+	AGENT_SESSION_KEY_SWEEP_ENTRY_CALLS,
+	AGENT_SESSION_KEY_SWEEP_UNIT_CALLS,
 	AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
 	AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS,
 	isStorageContentionError,
@@ -515,14 +517,25 @@ export const GUEST_COUPON_RELEASE_CALLS = 5;
 export const AGENT_SESSION_PURGE_CALLS = 15;
 /** Sessions one run lists for purge (a page; the gate bounds what is purged). */
 export const AGENT_SESSION_PURGE_BATCH = 20;
-/** The create-key and orphan-pointer sweep after the sessions: two pages and
- *  their deletes, at most this many each (fewer when the leg has less room). */
+/** The create-key and orphan-pointer sweep after the sessions: at most this many
+ *  of each (fewer when the leg has less room, `agentSessionKeyBatch`). */
 export const AGENT_SESSION_KEY_PURGE_BATCH = 5;
 /** Live-cap slot CANDIDATES one run processes (`purgeSlotsDue`): every one
  *  counts, deleted, landed, finished or skipped. The batch is sized to the room
  *  left from the adapter's measured worst case: its fixed page reads plus that
  *  many calls per candidate (`agentSessionSlotBatch`). */
 export const AGENT_SESSION_SLOT_PURGE_BATCH = 5;
+
+/** The key-sweep batch that fits `callRoom` calls at the measured worst case:
+ *  its two page reads, then up to one create record and one pointer per unit. */
+export function agentSessionKeyBatch(callRoom: number): number {
+	return Math.min(
+		AGENT_SESSION_KEY_PURGE_BATCH,
+		Math.floor(
+			(callRoom - AGENT_SESSION_KEY_SWEEP_ENTRY_CALLS) / AGENT_SESSION_KEY_SWEEP_UNIT_CALLS,
+		),
+	);
+}
 
 /** The slot-sweep batch that fits `callRoom` calls at the measured worst case. */
 export function agentSessionSlotBatch(callRoom: number): number {
@@ -2345,13 +2358,11 @@ export async function runCommerceSweeps(
 					}
 					if (await store.purge(id, nowIso)) count++;
 				}
-				// Opportunistic, and sized to the room left rather than gated: two page
-				// reads and up to two deletes per record. Orphans a thin tick leaves are
-				// the next run's, so an idle store never reads as "more next tick".
-				const keyBatch = Math.min(
-					AGENT_SESSION_KEY_PURGE_BATCH,
-					Math.floor((legBudget.remainingQueries() - 2) / 2),
-				);
+				// Opportunistic, and sized to the room left rather than gated, at the
+				// adapter's measured worst case (`agentSessionKeyBatch`). Orphans a thin
+				// tick leaves are the next run's, so an idle store never reads as "more
+				// next tick".
+				const keyBatch = agentSessionKeyBatch(legBudget.remainingQueries());
 				if (!stopped && keyBatch > 0) {
 					count += await store.purgeIdempotencyDue(nowIso, keyBatch);
 				}

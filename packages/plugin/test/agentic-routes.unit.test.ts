@@ -526,6 +526,68 @@ describe("the redeem (#712 round 3)", () => {
 		expect(await cartLines(base, shopperCart)).toEqual({ [MUG.sku]: { qty: 1 } });
 	});
 
+	/**
+	 * A redeem whose cap step is raced: an overlapping claim doubles the line, and
+	 * each of the first `refusals` cap writes finds the line replaced under it
+	 * (removed and re-added doubled by the peer), so that adjust is refused.
+	 */
+	async function cappedRedeem(key: string, refusals: number) {
+		const s = await session(key, MUG.id);
+		const peer = await makeCommerceClient(sweepContext(base));
+		const shopperCart = (
+			await peer.createCart(
+				s.currency,
+				await agenticCartKey(SERVER_KEY_BYTES, "shopper", [s.id, s.token]),
+			)
+		).cartId;
+		let raced = false;
+		let refused = 0;
+		const capKeys = new Set<string>();
+		before = async (collection, method, args) => {
+			if (!raced && collection === "inventory") {
+				raced = true;
+				expect((await peer.addCartLine(shopperCart, MUG.sku, MUG.id, 1, `${key}:peer`)).ok).toBe(
+					true,
+				);
+				return;
+			}
+			if (collection !== CARTS_COLLECTION || method !== "compareAndSet" || refused >= refusals)
+				return;
+			if (args[0] !== shopperCart) return;
+			// Only a write that carries a cap key never seen before: the cap's own.
+			const fresh = (
+				JSON.stringify(args[2]).match(/agentic:[^"]*:cap(?:-retry)?:[^"]*/g) ?? []
+			).filter((k) => !capKeys.has(k));
+			if (fresh.length === 0) return;
+			for (const k of fresh) capKeys.add(k);
+			refused++;
+			const lines = await peer.getCart(shopperCart);
+			const current = lines.ok ? lines.cart.lines[0] : undefined;
+			if (current === undefined) throw new Error("no line to replace");
+			await peer.removeCartLine(shopperCart, current.lineId, `${key}:rm:${String(refused)}`);
+			await peer.addCartLine(shopperCart, MUG.sku, MUG.id, 2, `${key}:readd:${String(refused)}`);
+		};
+		const redeemed = await redeem(ctx(), s.token, `browser-${key}`);
+		before = null;
+		return { s, shopperCart, redeemed, refused };
+	}
+
+	test("a refused cap is retried once against the re-read cart", async () => {
+		const { shopperCart, redeemed, refused } = await cappedRedeem("clamp-once", 1);
+		expect(refused).toBe(1);
+		expect(redeemed).toMatchObject({ ok: true, cartId: shopperCart });
+		expect(await cartLines(base, shopperCart)).toEqual({ [MUG.sku]: { qty: 1 } });
+	});
+
+	test("a cap refused twice fails the attempt: no hand-off, the claim released", async () => {
+		const { s, redeemed, refused } = await cappedRedeem("clamp-twice", 2);
+		expect(refused).toBe(2);
+		expect(redeemed).toEqual({ ok: false, error: "RENDER_FAILED" });
+		const after = await new EmdashAgentSessionStore({ storage: base }).get(s.id as never);
+		expect(after?.handoffClaim).toBeUndefined();
+		expect(after?.shopperCartId).toBeUndefined();
+	});
+
 	test("the out-of-stock hand-over adds to the shopper's cart BEFORE taking the agent's line", async () => {
 		const s = await session("handover-order", PAIR.id);
 		// The other unit is held by a stranger's cart, so the shopper's first add is

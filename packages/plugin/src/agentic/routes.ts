@@ -999,7 +999,10 @@ async function buildShopperCart(
 
 /**
  * At most the session's quantity of each line: an add re-adding a sku merges
- * into its line, so two claims of one link adding at once could double it.
+ * into its line, so two claims of one link adding at once could double it. A
+ * refused cap is retried once on a fresh read of the cart (under a fresh key: a
+ * refused key replays its refusal); refused again, the attempt fails (throws),
+ * so its claim is released rather than a doubled line handed over.
  */
 async function capLines(
 	client: CommerceClient,
@@ -1007,18 +1010,24 @@ async function capLines(
 	requested: ReadonlyArray<{ productId: string; quantity: number }>,
 	claimId: string,
 ): Promise<void> {
-	const read = await client.getCart(cartId);
-	if (!read.ok) return;
-	for (const line of read.cart.lines) {
-		const want = requested.find((r) => r.productId === line.productId);
-		if (want === undefined || line.qty <= want.quantity) continue;
-		await client.adjustCartLine(
-			cartId,
-			line.lineId,
-			want.quantity,
-			`agentic:${cartId}:${claimId}:cap:${line.lineId}`,
-		);
+	for (const attempt of ["cap", "cap-retry"] as const) {
+		const read = await client.getCart(cartId);
+		if (!read.ok) throw new Error("the shopper's cart cannot be read");
+		let refused = false;
+		for (const line of read.cart.lines) {
+			const want = requested.find((r) => r.productId === line.productId);
+			if (want === undefined || line.qty <= want.quantity) continue;
+			const capped = await client.adjustCartLine(
+				cartId,
+				line.lineId,
+				want.quantity,
+				`agentic:${cartId}:${claimId}:${attempt}:${line.lineId}`,
+			);
+			if (!capped.ok) refused = true;
+		}
+		if (!refused) return;
 	}
+	throw new Error("a shopper's line could not be capped at the session's quantity");
 }
 
 // ── order (status by order secret) ─────────────────────────────────────────
