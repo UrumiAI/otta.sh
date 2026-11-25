@@ -88,7 +88,9 @@ export type AgentSessionOperation = "create" | "replace" | "cancel" | "complete"
  * built field by field ({@link AGENT_SESSION_VIEW_KEYS}), so a field added to
  * the stored document never leaks by default. It carries no idempotency
  * bookkeeping, network key, secret hash, link generation or history, revision
- * or purge time; build `continue_url` only from a returned `handoffToken`.
+ * or purge time, and NO cart id: neither the agent's cart nor the shopper's (an
+ * agent holding the shopper's cart id could change or place that cart). Build
+ * `continue_url` only from a returned `handoffToken`.
  */
 export interface AgentSessionView {
 	id: AgentSessionId;
@@ -99,7 +101,6 @@ export interface AgentSessionView {
 	destination?: OrderAddress;
 	shippingMethodId?: string;
 	couponCode?: string;
-	cartId?: string;
 	quote?: AgentSessionQuote;
 	/** createdAt + 24 h: agent writes and hand-off links end here. */
 	expiresAt: string;
@@ -119,7 +120,6 @@ export const AGENT_SESSION_VIEW_KEYS = [
 	"destination",
 	"shippingMethodId",
 	"couponCode",
-	"cartId",
 	"quote",
 	"expiresAt",
 	"orderId",
@@ -157,6 +157,10 @@ export interface AgentSessionWriteRecord extends AgentSessionWriteKey {
 export interface AgentHandoffClaim {
 	/** The link the claim is on: the session's `handoffTokenHash` when claimed. */
 	tokenHash: string;
+	/** Hash of the claiming browser's random nonce (an httpOnly cookie the site
+	 *  sets at claim time). Only this browser may re-claim after a lapse or
+	 *  re-enter after finalize: the agent holds the token, not the cookie. */
+	redeemerHash: string;
 	/** Unguessable, minted per claim; finalize and release must present it. */
 	claimId: string;
 	claimedAt: string;
@@ -194,8 +198,13 @@ export interface AgentCheckoutSession {
 	destination?: OrderAddress;
 	shippingMethodId?: string;
 	couponCode?: string;
-	/** The cart last used to quote; may since have expired or been checked out. */
+	/** The AGENT's cart, last used to quote; may since have expired or been
+	 *  checked out. Never projected into a view. */
 	cartId?: string;
+	/** The SHOPPER's cart: set when the hand-off finalizes (and by the order
+	 *  record). Never projected into a view: only the plugin's redeem and
+	 *  checkout read it, never an agent. */
+	shopperCartId?: string;
 	quote?: AgentSessionQuote;
 	/** Hash of the derived `order_secret`. */
 	orderSecretHash: string;
@@ -235,7 +244,9 @@ export interface AgentCheckoutSession {
 	updatedAt: string;
 	/** createdAt + 24 h: the session, and every hand-off link it issues, dies here. */
 	expiresAt: string;
-	/** createdAt + 30 d: the sweep deletes the session from here on. */
+	/** The sweep deletes the session from here on: expiresAt + 1 h
+	 *  ({@link AGENT_SESSION_UNREDEEMED_RETENTION_MS}) until a hand-off finalizes,
+	 *  then createdAt + 30 d; a cancel sets it back to max(now, expiresAt) + 1 h. */
 	purgeAt: string;
 	/** Recent keyed writes with their answers, newest last, at most
 	 *  {@link AGENT_SESSION_MAX_WRITE_RECORDS}. Each answer holds a copy of the
@@ -250,9 +261,17 @@ export const AGENT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 export const AGENT_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long a shopper's claim on a link holds off other claims and agent writes. */
 export const AGENT_HANDOFF_CLAIM_LEASE_MS = 60 * 1000;
-/** After a finalized hand-off, the same link re-enters its cart (double click,
- *  second tab) for this long while no order is recorded; then it is used. */
+/** After a finalized hand-off, the SAME BROWSER (same redeemer) may re-open
+ *  the link into its cart for this long while no order is recorded; nobody else
+ *  ever may. */
 export const AGENT_HANDOFF_REENTRY_WINDOW_MS = 15 * 60 * 1000;
+/** A claim whose lease lapsed may still finalize for this long after it (the
+ *  cart work finished just late), never after the session's `expiresAt`. */
+export const AGENT_HANDOFF_FINALIZE_GRACE_MS = 30 * 1000;
+/** A session never handed off, or canceled, is purged this long after it
+ *  expires (or is canceled, if later). Only a finalized hand-off keeps
+ *  {@link AGENT_SESSION_RETENTION_MS}. */
+export const AGENT_SESSION_UNREDEEMED_RETENTION_MS = 60 * 60 * 1000;
 /**
  * The most a stored session document may weigh: UTF-8 bytes of its JSON
  * ({@link agentSessionDocumentBytes}). The store refuses a larger insert or

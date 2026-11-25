@@ -76,7 +76,10 @@ export type AgentHandoffFailureReason =
 	| "HANDOFF_INCOMPLETE"
 	/** Another redeem of this link holds a live claim. Retryable: once that claim
 	 *  finalizes the link re-enters its cart, and if it lapses the link claims again. */
-	| "HANDOFF_IN_PROGRESS";
+	| "HANDOFF_IN_PROGRESS"
+	/** The store refused the claim's document (over its byte cap). Not expected:
+	 *  keyed writes leave a reserve for it. */
+	| "HANDOFF_UNAVAILABLE";
 
 export type AgentHandoffFailure = { ok: false; reason: AgentHandoffFailureReason };
 
@@ -85,9 +88,10 @@ export type AgentOrderSecretFailure = { ok: false; reason: "ORDER_SECRET_INVALID
 
 /**
  * Why {@link finalizeAgentHandoff} refused. `HANDOFF_CLAIM_LOST`: the claim is no
- * longer the session's (it lapsed and another redeem re-claimed, or an agent
- * write after the lapse cleared it); the caller must not hand the shopper the
- * cart it built. Nothing is written on any failure.
+ * longer the session's (it lapsed and was re-claimed, an agent write after the
+ * lapse cleared it, or its finalize grace ran out); `HANDOFF_EXPIRED`: the
+ * session's 24 h ended first. Either way the caller must not hand the shopper
+ * the cart it built. Nothing is written on any failure.
  */
 export type AgentHandoffFinalizeFailure = {
 	ok: false;
@@ -96,5 +100,7 @@ export type AgentHandoffFinalizeFailure = {
 		| "HANDOFF_CLAIM_LOST"
 		| "HANDOFF_CANCELED"
 		| "HANDOFF_USED"
+		| "HANDOFF_EXPIRED"
+		| "HANDOFF_UNAVAILABLE"
 		| "INVALID_REQUEST";
 };

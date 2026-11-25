@@ -7,17 +7,23 @@ import type { AgentCheckoutSession, AgentSessionId } from "../agentic/model.js";
  * create before it exists). Writes to an existing session keep their
  * idempotency records on the session itself, inside the same compare-and-set.
  *
- * Storage is bounded BY THE STORE, not only by the use-cases' checks:
- *  - {@link insert} admits a session only while the live and stored counts are
- *    under the caller's caps, atomically with the insert, so racing creates can
- *    never overshoot either cap;
- *  - {@link insert} and {@link write} refuse a document heavier than
- *    `AGENT_SESSION_MAX_DOCUMENT_BYTES` as measured by
- *    `agentSessionDocumentBytes` (`too_large`).
+ * Every guarantee here must be implementable with PER-DOCUMENT compare-and-set
+ * alone (ADR-0019: EmDash storage has no transactions; D1, Postgres and EmDash
+ * all qualify). Adapters are REQUIRED to keep the caps race-safe, and the
+ * contract suite proves it by running its racing tests against interleaving
+ * callers; the EmDash adapter must pass it. The reference design (the in-memory
+ * fake) uses lease SLOTS: a cap of N is N slot documents, and an insert
+ * compare-and-sets a free or expired slot before it writes the session.
  *
- * "Live" everywhere means: status open (`incomplete` or `requires_escalation`)
- * and `expiresAt` strictly after `now`. "Stored" means every session not yet
- * purged, whatever its status or age.
+ * Storage bounds the store itself enforces:
+ *  - {@link insert} admits a session only while it can hold a live slot in the
+ *    store-wide pool (`maxLive`) and in its network's pool
+ *    (`maxLivePerNetwork`). A slot is held from the insert until the session's
+ *    `expiresAt`, WHATEVER its status: canceling does not free it (so a
+ *    create-cancel loop cannot outrun the cap).
+ *  - {@link insert}, {@link write}, {@link claimHandoff} and
+ *    {@link finalizeHandoff} refuse a document heavier than
+ *    `AGENT_SESSION_MAX_DOCUMENT_BYTES` (`agentSessionDocumentBytes`), `too_large`.
  *
  * Every method answers what it stores; none throws for an expected outcome.
  */
@@ -25,13 +31,13 @@ export interface AgentSessionStore {
 	/** The session, or null. */
 	get(id: AgentSessionId): Promise<AgentCheckoutSession | null>;
 	/**
-	 * Insert-if-absent, under the capacity caps. Checked in this order, all in one
-	 * atomic step: a session with that id exists → `exists` with it (a racing
-	 * create's replay wins over every cap); the document is over the byte cap →
-	 * `too_large`; live sessions at `capacity.now` ≥ `maxLive`, or stored sessions
-	 * ≥ `maxStored` → `capacity`. The winner is stored at `revision` 1 and
-	 * returned. Of any number of racing inserts, the store never ends up holding
-	 * more than the caps admit. The passed `revision` is ignored.
+	 * Insert-if-absent, under the live caps. Checked in this order: a session with
+	 * that id exists → `exists` with it (a racing create's replay wins over every
+	 * cap); the document is over the byte cap → `too_large`; no live slot free in
+	 * the network's pool or the store-wide pool at `capacity.now` → `capacity`
+	 * (any slot taken for a refused or lost insert is given back). The winner is
+	 * stored at `revision` 1 and returned. However many inserts race, the store
+	 * never holds more slots than either cap. The passed `revision` is ignored.
 	 */
 	insert(
 		session: AgentCheckoutSession,
@@ -61,11 +67,11 @@ export interface AgentSessionStore {
 	/**
 	 * The session whose current `handoffTokenHash`, or one of whose
 	 * `redeemedHandoffs`, equals `tokenHash`, or null. Found WHATEVER the
-	 * session's status, expiry, claim or use: redemption tells a used, canceled
-	 * or expired link apart from an unknown one by what this returns.
+	 * session's status, expiry, claim or use.
 	 */
 	findByHandoffTokenHash(tokenHash: string): Promise<AgentCheckoutSession | null>;
-	/** The most recently created session that last quoted on `cartId`, or null. */
+	/** The most recently created session whose agent `cartId` OR `shopperCartId`
+	 *  is `cartId`, or null. */
 	findByCartId(cartId: string): Promise<AgentCheckoutSession | null>;
 	/** The create record for (`networkKey`, `key`), or null. Keys are caller-scoped. */
 	getIdempotency(networkKey: string, key: string): Promise<AgentCreateIdempotencyRecord | null>;
@@ -77,27 +83,47 @@ export interface AgentSessionStore {
 		record: AgentCreateIdempotencyRecord,
 	): Promise<{ stored: true } | { stored: false; existing: AgentCreateIdempotencyRecord }>;
 	/**
-	 * Delete the create record for (`networkKey`, `key`) if, atomically, it still
-	 * points at `sessionId` AND no session `sessionId` is stored: a create the
-	 * insert refused leaves no record behind, so its key is free again. Answers
-	 * whether it deleted.
+	 * Take over a create record to finish its orphaned create (its session was
+	 * never stored): compare-and-set it, if it still points at `sessionId`, to
+	 * carry `attemptId` and a `purgeAt` no earlier than both its own and the one
+	 * given. Answers whether it adopted; from then on only `attemptId` can
+	 * {@link releaseIdempotency} it.
 	 */
-	releaseIdempotency(networkKey: string, key: string, sessionId: AgentSessionId): Promise<boolean>;
+	adoptIdempotency(
+		networkKey: string,
+		key: string,
+		adopt: { sessionId: AgentSessionId; attemptId: string; purgeAt: string },
+	): Promise<boolean>;
+	/**
+	 * Delete the create record for (`networkKey`, `key`) by compare-and-set, only
+	 * if it still carries `attemptId` (the attempt that put or adopted it, whose
+	 * insert was refused). An attempt that lost the record to an adopter deletes
+	 * nothing. Answers whether it deleted.
+	 */
+	releaseIdempotency(networkKey: string, key: string, attemptId: string): Promise<boolean>;
 	/**
 	 * Claim the session's current hand-off link for a redeem, as a lease. One
-	 * atomic step guarded on, in this order: the session exists (`not_found`),
-	 * `tokenHash` is its current link (`token_mismatch`), it is not canceled
-	 * (`canceled`) or completed (`completed`), the link was not finalized
-	 * (`already_used`), `expiresAt` is after `now` (`expired`), it has a line
-	 * (`incomplete`), and no OTHER claim's lease is still running
-	 * (`claimed`, with that claim's `leaseUntil`). A lapsed claim is replaced. The
-	 * winner sets `handoffClaim` = {tokenHash, claimId, claimedAt: now,
-	 * leaseUntil}, bumps the revision and answers the session. Exactly one of any
-	 * number of racing claims wins.
+	 * compare-and-set guarded on, in this order: the session exists
+	 * (`not_found`), `tokenHash` is its current link (`token_mismatch`), it is not
+	 * canceled (`canceled`) or completed (`completed`), the link was not
+	 * finalized (`already_used`), `expiresAt` is after `now` (`expired`), it has a
+	 * line (`incomplete`), no unfinalized claim's lease is still running
+	 * (`claimed`, with that lease's end — whoever asks), a lapsed unfinalized
+	 * claim belongs to the same `redeemerHash` (`bound` otherwise: only the
+	 * browser that claimed may claim again), and the document fits (`too_large`).
+	 * The winner sets `handoffClaim` = {tokenHash, claimId, redeemerHash,
+	 * claimedAt: now, leaseUntil}, bumps the revision and answers the session.
+	 * Exactly one of any number of racing claims wins.
 	 */
 	claimHandoff(
 		id: AgentSessionId,
-		claim: { tokenHash: string; claimId: string; now: string; leaseUntil: string },
+		claim: {
+			tokenHash: string;
+			claimId: string;
+			redeemerHash: string;
+			now: string;
+			leaseUntil: string;
+		},
 	): Promise<
 		| { ok: true; session: AgentCheckoutSession }
 		| { ok: false; reason: "claimed"; leaseUntil: string }
@@ -110,27 +136,39 @@ export interface AgentSessionStore {
 					| "completed"
 					| "already_used"
 					| "expired"
-					| "incomplete";
+					| "incomplete"
+					| "bound"
+					| "too_large";
 		  }
 	>;
 	/**
-	 * Finalize a claimed hand-off: in one atomic step, guarded on the session
-	 * existing (`not_found`), its `handoffClaim.claimId` being `claimId`
-	 * (`claim_lost`; a lapsed claim nobody replaced still finalizes), and it not
-	 * being canceled (`canceled`) or completed (`completed`), stamp
-	 * `handoffUsedAt = now` and `cartId`, keep the claim, bump the revision. The
-	 * same claim finalizing again with the same cart answers `replayed: true` and
-	 * writes nothing; with another cart, `already_used`. Exactly one of any number
-	 * of racing finalizes of one claim writes.
+	 * Finalize a claimed hand-off. One compare-and-set guarded on, in this order:
+	 * the session exists (`not_found`); its `handoffClaim.claimId` is `claimId`
+	 * (`claim_lost`); it is not canceled (`canceled`) or completed (`completed`);
+	 * if already finalized, the same cart replays (`replayed: true`, nothing
+	 * written) and another is `already_used`; otherwise `now` is before
+	 * `expiresAt` (`expired`) and before the claim's `leaseUntil` +
+	 * `AGENT_HANDOFF_FINALIZE_GRACE_MS` (`lease_lapsed`), and the document fits
+	 * (`too_large`). The winner stamps `handoffUsedAt = now`, `shopperCartId =
+	 * cartId` and `purgeAt = retainUntil`, keeps the claim, bumps the revision.
+	 * Exactly one of any number of racing finalizes of one claim writes.
 	 */
 	finalizeHandoff(
 		id: AgentSessionId,
-		finalize: { claimId: string; cartId: string; now: string },
+		finalize: { claimId: string; cartId: string; now: string; retainUntil: string },
 	): Promise<
 		| { ok: true; replayed: boolean; session: AgentCheckoutSession }
 		| {
 				ok: false;
-				reason: "not_found" | "claim_lost" | "canceled" | "completed" | "already_used";
+				reason:
+					| "not_found"
+					| "claim_lost"
+					| "canceled"
+					| "completed"
+					| "already_used"
+					| "expired"
+					| "lease_lapsed"
+					| "too_large";
 		  }
 	>;
 	/**
@@ -140,14 +178,7 @@ export interface AgentSessionStore {
 	 * revision. Answers whether it released.
 	 */
 	releaseHandoffClaim(id: AgentSessionId, claimId: string): Promise<boolean>;
-	/**
-	 * Move the create record for (`networkKey`, `key`) to purge no earlier than
-	 * `purgeAt`: it sets the record's `purgeAt` to the later of the two, never
-	 * earlier. A missing record is a no-op. Used when an orphaned create is
-	 * finished late, so its record outlives the session it now points at.
-	 */
-	extendIdempotencyPurge(networkKey: string, key: string, purgeAt: string): Promise<void>;
-	/** Live sessions at `now` (open, and `expiresAt` strictly after `now`). */
+	/** Sessions that are open and whose `expiresAt` is strictly after `now`. */
 	countLive(now: string): Promise<number>;
 	/** Sessions created by `networkKey` at or after `since`, whatever their status. */
 	countCreatedSince(networkKey: string, since: string): Promise<number>;
@@ -166,14 +197,14 @@ export interface AgentSessionStore {
 	purgeIdempotencyDue(now: string, limit: number): Promise<number>;
 }
 
-/** The caps {@link AgentSessionStore.insert} enforces atomically. */
+/** The live caps {@link AgentSessionStore.insert} enforces. */
 export interface AgentSessionCapacity {
-	/** The instant "live" is judged at. */
+	/** The instant slot expiry is judged at. */
 	now: string;
-	/** Admit only while fewer than this many sessions are live. */
+	/** Store-wide live slots. */
 	maxLive: number;
-	/** Admit only while fewer than this many sessions are stored. */
-	maxStored: number;
+	/** Live slots one `networkKey` may hold. */
+	maxLivePerNetwork: number;
 }
 
 /** Maps a caller's create `Idempotency-Key` to the session it created. */
@@ -183,9 +214,10 @@ export interface AgentCreateIdempotencyRecord {
 	key: string;
 	fingerprint: string;
 	sessionId: AgentSessionId;
+	/** The create attempt that put (or last adopted) the record; only it may release it. */
+	attemptId: string;
 	createdAt: string;
-	/** createdAt + 30 d, as the session's own `purgeAt`; never earlier than it
-	 *  (a create finished late extends it, {@link AgentSessionStore.extendIdempotencyPurge}).
-	 *  A record at or past it answers no replay, even before the sweep deletes it. */
+	/** The session's own `purgeAt` at create (never earlier than it). A record at
+	 *  or past it answers no replay, even before the sweep deletes it. */
 	purgeAt: string;
 }

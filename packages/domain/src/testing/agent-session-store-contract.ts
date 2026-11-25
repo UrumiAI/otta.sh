@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+	AGENT_HANDOFF_FINALIZE_GRACE_MS,
 	AGENT_SESSION_MAX_DOCUMENT_BYTES,
 	agentSessionDocumentBytes,
 	agentSessionId,
@@ -68,14 +69,23 @@ function createRecord(
 		key,
 		fingerprint: "fp",
 		sessionId: agentSessionId(sessionId),
+		attemptId: "attempt-1",
 		createdAt: T0,
 		purgeAt: at(30 * DAY_MS),
 		...overrides,
 	};
 }
 
+/** A pool of one slot, store-wide and per network. */
+function oneSlot(now: string): AgentSessionCapacity {
+	return { now, maxLive: 1, maxLivePerNetwork: 1 };
+}
+
 /** Caps no contract test reaches unless it means to. */
-const ROOMY: Omit<AgentSessionCapacity, "now"> = { maxLive: 1_000_000, maxStored: 1_000_000 };
+const ROOMY: Omit<AgentSessionCapacity, "now"> = {
+	maxLive: 1_000_000,
+	maxLivePerNetwork: 1_000_000,
+};
 
 async function seed(
 	store: AgentSessionStore,
@@ -95,10 +105,17 @@ function weighing(id: string, bytes: number): AgentCheckoutSession {
 }
 
 const CLAIM = (
-	over: Partial<{ tokenHash: string; claimId: string; now: string; leaseUntil: string }> = {},
+	over: Partial<{
+		tokenHash: string;
+		claimId: string;
+		redeemerHash: string;
+		now: string;
+		leaseUntil: string;
+	}> = {},
 ) => ({
 	tokenHash: "h",
 	claimId: "claim-1",
+	redeemerHash: "rh-1",
 	now: at(1000),
 	leaseUntil: at(61_000),
 	...over,
@@ -149,67 +166,118 @@ export function agentSessionStoreContract(
 			test("exists wins over every cap: a racing create's replay is never refused for capacity", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(store, sample("cs_ex"));
-				expect(await store.insert(sample("cs_ex"), { now: T0, maxLive: 0, maxStored: 0 })).toEqual({
+				expect(
+					await store.insert(sample("cs_ex"), { now: T0, maxLive: 0, maxLivePerNetwork: 0 }),
+				).toEqual({ ok: false, reason: "exists", current: s });
+			});
+
+			test("too_large is answered before capacity", async () => {
+				const { store } = await makeHarness();
+				const over = weighing("cs_tl", AGENT_SESSION_MAX_DOCUMENT_BYTES + 1);
+				expect(await store.insert(over, { now: T0, maxLive: 0, maxLivePerNetwork: 0 })).toEqual({
 					ok: false,
-					reason: "exists",
-					current: s,
+					reason: "too_large",
 				});
 			});
 
-			test("the live cap: refused at maxLive live sessions, admitted below it; nothing stored on refusal", async () => {
+			test("the store-wide live cap: refused at maxLive, nothing stored on refusal", async () => {
 				const { store } = await makeHarness();
-				const cap = { now: at(1000), maxLive: 2, maxStored: 100 };
+				const cap = { now: at(1000), maxLive: 2, maxLivePerNetwork: 100 };
 				expect((await store.insert(sample("cs_c1"), cap)).ok).toBe(true);
-				expect((await store.insert(sample("cs_c2"), cap)).ok).toBe(true);
-				expect(await store.insert(sample("cs_c3"), cap)).toEqual({ ok: false, reason: "capacity" });
+				expect((await store.insert(sample("cs_c2", { networkKey: "net-b" }), cap)).ok).toBe(true);
+				expect(await store.insert(sample("cs_c3", { networkKey: "net-c" }), cap)).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
 				expect(await store.get(agentSessionId("cs_c3"))).toBeNull();
-				expect(await store.countLive(at(1000))).toBe(2);
 			});
 
-			test("only live sessions use the live cap: canceled, completed and expired ones do not", async () => {
+			test("the per-network live cap: one network is refused at maxLivePerNetwork, another is not", async () => {
 				const { store } = await makeHarness();
-				await seed(store, sample("cs_d1", { status: "canceled" }));
-				await seed(store, sample("cs_d2", { status: "completed" }));
-				await seed(store, sample("cs_d3", { createdAt: at(-DAY_MS) })); // expiresAt == T0
-				const cap = { now: T0, maxLive: 1, maxStored: 100 };
-				expect((await store.insert(sample("cs_d4"), cap)).ok).toBe(true);
-				expect(await store.insert(sample("cs_d5"), cap)).toEqual({ ok: false, reason: "capacity" });
+				const cap = { now: at(1000), maxLive: 100, maxLivePerNetwork: 2 };
+				expect((await store.insert(sample("cs_n1"), cap)).ok).toBe(true);
+				expect((await store.insert(sample("cs_n2"), cap)).ok).toBe(true);
+				expect(await store.insert(sample("cs_n3"), cap)).toEqual({ ok: false, reason: "capacity" });
+				expect((await store.insert(sample("cs_n4", { networkKey: "net-b" }), cap)).ok).toBe(true);
+				// A refused per-network insert gives its store-wide slot back.
+				const tight = { now: at(1000), maxLive: 4, maxLivePerNetwork: 2 };
+				expect(await store.insert(sample("cs_n5"), tight)).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				expect((await store.insert(sample("cs_n6", { networkKey: "net-c" }), tight)).ok).toBe(true);
 			});
 
-			test("the stored cap counts every stored session whatever its status; a purge frees room", async () => {
+			test("a slot is held until the session's expiresAt whatever its status; expiry frees it", async () => {
 				const { store } = await makeHarness();
-				const old = await seed(
-					store,
-					sample("cs_s1", { status: "canceled", createdAt: at(-31 * DAY_MS) }),
-				);
-				await seed(store, sample("cs_s2", { status: "completed" }));
-				const cap = { now: T0, maxLive: 100, maxStored: 2 };
-				expect(await store.insert(sample("cs_s3"), cap)).toEqual({ ok: false, reason: "capacity" });
-				expect(await store.purge(old.id, T0)).toBe(true);
-				expect((await store.insert(sample("cs_s3"), cap)).ok).toBe(true);
-				expect(await store.insert(sample("cs_s4"), cap)).toEqual({ ok: false, reason: "capacity" });
+				const s = await store.insert(sample("cs_h1"), oneSlot(at(1000)));
+				if (!s.ok) throw new Error("insert failed");
+				const canceled = await store.write({ ...s.session, status: "canceled" }, 1);
+				expect(canceled.ok).toBe(true);
+				expect(await store.insert(sample("cs_h2"), oneSlot(at(2000)))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				const justBefore = new Date(Date.parse(s.session.expiresAt) - 1).toISOString();
+				expect(await store.insert(sample("cs_h3"), oneSlot(justBefore))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				expect((await store.insert(sample("cs_h4"), oneSlot(s.session.expiresAt))).ok).toBe(true);
 			});
 
-			test("racing inserts at the live cap: the store never overshoots it", async () => {
+			test("racing inserts at the store-wide cap: never more admitted than the cap (interleaving callers)", async () => {
 				const { store } = await makeHarness();
 				await seed(store, sample("cs_r0"));
-				const cap = { now: at(1000), maxLive: 3, maxStored: 100 };
+				const cap = { now: at(1000), maxLive: 3, maxLivePerNetwork: 100 };
+				// The seed took a slot of the 1,000,000 pool, not of this pool of 3.
 				const results = await Promise.all(
-					Array.from({ length: 8 }, (_, i) => store.insert(sample(`cs_rr${i}`), cap)),
+					Array.from({ length: 8 }, (_, i) =>
+						store.insert(sample(`cs_rr${i}`, { networkKey: `net-${i}` }), cap),
+					),
 				);
-				expect(results.filter((r) => r.ok)).toHaveLength(2);
+				expect(results.filter((r) => r.ok)).toHaveLength(3);
 				for (const r of results) if (!r.ok) expect(r).toEqual({ ok: false, reason: "capacity" });
-				expect(await store.countLive(at(1000))).toBe(3);
 			});
 
-			test("racing inserts at the stored cap: the store never overshoots it", async () => {
+			test("racing inserts from one network: never more admitted than its cap (interleaving callers)", async () => {
 				const { store } = await makeHarness();
-				await seed(store, sample("cs_q0", { status: "canceled" }));
-				const cap = { now: at(1000), maxLive: 100, maxStored: 2 };
+				const cap = { now: at(1000), maxLive: 100, maxLivePerNetwork: 2 };
 				const results = await Promise.all(
-					Array.from({ length: 8 }, (_, i) => store.insert(sample(`cs_qq${i}`), cap)),
+					Array.from({ length: 8 }, (_, i) => store.insert(sample(`cs_rn${i}`), cap)),
+				);
+				expect(results.filter((r) => r.ok)).toHaveLength(2);
+			});
+
+			test("racing inserts of one id: exactly one is stored; with room every loser answers exists", async () => {
+				const { store } = await makeHarness();
+				const results = await Promise.all(
+					Array.from({ length: 6 }, (_, i) =>
+						store.insert(sample("cs_same", { couponCode: `C${i}` }), { now: at(1000), ...ROOMY }),
+					),
 				);
 				expect(results.filter((r) => r.ok)).toHaveLength(1);
+				const stored = await store.get(agentSessionId("cs_same"));
+				for (const r of results) {
+					if (!r.ok) expect(r).toEqual({ ok: false, reason: "exists", current: stored });
+				}
+			});
+
+			test("racing inserts of one id in a tight pool: one stored, losers exists or capacity, their slots given back", async () => {
+				const { store } = await makeHarness();
+				const cap = { now: at(1000), maxLive: 2, maxLivePerNetwork: 2 };
+				const results = await Promise.all(
+					Array.from({ length: 6 }, (_, i) =>
+						store.insert(sample("cs_same2", { couponCode: `C${i}` }), cap),
+					),
+				);
+				expect(results.filter((r) => r.ok)).toHaveLength(1);
+				for (const r of results) if (!r.ok) expect(["exists", "capacity"]).toContain(r.reason);
+				expect((await store.insert(sample("cs_other"), cap)).ok).toBe(true);
+				expect(await store.insert(sample("cs_third"), cap)).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
 			});
 
 			test("refuses a document over the byte cap, admits one exactly at it", async () => {
@@ -335,11 +403,13 @@ export function agentSessionStoreContract(
 						},
 						shippingMethodId: "ship-std",
 						cartId: "cart-1",
+						shopperCartId: "cart-2",
 						linkGeneration: 2,
 						handoffTokenHash: "hash-2",
 						handoffClaim: {
 							tokenHash: "hash-2",
 							claimId: "c",
+							redeemerHash: "rh",
 							claimedAt: T0,
 							leaseUntil: at(60_000),
 						},
@@ -453,6 +523,16 @@ export function agentSessionStoreContract(
 				expect((await store.findByCartId("cart-x"))?.id).toBe("cs_old");
 				expect((await store.findByCartId("cart-z"))?.id).toBe("cs_new");
 			});
+
+			test("finds a session by its shopper cart too", async () => {
+				const { store } = await makeHarness();
+				const s = await seed(
+					store,
+					sample("cs_shop", { cartId: "cart-agent", shopperCartId: "cart-shop" }),
+				);
+				expect(await store.findByCartId("cart-shop")).toEqual(s);
+				expect(await store.findByCartId("cart-agent")).toEqual(s);
+			});
 		});
 
 		describe("create idempotency index", () => {
@@ -502,51 +582,68 @@ export function agentSessionStoreContract(
 				for (const r of results) if (!r.stored) expect(r.existing).toEqual(stored);
 			});
 
-			test("releaseIdempotency deletes only a record that still points at a session never stored", async () => {
+			test("releaseIdempotency deletes only a record still carrying the attempt's id", async () => {
 				const { store } = await makeHarness();
 				await store.putIdempotency(createRecord("rel-1", "cs_rel1"));
-				expect(await store.releaseIdempotency("net-a", "rel-1", agentSessionId("cs_other"))).toBe(
-					false,
-				);
+				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-other")).toBe(false);
 				expect(await store.getIdempotency("net-a", "rel-1")).not.toBeNull();
-				expect(await store.releaseIdempotency("net-b", "rel-1", agentSessionId("cs_rel1"))).toBe(
-					false,
-				);
-				expect(await store.releaseIdempotency("net-a", "rel-1", agentSessionId("cs_rel1"))).toBe(
-					true,
-				);
+				expect(await store.releaseIdempotency("net-b", "rel-1", "attempt-1")).toBe(false);
+				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-1")).toBe(true);
 				expect(await store.getIdempotency("net-a", "rel-1")).toBeNull();
-				expect(await store.releaseIdempotency("net-a", "rel-1", agentSessionId("cs_rel1"))).toBe(
-					false,
-				);
-				// A record whose session landed is kept: the key keeps answering it.
-				await seed(store, sample("cs_rel2"));
-				await store.putIdempotency(createRecord("rel-2", "cs_rel2"));
-				expect(await store.releaseIdempotency("net-a", "rel-2", agentSessionId("cs_rel2"))).toBe(
-					false,
-				);
-				expect(await store.getIdempotency("net-a", "rel-2")).not.toBeNull();
+				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-1")).toBe(false);
 			});
 
-			test("extendIdempotencyPurge moves a record's purge later, never earlier; a missing record is a no-op", async () => {
+			test("adoptIdempotency takes a record over (attempt id, later purge) only while it points at the session", async () => {
 				const { store } = await makeHarness();
-				await store.putIdempotency(createRecord("idem-x", "cs_x"));
-				await store.extendIdempotencyPurge("net-a", "idem-x", at(31 * DAY_MS));
-				expect((await store.getIdempotency("net-a", "idem-x"))?.purgeAt).toBe(at(31 * DAY_MS));
-				await store.extendIdempotencyPurge("net-a", "idem-x", at(DAY_MS));
-				expect((await store.getIdempotency("net-a", "idem-x"))?.purgeAt).toBe(at(31 * DAY_MS));
-				// Every other field is untouched.
-				expect(await store.getIdempotency("net-a", "idem-x")).toEqual(
-					createRecord("idem-x", "cs_x", { purgeAt: at(31 * DAY_MS) }),
+				await store.putIdempotency(createRecord("ad-1", "cs_ad1"));
+				const adopt = {
+					sessionId: agentSessionId("cs_ad1"),
+					attemptId: "attempt-2",
+					purgeAt: at(31 * DAY_MS),
+				};
+				expect(
+					await store.adoptIdempotency("net-a", "ad-1", {
+						...adopt,
+						sessionId: agentSessionId("cs_x"),
+					}),
+				).toBe(false);
+				expect(await store.adoptIdempotency("net-b", "ad-1", adopt)).toBe(false);
+				expect(await store.adoptIdempotency("net-a", "ad-none", adopt)).toBe(false);
+				expect(await store.adoptIdempotency("net-a", "ad-1", adopt)).toBe(true);
+				expect(await store.getIdempotency("net-a", "ad-1")).toEqual(
+					createRecord("ad-1", "cs_ad1", { attemptId: "attempt-2", purgeAt: at(31 * DAY_MS) }),
 				);
-				await store.putIdempotency(createRecord("idem-x", "cs_y", { networkKey: "net-b" }));
-				await store.extendIdempotencyPurge("net-a", "idem-x", at(40 * DAY_MS));
-				expect((await store.getIdempotency("net-b", "idem-x"))?.purgeAt).toBe(at(30 * DAY_MS));
-				await store.extendIdempotencyPurge("net-a", "idem-none", at(40 * DAY_MS));
-				expect(await store.getIdempotency("net-a", "idem-none")).toBeNull();
-				expect(await store.purgeIdempotencyDue(at(30 * DAY_MS), 10)).toBe(1);
-				expect(await store.getIdempotency("net-a", "idem-x")).not.toBeNull();
-				expect(await store.getIdempotency("net-b", "idem-x")).toBeNull();
+				// The purge never moves earlier.
+				expect(
+					await store.adoptIdempotency("net-a", "ad-1", {
+						...adopt,
+						attemptId: "attempt-3",
+						purgeAt: at(DAY_MS),
+					}),
+				).toBe(true);
+				expect((await store.getIdempotency("net-a", "ad-1"))?.purgeAt).toBe(at(31 * DAY_MS));
+				// The putter can no longer release it; the adopter can.
+				expect(await store.releaseIdempotency("net-a", "ad-1", "attempt-1")).toBe(false);
+				expect(await store.releaseIdempotency("net-a", "ad-1", "attempt-3")).toBe(true);
+			});
+
+			test("a release racing an adoption: never both (the adopter keeps the record, or it adopts nothing)", async () => {
+				for (let round = 0; round < 10; round++) {
+					const { store } = await makeHarness();
+					await store.putIdempotency(createRecord("race", "cs_race"));
+					const [released, adopted] = await Promise.all([
+						store.releaseIdempotency("net-a", "race", "attempt-1"),
+						store.adoptIdempotency("net-a", "race", {
+							sessionId: agentSessionId("cs_race"),
+							attemptId: "attempt-2",
+							purgeAt: at(31 * DAY_MS),
+						}),
+					]);
+					const left = await store.getIdempotency("net-a", "race");
+					expect(released && adopted).toBe(false);
+					if (adopted) expect(left?.attemptId).toBe("attempt-2");
+					else expect(left).toBeNull();
+				}
 			});
 		});
 
@@ -561,6 +658,7 @@ export function agentSessionStoreContract(
 					handoffClaim: {
 						tokenHash: "h",
 						claimId: "claim-1",
+						redeemerHash: "rh-1",
 						claimedAt: at(1000),
 						leaseUntil: at(61_000),
 					},
@@ -569,25 +667,39 @@ export function agentSessionStoreContract(
 				expect(await store.get(s.id)).toEqual(expected);
 			});
 
-			test("a second claim during the lease is refused claimed, with the lease end; nothing written", async () => {
+			test("a second claim during the lease is refused claimed, the same redeemer included; nothing written", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(store, sample("cs_c2", { handoffTokenHash: "h" }));
 				await store.claimHandoff(s.id, CLAIM());
 				const before = await store.get(s.id);
-				expect(
-					await store.claimHandoff(s.id, CLAIM({ claimId: "claim-2", now: at(60_999) })),
-				).toEqual({
-					ok: false,
-					reason: "claimed",
-					leaseUntil: at(61_000),
-				});
+				for (const redeemerHash of ["rh-1", "rh-2"]) {
+					expect(
+						await store.claimHandoff(
+							s.id,
+							CLAIM({ claimId: "claim-2", redeemerHash, now: at(60_999) }),
+						),
+					).toEqual({ ok: false, reason: "claimed", leaseUntil: at(61_000) });
+				}
 				expect(await store.get(s.id)).toEqual(before);
 			});
 
-			test("after the lease lapses (at leaseUntil) the same token claims again and the old claim is gone", async () => {
+			test("after the lease lapses (at leaseUntil) only the same redeemer claims again; another is bound", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(store, sample("cs_c3", { handoffTokenHash: "h" }));
 				await store.claimHandoff(s.id, CLAIM());
+				const before = await store.get(s.id);
+				expect(
+					await store.claimHandoff(
+						s.id,
+						CLAIM({
+							claimId: "claim-x",
+							redeemerHash: "rh-2",
+							now: at(61_000),
+							leaseUntil: at(121_000),
+						}),
+					),
+				).toEqual({ ok: false, reason: "bound" });
+				expect(await store.get(s.id)).toEqual(before);
 				const again = await store.claimHandoff(
 					s.id,
 					CLAIM({ claimId: "claim-2", now: at(61_000), leaseUntil: at(121_000) }),
@@ -595,29 +707,33 @@ export function agentSessionStoreContract(
 				expect(again.ok && again.session.handoffClaim).toEqual({
 					tokenHash: "h",
 					claimId: "claim-2",
+					redeemerHash: "rh-1",
 					claimedAt: at(61_000),
 					leaseUntil: at(121_000),
 				});
 				expect(
-					await store.finalizeHandoff(s.id, { claimId: "claim-1", cartId: "c", now: at(62_000) }),
-				).toEqual({
-					ok: false,
-					reason: "claim_lost",
-				});
+					await store.finalizeHandoff(s.id, {
+						claimId: "claim-1",
+						cartId: "c",
+						now: at(62_000),
+						retainUntil: at(30 * DAY_MS),
+					}),
+				).toEqual({ ok: false, reason: "claim_lost" });
 			});
 
-			test("racing claims: exactly one wins, every loser is refused claimed", async () => {
+			test("racing claims (interleaving callers): exactly one wins, every loser is refused claimed", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(store, sample("cs_c4", { handoffTokenHash: "h" }));
 				const results = await Promise.all(
 					Array.from({ length: 8 }, (_, i) =>
-						store.claimHandoff(s.id, CLAIM({ claimId: `claim-${i}` })),
+						store.claimHandoff(s.id, CLAIM({ claimId: `claim-${i}`, redeemerHash: `rh-${i}` })),
 					),
 				);
 				const winners = results.filter((r) => r.ok);
 				expect(winners).toHaveLength(1);
-				for (const r of results)
+				for (const r of results) {
 					if (!r.ok) expect(r).toEqual({ ok: false, reason: "claimed", leaseUntil: at(61_000) });
+				}
 				const read = await store.get(s.id);
 				expect(read?.revision).toBe(s.revision + 1);
 				expect(winners[0]).toEqual({ ok: true, session: read });
@@ -630,7 +746,7 @@ export function agentSessionStoreContract(
 					reason: "not_found",
 				});
 				const cases: [string, Partial<AgentCheckoutSession>, string][] = [
-					["cs_k1", { handoffTokenHash: "other" }, "token_mismatch"],
+					["cs_k1", { handoffTokenHash: "other", status: "canceled" }, "token_mismatch"],
 					[
 						"cs_k2",
 						{ status: "canceled", handoffUsedAt: T0, createdAt: at(-2 * DAY_MS), lines: [] },
@@ -652,6 +768,15 @@ export function agentSessionStoreContract(
 				}
 			});
 
+			test("a claim that would push the document over the byte cap is too_large", async () => {
+				const { store } = await makeHarness();
+				const base = sample("cs_cl", { handoffTokenHash: "h", couponCode: "", revision: 1 });
+				const room = AGENT_SESSION_MAX_DOCUMENT_BYTES - agentSessionDocumentBytes(base);
+				const s = await seed(store, { ...base, couponCode: "x".repeat(room - 20) });
+				expect(await store.claimHandoff(s.id, CLAIM())).toEqual({ ok: false, reason: "too_large" });
+				expect(await store.get(s.id)).toEqual(s);
+			});
+
 			test("a claim at one millisecond before expiresAt wins", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(store, sample("cs_c5", { handoffTokenHash: "h" }));
@@ -668,7 +793,17 @@ export function agentSessionStoreContract(
 				expect((await store.get(s.id))?.lines).toEqual(s.lines);
 			});
 
-			test("finalize stamps use and cart in one step, keeps the claim, bumps the revision; then replays", async () => {
+			const FIN = (
+				over: Partial<{ claimId: string; cartId: string; now: string; retainUntil: string }> = {},
+			) => ({
+				claimId: "claim-1",
+				cartId: "cart-shopper",
+				now: at(2000),
+				retainUntil: at(30 * DAY_MS),
+				...over,
+			});
+
+			test("finalize stamps use, shopper cart and retention in one step, keeps the claim; then replays", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(
 					store,
@@ -676,72 +811,64 @@ export function agentSessionStoreContract(
 				);
 				const claimed = await store.claimHandoff(s.id, CLAIM());
 				if (!claimed.ok) throw new Error("claim failed");
-				const done = await store.finalizeHandoff(s.id, {
-					claimId: "claim-1",
-					cartId: "cart-shopper",
-					now: at(2000),
-				});
+				const done = await store.finalizeHandoff(s.id, FIN());
 				const expected = {
 					...claimed.session,
 					revision: claimed.session.revision + 1,
 					handoffUsedAt: at(2000),
-					cartId: "cart-shopper",
+					shopperCartId: "cart-shopper",
+					purgeAt: at(30 * DAY_MS),
 				};
 				expect(done).toEqual({ ok: true, replayed: false, session: expected });
 				expect(await store.get(s.id)).toEqual(expected);
 				expect(await store.findByCartId("cart-shopper")).toEqual(expected);
-				expect(
-					await store.finalizeHandoff(s.id, {
-						claimId: "claim-1",
-						cartId: "cart-shopper",
-						now: at(3000),
-					}),
-				).toEqual({
+				expect(await store.finalizeHandoff(s.id, FIN({ now: at(3000) }))).toEqual({
 					ok: true,
 					replayed: true,
 					session: expected,
 				});
-				expect(
-					await store.finalizeHandoff(s.id, {
-						claimId: "claim-1",
-						cartId: "cart-other",
-						now: at(3000),
-					}),
-				).toEqual({
+				expect(await store.finalizeHandoff(s.id, FIN({ cartId: "cart-other" }))).toEqual({
 					ok: false,
 					reason: "already_used",
 				});
 				expect(await store.get(s.id)).toEqual(expected);
-				// A finalized link cannot be claimed again.
 				expect(
 					await store.claimHandoff(
 						s.id,
 						CLAIM({ claimId: "claim-9", now: at(200_000), leaseUntil: at(260_000) }),
 					),
-				).toEqual({
-					ok: false,
-					reason: "already_used",
-				});
+				).toEqual({ ok: false, reason: "already_used" });
 			});
 
-			test("racing finalizes of one claim: exactly one writes, the rest replay or refuse", async () => {
+			test("finalize guard order: canceled or completed is answered before a replay", async () => {
+				const { store } = await makeHarness();
+				for (const [id, status] of [
+					["cs_go1", "canceled"],
+					["cs_go2", "completed"],
+				] as const) {
+					const s = await seed(store, sample(id, { handoffTokenHash: "h" }));
+					await store.claimHandoff(s.id, CLAIM());
+					const done = await store.finalizeHandoff(s.id, FIN());
+					if (!done.ok) throw new Error("finalize failed");
+					const closed = await store.write({ ...done.session, status }, done.session.revision);
+					if (!closed.ok) throw new Error("close failed");
+					expect(await store.finalizeHandoff(s.id, FIN())).toEqual({ ok: false, reason: status });
+				}
+			});
+
+			test("racing finalizes of one claim (interleaving callers): exactly one writes, the rest replay or refuse", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(store, sample("cs_f2", { handoffTokenHash: "h" }));
 				await store.claimHandoff(s.id, CLAIM());
 				const results = await Promise.all(
 					Array.from({ length: 8 }, (_, i) =>
-						store.finalizeHandoff(s.id, {
-							claimId: "claim-1",
-							cartId: i % 2 === 0 ? "cart-a" : "cart-b",
-							now: at(2000),
-						}),
+						store.finalizeHandoff(s.id, FIN({ cartId: i % 2 === 0 ? "cart-a" : "cart-b" })),
 					),
 				);
-				const writers = results.filter((r) => r.ok && !r.replayed);
-				expect(writers).toHaveLength(1);
+				expect(results.filter((r) => r.ok && !r.replayed)).toHaveLength(1);
 				const read = await store.get(s.id);
 				for (const r of results) {
-					if (r.ok) expect(r.session.cartId).toBe(read?.cartId);
+					if (r.ok) expect(r.session.shopperCartId).toBe(read?.shopperCartId);
 					else expect(r).toEqual({ ok: false, reason: "already_used" });
 				}
 				expect(read?.revision).toBe(s.revision + 2);
@@ -749,19 +876,18 @@ export function agentSessionStoreContract(
 
 			test("finalize refuses unknown, another claim, no claim, canceled and completed; nothing written", async () => {
 				const { store } = await makeHarness();
-				const fin = { claimId: "claim-1", cartId: "cart", now: at(2000) };
-				expect(await store.finalizeHandoff(agentSessionId("cs_none"), fin)).toEqual({
+				expect(await store.finalizeHandoff(agentSessionId("cs_none"), FIN())).toEqual({
 					ok: false,
 					reason: "not_found",
 				});
 				const unclaimed = await seed(store, sample("cs_f3", { handoffTokenHash: "h" }));
-				expect(await store.finalizeHandoff(unclaimed.id, fin)).toEqual({
+				expect(await store.finalizeHandoff(unclaimed.id, FIN())).toEqual({
 					ok: false,
 					reason: "claim_lost",
 				});
 				const other = await seed(store, sample("cs_f4", { handoffTokenHash: "h" }));
 				await store.claimHandoff(other.id, CLAIM({ claimId: "claim-2" }));
-				expect(await store.finalizeHandoff(other.id, fin)).toEqual({
+				expect(await store.finalizeHandoff(other.id, FIN())).toEqual({
 					ok: false,
 					reason: "claim_lost",
 				});
@@ -777,21 +903,62 @@ export function agentSessionStoreContract(
 						claimed.session.revision,
 					);
 					if (!closed.ok) throw new Error("close failed");
-					expect(await store.finalizeHandoff(s.id, fin)).toEqual({ ok: false, reason: status });
+					expect(await store.finalizeHandoff(s.id, FIN())).toEqual({ ok: false, reason: status });
 					expect(await store.get(s.id)).toEqual(closed.session);
 				}
 			});
 
-			test("a lapsed claim nobody replaced still finalizes", async () => {
+			test("a lapsed claim nobody replaced finalizes within the grace, not at its end", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(store, sample("cs_f7", { handoffTokenHash: "h" }));
 				await store.claimHandoff(s.id, CLAIM());
-				const done = await store.finalizeHandoff(s.id, {
-					claimId: "claim-1",
-					cartId: "cart",
-					now: at(10 * 60_000),
+				const graceEnd = Date.parse(at(61_000)) + AGENT_HANDOFF_FINALIZE_GRACE_MS;
+				const before = await store.get(s.id);
+				expect(
+					await store.finalizeHandoff(s.id, FIN({ now: new Date(graceEnd).toISOString() })),
+				).toEqual({
+					ok: false,
+					reason: "lease_lapsed",
 				});
-				expect(done.ok && done.session.handoffUsedAt).toBe(at(10 * 60_000));
+				expect(await store.get(s.id)).toEqual(before);
+				const done = await store.finalizeHandoff(
+					s.id,
+					FIN({ now: new Date(graceEnd - 1).toISOString() }),
+				);
+				expect(done.ok && done.session.handoffUsedAt).toBe(new Date(graceEnd - 1).toISOString());
+			});
+
+			test("finalize never lands at or after expiresAt", async () => {
+				const { store } = await makeHarness();
+				const s = await seed(store, sample("cs_f8", { handoffTokenHash: "h" }));
+				const late = new Date(Date.parse(s.expiresAt) - 1000).toISOString();
+				await store.claimHandoff(
+					s.id,
+					CLAIM({ now: late, leaseUntil: new Date(Date.parse(late) + 60_000).toISOString() }),
+				);
+				expect(await store.finalizeHandoff(s.id, FIN({ now: s.expiresAt }))).toEqual({
+					ok: false,
+					reason: "expired",
+				});
+				expect((await store.get(s.id))?.handoffUsedAt).toBeUndefined();
+			});
+
+			test("a finalize that would push the document over the byte cap is too_large", async () => {
+				const { store } = await makeHarness();
+				const s = await seed(store, sample("cs_f9", { handoffTokenHash: "h" }));
+				const claimed = await store.claimHandoff(s.id, CLAIM());
+				if (!claimed.ok) throw new Error("claim failed");
+				const room = AGENT_SESSION_MAX_DOCUMENT_BYTES - agentSessionDocumentBytes(claimed.session);
+				const padded = await store.write(
+					{ ...claimed.session, couponCode: "x".repeat(room - 20) },
+					claimed.session.revision,
+				);
+				if (!padded.ok) throw new Error("pad failed");
+				expect(await store.finalizeHandoff(s.id, FIN())).toEqual({
+					ok: false,
+					reason: "too_large",
+				});
+				expect(await store.get(s.id)).toEqual(padded.session);
 			});
 
 			test("releaseHandoffClaim drops only that unfinalized claim; the link claims again at once", async () => {
@@ -807,13 +974,14 @@ export function agentSessionStoreContract(
 				expect(released).toEqual({ ...rest, revision: (claimed?.revision ?? 0) + 1 });
 				expect(await store.releaseHandoffClaim(s.id, "claim-1")).toBe(false);
 				expect(
-					(await store.claimHandoff(s.id, CLAIM({ claimId: "claim-2", now: at(1500) }))).ok,
+					(
+						await store.claimHandoff(
+							s.id,
+							CLAIM({ claimId: "claim-2", redeemerHash: "rh-2", now: at(1500) }),
+						)
+					).ok,
 				).toBe(true);
-				expect(
-					(await store.finalizeHandoff(s.id, { claimId: "claim-2", cartId: "c", now: at(2000) }))
-						.ok,
-				).toBe(true);
-				// A finalized claim is never released.
+				expect((await store.finalizeHandoff(s.id, FIN({ claimId: "claim-2" }))).ok).toBe(true);
 				expect(await store.releaseHandoffClaim(s.id, "claim-2")).toBe(false);
 				expect((await store.get(s.id))?.handoffUsedAt).toBe(at(2000));
 				expect(await store.releaseHandoffClaim(agentSessionId("cs_nope"), "claim-1")).toBe(false);
