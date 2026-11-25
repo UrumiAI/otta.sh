@@ -2792,3 +2792,53 @@ describe("review round 4", () => {
 		expect(await other(h, "net-f")).toEqual({ ok: false, reason: "TOO_MANY_SESSIONS" });
 	});
 });
+
+describe("review round 6", () => {
+	test("a create whose insert crashed before landing: the replay lands it (retryable once), then replays", async () => {
+		const h = harness();
+		const sessionId = agentSessionId("cs_crashland000000000000");
+		await h.store.putIdempotency({
+			networkKey: "net-a",
+			attemptId: "attempt-test",
+			key: "k-crash",
+			fingerprint: "fp",
+			sessionId,
+			createdAt: T0.toISOString(),
+			purgeAt: new Date(T0.getTime() + DAY_MS + HOUR_MS).toISOString(),
+		});
+		const probe = await createAgentSession(h.deps, {
+			idempotencyKey: "probe",
+			fingerprint: "fp",
+			networkKey: "net-a",
+			content: content(),
+		});
+		if (!probe.ok) throw new Error("probe failed");
+		const shape = await stored(h, probe.session.id);
+		await h.store.insertCrashingBeforeLanding(
+			{
+				...shape,
+				id: sessionId,
+				orderSecretHash: `h(${h.secrets.orderSecret(sessionId)})`,
+				handoffTokenHash: `h(${h.secrets.token(sessionId, shape.linkGeneration)})`,
+				writes: shape.writes.map((w) => ({ ...w, key: "k-crash" })),
+			},
+			{ now: T0.toISOString(), maxLive: 500, maxLivePerNetwork: 50 },
+		);
+		h.clock.advance(2 * 60 * 1000);
+		const req = {
+			idempotencyKey: "k-crash",
+			fingerprint: "fp",
+			networkKey: "net-a",
+			content: content(),
+		};
+		const first = await createAgentSession(h.deps, req);
+		expect(first).toEqual({ ok: false, reason: "WRITE_CONFLICT" });
+		expect((await h.store.get(sessionId))?.id).toBe(sessionId);
+		expect(await h.store.occupiedSlots("net-a", h.clock.now().toISOString())).toEqual({
+			store: 2,
+			network: 2,
+		});
+		const retry = await createAgentSession(h.deps, req);
+		expect(retry.ok && retry.replayed).toBe(true);
+	});
+});

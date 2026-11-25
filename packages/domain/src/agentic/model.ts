@@ -158,8 +158,10 @@ export interface AgentHandoffClaim {
 	/** The link the claim is on: the session's `handoffTokenHash` when claimed. */
 	tokenHash: string;
 	/** Hash of the claiming browser's random nonce (an httpOnly cookie the site
-	 *  sets at claim time). Only this browser may re-claim after a lapse or
-	 *  re-enter after finalize: the agent holds the token, not the cookie. */
+	 *  sets on the hand-off landing page, before any claim). It binds nothing
+	 *  while the claim is unfinalized: a lapsed claim may be claimed again by any
+	 *  browser. Once finalized, only this browser may re-enter (the agent holds
+	 *  the token, not the cookie). */
 	redeemerHash: string;
 	/** Unguessable, minted per claim; finalize and release must present it. */
 	claimId: string;
@@ -223,7 +225,7 @@ export interface AgentCheckoutSession {
 	 * The shopper's claim on the current link while the redeem does its cart
 	 * work: a lease, not a use. While `leaseUntil` is after now, agent writes are
 	 * refused `HANDOFF_IN_PROGRESS` and a second claim is refused `claimed`; once
-	 * it lapses the same token may claim again. A finalized hand-off keeps the
+	 * it lapses any browser may claim again with the token. A finalized hand-off keeps the
 	 * claim that finalized it (so a repeated finalize replays). Absent until the
 	 * first claim.
 	 */
@@ -269,9 +271,9 @@ export const AGENT_HANDOFF_REENTRY_WINDOW_MS = 15 * 60 * 1000;
 /** A claim whose lease lapsed may still finalize for this long after it (the
  *  cart work finished just late), never after the session's `expiresAt`. */
 export const AGENT_HANDOFF_FINALIZE_GRACE_MS = 30 * 1000;
-/** A session never handed off, or canceled, is purged this long after it
- *  expires (or is canceled, if later). Only a finalized hand-off keeps
- *  {@link AGENT_SESSION_RETENTION_MS}. */
+/** Every session without a recorded order (never handed off, handed off, or
+ *  canceled) is purged this long after it expires (or is canceled, if later).
+ *  Only a recorded order keeps {@link AGENT_SESSION_RETENTION_MS}. */
 export const AGENT_SESSION_UNREDEEMED_RETENTION_MS = 60 * 60 * 1000;
 /**
  * The most a stored session document may weigh: UTF-8 bytes of its JSON

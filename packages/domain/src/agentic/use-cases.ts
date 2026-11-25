@@ -100,11 +100,12 @@ import type { AgentSessionSecrets } from "./secrets.js";
 export interface AgentSessionLimits {
 	/**
 	 * Store-wide live slots: a session holds one from its insert until its
-	 * `expiresAt`, whatever its status. HARD: the store takes the slot by
-	 * compare-and-set before it writes the session ({@link AgentSessionStore.insert});
-	 * adapters must keep it race-safe, as the contract's interleaving tests prove.
-	 * Each insert may probe every slot when the pool is nearly full, so the slot
-	 * count is also a per-create read cost (see the spec).
+	 * `expiresAt` (canceled or handed off included), unless a recorded order
+	 * frees it earlier. HARD: the store takes the slot by compare-and-set before
+	 * it writes the session ({@link AgentSessionStore.insert}); adapters must keep
+	 * it race-safe, as the contract's interleaving and crash tests prove. Each
+	 * insert may probe every slot when the pool is nearly full, so the slot count
+	 * is also a per-create read cost (see the spec).
 	 */
 	maxLiveSessions: number;
 	/** Live slots one network key may hold at once: HARD, like `maxLiveSessions`,
@@ -1044,7 +1045,8 @@ export type ClaimAgentHandoffResult =
  * Step 1 of redeeming a hand-off link (ADR-0047): CLAIM it with a short lease
  * ({@link AGENT_HANDOFF_CLAIM_LEASE_MS}) instead of burning it, so a failure in
  * the cart work that follows never kills the link. `redeemer` is the browser's
- * random nonce (an httpOnly cookie the site sets at claim time); the domain
+ * random nonce (an httpOnly cookie the site sets on the landing page, before any
+ * claim; without it the claim is `HANDOFF_REDEEMER_MISSING`); the domain
  * stores and compares only its hash. The link is single-use PER BROWSER: any
  * browser may claim it again after a lapsed, unfinalized claim, but only the
  * browser that finalized it may re-open it, before `expiresAt` and for

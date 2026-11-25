@@ -21,6 +21,22 @@ import type {
 
 export interface AgentSessionStoreHarness {
 	store: AgentSessionStore;
+	/**
+	 * Optional crash injection: run an insert of `session` that stops, as a
+	 * process crash would, right after the session document is written and
+	 * before its slots are marked landed. Adapters that can inject this should;
+	 * the crash tests are skipped without it.
+	 */
+	crashInsertBeforeLanding?: (
+		session: AgentCheckoutSession,
+		capacity: AgentSessionCapacity,
+	) => Promise<void>;
+	/** Optional crash injection: an insert that stops after taking its slots and
+	 *  before writing the session document (it leaves abandoned slots). */
+	crashInsertBeforeSessionWrite?: (
+		session: AgentCheckoutSession,
+		capacity: AgentSessionCapacity,
+	) => Promise<void>;
 }
 
 export interface AgentSessionStoreContractOptions {
@@ -74,6 +90,11 @@ function createRecord(
 		purgeAt: at(30 * DAY_MS),
 		...overrides,
 	};
+}
+
+/** A store-wide pool of two slots, roomy per network. */
+function twoLive(now: string): AgentSessionCapacity {
+	return { now, maxLive: 2, maxLivePerNetwork: 100 };
 }
 
 /** A pool of one slot, store-wide and per network. */
@@ -1040,6 +1061,75 @@ export function agentSessionStoreContract(
 		});
 
 		describe("live slots", () => {
+			test("a crash after the session write, before landing: its slots are never retaken; the sweep lands them", async () => {
+				const h = await makeHarness();
+				if (h.crashInsertBeforeLanding === undefined) return;
+				const { store } = h;
+				await h.crashInsertBeforeLanding(sample("cs_crash"), oneSlot(at(1000)));
+				// Long past the 60 s abandon time: the slot is unlanded and old, but its
+				// session is stored, so it still holds the cap.
+				const later = at(120_000);
+				expect(await store.insert(sample("cs_next"), oneSlot(later))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				expect(await store.occupiedSlots("net-a", later)).toEqual({ store: 1, network: 1 });
+				expect(await store.purgeSlotsDue(later, 100)).toBe(0);
+				expect(await store.countSlotDocs()).toBe(2);
+				// The sweep landed the marks: the session is whole and still the only one.
+				expect((await store.get(agentSessionId("cs_crash")))?.id).toBe("cs_crash");
+				expect(await store.insert(sample("cs_next2"), oneSlot(at(240_000)))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+			});
+
+			test("a crash before the session write leaves abandoned slots: free after 60 s, swept", async () => {
+				const h = await makeHarness();
+				if (h.crashInsertBeforeSessionWrite === undefined) return;
+				const { store } = h;
+				await h.crashInsertBeforeSessionWrite(sample("cs_gone"), oneSlot(at(1000)));
+				expect(await store.insert(sample("cs_young"), oneSlot(at(60_999)))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				expect(await store.occupiedSlots("net-a", at(61_000))).toEqual({ store: 0, network: 0 });
+				expect(await store.purgeSlotsDue(at(61_000), 100)).toBe(2);
+				expect(await store.countSlotDocs()).toBe(0);
+				await h.crashInsertBeforeSessionWrite(sample("cs_gone2"), oneSlot(at(100_000)));
+				expect((await store.insert(sample("cs_old"), oneSlot(at(161_000)))).ok).toBe(true);
+			});
+
+			test("a crash before landing, then a replay of the same insert: answered exists, caps kept", async () => {
+				const h = await makeHarness();
+				if (h.crashInsertBeforeLanding === undefined) return;
+				const { store } = h;
+				await h.crashInsertBeforeLanding(sample("cs_crash2"), oneSlot(at(1000)));
+				const again = await store.insert(sample("cs_crash2"), oneSlot(at(120_000)));
+				expect(again.ok).toBe(false);
+				expect(!again.ok && again.reason).toBe("exists");
+				expect(await store.insert(sample("cs_other2"), oneSlot(at(120_000)))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				expect(await store.occupiedSlots("net-a", at(120_000))).toEqual({ store: 1, network: 1 });
+			});
+
+			test("crashes before landing under racing inserts (interleaving callers): never more sessions than slots", async () => {
+				const h = await makeHarness();
+				if (h.crashInsertBeforeLanding === undefined) return;
+				const { store } = h;
+				await h.crashInsertBeforeLanding(sample("cs_k0", { networkKey: "n0" }), twoLive(at(1000)));
+				const results = await Promise.all(
+					Array.from({ length: 6 }, (_, i) =>
+						store.insert(sample(`cs_k${i + 1}`, { networkKey: `n${i + 1}` }), twoLive(at(120_000))),
+					),
+				);
+				expect(results.filter((r) => r.ok)).toHaveLength(1);
+				await store.purgeSlotsDue(at(120_000), 100);
+				expect((await store.occupiedSlots("x", at(120_000))).store).toBe(2);
+			});
+
 			test("a finalized hand-off keeps the session's slots; completing it frees them and moves its records to its purge", async () => {
 				const { store } = await makeHarness();
 				const a = await store.insert(
@@ -1176,15 +1266,25 @@ export function agentSessionStoreContract(
 						await store.get(agentSessionId("cs_slow")),
 						await store.get(agentSessionId("cs_fast")),
 					].filter((x) => x !== null);
-					expect(kept, `delay ${delay}`).toHaveLength(1);
-					expect([slow.ok, fast.ok].filter(Boolean), `delay ${delay}`).toHaveLength(1);
+					// Never more than the one slot's worth; a stall may cost both a retry.
+					expect(kept.length, `delay ${delay}`).toBeLessThanOrEqual(1);
+					expect([slow.ok, fast.ok].filter(Boolean), `delay ${delay}`).toHaveLength(kept.length);
 					for (const r of [slow, fast])
 						if (!r.ok) expect(r).toEqual({ ok: false, reason: "capacity" });
-					winners.add(slow.ok ? "slow" : "fast");
+					if (slow.ok) winners.add("slow");
+					if (fast.ok) winners.add("fast");
+					// A loser left nothing behind: its id inserts afresh once there is room.
+					for (const [r, id] of [
+						[slow, "cs_slow"],
+						[fast, "cs_fast"],
+					] as const) {
+						if (r.ok) continue;
+						const roomy = { now: at(3 * DAY_MS), ...ROOMY };
+						const again = await store.insert(sample(id, { createdAt: at(3 * DAY_MS) }), roomy);
+						expect(again.ok, `delay ${delay} ${id}`).toBe(true);
+					}
 				}
-				// At some interleavings the later insert takes the abandoned (never landed)
-				// slot, and then the stalled one stands down.
-				expect([...winners].toSorted()).toEqual(["fast", "slow"]);
+				expect(winners.size).toBeGreaterThan(0);
 			});
 
 			test("a lowered cap: only slots below the new size are probed; it fully applies once older slots expire", async () => {

@@ -14,11 +14,16 @@ import type { AgentCheckoutSession, AgentSessionId } from "../agentic/model.js";
  * callers; the EmDash adapter must pass it. The reference design (the in-memory
  * fake) uses lease SLOTS: a cap of N is N slot documents (`<pool>:<index>`,
  * index below the cap); an insert compare-and-sets a free slot in each pool,
- * writes the session, then compare-and-sets a `landed` mark onto each slot. A
- * slot is free when absent, expired, or never landed and taken more than 60 s
- * ago (abandoned); probes read slot documents only, never sessions. An insert
- * whose `landed` mark loses (its slot was retaken as abandoned after a stall)
- * deletes its own session by version and answers `capacity`.
+ * writes the session (not yet visible to reads), then compare-and-sets a
+ * `landed` mark onto each slot and makes the session visible. A slot is free
+ * when absent or expired, or ABANDONED: never landed, taken more than 60 s ago,
+ * AND its session document absent. Probes read a session only for such an old
+ * unlanded slot; landed ones skip the read. So a slot whose session was written
+ * is never retaken, however long its insert stalled or if it crashed; a later
+ * insert of the same id, an adoption of its create record, or
+ * {@link purgeSlotsDue} lands its marks. An insert whose slot was taken before
+ * its session was written drops that never-visible session and answers
+ * `capacity`.
  *
  * Storage bounds the store itself enforces:
  *  - {@link insert} admits a session only while it can hold a live slot in the
@@ -101,9 +106,11 @@ export interface AgentSessionStore {
 	 * never stored): compare-and-set it, if it still points at `sessionId`, to
 	 * carry `attemptId` and a `purgeAt` no earlier than both its own and the one
 	 * given; from then on only `attemptId` can {@link releaseIdempotency} it.
-	 * `lost` if it is gone or points elsewhere; `busy` (retryable, nothing
-	 * written) while its session holds a live slot at `now`: landed, or taken and not yet
-	 * abandoned (another attempt's insert is in flight).
+	 * `lost` if it is gone or points elsewhere; `busy` (retryable, the record
+	 * unchanged) while its session holds a live slot at `now`: landed, or taken
+	 * and not yet abandoned (another attempt's insert is in flight). If that
+	 * session was written but its insert stopped before landing, the adoption
+	 * lands it first, so the retry replays it.
 	 */
 	adoptIdempotency(
 		networkKey: string,
@@ -209,7 +216,8 @@ export interface AgentSessionStore {
 	/** Every slot document stored, held or not (bounded by the sweep). */
 	countSlotDocs(): Promise<number>;
 	/** Delete up to `limit` slot documents that are expired or abandoned at
-	 *  `now`, by version. Answers how many it deleted. */
+	 *  `now`, by version, and land the marks of a written session whose insert
+	 *  stopped before landing. Answers how many it deleted. */
 	purgeSlotsDue(now: string, limit: number): Promise<number>;
 	/** Sessions created by `networkKey` at or after `since`, whatever their status. */
 	countCreatedSince(networkKey: string, since: string): Promise<number>;

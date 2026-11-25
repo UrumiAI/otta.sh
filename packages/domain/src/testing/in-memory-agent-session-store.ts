@@ -24,19 +24,30 @@ interface SlotDoc {
 	landed: boolean;
 }
 
-/** A stored session and the slot documents it took (adapter-private). */
+/**
+ * A stored session and the slot documents it took (adapter-private). An insert
+ * writes it `admitted: false` (invisible to every read) and admits it only
+ * after both slots are marked landed, so a session no caller has seen is the
+ * only kind an insert ever deletes again.
+ */
 interface SessionDoc {
 	session: AgentCheckoutSession;
 	slots: string[];
+	admitted: boolean;
 }
 
-/** A slot whose session never landed is free this long after it was taken. */
+/** A slot whose session was never written is free this long after it was taken. */
 const ABANDONED_SLOT_MS = 60 * 1000;
 
-/** Whether `slot` still holds capacity at `now` (reads nothing else). */
-function slotHeld(slot: SlotDoc, now: string): boolean {
+/**
+ * Whether `slot` holds capacity at `now`, without reading anything else, or
+ * null when that depends on its session: an unlanded slot older than
+ * {@link ABANDONED_SLOT_MS} is abandoned only if its session document is absent.
+ */
+function slotHeldWithoutRead(slot: SlotDoc, now: string): boolean | null {
 	if (slot.expiresAt <= now) return false;
-	return slot.landed || Date.parse(slot.claimedAt) + ABANDONED_SLOT_MS > Date.parse(now);
+	if (slot.landed || Date.parse(slot.claimedAt) + ABANDONED_SLOT_MS > Date.parse(now)) return true;
+	return null;
 }
 
 const LIVE_POOL = "live";
@@ -109,23 +120,58 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 	#slots = new CasDocs<SlotDoc>();
 
 	async get(id: AgentSessionId): Promise<AgentCheckoutSession | null> {
-		return (await this.#sessions.get(id))?.value.session ?? null;
+		const doc = await this.#sessions.get(id);
+		return doc !== null && doc.value.admitted ? doc.value.session : null;
 	}
 
-	/** Every stored session (a scan the port answers loosely). */
+	/** Every admitted session (a scan the port answers loosely). */
 	async #allSessions(): Promise<AgentCheckoutSession[]> {
-		return (await this.#sessions.all()).map(([, d]) => d.session);
+		return (await this.#sessions.all()).flatMap(([, d]) => (d.admitted ? [d.session] : []));
+	}
+
+	/**
+	 * Test hook: an insert that stops, as a crash would, right after the session
+	 * document is written and before its slots are marked landed.
+	 */
+	async insertCrashingBeforeLanding(
+		session: AgentCheckoutSession,
+		capacity: AgentSessionCapacity,
+	): Promise<void> {
+		await this.#insert(session, capacity, "before_landing");
+	}
+
+	/** Test hook: an insert that stops after taking its slots, before the session
+	 *  document is written (its slots are left unlanded, then abandoned). */
+	async insertCrashingBeforeSessionWrite(
+		session: AgentCheckoutSession,
+		capacity: AgentSessionCapacity,
+	): Promise<void> {
+		await this.#insert(session, capacity, "before_write");
 	}
 
 	async insert(
 		session: AgentCheckoutSession,
 		capacity: AgentSessionCapacity,
 	): Promise<Result<"insert">> {
+		return this.#insert(session, capacity, null);
+	}
+
+	async #insert(
+		session: AgentCheckoutSession,
+		capacity: AgentSessionCapacity,
+		crash: "before_write" | "before_landing" | null,
+	): Promise<Result<"insert">> {
 		const stored: AgentCheckoutSession = structuredClone({ ...session, revision: 1 });
 		for (;;) {
 			const current = await this.#sessions.get(session.id);
 			if (current !== null) {
-				return { ok: false, reason: "exists", current: current.value.session };
+				// A pending document (an insert in flight, or one that crashed before
+				// landing) is finished here, or dropped if it lost a slot; then retry.
+				if (current.value.admitted || (await this.#complete(session.id))) {
+					const now = await this.get(session.id);
+					if (now !== null) return { ok: false, reason: "exists", current: now };
+				}
+				continue;
 			}
 			if (agentSessionDocumentBytes(stored) > AGENT_SESSION_MAX_DOCUMENT_BYTES) {
 				return { ok: false, reason: "too_large" };
@@ -142,31 +188,73 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 				await this.#slots.cas(net.id, net.version, null);
 				return { ok: false, reason: "capacity" };
 			}
-			const version = await this.#sessions.put(session.id, null, {
+			if (crash === "before_write") return { ok: true, session: structuredClone(stored) };
+			const written = await this.#sessions.cas(session.id, null, {
 				session: stored,
 				slots: [net.id, live.id],
+				admitted: false,
 			});
-			if (version === null) {
+			if (!written) {
 				await this.#slots.cas(live.id, live.version, null);
 				await this.#slots.cas(net.id, net.version, null);
 				continue;
 			}
-			// Mark both slots landed. A mark that loses means the slot was retaken as
-			// abandoned while this insert stalled: undo the session and refuse, so the
-			// pool never holds more sessions than slots.
-			const landed =
-				(await this.#land(net.id, net.version, net.value)) &&
-				(await this.#land(live.id, live.version, live.value));
-			if (!landed && (await this.#sessions.cas(session.id, version, null))) {
-				await this.#freeSlots(session.id, [net.id, live.id]);
-				return { ok: false, reason: "capacity" };
+			if (crash === "before_landing") return { ok: true, session: structuredClone(stored) };
+			// Land both slots, then admit. Losing a slot is only possible if it was
+			// taken as abandoned before the document above existed (a stall past
+			// 60 s); the pending document was never visible, so dropping it is safe.
+			if (await this.#complete(session.id)) {
+				return { ok: true, session: structuredClone(stored) };
 			}
-			return { ok: true, session: structuredClone(stored) };
+			return { ok: false, reason: "capacity" };
 		}
 	}
 
-	async #land(id: string, version: number, value: SlotDoc): Promise<boolean> {
-		return this.#slots.cas(id, version, { ...value, landed: true });
+	/**
+	 * Finish a pending session document: mark each of its slots landed (while it
+	 * is still that session's), then admit it. If a slot was lost, delete the
+	 * pending document by version and free what it still holds. Idempotent and
+	 * safe to race (insert, replay, adoption and sweep all call it). Answers
+	 * whether the session is admitted.
+	 */
+	async #complete(sessionId: AgentSessionId): Promise<boolean> {
+		for (;;) {
+			const doc = await this.#sessions.get(sessionId);
+			if (doc === null) return false;
+			if (doc.value.admitted) return true;
+			let lost = false;
+			for (const id of doc.value.slots) {
+				if (!(await this.#landSlot(id, sessionId))) lost = true;
+			}
+			if (lost) {
+				if (await this.#sessions.cas(sessionId, doc.version, null)) {
+					await this.#freeSlots(sessionId, doc.value.slots);
+					return false;
+				}
+				continue;
+			}
+			if (await this.#sessions.cas(sessionId, doc.version, { ...doc.value, admitted: true })) {
+				return true;
+			}
+		}
+	}
+
+	/** Mark slot `id` landed if it is still `sessionId`'s; false if it is not. */
+	async #landSlot(id: string, sessionId: AgentSessionId): Promise<boolean> {
+		for (;;) {
+			const slot = await this.#slots.get(id);
+			if (slot === null || slot.value.sessionId !== sessionId) return false;
+			if (slot.value.landed) return true;
+			if (await this.#slots.cas(id, slot.version, { ...slot.value, landed: true })) return true;
+		}
+	}
+
+	/** Whether `slot` holds capacity at `now`; reads the session only for an
+	 *  unlanded slot past the abandon time. */
+	async #slotHeld(slot: SlotDoc, now: string): Promise<boolean> {
+		const known = slotHeldWithoutRead(slot, now);
+		if (known !== null) return known;
+		return (await this.#sessions.get(slot.sessionId)) !== null;
 	}
 
 	/** Compare-and-set the first free slot of pool `pool` (size `size`), or null if none. */
@@ -180,7 +268,7 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		for (let i = 0; i < size; i++) {
 			const id = `${pool}:${(start + i) % size}`;
 			const slot = await this.#slots.get(id);
-			if (slot !== null && slotHeld(slot.value, now)) continue;
+			if (slot !== null && (await this.#slotHeld(slot.value, now))) continue;
 			const value: SlotDoc = {
 				sessionId: session.id,
 				expiresAt: session.expiresAt,
@@ -211,7 +299,7 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 	/** Whether any slot still holds capacity for `sessionId` at `now`. */
 	async #holdsLiveSlot(sessionId: AgentSessionId, now: string): Promise<boolean> {
 		for (const [, slot] of await this.#slots.all()) {
-			if (slot.sessionId === sessionId && slotHeld(slot, now)) return true;
+			if (slot.sessionId === sessionId && (await this.#slotHeld(slot, now))) return true;
 		}
 		return false;
 	}
@@ -282,6 +370,13 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		for (;;) {
 			const r = await this.#records.get(id);
 			if (r === null || r.value.sessionId !== adopt.sessionId) return "lost";
+			// Its session was written but never admitted (an insert crashed before
+			// landing): finish it, and let the caller retry into a replay.
+			const pending = await this.#sessions.get(adopt.sessionId);
+			if (pending !== null && !pending.value.admitted) {
+				await this.#complete(adopt.sessionId);
+				return "busy";
+			}
 			if (await this.#holdsLiveSlot(adopt.sessionId, adopt.now)) return "busy";
 			const purgeAt = r.value.purgeAt > adopt.purgeAt ? r.value.purgeAt : adopt.purgeAt;
 			const next = { ...r.value, attemptId: adopt.attemptId, purgeAt };
@@ -438,7 +533,7 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		let store = 0;
 		let network = 0;
 		for (const [id, slot] of await this.#slots.all()) {
-			if (!slotHeld(slot, now)) continue;
+			if (!(await this.#slotHeld(slot, now))) continue;
 			if (id.startsWith(`${LIVE_POOL}:`)) store++;
 			else if (id.startsWith(prefix)) network++;
 		}
@@ -457,9 +552,15 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		for (const [id] of await this.#slots.all()) {
 			if (deleted >= limit) break;
 			const slot = await this.#slots.get(id);
+			if (slot === null) continue;
+			// An unlanded slot whose session document is stored (an insert that
+			// crashed before landing): finish that session instead.
+			if (!slot.value.landed && (await this.#sessions.get(slot.value.sessionId)) !== null) {
+				await this.#complete(slot.value.sessionId);
+				continue;
+			}
 			if (
-				slot !== null &&
-				!slotHeld(slot.value, now) &&
+				!(await this.#slotHeld(slot.value, now)) &&
 				(await this.#slots.cas(id, slot.version, null))
 			) {
 				deleted++;
@@ -490,7 +591,7 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 
 	async purge(id: AgentSessionId, now: string): Promise<boolean> {
 		const s = await this.#sessions.get(id);
-		if (s === null || s.value.session.purgeAt > now) return false;
+		if (s === null || !s.value.admitted || s.value.session.purgeAt > now) return false;
 		// Create records and slots first, the session last: a purge cut short stays due.
 		for (const [recordId, r] of await this.#records.all()) {
 			if (r.sessionId !== id) continue;
@@ -531,7 +632,9 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		won: (stored: AgentCheckoutSession) => R,
 	): Promise<R | { ok: false; reason: "too_large" }> {
 		for (;;) {
-			const current = await this.#sessions.get(id);
+			const read = await this.#sessions.get(id);
+			// A pending (not yet admitted) document is no session to its readers.
+			const current = read !== null && read.value.admitted ? read : null;
 			const step: Step<R | { ok: false; reason: "too_large" }> = await (async () => {
 				const decided = decide(current?.value.session ?? null);
 				if ("refuse" in decided) return done(decided.refuse);
@@ -539,7 +642,11 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 					return done({ ok: false as const, reason: "too_large" as const });
 				}
 				const stored = structuredClone(decided.next);
-				const doc: SessionDoc = { session: stored, slots: current?.value.slots ?? [] };
+				const doc: SessionDoc = {
+					session: stored,
+					slots: current?.value.slots ?? [],
+					admitted: true,
+				};
 				return (await this.#sessions.cas(id, current?.version ?? null, doc))
 					? done(won(stored))
 					: RETRY;
