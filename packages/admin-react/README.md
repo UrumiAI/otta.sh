@@ -8,7 +8,7 @@ Otta React admin console — the `otta-console` native-format EmDash descriptor 
 pnpm add @urumi.ai/otta-admin-react
 ```
 
-ESM-only. Peer dependencies: `emdash` `^1.5.0` and `react` `^19.2.4`. Node `>=22.16`.
+ESM-only. Peer dependencies: `emdash` `^1.5.0` and `react` `^19.2.4`. Node `>=22.16` for this package; a storefront built with `@urumi.ai/otta-store` needs Node `>=22.23.4`, the floor astro 7.4 sets.
 
 ## Entry points
 
