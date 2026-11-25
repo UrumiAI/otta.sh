@@ -129,6 +129,11 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		return (await this.#sessions.all()).flatMap(([, d]) => (d.admitted ? [d.session] : []));
 	}
 
+	/** Test hook: every stored session document, admitted or hidden. */
+	async countSessionDocuments(): Promise<number> {
+		return (await this.#sessions.all()).length;
+	}
+
 	/**
 	 * Test hook: an insert that stops, as a crash would, right after the session
 	 * document is written and before its slots are marked landed.
@@ -239,6 +244,16 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		}
 	}
 
+	/** Delete `sessionId`'s document by version if it is still hidden, and free
+	 *  any slot it still holds. */
+	async #dropHidden(sessionId: AgentSessionId): Promise<void> {
+		const doc = await this.#sessions.get(sessionId);
+		if (doc === null || doc.value.admitted) return;
+		if (await this.#sessions.cas(sessionId, doc.version, null)) {
+			await this.#freeSlots(sessionId, doc.value.slots);
+		}
+	}
+
 	/** Mark slot `id` landed if it is still `sessionId`'s; false if it is not. */
 	async #landSlot(id: string, sessionId: AgentSessionId): Promise<boolean> {
 		for (;;) {
@@ -276,7 +291,11 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 				landed: false,
 			};
 			const version = await this.#slots.put(id, slot?.version ?? null, value);
-			if (version !== null) return { id, version, value };
+			if (version === null) continue;
+			// Retook an unlanded slot: a session document it still names is stranded
+			// (its insert stopped before landing and can never land now), so delete it.
+			if (slot !== null && !slot.value.landed) await this.#dropHidden(slot.value.sessionId);
+			return { id, version, value };
 		}
 		return null;
 	}
@@ -581,17 +600,19 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		if (!Number.isSafeInteger(limit) || limit < 1) {
 			throw new RangeError("listPurgeDue limit must be a positive integer");
 		}
+		// Hidden documents too: one stranded by an insert that stopped before
+		// landing is purged like any other session once its purgeAt passes.
 		const due: AgentSessionId[] = [];
-		for (const s of await this.#allSessions()) {
+		for (const [, d] of await this.#sessions.all()) {
 			if (due.length >= limit) break;
-			if (s.purgeAt <= now) due.push(s.id);
+			if (d.session.purgeAt <= now) due.push(d.session.id);
 		}
 		return due;
 	}
 
 	async purge(id: AgentSessionId, now: string): Promise<boolean> {
 		const s = await this.#sessions.get(id);
-		if (s === null || !s.value.admitted || s.value.session.purgeAt > now) return false;
+		if (s === null || s.value.session.purgeAt > now) return false;
 		// Create records and slots first, the session last: a purge cut short stays due.
 		for (const [recordId, r] of await this.#records.all()) {
 			if (r.sessionId !== id) continue;
@@ -632,24 +653,24 @@ export class InMemoryAgentSessionStore implements AgentSessionStore {
 		won: (stored: AgentCheckoutSession) => R,
 	): Promise<R | { ok: false; reason: "too_large" }> {
 		for (;;) {
-			const read = await this.#sessions.get(id);
-			// A pending (not yet admitted) document is no session to its readers.
-			const current = read !== null && read.value.admitted ? read : null;
+			const current = await this.#sessions.get(id);
+			// Absent, or hidden (not yet admitted, so no session to its readers):
+			// the decision sees null and must refuse; nothing is ever written
+			// against a missing or hidden document.
+			if (current === null || !current.value.admitted) {
+				const decided = decide(null);
+				if ("refuse" in decided) return decided.refuse;
+				throw new Error("an update never creates a session");
+			}
 			const step: Step<R | { ok: false; reason: "too_large" }> = await (async () => {
-				const decided = decide(current?.value.session ?? null);
+				const decided = decide(current.value.session);
 				if ("refuse" in decided) return done(decided.refuse);
 				if (agentSessionDocumentBytes(decided.next) > AGENT_SESSION_MAX_DOCUMENT_BYTES) {
 					return done({ ok: false as const, reason: "too_large" as const });
 				}
 				const stored = structuredClone(decided.next);
-				const doc: SessionDoc = {
-					session: stored,
-					slots: current?.value.slots ?? [],
-					admitted: true,
-				};
-				return (await this.#sessions.cas(id, current?.version ?? null, doc))
-					? done(won(stored))
-					: RETRY;
+				const doc: SessionDoc = { ...current.value, session: stored };
+				return (await this.#sessions.cas(id, current.version, doc)) ? done(won(stored)) : RETRY;
 			})();
 			if (step.done) return step.value;
 		}

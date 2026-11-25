@@ -215,6 +215,7 @@ export { InMemoryAgentSessionStore } from "./in-memory-agent-session-store.js";
 export {
 	agentSessionSecretsContract,
 	agentSessionStoreContract,
+	requiredHarnessHook,
 	type AgentSessionSecretsFactory,
 	type AgentSessionStoreHarness,
 	type AgentSessionStoreContractOptions,

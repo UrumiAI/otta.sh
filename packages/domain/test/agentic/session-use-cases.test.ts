@@ -2793,37 +2793,41 @@ describe("review round 4", () => {
 	});
 });
 
+async function crashedCreate(h: Harness, sessionId: AgentSessionId): Promise<void> {
+	await h.store.putIdempotency({
+		networkKey: "net-a",
+		attemptId: "attempt-test",
+		key: "k-crash",
+		fingerprint: "fp",
+		sessionId,
+		createdAt: T0.toISOString(),
+		purgeAt: new Date(T0.getTime() + DAY_MS + HOUR_MS).toISOString(),
+	});
+	const probe = await createAgentSession(h.deps, {
+		idempotencyKey: "probe",
+		fingerprint: "fp",
+		networkKey: "net-a",
+		content: content(),
+	});
+	if (!probe.ok) throw new Error("probe failed");
+	const shape = await stored(h, probe.session.id);
+	await h.store.insertCrashingBeforeLanding(
+		{
+			...shape,
+			id: sessionId,
+			orderSecretHash: `h(${h.secrets.orderSecret(sessionId)})`,
+			handoffTokenHash: `h(${h.secrets.token(sessionId, shape.linkGeneration)})`,
+			writes: shape.writes.map((w) => ({ ...w, key: "k-crash" })),
+		},
+		{ now: T0.toISOString(), maxLive: 500, maxLivePerNetwork: 50 },
+	);
+}
+
 describe("review round 6", () => {
 	test("a create whose insert crashed before landing: the replay lands it (retryable once), then replays", async () => {
 		const h = harness();
 		const sessionId = agentSessionId("cs_crashland000000000000");
-		await h.store.putIdempotency({
-			networkKey: "net-a",
-			attemptId: "attempt-test",
-			key: "k-crash",
-			fingerprint: "fp",
-			sessionId,
-			createdAt: T0.toISOString(),
-			purgeAt: new Date(T0.getTime() + DAY_MS + HOUR_MS).toISOString(),
-		});
-		const probe = await createAgentSession(h.deps, {
-			idempotencyKey: "probe",
-			fingerprint: "fp",
-			networkKey: "net-a",
-			content: content(),
-		});
-		if (!probe.ok) throw new Error("probe failed");
-		const shape = await stored(h, probe.session.id);
-		await h.store.insertCrashingBeforeLanding(
-			{
-				...shape,
-				id: sessionId,
-				orderSecretHash: `h(${h.secrets.orderSecret(sessionId)})`,
-				handoffTokenHash: `h(${h.secrets.token(sessionId, shape.linkGeneration)})`,
-				writes: shape.writes.map((w) => ({ ...w, key: "k-crash" })),
-			},
-			{ now: T0.toISOString(), maxLive: 500, maxLivePerNetwork: 50 },
-		);
+		await crashedCreate(h, sessionId);
 		h.clock.advance(2 * 60 * 1000);
 		const req = {
 			idempotencyKey: "k-crash",
@@ -2840,5 +2844,61 @@ describe("review round 6", () => {
 		});
 		const retry = await createAgentSession(h.deps, req);
 		expect(retry.ok && retry.replayed).toBe(true);
+	});
+
+	test("a replay of a crashed create at a full pool is landed, not refused TOO_MANY_SESSIONS", async () => {
+		const h = harness({ maxLiveSessions: 2, maxLivePerNetwork: 2 });
+		const sessionId = agentSessionId("cs_crashfull000000000000");
+		await crashedCreate(h, sessionId);
+		h.clock.advance(2 * 60 * 1000);
+		const req = {
+			idempotencyKey: "k-crash",
+			fingerprint: "fp",
+			networkKey: "net-a",
+			content: content(),
+		};
+		expect(await createAgentSession(h.deps, req)).toEqual({ ok: false, reason: "WRITE_CONFLICT" });
+		const retry = await createAgentSession(h.deps, req);
+		expect(retry.ok && retry.replayed).toBe(true);
+		// A fresh create is still refused at the full pool, and its key stays free.
+		const fresh = { ...req, idempotencyKey: "k-fresh" };
+		expect(await createAgentSession(h.deps, fresh)).toEqual({
+			ok: false,
+			reason: "TOO_MANY_SESSIONS",
+		});
+		expect(await h.store.getIdempotency("net-a", "k-fresh")).toBeNull();
+	});
+
+	test("an orphan create record replayed at a full pool is refused and kept under its id", async () => {
+		const h = harness({ maxLiveSessions: 1 });
+		const full = await createAgentSession(h.deps, {
+			idempotencyKey: "k-full",
+			fingerprint: "fp",
+			networkKey: "net-a",
+			content: content(),
+		});
+		expect(full.ok).toBe(true);
+		const orphan = agentSessionId("cs_orphanfull00000000000");
+		await h.store.putIdempotency({
+			networkKey: "net-a",
+			attemptId: "attempt-test",
+			key: "k-orphan",
+			fingerprint: "fp",
+			sessionId: orphan,
+			createdAt: T0.toISOString(),
+			purgeAt: new Date(T0.getTime() + DAY_MS + HOUR_MS).toISOString(),
+		});
+		const req = {
+			idempotencyKey: "k-orphan",
+			fingerprint: "fp",
+			networkKey: "net-a",
+			content: content(),
+		};
+		expect(await createAgentSession(h.deps, req)).toEqual({
+			ok: false,
+			reason: "TOO_MANY_SESSIONS",
+		});
+		expect((await h.store.getIdempotency("net-a", "k-orphan"))?.sessionId).toBe(orphan);
+		expect(await h.store.get(orphan)).toBeNull();
 	});
 });

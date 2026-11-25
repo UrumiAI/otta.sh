@@ -22,21 +22,35 @@ import type {
 export interface AgentSessionStoreHarness {
 	store: AgentSessionStore;
 	/**
-	 * Optional crash injection: run an insert of `session` that stops, as a
+	 * REQUIRED crash injection: run an insert of `session` that stops, as a
 	 * process crash would, right after the session document is written and
-	 * before its slots are marked landed. Adapters that can inject this should;
-	 * the crash tests are skipped without it.
+	 * before its slots are marked landed. An adapter that truly cannot inject it
+	 * passes `{ skip: reason }` and those tests are skipped VISIBLY, with it.
 	 */
-	crashInsertBeforeLanding?: (
-		session: AgentCheckoutSession,
-		capacity: AgentSessionCapacity,
-	) => Promise<void>;
-	/** Optional crash injection: an insert that stops after taking its slots and
-	 *  before writing the session document (it leaves abandoned slots). */
-	crashInsertBeforeSessionWrite?: (
-		session: AgentCheckoutSession,
-		capacity: AgentSessionCapacity,
-	) => Promise<void>;
+	crashInsertBeforeLanding:
+		| ((session: AgentCheckoutSession, capacity: AgentSessionCapacity) => Promise<void>)
+		| { skip: string };
+	/** REQUIRED: crash injection that stops after taking the slots, before the
+	 *  session document is written (it leaves abandoned slots). Same skip rule. */
+	crashInsertBeforeSessionWrite:
+		| ((session: AgentCheckoutSession, capacity: AgentSessionCapacity) => Promise<void>)
+		| { skip: string };
+	/** REQUIRED: how many session documents are stored, admitted or not (the
+	 *  storage bound counts hidden ones too). Same skip rule. */
+	countSessionDocuments: (() => Promise<number>) | { skip: string };
+}
+
+/** The test context's visible skip (vitest's `ctx.skip(note)`). */
+interface SkipContext {
+	skip: (note?: string) => never;
+}
+
+/** A required harness hook, or a VISIBLE skip with the adapter's reason. */
+export function requiredHarnessHook<F>(hook: F | { skip: string }, ctx: SkipContext): F {
+	if (typeof hook === "object" && hook !== null && "skip" in hook) {
+		return ctx.skip(`harness hook unavailable: ${hook.skip}`);
+	}
+	return hook as F;
 }
 
 export interface AgentSessionStoreContractOptions {
@@ -1061,11 +1075,11 @@ export function agentSessionStoreContract(
 		});
 
 		describe("live slots", () => {
-			test("a crash after the session write, before landing: its slots are never retaken; the sweep lands them", async () => {
+			test("a crash after the session write, before landing: its slots are never retaken before expiry; the sweep lands them", async (ctx) => {
 				const h = await makeHarness();
-				if (h.crashInsertBeforeLanding === undefined) return;
+				const crashInsertBeforeLanding = requiredHarnessHook(h.crashInsertBeforeLanding, ctx);
 				const { store } = h;
-				await h.crashInsertBeforeLanding(sample("cs_crash"), oneSlot(at(1000)));
+				await crashInsertBeforeLanding(sample("cs_crash"), oneSlot(at(1000)));
 				// Long past the 60 s abandon time: the slot is unlanded and old, but its
 				// session is stored, so it still holds the cap.
 				const later = at(120_000);
@@ -1084,11 +1098,82 @@ export function agentSessionStoreContract(
 				});
 			});
 
-			test("a crash before the session write leaves abandoned slots: free after 60 s, swept", async () => {
+			test("a crash before landing, no replay, no sweep for 24 h, slots retaken: the hidden document is still purged", async (ctx) => {
 				const h = await makeHarness();
-				if (h.crashInsertBeforeSessionWrite === undefined) return;
+				const crash = requiredHarnessHook(h.crashInsertBeforeLanding, ctx);
+				const countDocs = requiredHarnessHook(h.countSessionDocuments, ctx);
 				const { store } = h;
-				await h.crashInsertBeforeSessionWrite(sample("cs_gone"), oneSlot(at(1000)));
+				const purgeAt = at(DAY_MS + 60 * 60 * 1000);
+				await crash(sample("cs_strand", { purgeAt }), oneSlot(at(1000)));
+				expect(await countDocs()).toBe(1);
+				// Past its expiry its slots are free; a later insert retakes them and
+				// deletes the stranded hidden document it took them from.
+				const later = at(DAY_MS + 1000);
+				const next = await store.insert(sample("cs_after", { createdAt: later }), oneSlot(later));
+				expect(next.ok).toBe(true);
+				expect(await countDocs()).toBe(1);
+				expect(await store.get(agentSessionId("cs_after"))).not.toBeNull();
+				expect(await store.listPurgeDue(at(2 * DAY_MS), 100)).toEqual([]);
+			});
+
+			test("a stranded hidden document is listed and purged at its purgeAt, by version", async (ctx) => {
+				const h = await makeHarness();
+				const crash = requiredHarnessHook(h.crashInsertBeforeLanding, ctx);
+				const countDocs = requiredHarnessHook(h.countSessionDocuments, ctx);
+				const { store } = h;
+				const purgeAt = at(DAY_MS + 60 * 60 * 1000);
+				await crash(sample("cs_strand2", { purgeAt }), oneSlot(at(1000)));
+				expect(await store.listPurgeDue(at(DAY_MS), 100)).toEqual([]);
+				expect(await store.purge(agentSessionId("cs_strand2"), at(DAY_MS))).toBe(false);
+				expect(await store.listPurgeDue(purgeAt, 100)).toEqual(["cs_strand2"]);
+				expect(await store.purge(agentSessionId("cs_strand2"), purgeAt)).toBe(true);
+				expect(await countDocs()).toBe(0);
+				expect(await store.countSlotDocs()).toBe(0);
+				expect(await store.listPurgeDue(purgeAt, 100)).toEqual([]);
+			});
+
+			test("a hidden (never admitted) session is invisible to every read and refuses every update", async (ctx) => {
+				const h = await makeHarness();
+				const crash = requiredHarnessHook(h.crashInsertBeforeLanding, ctx);
+				const { store } = h;
+				const hidden = sample("cs_hidden", {
+					handoffTokenHash: "tok-hidden",
+					cartId: "cart-hidden",
+					purgeAt: at(DAY_MS + 60 * 60 * 1000),
+				});
+				await crash(hidden, oneSlot(at(1000)));
+				const id = agentSessionId("cs_hidden");
+				expect(await store.get(id)).toBeNull();
+				expect(await store.findByHandoffTokenHash("tok-hidden")).toBeNull();
+				expect(await store.findByCartId("cart-hidden")).toBeNull();
+				expect(await store.countLive(at(2000))).toBe(0);
+				expect(await store.countCreatedSince("net-a", at(0))).toBe(0);
+				expect(await store.listPurgeDue(at(2000), 100)).toEqual([]);
+				expect(await store.write({ ...hidden, revision: 1 }, 1)).toEqual({
+					ok: false,
+					reason: "conflict",
+					current: null,
+				});
+				expect(
+					await store.claimHandoff(id, {
+						tokenHash: "tok-hidden",
+						claimId: "c1",
+						redeemerHash: "r1",
+						now: at(2000),
+						leaseUntil: at(62_000),
+					}),
+				).toEqual({ ok: false, reason: "not_found" });
+				expect(await store.releaseHandoffClaim(id, "c1")).toBe(false);
+			});
+
+			test("a crash before the session write leaves abandoned slots: free after 60 s, swept", async (ctx) => {
+				const h = await makeHarness();
+				const crashInsertBeforeSessionWrite = requiredHarnessHook(
+					h.crashInsertBeforeSessionWrite,
+					ctx,
+				);
+				const { store } = h;
+				await crashInsertBeforeSessionWrite(sample("cs_gone"), oneSlot(at(1000)));
 				expect(await store.insert(sample("cs_young"), oneSlot(at(60_999)))).toEqual({
 					ok: false,
 					reason: "capacity",
@@ -1096,15 +1181,15 @@ export function agentSessionStoreContract(
 				expect(await store.occupiedSlots("net-a", at(61_000))).toEqual({ store: 0, network: 0 });
 				expect(await store.purgeSlotsDue(at(61_000), 100)).toBe(2);
 				expect(await store.countSlotDocs()).toBe(0);
-				await h.crashInsertBeforeSessionWrite(sample("cs_gone2"), oneSlot(at(100_000)));
+				await crashInsertBeforeSessionWrite(sample("cs_gone2"), oneSlot(at(100_000)));
 				expect((await store.insert(sample("cs_old"), oneSlot(at(161_000)))).ok).toBe(true);
 			});
 
-			test("a crash before landing, then a replay of the same insert: answered exists, caps kept", async () => {
+			test("a crash before landing, then a replay of the same insert: answered exists, caps kept", async (ctx) => {
 				const h = await makeHarness();
-				if (h.crashInsertBeforeLanding === undefined) return;
+				const crashInsertBeforeLanding = requiredHarnessHook(h.crashInsertBeforeLanding, ctx);
 				const { store } = h;
-				await h.crashInsertBeforeLanding(sample("cs_crash2"), oneSlot(at(1000)));
+				await crashInsertBeforeLanding(sample("cs_crash2"), oneSlot(at(1000)));
 				const again = await store.insert(sample("cs_crash2"), oneSlot(at(120_000)));
 				expect(again.ok).toBe(false);
 				expect(!again.ok && again.reason).toBe("exists");
@@ -1115,11 +1200,11 @@ export function agentSessionStoreContract(
 				expect(await store.occupiedSlots("net-a", at(120_000))).toEqual({ store: 1, network: 1 });
 			});
 
-			test("crashes before landing under racing inserts (interleaving callers): never more sessions than slots", async () => {
+			test("crashes before landing under racing inserts (interleaving callers): never more sessions than slots", async (ctx) => {
 				const h = await makeHarness();
-				if (h.crashInsertBeforeLanding === undefined) return;
+				const crashInsertBeforeLanding = requiredHarnessHook(h.crashInsertBeforeLanding, ctx);
 				const { store } = h;
-				await h.crashInsertBeforeLanding(sample("cs_k0", { networkKey: "n0" }), twoLive(at(1000)));
+				await crashInsertBeforeLanding(sample("cs_k0", { networkKey: "n0" }), twoLive(at(1000)));
 				const results = await Promise.all(
 					Array.from({ length: 6 }, (_, i) =>
 						store.insert(sample(`cs_k${i + 1}`, { networkKey: `n${i + 1}` }), twoLive(at(120_000))),

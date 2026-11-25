@@ -19,11 +19,13 @@ import type { AgentCheckoutSession, AgentSessionId } from "../agentic/model.js";
  * when absent or expired, or ABANDONED: never landed, taken more than 60 s ago,
  * AND its session document absent. Probes read a session only for such an old
  * unlanded slot; landed ones skip the read. So a slot whose session was written
- * is never retaken, however long its insert stalled or if it crashed; a later
- * insert of the same id, an adoption of its create record, or
+ * is never retaken before its expiry, however long its insert stalled or if it
+ * crashed; a later insert of the same id, an adoption of its create record, or
  * {@link purgeSlotsDue} lands its marks. An insert whose slot was taken before
  * its session was written drops that never-visible session and answers
- * `capacity`.
+ * `capacity`. A hidden session stranded past its expiry (no replay, no sweep)
+ * is deleted by the probe that retakes one of its slots, and in any case by
+ * {@link purge} at its `purgeAt`.
  *
  * Storage bounds the store itself enforces:
  *  - {@link insert} admits a session only while it can hold a live slot in the
@@ -221,12 +223,14 @@ export interface AgentSessionStore {
 	purgeSlotsDue(now: string, limit: number): Promise<number>;
 	/** Sessions created by `networkKey` at or after `since`, whatever their status. */
 	countCreatedSince(networkKey: string, since: string): Promise<number>;
-	/** Ids of sessions whose `purgeAt` is at or before `now`, at most `limit` of them. */
+	/** Ids of sessions whose `purgeAt` is at or before `now`, at most `limit` of
+	 *  them, hidden (never admitted) session documents included. */
 	listPurgeDue(now: string, limit: number): Promise<AgentSessionId[]>;
 	/**
-	 * Delete the session, its create records, its slot documents and its
-	 * hand-off lookups, if its `purgeAt` is at or before `now`. Answers whether
-	 * it deleted; idempotent.
+	 * Delete the session (or a hidden, never-admitted session document), its
+	 * create records, its slot documents and its hand-off lookups, by version,
+	 * if its `purgeAt` is at or before `now`. Answers whether it deleted;
+	 * idempotent.
 	 */
 	purge(id: AgentSessionId, now: string): Promise<boolean>;
 	/**

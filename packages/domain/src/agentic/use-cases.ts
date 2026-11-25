@@ -548,12 +548,13 @@ async function createFromRecord(
 	}
 	const refused = validateContent(input.content, limitsOf(deps));
 	if (refused !== null) return refused;
-	const capped = await admitCreate(deps, record.networkKey, now);
-	if (capped !== null) return capped;
 	// Adopt the record first: from here only this attempt may release it (so a
 	// racer whose insert was refused cannot delete it under our session), and its
 	// purge moves out to the session's own. Lost to a release or another adopter:
-	// retryable, and the retry starts from what is stored then.
+	// retryable, and the retry starts from what is stored then. Adopting BEFORE
+	// the early cap refusal lets a replay of a create whose insert crashed before
+	// landing (its session written, its slots counted) land it instead of being
+	// refused TOO_MANY_SESSIONS by its own slots.
 	const attemptId = deps.secrets.mintId();
 	const adopted = await deps.store.adoptIdempotency(record.networkKey, record.key, {
 		sessionId: record.sessionId,
@@ -561,8 +562,13 @@ async function createFromRecord(
 		purgeAt: unredeemedPurgeAt(now),
 		now: now.toISOString(),
 	});
-	// Lost, or busy (another attempt's insert of this session is in flight).
+	// Lost, or busy (another attempt's insert of this session is in flight, or
+	// a crashed one the adoption just landed).
 	if (adopted !== "adopted") return fail("WRITE_CONFLICT");
+	const capped = await admitCreate(deps, record.networkKey, now);
+	// Refused: the record stays (adopted, nothing inserted), so a later replay
+	// still finishes the create under the recorded id.
+	if (capped !== null) return capped;
 	return insertCreated(
 		deps,
 		{ ...input, networkKey: record.networkKey },
