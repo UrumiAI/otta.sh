@@ -1488,7 +1488,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
-	 * ADR-0047: the session whose redeemed hand-off built `cartId`, while it has no
+	 * ADR-0047: the session whose finalized hand-off recorded `cartId` as the
+	 * shopper's cart (`shopperCartId`), while it has no
 	 * order yet and is still open — or none. A session the agent canceled (or that
 	 * is otherwise closed) LOSES its attribution, as does any hand-off cart while
 	 * agentic checkout is off (`enabled` false): `skipped` names the reason code,
@@ -1502,7 +1503,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		const none = { session: null, skipped: null };
 		try {
 			const session = await this.#stores.agentSessionStore.findByCartId(cartId);
-			if (session === null || session.cartId !== cartId) return none;
+			// Only the SHOPPER's cart (recorded by the hand-off's finalize) carries the
+			// attribution; the agent's own cart is never handed over.
+			if (session === null || session.shopperCartId !== cartId) return none;
 			if (!isAgentSessionHandedOff(session) || session.orderId !== undefined) return none;
 			if (!enabled) return { session: null, skipped: "AGENTIC_DISABLED" };
 			if (!isAgentSessionOpen(session.status)) return { session: null, skipped: "SESSION_CLOSED" };

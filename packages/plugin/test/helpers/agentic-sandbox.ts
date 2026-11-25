@@ -18,6 +18,7 @@ import {
 } from "@urumi.ai/otta-store-emdash";
 import { expect } from "vitest";
 import type { SandboxHandle } from "../sandbox/harness.js";
+import { AGENTIC_ENABLED_KEY } from "../../src/agentic/settings.js";
 
 export const PUBLISHED_AT = "2026-01-01T00:00:00.000Z";
 
@@ -165,12 +166,18 @@ export async function call(
 	return resultOf(await handle.invokeRoute(route, input, request));
 }
 
-/** Switch agentic checkout on or off through the Settings form, as a merchant does. */
+/** The fixture entry whose test-only window sets the agentic switch in kv. */
+export const AGENTIC_TEST_ENTRY = "agentic/testing/agentic-entry.ts";
+
+/**
+ * Switch agentic checkout on or off by writing the stored value directly (the
+ * Settings form refuses to turn it on until buyer-data export and erasure exist,
+ * ADR-0047). Needs a boot with `entry: AGENTIC_TEST_ENTRY`.
+ */
 export async function saveAgentic(handle: SandboxHandle, enabled: boolean): Promise<void> {
-	const saved = await handle.invokeRoute("admin", {
-		type: "form_submit",
-		action_id: "save-agentic-checkout",
-		values: { agenticEnabled: enabled },
+	const res = await handle.rawFetch(`/kv/${encodeURIComponent(AGENTIC_ENABLED_KEY)}`, {
+		method: "PUT",
+		body: JSON.stringify(enabled),
 	});
-	expect(saved).toHaveProperty("result");
+	expect(res.status).toBe(200);
 }

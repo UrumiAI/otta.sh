@@ -16,7 +16,8 @@
 import {
 	AGENT_SESSION_RETENTION_MS,
 	createAgentSession,
-	redeemAgentHandoff,
+	claimAgentHandoff,
+	finalizeAgentHandoff,
 	NOOP_LOGGER,
 	cents,
 	currency,
@@ -110,6 +111,20 @@ import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
 import { strandOrder } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
+
+/** A finalized hand-off through the domain: claim, then finalize on a cart. */
+async function redeemAgentHandoff(
+	d: Parameters<typeof claimAgentHandoff>[0],
+	input: { token: string },
+): Promise<{ ok: boolean }> {
+	const claimed = await claimAgentHandoff(d, { token: input.token, redeemer: "browser-1" });
+	if (!claimed.ok || claimed.status !== "claimed") return { ok: false };
+	return finalizeAgentHandoff(d, {
+		sessionId: claimed.session.id,
+		claimId: claimed.claimId,
+		cartId: "cart-shopper",
+	});
+}
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -931,9 +946,9 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		});
 		expect(purged).toBe(true);
 		expect(await collectionOf(storage, AGENT_SESSIONS_COLLECTION).get(made.session.id)).toBeNull();
-		// One pointer: 6 measured. AGENT_SESSION_PURGE_CALLS is the two-pointer
-		// ceiling (a session that issued a second link): 2 more deletes.
-		expect(used, `measured ${String(used)}`).toBe(6);
+		// One pointer: 13 measured (its two slots included). AGENT_SESSION_PURGE_CALLS
+		// is the two-pointer ceiling (a session that issued a second link): 2 more.
+		expect(used, `measured ${String(used)}`).toBe(13);
 		expect(used + 2).toBe(AGENT_SESSION_PURGE_CALLS);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["prune-agent-sessions"].unit);
 	});

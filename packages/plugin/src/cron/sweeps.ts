@@ -504,17 +504,23 @@ export const COUPON_RELEASE_CALLS = 7;
 export const GUEST_COUPON_RELEASE_CALLS = 5;
 
 /**
- * ADR-0047 `prune-agent-sessions`: one session's purge — its read, one page of
- * link pointers and their deletes, one page of create keys and its delete, and
- * the session's delete. 6 measured for one pointer (cron-leg-costs.test.ts); 8
+ * ADR-0047 `prune-agent-sessions`: one session's purge — its read; one page of
+ * link pointers, each read by version and deleted; the same for its create key;
+ * one page of its two live-cap slots, each read by version and deleted; and the
+ * session's delete. 13 measured for one pointer (cron-leg-costs.test.ts); 15
  * leaves room for a second pointer (a session that issued another link).
  */
-export const AGENT_SESSION_PURGE_CALLS = 8;
+export const AGENT_SESSION_PURGE_CALLS = 15;
 /** Sessions one run lists for purge (a page; the gate bounds what is purged). */
 export const AGENT_SESSION_PURGE_BATCH = 20;
 /** The create-key and orphan-pointer sweep after the sessions: two pages and
  *  their deletes, at most this many each (fewer when the leg has less room). */
 export const AGENT_SESSION_KEY_PURGE_BATCH = 5;
+/** Live-cap slot documents one run deletes once expired or abandoned
+ *  (`purgeSlotsDue`). Its two page reads take up to twice this many candidates,
+ *  each up to three calls (a versioned read, its session's read, the delete), so
+ *  it is sized to the room left as `(room - 2) / 6`. */
+export const AGENT_SESSION_SLOT_PURGE_BATCH = 5;
 
 /** The legs with a per-tick batch, and which batch. */
 const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
@@ -2310,10 +2316,12 @@ export async function runCommerceSweeps(
 		"prune-agent-sessions": async () =>
 			await run("prune-agent-sessions", async (legBudget) => {
 				// ADR-0047 retention: sessions 30 days after creation (their link
-				// pointers and create keys with them), then create keys and orphan
-				// pointers due on their own. Bounded per tick like `prune-carts`: a
+				// pointers, create keys and slots with them), then create keys and
+				// orphan pointers due on their own, then expired or abandoned slots. Bounded per tick like `prune-carts`: a
 				// gate before each purge, the rest next run.
 				const gate = legBudget.gate(0, LEG_QUERY_COSTS["prune-agent-sessions"].unit);
+				const startQueries = legBudget.remainingQueries();
+				const startMs = legBudget.remainingMs();
 				const store = stores.agentSessionStore;
 				const due = await store.listPurgeDue(nowIso, AGENT_SESSION_PURGE_BATCH);
 				let count = 0;
@@ -2334,6 +2342,24 @@ export async function runCommerceSweeps(
 				);
 				if (!stopped && keyBatch > 0) {
 					count += await store.purgeIdempotencyDue(nowIso, keyBatch);
+				}
+				// The live-cap slots (ADR-0047): purged sessions took theirs with them;
+				// these are the slots of sessions that expired, or of inserts that
+				// stopped before landing. Same rule, sized to the room left in calls
+				// AND in time (at this leg's own observed cost per call: a slow store
+				// must not carry the tick past its time budget on cleanup).
+				const callsUsed = startQueries - legBudget.remainingQueries();
+				const perCallMs = callsUsed > 0 ? (startMs - legBudget.remainingMs()) / callsUsed : 0;
+				const callRoom =
+					perCallMs > 0
+						? Math.min(
+								legBudget.remainingQueries(),
+								Math.floor(legBudget.remainingMs() / perCallMs),
+							)
+						: legBudget.remainingQueries();
+				const slotBatch = Math.min(AGENT_SESSION_SLOT_PURGE_BATCH, Math.floor((callRoom - 2) / 6));
+				if (!stopped && slotBatch > 0) {
+					count += await store.purgeSlotsDue(nowIso, slotBatch);
 				}
 				return legResult(count, stopped || legBudget.stopped);
 			}),

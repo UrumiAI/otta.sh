@@ -20,10 +20,11 @@ import {
 	detachAgentSessionCart,
 	getAgentSession,
 	precheckAgentSessionCreate,
+	claimAgentHandoff,
+	finalizeAgentHandoff,
 	productId as toProductId,
 	precheckAgentSessionReplace,
-	recordAgentHandoffCart,
-	redeemAgentHandoff,
+	releaseAgentHandoffClaim,
 	replaceAgentSession,
 	sku as toSku,
 	verifyAgentOrderSecret,
@@ -34,21 +35,21 @@ import {
 	type AgentSessionView,
 	type OrderAddress,
 } from "@urumi.ai/otta-domain";
-import { hashToken, WebCryptoAgentSessionSecrets } from "@urumi.ai/otta-store-emdash";
+import { WebCryptoAgentSessionSecrets } from "@urumi.ai/otta-store-emdash";
 import { CART_LINE_MAX_QTY } from "../commerce/commerce-input.js";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
-import { codRequestFacts, networkKey } from "../payments/cod-request.js";
+import { clientAddress, clientNetwork, networkKey } from "../payments/cod-request.js";
 import type { CartWire, CommerceClient } from "../product-commerce/commerce-client.js";
 import { cartCookieDescriptor, type CartCookieDescriptor } from "../storefront/cart-routes.js";
 import { renderGuard, type RenderGuardFailure } from "../storefront/pdp-route.js";
 import type { PluginContext, RouteHandler, SandboxedRequest } from "../types.js";
+import { agenticCartKey, type AgenticCartKeyKind } from "./cart-key.js";
 import {
 	addAgentLines,
 	buildAgentCart,
 	quoteAgentCart,
 	retryAgentLine,
-	screenAgentLines,
 	startAgentCart,
 	type AgentMessage,
 	type AgentSelection,
@@ -139,16 +140,22 @@ function sessionWire(view: AgentSessionView): AgentSessionWire {
 	};
 }
 
-/** The domain deps, or `null` (logged) when the server key cannot be had. */
-async function agentDeps(ctx: PluginContext): Promise<AgentSessionDeps | null> {
+/** The domain deps and the server key's bytes (the agentic cart keys are HMACs
+ *  under it), or `null` (logged) when the server key cannot be had. */
+async function agentDeps(
+	ctx: PluginContext,
+): Promise<{ deps: AgentSessionDeps; serverKey: Uint8Array } | null> {
 	const key = await readAgenticServerKey(ctx);
 	if (key === null) return null;
 	const stores = createInProcessCommerceStores(ctx);
 	return {
-		store: stores.agentSessionStore,
-		clock: stores.clock,
-		secrets: new WebCryptoAgentSessionSecrets(key),
-		limits: { maxLineQuantity: CART_LINE_MAX_QTY },
+		serverKey: key,
+		deps: {
+			store: stores.agentSessionStore,
+			clock: stores.clock,
+			secrets: new WebCryptoAgentSessionSecrets(key),
+			limits: { maxLineQuantity: CART_LINE_MAX_QTY },
+		},
 	};
 }
 
@@ -160,13 +167,13 @@ async function agentDeps(ctx: PluginContext): Promise<AgentSessionDeps | null> {
 function guarded<T>(
 	route: string,
 	ctx: PluginContext,
-	body: (deps: AgentSessionDeps) => Promise<T>,
+	body: (deps: AgentSessionDeps, serverKey: Uint8Array) => Promise<T>,
 ): Promise<T | NotFound | Unavailable | RenderGuardFailure> {
 	return renderGuard(route, async () => {
 		if (!(await readAgenticEnabled(ctx))) return NOT_FOUND;
-		const deps = await agentDeps(ctx);
-		if (deps === null) return UNAVAILABLE;
-		return body(deps);
+		const built = await agentDeps(ctx);
+		if (built === null) return UNAVAILABLE;
+		return body(built.deps, built.serverKey);
 	});
 }
 
@@ -176,7 +183,10 @@ async function requestNetworkKey(
 	ctx: PluginContext,
 	request: SandboxedRequest | undefined,
 ): Promise<string | null> {
-	const network = codRequestFacts(request).network;
+	// IPv6 aggregated to its /64 (ADR-0047): one host typically owns a whole /64,
+	// and the per-network live cap means nothing if a caller can rotate addresses
+	// inside it. (The COD path keeps its own, wider /48.)
+	const network = clientNetwork(clientAddress(request), 64);
 	return network === null ? null : networkKey(ctx, network);
 }
 
@@ -238,18 +248,21 @@ export function acceptedSelection(
 }
 
 /**
- * A cart key no caller can name: a digest of the write's scope, its key AND its
- * body's fingerprint — so two bodies racing under one key never share a cart (the
- * loser's lines can never land in a cart the winner's shopper re-adopted), while
- * a same-body retry lands in the same cart (deduped by its line keys).
+ * An agent write's cart key, which no caller can compute: an HMAC under the
+ * server key (`cart-key.ts`) of the write's scope, its key AND its body's
+ * fingerprint — so two bodies racing under one key never share a cart, while a
+ * same-body retry lands in the same cart (deduped by its line keys). The agent
+ * knows every input but the server key, so it cannot name the cart, and the
+ * storefront's `cart/create` refuses `agentic:` keys besides.
  */
 export async function agentCartKey(
-	kind: string,
+	serverKey: Uint8Array,
+	kind: Exclude<AgenticCartKeyKind, "shopper">,
 	scope: string,
 	idempotencyKey: string,
 	fingerprint: string,
 ): Promise<string> {
-	return `agentic:${kind}:${await hashToken(`${scope}\u0000${idempotencyKey}\u0000${fingerprint}`)}`;
+	return agenticCartKey(serverKey, kind, [scope, idempotencyKey, fingerprint]);
 }
 
 // ── session/create ─────────────────────────────────────────────────────────
@@ -268,7 +281,7 @@ export type AgenticCreateResult =
 
 export function createAgenticSessionCreateHandler(): RouteHandler<unknown> {
 	return (routeCtx, ctx): Promise<AgenticCreateResult> =>
-		guarded(AGENTIC_SESSION_CREATE_ROUTE, ctx, async (deps) => {
+		guarded(AGENTIC_SESSION_CREATE_ROUTE, ctx, async (deps, serverKey) => {
 			const input = parseAgentSessionInput(routeCtx.input);
 			if (input === null) return INVALID_INPUT;
 			const net = await requestNetworkKey(ctx, routeCtx.request);
@@ -286,7 +299,7 @@ export function createAgenticSessionCreateHandler(): RouteHandler<unknown> {
 			const client = await makeCommerceClient(ctx);
 			const built = await contentFor(
 				client,
-				await agentCartKey("create", net, input.idempotencyKey, request.fingerprint),
+				await agentCartKey(serverKey, "create", net, input.idempotencyKey, request.fingerprint),
 				input,
 				deps.clock.now().toISOString(),
 			);
@@ -395,7 +408,7 @@ export type AgenticWriteResult =
 
 export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
 	return (routeCtx, ctx): Promise<AgenticWriteResult> =>
-		guarded(AGENTIC_SESSION_UPDATE_ROUTE, ctx, async (deps) => {
+		guarded(AGENTIC_SESSION_UPDATE_ROUTE, ctx, async (deps, serverKey) => {
 			const sessionId = parseSessionId(fieldOf(routeCtx.input, "sessionId"));
 			const input = parseAgentSessionInput(routeCtx.input);
 			if (input === null) return INVALID_INPUT;
@@ -411,7 +424,7 @@ export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
 			// with no cart built or touched. Only a fresh, allowed write builds one.
 			const pre = await precheckAgentSessionReplace(deps, request);
 			if (!pre.proceed) return writeAnswer(pre.result);
-			return replaceWithNewCart(ctx, deps, request, input);
+			return replaceWithNewCart(ctx, deps, serverKey, request, input);
 		});
 }
 
@@ -437,6 +450,7 @@ export function createAgenticSessionUpdateHandler(): RouteHandler<unknown> {
 async function replaceWithNewCart(
 	ctx: PluginContext,
 	deps: AgentSessionDeps,
+	serverKey: Uint8Array,
 	request: { sessionId: AgentSessionId; idempotencyKey: string; fingerprint: string },
 	input: AgentSessionInput,
 ): Promise<AgenticWriteResult> {
@@ -445,7 +459,7 @@ async function replaceWithNewCart(
 	const oldCartId = (await deps.store.get(sessionId))?.cartId;
 	const started = await startAgentCart(
 		client,
-		await agentCartKey("replace", sessionId, input.idempotencyKey, request.fingerprint),
+		await agentCartKey(serverKey, "replace", sessionId, input.idempotencyKey, request.fingerprint),
 		input.currency,
 	);
 	if ("failed" in started) return { ok: false, reason: started.failed };
@@ -658,8 +672,10 @@ export function createAgenticSessionCancelHandler(): RouteHandler<unknown> {
 			// built — never one a shopper redeemed into. Decided on the session AS THE
 			// CANCEL LEFT IT: a redeem that won the race in between makes it handed
 			// off, and then the cart is the shopper's and is never released.
+			// The cart id is read from the STORE (the view never carries one): the
+			// agent's own cart, never the shopper's (`shopperCartId`, a separate cart).
 			if (result.ok && !result.replayed && !result.session.handedOff) {
-				const cartId = result.session.cartId ?? before?.cartId;
+				const cartId = (await deps.store.get(keyed.sessionId))?.cartId ?? before?.cartId;
 				if (cartId !== undefined) await releaseCart(ctx, cartId);
 			}
 			return writeAnswer(result);
@@ -729,100 +745,242 @@ export function allHeld(cart: Pick<CartWire, "lines">, nowIso: string): boolean 
 	);
 }
 
-/** The cart holds exactly the session's lines, and can still be checked out. */
-function cartMatches(cart: CartWire, lines: readonly AgentSessionLine[]): boolean {
-	if (cart.state !== "active" || cart.orderId !== null) return false;
-	if (cart.lines.length !== lines.length) return false;
-	const want = new Map(lines.map((l) => [`${l.productId}\u0000${l.sku}`, l.quantity]));
-	return cart.lines.every((l) => want.get(`${l.productId ?? ""}\u0000${l.sku}`) === l.qty);
+/** The browser's redeemer nonce cookie (ADR-0047). The site's landing GET for a
+ *  hand-off link sets it (a random value, once per browser) and its redeem shim
+ *  reads it back and passes it as the route's `redeemer` input: a sandboxed route
+ *  never sees a cookie header. Missing ⇒ `HANDOFF_REDEEMER_MISSING`, retryable. */
+export const AGENTIC_REDEEMER_COOKIE_NAME = "otta_agentic_redeemer";
+/** The nonce outlives the hand-off's re-entry window (15 min) comfortably. */
+export const AGENTIC_REDEEMER_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24;
+
+/** The cookie the site sets on the landing GET, in the cart cookie's shape. */
+export function agenticRedeemerCookieDescriptor(nonce: string): CartCookieDescriptor {
+	return {
+		...cartCookieDescriptor(nonce),
+		name: AGENTIC_REDEEMER_COOKIE_NAME,
+		maxAgeSeconds: AGENTIC_REDEEMER_COOKIE_MAX_AGE_SECONDS,
+	};
 }
 
 /**
- * The shopper's half (ADR-0047 "hand-off link"): the link is marked used
- * ATOMICALLY first (exactly one of any number of racing redeems wins), then the
- * session's cart is re-adopted when it still holds the same lines, else a new cart
- * is built from them. Prices are never carried: the checkout the shopper lands on
- * re-quotes the cart from scratch. The cart is marked agent-originated by pointing
- * the session at it, which is what attributes the order placed from it.
+ * The shopper's half (ADR-0047 "hand-off link"), in three steps so no transient
+ * failure kills the link:
+ *  1. CLAIM the link with a short lease (`claimAgentHandoff`): other redeems get
+ *     `HANDOFF_IN_PROGRESS` and agent writes are held off; nothing is spent yet.
+ *  2. Build the SHOPPER'S cart: a cart keyed by an HMAC under the server key of
+ *     the session and the token, so a retry (any claim) converges on the same one
+ *     and the agent can never name it. The agent's cart is never handed over.
+ *     Lines a prior attempt left held are kept; an OUT_OF_STOCK line whose stock
+ *     the agent's cart holds is moved over (removed there, added here).
+ *  3. FINALIZE (`finalizeAgentHandoff`) records it as `shopperCartId`; only then
+ *     are the agent cart's holds released and the cookie answered.
+ * ANY failure after the claim — a throw included — releases the claim, so the
+ * link can be redeemed again at once. A cart that takes no line is
+ * `HANDOFF_NO_LINES` and never finalizes. The same browser re-opening a
+ * finalized link re-enters the same cart, unless it has become an order.
+ * Prices are never carried: the checkout re-quotes the cart from scratch.
  */
 export function createAgenticHandoffRedeemHandler(): RouteHandler<unknown> {
 	return (routeCtx, ctx): Promise<AgenticRedeemResult> =>
-		guarded(AGENTIC_HANDOFF_REDEEM_ROUTE, ctx, async (deps) => {
+		guarded(AGENTIC_HANDOFF_REDEEM_ROUTE, ctx, async (deps, serverKey) => {
 			const token = parseSecret(fieldOf(routeCtx.input, "token"));
 			if (token === null) return { ok: false as const, reason: "HANDOFF_INVALID" };
-			const redeemed = await redeemAgentHandoff(deps, { token });
-			if (!redeemed.ok) return { ok: false as const, reason: redeemed.reason };
-			const session = redeemed.session;
+			const raw = fieldOf(routeCtx.input, "redeemer");
+			const redeemer = typeof raw === "string" ? raw : "";
+			const claimed = await claimAgentHandoff(deps, { token, redeemer });
+			if (!claimed.ok) return { ok: false as const, reason: claimed.reason };
 			const client = await makeCommerceClient(ctx);
-			const requested = session.lines.map((l) => ({
-				productId: l.productId,
-				sku: l.sku,
-				quantity: l.quantity,
-			}));
-			// The same sellability check a rebuild makes, BEFORE any cart is touched:
-			// not one line sellable ⇒ HANDOFF_NO_LINES, no cookie, every cart as it was.
-			const screened = await screenAgentLines(client, session.currency, requested);
-			if (screened.accepted.length === 0) {
-				return {
-					ok: false as const,
-					reason: "HANDOFF_NO_LINES" as const,
-					messages: screened.messages,
-				};
-			}
-			let cartId: string | null = null;
-			let messages: AgentMessage[] = [];
-			const agentCart = session.cartId === undefined ? null : await client.getCart(session.cartId);
-			// Re-adopt only a cart that still holds exactly the session's lines, every
-			// one of them sellable and its stock still held.
-			if (
-				agentCart !== null &&
-				agentCart.ok &&
-				screened.messages.length === 0 &&
-				cartMatches(agentCart.cart, session.lines) &&
-				allHeld(agentCart.cart, deps.clock.now().toISOString())
-			) {
-				cartId = agentCart.cart.cartId;
-			}
-			if (cartId === null) {
-				// Rebuild with the sellable lines alone. The agent's cart is dead (the
-				// link is spent), so its holds are released first — its stock may be
-				// exactly what the rebuilt cart needs. Single-use, so no replay to
-				// dedupe: a fresh cart each time.
-				if (agentCart !== null && agentCart.ok && agentCart.cart.orderId === null) {
-					await releaseCart(ctx, agentCart.cart.cartId);
+			if (claimed.status === "reentered") {
+				// Never hand back a cart a checkout already turned into an order.
+				const cart = await client.getCart(claimed.shopperCartId);
+				if (!cart.ok || cart.cart.state !== "active" || cart.cart.orderId !== null) {
+					return { ok: false as const, reason: "HANDOFF_USED" };
 				}
-				const { cartId: fresh } = await client.createCart(session.currency);
-				// The whole request again, so each message keeps its own line index;
-				// the lines refused above are refused again, with no cart write.
-				const added = await addAgentLines(client, fresh, session.currency, requested);
-				messages = added.messages;
-				if (added.lines.length === 0) {
-					return { ok: false as const, reason: "HANDOFF_NO_LINES" as const, messages };
+				return redeemAnswer(claimed.session, claimed.shopperCartId, []);
+			}
+			const release = async (): Promise<void> => {
+				try {
+					await releaseAgentHandoffClaim(deps, {
+						sessionId: claimed.session.id,
+						claimId: claimed.claimId,
+					});
+				} catch {
+					console.error("[otta] agentic: a hand-off claim could not be released");
 				}
-				cartId = fresh;
-			}
-			const marked = await recordAgentHandoffCart(deps, { sessionId: session.id, cartId });
-			if (!marked.ok) {
-				// Reason code only: the order placed from this cart goes unattributed.
-				console.warn(`[otta] agentic: redeemed cart not marked (${marked.reason})`);
-			}
-			const buyer = session.buyer;
-			const address = session.destination ?? null;
-			return {
-				ok: true as const,
-				...NO_STORE,
-				cartId,
-				cookie: cartCookieDescriptor(cartId),
-				prefill: {
-					email: buyer?.email ?? address?.email ?? null,
-					phone: buyer?.phone ?? address?.phone ?? null,
-					address,
-					shippingMethodId: session.shippingMethodId ?? null,
-					couponCode: session.couponCode ?? null,
-				},
-				messages,
 			};
+			try {
+				const built = await buildShopperCart(ctx, client, deps, serverKey, token, claimed);
+				if (built.lines === 0) {
+					await release();
+					return {
+						ok: false as const,
+						reason: "HANDOFF_NO_LINES" as const,
+						messages: built.messages,
+					};
+				}
+				const done = await finalizeAgentHandoff(deps, {
+					sessionId: claimed.session.id,
+					claimId: claimed.claimId,
+					cartId: built.cartId,
+				});
+				if (!done.ok) {
+					// The session can never take this cart: free its holds. A lost claim
+					// keeps it — the claim that took over converges on the same cart.
+					if (SHOPPER_CART_DEAD.has(done.reason)) {
+						await releaseUnlessShoppers(ctx, deps, claimed.session.id, built.cartId);
+					} else {
+						await release();
+					}
+					return { ok: false as const, reason: done.reason };
+				}
+				const agentCartId = claimed.agentCartId;
+				if (agentCartId !== undefined && agentCartId !== done.shopperCartId) {
+					await releaseCart(ctx, agentCartId);
+				}
+				return redeemAnswer(done.session, done.shopperCartId, built.messages);
+			} catch (err) {
+				await release();
+				throw err;
+			}
 		});
+}
+
+/** Finalize refusals after which this claim's cart may be nobody's (checked
+ *  against the session first: a claim that took over may have finalized it). */
+const SHOPPER_CART_DEAD: ReadonlySet<string> = new Set([
+	"HANDOFF_CANCELED",
+	"HANDOFF_EXPIRED",
+	"SESSION_NOT_FOUND",
+]);
+
+/** Release `cartId` unless the session records it as the shopper's. */
+async function releaseUnlessShoppers(
+	ctx: PluginContext,
+	deps: AgentSessionDeps,
+	sessionId: AgentSessionId,
+	cartId: string,
+): Promise<void> {
+	try {
+		if ((await deps.store.get(sessionId))?.shopperCartId === cartId) return;
+	} catch {
+		return;
+	}
+	await releaseCart(ctx, cartId);
+}
+
+function redeemAnswer(
+	session: AgentSessionView,
+	cartId: string,
+	messages: AgentMessage[],
+): AgenticRedeemResult {
+	const buyer = session.buyer;
+	const address = session.destination ?? null;
+	return {
+		ok: true as const,
+		...NO_STORE,
+		cartId,
+		cookie: cartCookieDescriptor(cartId),
+		prefill: {
+			email: buyer?.email ?? address?.email ?? null,
+			phone: buyer?.phone ?? address?.phone ?? null,
+			address,
+			shippingMethodId: session.shippingMethodId ?? null,
+			couponCode: session.couponCode ?? null,
+		},
+		messages,
+	};
+}
+
+/**
+ * Step 2 of the redeem: the shopper's cart, holding every session line it can.
+ * Keyed by an HMAC of the session and the token under the server key, so every
+ * claim of this link lands in ONE cart. A line it already holds (a prior
+ * attempt's, still held, same sku and quantity) is kept; any other line in it is
+ * removed first. New lines go in under claim-scoped keys (a refusal one claim
+ * consumed never replays into the next). A line refused OUT_OF_STOCK whose stock
+ * the agent's cart still holds is moved: removed from the agent's cart, then
+ * added here once.
+ */
+async function buildShopperCart(
+	ctx: PluginContext,
+	client: CommerceClient,
+	deps: AgentSessionDeps,
+	serverKey: Uint8Array,
+	token: string,
+	claimed: { claimId: string; session: AgentSessionView; agentCartId?: string },
+): Promise<{ cartId: string; lines: number; messages: AgentMessage[] }> {
+	const { session, claimId } = claimed;
+	const nowIso = deps.clock.now().toISOString();
+	const requested = session.lines.map((l) => ({
+		productId: l.productId as string,
+		sku: l.sku as string,
+		quantity: l.quantity,
+	}));
+	const key = await agenticCartKey(serverKey, "shopper", [session.id, token]);
+	const { cartId } = await client.createCart(session.currency, key);
+	const read = await client.getCart(cartId);
+	if (!read.ok || read.cart.state !== "active" || read.cart.orderId !== null) {
+		throw new Error("the shopper's cart cannot be used");
+	}
+	const kept = new Set<string>();
+	for (const line of read.cart.lines) {
+		const want = requested.find((r) => r.productId === line.productId);
+		const keep =
+			want !== undefined &&
+			want.sku === line.sku &&
+			want.quantity === line.qty &&
+			allHeld({ lines: [line] }, nowIso);
+		if (keep) {
+			kept.add(line.productId ?? "");
+			continue;
+		}
+		await client.removeCartLine(
+			cartId,
+			line.lineId,
+			`agentic:${cartId}:${claimId}:drop:${line.lineId}`,
+		);
+	}
+	const toAdd = requested.map((r) => (kept.has(r.productId) ? null : r));
+	const added = await addAgentLines(
+		client,
+		cartId,
+		session.currency,
+		toAdd.filter((r): r is NonNullable<typeof r> => r !== null),
+		claimId,
+	);
+	// `addAgentLines` indexes its messages over the lines it was given: map them
+	// back to the session's own line indexes.
+	const indexOf = toAdd.flatMap((r, i) => (r === null ? [] : [i]));
+	let messages = added.messages.map((m) => {
+		const at = /^lines\[(\d+)\]$/.exec(m.path);
+		const original = at === null ? undefined : indexOf[Number(at[1])];
+		return original === undefined ? m : { ...m, path: `lines[${String(original)}]` };
+	});
+	let lines = kept.size + added.lines.length;
+	const agentCartId = claimed.agentCartId;
+	const outOfStock = messages.filter((m) => m.code === "OUT_OF_STOCK");
+	if (outOfStock.length > 0 && agentCartId !== undefined) {
+		const agentCart = await client.getCart(agentCartId);
+		for (const message of outOfStock) {
+			const want = requested[messageLineIndex(message)];
+			if (!agentCart.ok || want === undefined) continue;
+			const held = agentCart.cart.lines.find(
+				(l) => l.productId === want.productId && allHeld({ lines: [l] }, nowIso),
+			);
+			if (held === undefined) continue;
+			await client.removeCartLine(
+				agentCartId,
+				held.lineId,
+				`agentic:${agentCartId}:${claimId}:handover:${held.lineId}`,
+			);
+			const again = await retryAgentLine(client, cartId, want, claimId);
+			messages = messages.filter((m) => m !== message);
+			if (again.ok) lines++;
+			else messages.push({ code: again.reason, path: message.path });
+		}
+		messages = messages.toSorted((a, b) => messageLineIndex(a) - messageLineIndex(b));
+	}
+	return { cartId, lines, messages };
 }
 
 // ── order (status by order secret) ─────────────────────────────────────────

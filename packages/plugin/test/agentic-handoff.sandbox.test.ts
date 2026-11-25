@@ -12,12 +12,15 @@ import {
 	AGENT_SESSIONS_COLLECTION,
 	CARTS_COLLECTION,
 	collectionOf,
+	hashToken,
+	INVENTORY_COLLECTION,
 	ORDERS_COLLECTION,
 	type StorageAccess,
 } from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	AGENT_ADDRESS,
+	AGENTIC_TEST_ENTRY,
 	agenticFixture,
 	call,
 	cartLines,
@@ -26,6 +29,7 @@ import {
 	seedProduct,
 	unpublishProduct,
 } from "./helpers/agentic-sandbox.js";
+import { fingerprintOf, parseAgentSessionInput } from "../src/agentic/input.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
 
@@ -39,16 +43,23 @@ const JUG = { id: "prod-aho-jug", sku: "SKU-AHO-JUG", amount: 1200 };
 const VASE = { id: "prod-aho-vase", sku: "SKU-AHO-VASE", amount: 900 };
 /** A digital product: its cart line takes no reservation and has no deadline. */
 const EBOOK = { id: "prod-aho-ebook", sku: "SKU-AHO-EBOOK", amount: 700 };
+/** One unit on hand: the transient out-of-stock case. */
+const SOLO = { id: "prod-aho-solo", sku: "SKU-AHO-SOLO", amount: 1500 };
 
 let handle: SandboxHandle;
 let storage: StorageAccess;
 
 beforeAll(async () => {
 	({ storage } = await storageBridge());
-	handle = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+	handle = await loadPluginInSandbox({
+		allowedHosts: [],
+		storage: true,
+		entry: AGENTIC_TEST_ENTRY,
+	});
 	await seedAgenticStore(storage, F);
 	for (const product of [PLATE, CUP, JUG, VASE]) await seedProduct(storage, product);
 	await seedProduct(storage, EBOOK, 1, { kind: "digital" });
+	await seedProduct(storage, SOLO, 1, { stock: 1 });
 	await saveAgentic(handle, true);
 	const cod = await handle.invokeRoute("admin", {
 		type: "form_submit",
@@ -120,6 +131,89 @@ async function placeCod(cartId: string, ip: string): Promise<Record<string, unkn
 	);
 }
 
+/** Redeem a hand-off link as one browser (its redeemer nonce cookie, passed by
+ *  the site's shim as the `redeemer` input). */
+async function redeem(token: string, redeemer = "browser-aho"): Promise<Record<string, unknown>> {
+	return call(handle, "agentic/handoff/redeem", { token, redeemer });
+}
+
+/** The bridge methods a collection answers (`sandbox/storage-bridge.ts`). */
+const BRIDGED = [
+	"get",
+	"put",
+	"delete",
+	"query",
+	"count",
+	"updateIf",
+	"getVersioned",
+	"compareAndSet",
+	"compareAndDelete",
+] as const;
+
+/**
+ * Run `action` before the FIRST call the plugin makes to `collection` from here
+ * on (a throw is a real storage failure inside the redeem; an await pauses it
+ * there), then behave normally. Returns the restore.
+ */
+function onFirstCall(collection: string, action: () => Promise<void>): () => void {
+	const target = storage[collection] as unknown as Record<string, unknown>;
+	const saved = new Map<string, PropertyDescriptor | undefined>();
+	let fired = false;
+	for (const method of BRIDGED) {
+		const original = target[method];
+		if (typeof original !== "function") continue;
+		saved.set(method, Object.getOwnPropertyDescriptor(target, method));
+		target[method] = async (...args: unknown[]) => {
+			if (!fired) {
+				fired = true;
+				await action();
+			}
+			return (original as (...a: unknown[]) => unknown).apply(target, args);
+		};
+	}
+	return () => {
+		for (const [method, descriptor] of saved) {
+			if (descriptor === undefined) delete target[method];
+			else Object.defineProperty(target, method, descriptor);
+		}
+	};
+}
+
+/** A promise and its resolve, for pausing a call from outside. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	const settle: { resolve?: () => void } = {};
+	const promise = new Promise<void>((done) => {
+		settle.resolve = done;
+	});
+	return {
+		promise,
+		resolve: () => {
+			settle.resolve?.();
+		},
+	};
+}
+
+async function cartIds(): Promise<Set<string>> {
+	const carts = collectionOf(storage, CARTS_COLLECTION);
+	const ids = new Set<string>();
+	let cursor: string | undefined;
+	do {
+		const page = await carts.query({ limit: 100, ...(cursor === undefined ? {} : { cursor }) });
+		for (const item of page.items) ids.add(item.id);
+		cursor = page.hasMore ? page.cursor : undefined;
+	} while (cursor !== undefined);
+	return ids;
+}
+
+/** The stored line ids of `cartId`, by sku. */
+async function lineIds(cartId: string): Promise<Record<string, string>> {
+	const doc = await collectionOf<{ lines: Record<string, { lineId: string }> }>(
+		storage,
+		CARTS_COLLECTION,
+	).get(cartId);
+	return Object.fromEntries(Object.entries(doc?.lines ?? {}).map(([k, v]) => [k, v.lineId]));
+}
+
 async function storedOrder(orderId: string): Promise<Record<string, unknown> | null> {
 	return collectionOf<Record<string, unknown>>(storage, ORDERS_COLLECTION).get(orderId);
 }
@@ -138,8 +232,9 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		const quote = s.session["quote"] as Record<string, number | null>;
 		expect(quote["total"]).not.toBeNull();
 
-		// Redeem: the agent's cart still holds the same lines, so it is re-adopted.
-		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s.token });
+		// Redeem: the shopper gets a cart of its own; the agent's cart is released.
+		const agentCart = (await storedSession(s.id))["cartId"] as string;
+		const redeemed = await redeem(s.token);
 		expect(redeemed).toMatchObject({
 			ok: true,
 			noStore: true,
@@ -154,7 +249,12 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		});
 		const cartId = redeemed["cartId"] as string;
 		expect(redeemed["cookie"]).toMatchObject({ value: cartId, httpOnly: true, secure: true });
-		expect((await storedSession(s.id))["cartId"]).toBe(cartId);
+		expect(cartId).not.toBe(agentCart);
+		expect((await storedSession(s.id))["shopperCartId"]).toBe(cartId);
+		expect(await cartLines(storage, agentCart)).toEqual({});
+		expect(Object.keys((await cartLines(storage, cartId)) ?? {}).toSorted()).toEqual(
+			[MUG.sku, BOWL.sku].toSorted(),
+		);
 
 		// The quote the agent got is exactly what the shopper's checkout shows.
 		const summary = await call(handle, "storefront/checkout/summary", {
@@ -179,11 +279,13 @@ describe("agentic hand-off (workerd sandbox)", () => {
 			total: quote["total"],
 		});
 
-		// Single use: a second redeem is refused, with no cookie.
-		expect(await call(handle, "agentic/handoff/redeem", { token: s.token })).toEqual({
+		// Single use: another browser (the agent holds the token too) is refused,
+		// with no cookie; the browser that redeemed re-enters the SAME cart.
+		expect(await redeem(s.token, "browser-other")).toEqual({
 			ok: false,
 			reason: "HANDOFF_USED",
 		});
+		expect(await redeem(s.token)).toMatchObject({ ok: true, cartId });
 
 		// Before any order, the secret answers the status and no order.
 		expect(
@@ -269,7 +371,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		const s = await createSession("expired-1", [{ productId: MUG.id, quantity: 1 }]);
 		await editSession(s.id, { expiresAt: "2020-01-01T00:00:00.000Z" });
 		const before = await storedSession(s.id);
-		expect(await call(handle, "agentic/handoff/redeem", { token: s.token })).toEqual({
+		expect(await redeem(s.token)).toEqual({
 			ok: false,
 			reason: "HANDOFF_EXPIRED",
 		});
@@ -280,7 +382,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		const sessions = collectionOf(storage, AGENT_SESSIONS_COLLECTION);
 		const count = await sessions.count({});
 		for (const token of ["x".repeat(43), "short", ""]) {
-			expect(await call(handle, "agentic/handoff/redeem", { token })).toEqual({
+			expect(await redeem(token)).toEqual({
 				ok: false,
 				reason: "HANDOFF_INVALID",
 			});
@@ -295,7 +397,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 			cartId: "cart-aho-gone",
 			lines: [{ productId: "prod-aho-gone", sku: "SKU-AHO-GONE", quantity: 1 }],
 		});
-		const refused = await call(handle, "agentic/handoff/redeem", { token: s.token });
+		const refused = await redeem(s.token);
 		expect(refused).toEqual({
 			ok: false,
 			reason: "HANDOFF_NO_LINES",
@@ -303,6 +405,11 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		});
 		expect(refused).not.toHaveProperty("cookie");
 		expect(refused).not.toHaveProperty("cartId");
+		// Never finalized, and the claim released: the link is still redeemable.
+		const after = await storedSession(s.id);
+		expect(after).not.toHaveProperty("handoffUsedAt");
+		expect(after).not.toHaveProperty("shopperCartId");
+		expect(after).not.toHaveProperty("handoffClaim");
 	});
 
 	test("prices are re-read at the hand-off: the shopper's checkout shows today's price, not the quote's", async () => {
@@ -311,7 +418,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		});
 		expect((s.session["quote"] as { subtotal: number }).subtotal).toBe(1000);
 		await seedProduct(storage, { ...PLATE, amount: 1200 }, 2);
-		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s.token });
+		const redeemed = await redeem(s.token);
 		expect(redeemed["ok"]).toBe(true);
 		const summary = await call(handle, "storefront/checkout/summary", {
 			cartId: redeemed["cartId"],
@@ -322,7 +429,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		expect(totals["subtotal"]?.money?.amount).toBe(1200);
 	});
 
-	test("re-adopt checks sellability: the agent's cart still exists but its product is unpublished → no cookie, the cart untouched", async () => {
+	test("sellability is checked: the agent's cart still exists but its product is unpublished → no cookie, the agent's cart untouched", async () => {
 		const s2 = await createSession("unsold-1", [{ productId: VASE.id, quantity: 1 }], {
 			couponCode: undefined,
 		});
@@ -330,7 +437,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		const before = await cartLines(storage, agentCart);
 		expect(Object.keys(before ?? {})).toEqual([VASE.sku]);
 		await unpublishProduct(storage, VASE.id);
-		const refused = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		const refused = await redeem(s2.token);
 		expect(refused).toEqual({
 			ok: false,
 			reason: "HANDOFF_NO_LINES",
@@ -340,7 +447,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		expect(await cartLines(storage, agentCart)).toEqual(before);
 	});
 
-	test("rebuild: the agent's cart no longer fits (one product unpublished) → a cart of the rest, pointed at the session, and its order attributed", async () => {
+	test("one product unpublished → the shopper's cart holds the rest, is recorded on the session, and its order attributed", async () => {
 		const s2 = await createSession(
 			"rebuild-1",
 			[
@@ -351,7 +458,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		);
 		const agentCart = (await storedSession(s2.id))["cartId"] as string;
 		await unpublishProduct(storage, CUP.id);
-		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		const redeemed = await redeem(s2.token);
 		expect(redeemed).toMatchObject({
 			ok: true,
 			messages: [{ code: "PRODUCT_UNAVAILABLE", path: "lines[1]" }],
@@ -359,8 +466,8 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		const cartId = redeemed["cartId"] as string;
 		expect(cartId).not.toBe(agentCart);
 		expect(Object.keys((await cartLines(storage, cartId)) ?? {})).toEqual([MUG.sku]);
-		// recordAgentHandoffCart pointed the session at the rebuilt cart...
-		expect((await storedSession(s2.id))["cartId"]).toBe(cartId);
+		// The finalize recorded the shopper's cart on the session...
+		expect((await storedSession(s2.id))["shopperCartId"]).toBe(cartId);
 		// ...and the agent's dead cart released its holds.
 		expect(await cartLines(storage, agentCart)).toEqual({});
 		const placed = await placeCod(cartId, "203.0.113.11");
@@ -377,7 +484,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		const s2 = await createSession("cancel-after-1", [{ productId: MUG.id, quantity: 1 }], {
 			couponCode: undefined,
 		});
-		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		const redeemed = await redeem(s2.token);
 		const cartId = redeemed["cartId"] as string;
 		const canceled = await call(handle, "agentic/session/cancel", {
 			sessionId: s2.id,
@@ -416,7 +523,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		).toEqual({ ok: true, sessionStatus: "completed", order: null });
 	});
 
-	test("re-adopt needs every hold live: a lapsed hold is rebuilt into a fresh cart", async () => {
+	test("a lapsed hold on the agent's cart: the shopper's cart takes the line afresh", async () => {
 		const s2 = await createSession("lapsed-1", [{ productId: JUG.id, quantity: 1 }], {
 			couponCode: undefined,
 		});
@@ -429,7 +536,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		if (doc === null) throw new Error("no agent cart");
 		for (const line of Object.values(doc.lines)) line.expiresAt = "2020-01-01T00:00:00.000Z";
 		await carts.put(agentCart, doc);
-		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		const redeemed = await redeem(s2.token);
 		expect(redeemed).toMatchObject({ ok: true, messages: [] });
 		expect(redeemed["cartId"]).not.toBe(agentCart);
 		expect(Object.keys((await cartLines(storage, redeemed["cartId"] as string)) ?? {})).toEqual([
@@ -437,15 +544,225 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		]);
 	});
 
-	test("a cart with a digital line (no reservation, no deadline) is re-adopted", async () => {
+	test("a digital line (no reservation, no deadline) moves to the shopper's own cart", async () => {
 		const s2 = await createSession("digital-1", [{ productId: EBOOK.id, quantity: 1 }], {
 			couponCode: undefined,
 			shippingMethodId: undefined,
 		});
 		const agentCart = (await storedSession(s2.id))["cartId"] as string;
-		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		const redeemed = await redeem(s2.token);
 		expect(redeemed).toMatchObject({ ok: true, messages: [] });
-		expect(redeemed["cartId"]).toBe(agentCart);
+		expect(redeemed["cartId"]).not.toBe(agentCart);
+		expect(Object.keys((await cartLines(storage, redeemed["cartId"] as string)) ?? {})).toEqual([
+			EBOOK.sku,
+		]);
+		expect(await cartLines(storage, agentCart)).toEqual({});
+	});
+
+	// ── #712 review, blocker 1: the agent can never reach the shopper's cart ──
+	test("an agent cannot name any cart of its session through the public cart/create, and no answer carries a cart id", async () => {
+		const s = await createSession("exploit-1", [{ productId: MUG.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const upd = {
+			sessionId: s.id,
+			idempotencyKey: "exploit-upd",
+			lines: [{ productId: MUG.id, quantity: 2 }],
+			destination: AGENT_ADDRESS,
+			shippingMethodId: F.methodId,
+		};
+		const updated = await call(handle, "agentic/session/update", upd);
+		expect(updated["ok"]).toBe(true);
+		const agentCart = (await storedSession(s.id))["cartId"] as string;
+		const redeemed = await redeem(s.token);
+		expect(redeemed["ok"]).toBe(true);
+		const shopperCart = redeemed["cartId"] as string;
+		const shopperLines = await cartLines(storage, shopperCart);
+
+		// What the agent knows: its session id, its key, its own body. d0cc4f60 keyed
+		// the update's cart on a plain SHA-256 of exactly those, so the agent could
+		// recompute it and have cart/create answer the cart (then re-adopted as the
+		// shopper's). Under the HMAC (and the storefront's `agentic:` refusal) it
+		// names nothing of the session's.
+		const input = parseAgentSessionInput(upd);
+		if (input === null) throw new Error("bad body");
+		const fp = await fingerprintOf(input, "replace");
+		const oldKey = `agentic:replace:${await hashToken(`${s.id}\u0000exploit-upd\u0000${fp}`)}`;
+		const got = await call(handle, "storefront/cart/create", { idempotencyKey: oldKey });
+		expect(got["ok"]).toBe(true);
+		expect(got["cartId"]).not.toBe(shopperCart);
+		expect(got["cartId"]).not.toBe(agentCart);
+		// Its edits land in its own cart, never the shopper's.
+		expect(
+			await call(handle, "storefront/cart/lines/add", {
+				cartId: got["cartId"],
+				sku: BOWL.sku,
+				productId: BOWL.id,
+				qty: 1,
+				idempotencyKey: `exploit-add-${String(got["cartId"])}`,
+			}),
+		).toMatchObject({ ok: true });
+		expect(await cartLines(storage, shopperCart)).toEqual(shopperLines);
+
+		// Every agent-facing answer (writes, a replay, reads, refusals) is cart-id free.
+		const answers = [
+			s.session,
+			updated,
+			await call(handle, "agentic/session/update", upd),
+			await call(handle, "agentic/session/get", { sessionId: s.id }),
+			await call(handle, "agentic/session/update", { ...upd, idempotencyKey: "exploit-late" }),
+			await call(handle, "agentic/session/complete", {
+				sessionId: s.id,
+				idempotencyKey: "exploit-complete",
+			}),
+			await redeem(s.token, "browser-agent"),
+			await call(handle, "agentic/session/cancel", {
+				sessionId: s.id,
+				idempotencyKey: "exploit-cancel",
+			}),
+		];
+		const wire = JSON.stringify(answers);
+		expect(wire).not.toContain(agentCart);
+		expect(wire).not.toContain(shopperCart);
+		expect(wire).not.toMatch(/"(cartId|shopperCartId)"/);
+	});
+
+	// ── #712 review, blocker 2: no transient failure kills the link ───────────
+	test("a storage error after the claim: the claim is released, and the retry succeeds with exactly ONE cart", async () => {
+		const s = await createSession("inject-1", [{ productId: MUG.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const before = await cartIds();
+		const restore = onFirstCall(INVENTORY_COLLECTION, () =>
+			Promise.reject(new Error("injected storage fault")),
+		);
+		let failed: unknown;
+		try {
+			failed = await handle.invokeRoute(
+				"agentic/handoff/redeem",
+				{ token: s.token, redeemer: "browser-inject" },
+				{ headers: {} },
+			);
+		} finally {
+			restore();
+		}
+		expect(JSON.stringify(failed)).not.toContain('"ok":true');
+		const mid = await storedSession(s.id);
+		expect(mid).not.toHaveProperty("handoffClaim");
+		expect(mid).not.toHaveProperty("handoffUsedAt");
+
+		const redeemed = await redeem(s.token, "browser-inject");
+		expect(redeemed).toMatchObject({ ok: true, messages: [] });
+		const created = [...(await cartIds())].filter((id) => !before.has(id));
+		expect(created).toEqual([redeemed["cartId"]]);
+		expect(await cartLines(storage, redeemed["cartId"] as string)).toEqual({
+			[MUG.sku]: { qty: 1 },
+		});
+	});
+
+	test("out of stock for a moment: HANDOFF_NO_LINES writes no hand-off; once stock frees, the link redeems", async () => {
+		const s = await createSession("transient-1", [{ productId: SOLO.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		// The one unit is held by a cart no longer the session's (its hold outlives
+		// the pointer): nothing to move it from.
+		const holder = (await storedSession(s.id))["cartId"] as string;
+		await editSession(s.id, { cartId: "cart-aho-elsewhere" });
+		const refused = await redeem(s.token);
+		expect(refused).toEqual({
+			ok: false,
+			reason: "HANDOFF_NO_LINES",
+			messages: [{ code: "OUT_OF_STOCK", path: "lines[0]" }],
+		});
+		const mid = await storedSession(s.id);
+		expect(mid).not.toHaveProperty("handoffUsedAt");
+		expect(mid).not.toHaveProperty("handoffClaim");
+
+		const lineId = (await lineIds(holder))[SOLO.sku];
+		expect(
+			await call(handle, "storefront/cart/lines/remove", {
+				cartId: holder,
+				lineId,
+				idempotencyKey: `free-${holder}`,
+			}),
+		).toMatchObject({ ok: true });
+		const redeemed = await redeem(s.token);
+		expect(redeemed).toMatchObject({ ok: true, messages: [] });
+		expect(await cartLines(storage, redeemed["cartId"] as string)).toEqual({
+			[SOLO.sku]: { qty: 1 },
+		});
+	});
+
+	test("two redeems from ONE browser at once: one claims, the other is HANDOFF_IN_PROGRESS then re-enters; one cart", async () => {
+		const s = await createSession("twin-1", [{ productId: BOWL.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const before = await cartIds();
+		const both = await Promise.all([
+			redeem(s.token, "browser-twin"),
+			redeem(s.token, "browser-twin"),
+		]);
+		const won = both.filter((r) => r["ok"] === true);
+		expect(won.length).toBeGreaterThanOrEqual(1);
+		for (const lost of both.filter((r) => r["ok"] !== true)) {
+			expect(lost).toEqual({ ok: false, reason: "HANDOFF_IN_PROGRESS" });
+		}
+		const cartId = won[0]?.["cartId"];
+		for (const r of won) expect(r["cartId"]).toBe(cartId);
+		expect(await redeem(s.token, "browser-twin")).toMatchObject({ ok: true, cartId });
+		expect([...(await cartIds())].filter((id) => !before.has(id))).toEqual([cartId]);
+	});
+
+	test("a cancel lands DURING a claim: the cancel wins, the redeem is HANDOFF_CANCELED and its cart released", async () => {
+		const s = await createSession("cancel-claim-1", [{ productId: MUG.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const before = await cartIds();
+		const gate = deferred();
+		const paused = deferred();
+		// The redeem holds its claim and is filling the shopper's cart right now.
+		const restore = onFirstCall(INVENTORY_COLLECTION, async () => {
+			paused.resolve();
+			await gate.promise;
+		});
+		const pending = redeem(s.token, "browser-cc");
+		try {
+			await paused.promise;
+			expect((await storedSession(s.id))["handoffClaim"]).toBeDefined();
+			const canceled = await call(handle, "agentic/session/cancel", {
+				sessionId: s.id,
+				idempotencyKey: "cc-1",
+			});
+			expect(canceled).toMatchObject({
+				ok: true,
+				session: { status: "canceled", handedOff: false },
+			});
+		} finally {
+			gate.resolve();
+			restore();
+		}
+		expect(await pending).toEqual({ ok: false, reason: "HANDOFF_CANCELED" });
+		const after = await storedSession(s.id);
+		expect(after["status"]).toBe("canceled");
+		expect(after).not.toHaveProperty("handoffUsedAt");
+		expect(after).not.toHaveProperty("shopperCartId");
+		for (const id of [...(await cartIds())].filter((c) => !before.has(c))) {
+			expect(await cartLines(storage, id)).toEqual({});
+		}
+		expect(await redeem(s.token, "browser-cc")).toEqual({ ok: false, reason: "HANDOFF_CANCELED" });
+	});
+
+	test("no redeemer nonce (the site's cookie is missing): HANDOFF_REDEEMER_MISSING, retryable, nothing written", async () => {
+		const s = await createSession("nonce-1", [{ productId: MUG.id, quantity: 1 }], {
+			couponCode: undefined,
+		});
+		const before = await storedSession(s.id);
+		expect(await call(handle, "agentic/handoff/redeem", { token: s.token })).toEqual({
+			ok: false,
+			reason: "HANDOFF_REDEEMER_MISSING",
+		});
+		expect(await storedSession(s.id)).toEqual(before);
+		expect(await redeem(s.token)).toMatchObject({ ok: true });
 	});
 
 	// Last: it switches agentic checkout off.
@@ -453,7 +770,7 @@ describe("agentic hand-off (workerd sandbox)", () => {
 		const s2 = await createSession("off-after-1", [{ productId: MUG.id, quantity: 1 }], {
 			couponCode: undefined,
 		});
-		const redeemed = await call(handle, "agentic/handoff/redeem", { token: s2.token });
+		const redeemed = await redeem(s2.token);
 		const cartId = redeemed["cartId"] as string;
 		await saveAgentic(handle, false);
 		const logged = handle.workerOutput().length;

@@ -65,9 +65,13 @@ export interface BuiltCart {
 	messages: AgentMessage[];
 }
 
-/** The line's cart idempotency key: unique per cart and product. */
-function lineKey(cartId: string, productId: string): string {
-	return `agentic:${cartId}:line:${productId}`;
+/** The line's cart idempotency key: unique per cart and product, and per
+ *  `scope` when one is given (the hand-off's claim, so a refusal one claim
+ *  consumed does not replay into the next claim's attempt on the same cart). */
+function lineKey(cartId: string, productId: string, scope?: string): string {
+	return scope === undefined
+		? `agentic:${cartId}:line:${productId}`
+		: `agentic:${cartId}:${scope}:line:${productId}`;
 }
 
 /**
@@ -79,13 +83,14 @@ export async function retryAgentLine(
 	client: CommerceClient,
 	cartId: string,
 	line: { productId: string; sku: string; quantity: number },
+	scope?: string,
 ): Promise<{ ok: true; line: AgentSessionLine } | { ok: false; reason: string }> {
 	const added = await client.addCartLine(
 		cartId,
 		line.sku,
 		line.productId,
 		line.quantity,
-		`${lineKey(cartId, line.productId)}:retry`,
+		`${lineKey(cartId, line.productId, scope)}:retry`,
 	);
 	if (!added.ok) return { ok: false, reason: added.reason };
 	return {
@@ -173,6 +178,7 @@ export async function addAgentLines(
 	cartId: string,
 	cartCurrency: string,
 	requested: readonly AgentLineRequest[],
+	scope?: string,
 ): Promise<{ lines: AgentSessionLine[]; messages: AgentMessage[] }> {
 	const screened = await screenAgentLines(client, cartCurrency, requested);
 	const messages = [...screened.messages];
@@ -183,7 +189,7 @@ export async function addAgentLines(
 			line.sku,
 			line.productId,
 			line.quantity,
-			lineKey(cartId, line.productId),
+			lineKey(cartId, line.productId, scope),
 		);
 		if (!added.ok) {
 			messages.push({ code: added.reason, path: linePath(line.index) });

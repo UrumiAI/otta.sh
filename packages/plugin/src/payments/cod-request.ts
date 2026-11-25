@@ -45,11 +45,18 @@ export interface CodRequestFacts {
 export function codRequestFacts(request: SandboxedRequest | undefined): CodRequestFacts {
 	if (request === undefined) return { attested: false, network: null };
 	const attested = header(request, COD_ATTEST_HEADER)?.trim() === COD_ATTEST_VALUE;
+	return { attested, network: clientNetwork(clientAddress(request)) };
+}
+
+/** The client's address as Cloudflare reports it (`cf-connecting-ip`, its
+ *  pseudo-IPv4 mapped back to `cf-connecting-ipv6`), or null. */
+export function clientAddress(request: SandboxedRequest | undefined): string | null {
+	if (request === undefined) return null;
 	const ip = header(request, "cf-connecting-ip") ?? null;
 	const ipv6 = header(request, "cf-connecting-ipv6") ?? null;
-	const address =
-		ip !== null && PSEUDO_IPV4.test(ip.trim()) && ipv6 !== null && ipv6.trim() !== "" ? ipv6 : ip;
-	return { attested, network: clientNetwork(address) };
+	return ip !== null && PSEUDO_IPV4.test(ip.trim()) && ipv6 !== null && ipv6.trim() !== ""
+		? ipv6
+		: ip;
 }
 
 /**
@@ -145,9 +152,10 @@ function ipv6Groups(value: string): number[] | null {
 	return groups.map((group) => Number.parseInt(group, 16));
 }
 
-/** IPv4 whole; IPv6 cut to its /48 (mapped, compatible and NAT64 forms collapse to
- *  their IPv4 host); anything else bounded and tagged `raw:`. `null` for none. */
-export function clientNetwork(ip: string | null): string | null {
+/** IPv4 whole; IPv6 cut to its /48, or to its /64 when `prefix` says so (mapped,
+ *  compatible and NAT64 forms collapse to their IPv4 host); anything else bounded
+ *  and tagged `raw:`. `null` for none. */
+export function clientNetwork(ip: string | null, prefix: 48 | 64 = 48): string | null {
 	const value = (ip ?? "").trim().toLowerCase();
 	if (value === "") return null;
 	if (isIpv4(value)) return value;
@@ -163,5 +171,5 @@ export function clientNetwork(ip: string | null): string | null {
 		const low = groups[7] ?? 0;
 		return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
 	}
-	return `${hex.slice(0, 3).join(":")}::/48`;
+	return prefix === 64 ? `${hex.slice(0, 4).join(":")}::/64` : `${hex.slice(0, 3).join(":")}::/48`;
 }

@@ -11,9 +11,10 @@
  *  - which carts count as still held (a digital line does; a lapsed hold does not).
  */
 import {
+	claimAgentHandoff,
 	createAgentSession,
 	currency,
-	redeemAgentHandoff,
+	finalizeAgentHandoff,
 	type AgentSessionDeps,
 } from "@urumi.ai/otta-domain";
 import {
@@ -24,6 +25,7 @@ import {
 	systemClock,
 	WebCryptoAgentSessionSecrets,
 	base64UrlDecode,
+	hashToken,
 	type StorageAccess,
 } from "@urumi.ai/otta-store-emdash";
 import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
@@ -56,6 +58,7 @@ const [MUG] = F.products;
 /** One unit on hand. */
 const LAST = { id: "prod-aru-last", sku: "SKU-ARU-LAST", amount: 4000 };
 const SERVER_KEY = randomBase64Url(32);
+const SERVER_KEY_BYTES = base64UrlDecode(SERVER_KEY) as Uint8Array;
 const REQUEST = {
 	method: "POST",
 	url: "https://shop.test/",
@@ -122,12 +125,52 @@ beforeEach(async () => {
 }, 120_000);
 
 describe("the agent cart key", () => {
+	const K = SERVER_KEY_BYTES;
 	test("carries the body's fingerprint: two bodies under one key get two carts; one body, one", async () => {
-		const a = await agentCartKey("create", "net", "k-1", "fp-a");
-		const b = await agentCartKey("create", "net", "k-1", "fp-b");
+		const a = await agentCartKey(K, "create", "net", "k-1", "fp-a");
+		const b = await agentCartKey(K, "create", "net", "k-1", "fp-b");
 		expect(a).not.toBe(b);
-		expect(await agentCartKey("create", "net", "k-1", "fp-a")).toBe(a);
-		expect(await agentCartKey("replace", "net", "k-1", "fp-a")).not.toBe(a);
+		expect(await agentCartKey(K, "create", "net", "k-1", "fp-a")).toBe(a);
+		expect(await agentCartKey(K, "replace", "net", "k-1", "fp-a")).not.toBe(a);
+	});
+
+	test("is an HMAC under the server key: another key, another cart key; never the plain digest", async () => {
+		const a = await agentCartKey(K, "create", "net", "k-1", "fp-a");
+		const other = new Uint8Array(32).fill(7);
+		expect(await agentCartKey(other, "create", "net", "k-1", "fp-a")).not.toBe(a);
+		expect(a.startsWith("agentic:create:")).toBe(true);
+		// d0cc4f60's key: a SHA-256 of inputs the agent knows. Never that again.
+		expect(a).not.toBe(`agentic:create:${await hashToken("net\u0000k-1\u0000fp-a")}`);
+	});
+});
+
+describe("the network key (ADR-0047)", () => {
+	async function storedNetwork(
+		c: PluginContext,
+		ip: string,
+		key: string,
+	): Promise<string | undefined> {
+		const created = (await createAgenticSessionCreateHandler()(
+			{
+				input: { idempotencyKey: key, lines: [{ productId: MUG.id, quantity: 1 }] },
+				request: { ...REQUEST, headers: { "cf-connecting-ip": ip } },
+			} as never,
+			c,
+		)) as Record<string, unknown>;
+		expect(created["ok"]).toBe(true);
+		const id = (created["session"] as { id: string }).id;
+		return (await new EmdashAgentSessionStore({ storage: base }).get(id as never))?.networkKey;
+	}
+
+	test("IPv6 aggregates to the /64: one /64 is one network, the next /64 another", async () => {
+		// One store: one network-key secret.
+		const store = ctx();
+		const a = await storedNetwork(store, "2001:db8:7:1::1", "net-a");
+		const b = await storedNetwork(store, "2001:db8:7:1:ffff:ffff:ffff:fffe", "net-b");
+		const c = await storedNetwork(store, "2001:db8:7:2::1", "net-c");
+		expect(a).toBeDefined();
+		expect(b).toBe(a);
+		expect(c).not.toBe(a);
 	});
 });
 
@@ -172,6 +215,7 @@ describe("a write refused after its cart was built", () => {
 		const input = parseAgentSessionInput(BODY);
 		if (input === null) throw new Error("bad body");
 		const cartKey = await agentCartKey(
+			SERVER_KEY_BYTES,
 			"create",
 			networkKey,
 			BODY.idempotencyKey,
@@ -183,7 +227,7 @@ describe("a write refused after its cart was built", () => {
 });
 
 describe("a redeem landing mid-update", () => {
-	test("the last unit: the shopper re-adopts the agent's cart holding it; the update is SESSION_HANDED_OFF and its cart released", async () => {
+	test("the last unit: the agent's cart hands it to the shopper's own cart; the update is SESSION_HANDED_OFF and its cart released", async () => {
 		const c = ctx();
 		const created = await call(createAgenticSessionCreateHandler(), c, {
 			idempotencyKey: "mid-create",
@@ -206,6 +250,7 @@ describe("a redeem landing mid-update", () => {
 			});
 			redeemed = await call(createAgenticHandoffRedeemHandler(), shopper, {
 				token: created["handoffToken"],
+				redeemer: "browser-mid",
 			});
 		};
 		const body = {
@@ -217,15 +262,24 @@ describe("a redeem landing mid-update", () => {
 		const updated = await call(createAgenticSessionUpdateHandler(), c, body);
 		before = null;
 
-		expect(redeemed).toMatchObject({ ok: true, cartId: agentCart, messages: [] });
-		expect(Object.keys((await cartLines(base, agentCart)) ?? {})).toEqual([LAST.sku]);
+		expect(redeemed).toMatchObject({ ok: true, messages: [] });
+		const shopperCart = (redeemed as unknown as { cartId: string }).cartId;
+		expect(shopperCart).not.toBe(agentCart);
+		expect(Object.keys((await cartLines(base, shopperCart)) ?? {})).toEqual([LAST.sku]);
+		expect(await cartLines(base, agentCart)).toEqual({});
 		expect(updated).toEqual({ ok: false, reason: "SESSION_HANDED_OFF" });
 		const input = parseAgentSessionInput(body);
 		if (input === null) throw new Error("bad body");
 		const client = await makeCommerceClient(sweepContext(base));
 		const { cartId: built } = await client.createCart(
 			undefined,
-			await agentCartKey("replace", id, body.idempotencyKey, await fingerprintOf(input, "replace")),
+			await agentCartKey(
+				SERVER_KEY_BYTES,
+				"replace",
+				id,
+				body.idempotencyKey,
+				await fingerprintOf(input, "replace"),
+			),
 		);
 		expect(built).not.toBe(agentCart);
 		expect(await cartLines(base, built)).toEqual({});
@@ -358,11 +412,18 @@ describe("cancel decides on the session it LEFT", () => {
 			if (collection !== AGENT_SESSIONS_COLLECTION || method !== "get") return;
 			reads++;
 			if (reads !== 2) return;
-			// The shopper redeems (and re-adopts the agent's cart) right here.
-			const redeemed = await redeemAgentHandoff(peerDeps(), {
+			// The shopper's hand-off finalizes right here.
+			const claimed = await claimAgentHandoff(peerDeps(), {
 				token: created["handoffToken"] as string,
+				redeemer: "browser-cancel",
 			});
-			expect(redeemed.ok).toBe(true);
+			if (!claimed.ok || claimed.status !== "claimed") throw new Error("not claimed");
+			const done = await finalizeAgentHandoff(peerDeps(), {
+				sessionId: claimed.session.id,
+				claimId: claimed.claimId,
+				cartId: "cart-shopper",
+			});
+			expect(done.ok).toBe(true);
 		};
 		const canceled = await call(createAgenticSessionCancelHandler(), c, {
 			sessionId: id,

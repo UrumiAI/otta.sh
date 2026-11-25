@@ -16,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { AGENTIC_ROUTES } from "../src/agentic/routes.js";
 import {
 	AGENT_ADDRESS,
+	AGENTIC_TEST_ENTRY,
 	agenticFixture,
 	call,
 	cartLines,
@@ -38,7 +39,11 @@ let storage: StorageAccess;
 
 beforeAll(async () => {
 	({ storage } = await storageBridge());
-	handle = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+	handle = await loadPluginInSandbox({
+		allowedHosts: [],
+		storage: true,
+		entry: AGENTIC_TEST_ENTRY,
+	});
 	await seedAgenticStore(storage, F);
 	await seedProduct(storage, LAST, 1, { stock: 1 });
 	await seedProduct(storage, SCARCE, 1, { stock: 2 });
@@ -241,7 +246,10 @@ describe("agentic routes, switched on", () => {
 		const links = collectionOf(storage, AGENT_SESSION_LINKS_COLLECTION);
 		const linkCount = await links.count({});
 		expect(
-			await call(handle, "agentic/handoff/redeem", { token: created["handoffToken"] }),
+			await call(handle, "agentic/handoff/redeem", {
+				token: created["handoffToken"],
+				redeemer: "browser-asr",
+			}),
 		).toEqual({ ok: false, reason: "HANDOFF_CANCELED" });
 		expect(await links.count({})).toBe(linkCount);
 		expect(
@@ -254,11 +262,13 @@ describe("agentic routes, switched on", () => {
 		const id = (created["session"] as { id: string }).id;
 		const redeemed = await call(handle, "agentic/handoff/redeem", {
 			token: created["handoffToken"],
+			redeemer: "browser-asr",
 		});
 		expect(redeemed["ok"]).toBe(true);
 		const shopperCart = redeemed["cartId"] as string;
-		// The agent's own cart was re-adopted: the create key's cart IS the shopper's.
-		expect(shopperCart).toBe(await storedCartId(id));
+		// The shopper gets a cart of its own, never the agent's (whose key an agent
+		// write may still name): the create key's cart is NOT the shopper's.
+		expect(shopperCart).not.toBe(await storedCartId(id));
 		const lines = await cartLines(storage, shopperCart);
 		const carts = await cartCount();
 
@@ -375,6 +385,7 @@ describe("agentic routes, switched on", () => {
 		expect(created["session"]).toMatchObject({ destination: null, shippingMethodId: null });
 		const redeemed = await call(handle, "agentic/handoff/redeem", {
 			token: created["handoffToken"],
+			redeemer: "browser-asr",
 		});
 		expect(redeemed).toMatchObject({
 			ok: true,
