@@ -1165,7 +1165,8 @@ export type ClaimAgentHandoffResult =
 			/** The claim holds off other redeems and agent writes until here. */
 			leaseUntil: string;
 			session: AgentSessionView;
-			/** The agent's cart, for the redeem to reuse when it still matches. */
+			/** The agent's cart, so the redeem can release it after finalize. It is
+			 *  never handed to the shopper, who gets a fresh cart. */
 			agentCartId?: string;
 	  }
 	| {

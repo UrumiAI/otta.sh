@@ -52,8 +52,9 @@ Options considered:
    held in plugin storage, stored only as a hash (as login links are, ADR-0004), and expiring
    after 24 hours. Because the session lives in the same store, the link carries no encrypted
    payload. The token rides in the URL fragment so it stays out of access logs.
-4. **Prices are always taken fresh.** Opening a hand-off rebuilds or re-adopts the cart through
-   the normal cart use-cases; the session's quoted totals are a preview, never a price promise.
+4. **Prices are always taken fresh.** Opening a hand-off builds the shopper a fresh cart (never
+   the agent's; its id is HMAC(server key, session + token)) through the normal cart use-cases,
+   and the agent's cart is released after finalize; the session's quoted totals are a preview, never a price promise.
 5. **Off by default.** A merchant setting turns the agent surface on. While it is off every agent
    endpoint answers 404, and `/.well-known/ucp` is not served.
 6. **Unsigned ("open tier") agents only, at first.** Every write needs an `Idempotency-Key`,

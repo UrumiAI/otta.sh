@@ -172,14 +172,17 @@ AgentCheckoutSession {
   without the cookie (blocked or cleared cookies) is refused `HANDOFF_REDEEMER_MISSING`
   (retryable): the site reloads the landing page, which sets it, and the shopper continues.
   The plugin CLAIMS the link with a 60 s lease (`claimAgentHandoff({token, redeemer})`; the link
-  is not used yet; the answer carries the agent's `agentCartId` to reuse), then:
-  1. reuses the agent's cart if it is still active with the same lines; otherwise creates a new
-     cart and re-adds the lines (prices and stock re-read);
+  is not used yet), then:
+  1. builds the shopper a FRESH cart, never the agent's: its id is derived as HMAC(server key,
+     session id + token), so a retried redeem of the same link lands on the same cart, and the
+     session's lines are re-added to it (prices and stock re-read);
   2. if **no** line can be added, releases the claim (`releaseAgentHandoffClaim`, the link stays
      redeemable), leaves the shopper's existing cart cookie untouched and shows why (lesson from
      #4596);
   3. otherwise FINALIZES (`finalizeAgentHandoff`): one compare-and-set marks the link used,
-     records the shopper's cart as `shopperCartId` (never shown to the agent), then returns the cart cookie descriptor plus the pre-fill
+     records the shopper's cart as `shopperCartId` (never shown to the agent), releases the
+     agent's cart (the session's `cartId`; the agent never sees the shopper's cart, nor the
+     shopper the agent's), then returns the cart cookie descriptor plus the pre-fill
      (email, phone, address, shipping method, coupon). Finalize is refused
      (`HANDOFF_CLAIM_LOST`) once the claim was replaced or its lease lapsed more than 30 s ago,
      and (`HANDOFF_EXPIRED`) at or after `expiresAt`; the plugin then does not hand that cart
