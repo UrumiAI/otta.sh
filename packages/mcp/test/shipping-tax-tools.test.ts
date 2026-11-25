@@ -535,6 +535,20 @@ describe("tax rates", () => {
 		expect(await storage[TAX_CLASSES_COLLECTION]?.get("nope-class")).toBeNull();
 	});
 
+	test("any field the surface refuses rides details.field", async () => {
+		await seedZone("us", "US");
+		await call("tax_class_create", { id: "std", name: "Standard" });
+		const err = await failure("tax_rate_create", {
+			taxClassId: "std",
+			zoneId: "us",
+			rateBps: 825,
+			ratePpm: 1,
+		});
+		expect(err.code).toBe("INVALID_INPUT");
+		expect(err.details.field).toBe("ratePpm");
+		expect(await call("tax_rates_list", { zoneId: "us" })).toMatchObject({ items: [] });
+	});
+
 	test("create, then a partial update keeps the rate and flips the flag", async () => {
 		await seedZone("us", "US");
 		await call("tax_class_create", { id: "std", name: "Standard" });

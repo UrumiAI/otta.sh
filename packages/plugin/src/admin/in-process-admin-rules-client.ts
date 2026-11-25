@@ -661,6 +661,26 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		}
 	}
 
+	/** Whether `classId` is a class the merchant declared — one `listClasses`
+	 *  reports. A class document that only holds rates (`name: null`) is not. */
+	async #isDeclaredTaxClass(classId: string): Promise<boolean> {
+		const classes = await this.#stores.taxRules.listClasses();
+		return classes.some((c) => c.id === classId);
+	}
+
+	/** {@link #isDeclaredTaxClass}, or the surface's input refusal naming `field`. */
+	async #requireDeclaredTaxClass(field: string, classId: string): Promise<void> {
+		if (!(await this.#isDeclaredTaxClass(classId))) {
+			throw new CommerceInputError(field, `"${classId}" names no tax class that exists`);
+		}
+	}
+
+	/** The upgrade rule's input with nothing saved: rates exist, or an outside
+	 *  calculator is registered (it replaces the rates). Same rule as the quote's. */
+	async #chargesTaxAlready(): Promise<boolean> {
+		return this.#hasOutsideTaxCalculator || (await this.#stores.taxRules.hasAnyRate());
+	}
+
 	/**
 	 * The upgrade rule is decided by whether rates exist, so the first rate created
 	 * (or the last deleted) would flip a store with nothing saved between "new" and
@@ -674,26 +694,6 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 * key of its own (a fixed key could be pinned forever to a revision that has
 	 * since moved, and refuse every later rate edit).
 	 */
-	/** Whether `classId` is a class the merchant declared — one `listClasses`
-	 *  reports. A class document that only holds rates (`name: null`) is not. */
-	async #isDeclaredTaxClass(classId: string): Promise<boolean> {
-		const classes = await this.#stores.taxRules.listClasses();
-		return classes.some((c) => c.id === classId);
-	}
-
-	/** {@link #isDeclaredTaxClass}, or the surface's input refusal naming `field`. */
-	async #requireDeclaredTaxClass(field: string, classId: string): Promise<void> {
-		if (!(await this.#isDeclaredTaxClass(classId))) {
-			throw new CommerceInputError(field, `no tax class "${classId}" exists`);
-		}
-	}
-
-	/** The upgrade rule's input with nothing saved: rates exist, or an outside
-	 *  calculator is registered (it replaces the rates). Same rule as the quote's. */
-	async #chargesTaxAlready(): Promise<boolean> {
-		return this.#hasOutsideTaxCalculator || (await this.#stores.taxRules.hasAnyRate());
-	}
-
 	async #pinTaxSettings(): Promise<void> {
 		if ((await this.#stores.settingsStore.get()).tax !== undefined) return;
 		const chargesTax = await this.#chargesTaxAlready();
