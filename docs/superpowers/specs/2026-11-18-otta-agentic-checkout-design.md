@@ -173,8 +173,9 @@ AgentCheckoutSession {
   (retryable): the site reloads the landing page, which sets it, and the shopper continues.
   The plugin CLAIMS the link with a 60 s lease (`claimAgentHandoff({token, redeemer})`; the link
   is not used yet), then:
-  1. builds the shopper a FRESH cart, never the agent's: its id is derived as HMAC(server key,
-     session id + token), so a retried redeem of the same link lands on the same cart, and the
+  1. builds the shopper a FRESH cart, never the agent's: the cart id is random, and the cart's
+     CREATE (idempotency) KEY is HMAC(server key, session id + token), so a retried redeem of the
+     same link lands on the same cart, and the
      session's lines are re-added to it (prices and stock re-read);
   2. if **no** line can be added, releases the claim (`releaseAgentHandoffClaim`, the link stays
      redeemable), leaves the shopper's existing cart cookie untouched and shows why (lesson from
