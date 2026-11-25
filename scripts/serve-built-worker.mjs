@@ -1,26 +1,37 @@
 #!/usr/bin/env node
 /**
- * Serve the BUILT staging Worker and check it answers (#732).
+ * Serve a BUILT Worker and check it answers (#732, #734).
  *
- * `astro dev` (the e2e suite) runs the site's modules under Vite, and
- * `pack-build` builds the template without serving it, so nothing else loads
- * the bundled Worker the way Cloudflare does. A module that throws while the
- * Worker loads (#732: `new URL("…", import.meta.url)` at the top of a module,
- * with `import.meta.url` undefined in the bundle) answers every request with a
- * 500 and is invisible to every other test.
+ * `astro dev` (the e2e suite) runs the site's modules under Vite, so only a
+ * served build loads the bundled Worker the way Cloudflare does. A module that
+ * throws while the Worker loads (#732: `new URL("…", import.meta.url)` at the
+ * top of a module, with `import.meta.url` undefined in the bundle) answers
+ * every request with a 500 and is invisible to every other test.
  *
- * This runs `wrangler dev` on `sites/staging/dist/server/wrangler.json` (local
+ * This runs `wrangler dev` on the build's `dist/server/wrangler.json` (local
  * workerd and miniflare: no account, token or network), waits for ITS ready
  * line (so another server on the port can never answer for it), then requests
  * `/` (must be 200) and a few lazily loaded page routes (each must be below
  * 500; a missing product's 404 still loads the product page's chunk), and
  * fails on any other answer or an error in the Worker's log. Run it after
- * `pnpm -r build`. It serves the D1 build only, not the playground build.
+ * `pnpm -r build`.
  *
  *   node scripts/serve-built-worker.mjs
  *
+ * Three builds go through it:
+ *  - the staging D1 build (the default; `ci.yml`, "Serve the built staging worker");
+ *  - the playground build (`OTTA_SERVE_PLAYGROUND=1`; `ci.yml`, "Serve the
+ *    built playground worker"). Every playground request without a session
+ *    cookie redirects to `/playground`, so this opens a session the way the
+ *    loading page does (`GET /playground` for the cookie, `POST
+ *    /_playground/init` to build the visitor's database) and then checks the
+ *    pages with that cookie;
+ *  - the one-click template built from the packed packages
+ *    (`scripts/pack-build.mjs`, with `OTTA_SERVE_SITE` set to the template copy).
+ *
  * `OTTA_SERVE_DIST` serves another copy of the build output (default
- * `sites/staging/dist`). `OTTA_SERVE_PORT` / `OTTA_SERVE_INSPECTOR_PORT` set the ports (default:
+ * `<site>/dist`). `OTTA_SERVE_SITE` is the site whose own wrangler runs it
+ * (default `sites/staging`). `OTTA_SERVE_PORT` / `OTTA_SERVE_INSPECTOR_PORT` set the ports (default:
  * free ports picked at start); `OTTA_SERVE_TIMEOUT_MS` the wait for wrangler to
  * be ready (default 120000).
  */
@@ -34,7 +45,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SITE = path.join(ROOT, "sites", "staging");
+const SITE = path.resolve(process.env.OTTA_SERVE_SITE ?? path.join(ROOT, "sites", "staging"));
+const PLAYGROUND = process.env.OTTA_SERVE_PLAYGROUND === "1";
 const DIST = path.resolve(process.env.OTTA_SERVE_DIST ?? path.join(SITE, "dist"));
 const CONFIG = path.join(DIST, "server", "wrangler.json");
 /** A port nothing listens on right now (the OS picks it). */
@@ -60,9 +72,28 @@ const PAGES = ["/products", "/cart", "/products/serve-built-worker-missing"];
 const READY = new RegExp(`Ready on http://localhost:${String(PORT)}\\b`);
 /** What in the Worker's log means it failed, even behind a non-5xx answer. */
 const LOG_FAILURES = [/Invalid URL/, /\[ERROR\]/, /Uncaught/];
+/**
+ * Playground errors that are not failures. A new visitor's database is empty,
+ * and EmDash's playground init (`@emdash-cms/cloudflare`, `initializePlayground`)
+ * reads `options` and the migrations table before it migrates, catching the
+ * "no such table" itself. The read runs inside the visitor's Durable Object,
+ * which logs the error as uncaught when it crosses the RPC boundary.
+ */
+const PLAYGROUND_EXPECTED = [/no such table: (options|_emdash_migrations): SQLITE_ERROR/];
+/** The log lines that count against the Worker, with colour codes removed
+ *  (wrangler colours `[ERROR]` even under NO_COLOR). */
+function failureLines(text) {
+	// eslint-disable-next-line no-control-regex
+	const lines = text.replace(/\u001b\[[0-9;]*m/g, "").split("\n");
+	return lines.filter(
+		(line) =>
+			LOG_FAILURES.some((re) => re.test(line)) &&
+			!(PLAYGROUND && PLAYGROUND_EXPECTED.some((re) => re.test(line))),
+	);
+}
 
 if (!existsSync(CONFIG)) {
-	console.error(`[serve-built-worker] ${CONFIG} is missing: run \`pnpm -r build\` first.`);
+	console.error(`[serve-built-worker] ${CONFIG} is missing: build the site first.`);
 	process.exit(1);
 }
 
@@ -161,19 +192,46 @@ async function ready() {
 	}
 }
 
-async function get(pathname) {
+/** The cookies the Worker has set (the playground's session cookie). */
+const cookies = new Map();
+
+async function request(method, pathname) {
+	const headers = { origin: ORIGIN };
+	if (cookies.size > 0) {
+		headers.cookie = [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
+	}
 	const res = await fetch(`${ORIGIN}${pathname}`, {
+		method,
+		headers,
 		redirect: "manual",
 		signal: AbortSignal.timeout(60_000),
 	});
+	for (const line of res.headers.getSetCookie()) {
+		const pair = line.split(";", 1)[0] ?? "";
+		const eq = pair.indexOf("=");
+		if (eq > 0) cookies.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+	}
 	await res.text();
-	console.info(`[serve-built-worker] GET ${pathname} answered ${String(res.status)}`);
+	console.info(`[serve-built-worker] ${method} ${pathname} answered ${String(res.status)}`);
 	return res.status;
+}
+const get = (pathname) => request("GET", pathname);
+
+/** Open a playground session: the cookie, then the visitor's database. */
+async function openPlaygroundSession() {
+	const page = await get("/playground");
+	if (page !== 200) return `GET /playground answered ${String(page)}, not 200`;
+	if (cookies.size === 0) return "GET /playground set no session cookie";
+	const init = await request("POST", "/_playground/init");
+	if (init !== 200) return `POST /_playground/init answered ${String(init)}, not 200`;
+	return undefined;
 }
 
 let failure;
 try {
 	await ready();
+	if (PLAYGROUND) failure = await openPlaygroundSession();
+	if (failure !== undefined) throw new Error(failure);
 	const home = await get("/");
 	if (home !== 200) failure = `GET / answered ${String(home)}, not 200`;
 	for (const page of PAGES) {
@@ -182,9 +240,9 @@ try {
 	}
 	// Give the Worker's error log a moment to reach us.
 	await sleep(1000);
-	const logged = LOG_FAILURES.find((re) => re.test(log));
-	if (failure === undefined && logged !== undefined) {
-		failure = `the Worker logged an error (${String(logged)})`;
+	const logged = failureLines(log);
+	if (failure === undefined && logged.length > 0) {
+		failure = `the Worker logged an error: ${logged[0].trim()}`;
 	}
 } catch (error) {
 	failure = error instanceof Error ? error.message : String(error);

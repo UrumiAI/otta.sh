@@ -54,10 +54,20 @@ jobs:
       - run: pnpm -r build
       # #732: serve the BUILT staging Worker with `wrangler dev` (local workerd,
       # no account) and fail on a 5xx from `/` or an error in its log. `astro
-      # dev` and `pack-build` never load the bundle, so a module that throws at
-      # Worker load (the bundle has no `import.meta.url`) is caught only here.
+      # dev` never loads the bundle, so a module that throws at Worker load (the
+      # bundle has no `import.meta.url`) is caught only by a served build: this
+      # one, the playground's below, and the packed template's in `pack-build`.
       - name: Serve the built staging worker
         run: pnpm test:built-worker
+      # #734: the playground (try.otta.sh) is its own build (`build:playground`:
+      # `playground-worker.ts`, the `__OTTA_PLAYGROUND__` branches), which
+      # `pnpm -r build` does not produce. Built outside `sites/staging/dist` so
+      # the staging build stays as built; served with a playground session.
+      - name: Serve the built playground worker
+        run: |
+          out="$RUNNER_TEMP/otta-playground-dist"
+          pnpm --filter @urumi.ai/otta-site-staging build:playground --outDir "$out"
+          OTTA_SERVE_PLAYGROUND=1 OTTA_SERVE_DIST="$out" pnpm test:built-worker
       # Otta Core registry size gate: builds the real registry bundle with
       # `emdash-plugin bundle` (which also validates it) and fails when backend.js
       # is over 72 KiB or the bundle total (backend.js + manifest.json + README.md)
