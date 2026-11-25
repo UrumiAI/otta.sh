@@ -20,6 +20,7 @@ import {
 import {
 	AGENT_SESSIONS_COLLECTION,
 	AGENT_SESSION_CREATE_KEYS_COLLECTION,
+	CARTS_COLLECTION,
 	EmdashAgentSessionStore,
 	randomBase64Url,
 	systemClock,
@@ -40,6 +41,7 @@ import {
 	createAgenticSessionUpdateHandler,
 } from "../src/agentic/routes.js";
 import { fingerprintOf, parseAgentSessionInput } from "../src/agentic/input.js";
+import { agenticCartKey } from "../src/agentic/cart-key.js";
 import { AGENTIC_ENABLED_KEY, AGENTIC_SERVER_KEY_KEY } from "../src/agentic/settings.js";
 import { makeCommerceClient } from "../src/commerce/make-commerce-client.js";
 import type { PluginContext } from "../src/types.js";
@@ -57,6 +59,8 @@ const F = agenticFixture("aru");
 const [MUG] = F.products;
 /** One unit on hand. */
 const LAST = { id: "prod-aru-last", sku: "SKU-ARU-LAST", amount: 4000 };
+/** Two units on hand: the hand-over ordering case. */
+const PAIR = { id: "prod-aru-pair", sku: "SKU-ARU-PAIR", amount: 2500 };
 const SERVER_KEY = randomBase64Url(32);
 const SERVER_KEY_BYTES = base64UrlDecode(SERVER_KEY) as Uint8Array;
 const REQUEST = {
@@ -67,7 +71,7 @@ const REQUEST = {
 
 let base: StorageAccess;
 /** Run (once, uncounted) before the named collection call; cleared by the test. */
-let before: ((collection: string, method: string) => Promise<void>) | null = null;
+let before: ((collection: string, method: string, args: unknown[]) => Promise<void>) | null = null;
 
 /** `base`, with {@link before} run ahead of every collection call. */
 function hooked(): StorageAccess {
@@ -78,7 +82,7 @@ function hooked(): StorageAccess {
 				const value: unknown = Reflect.get(target, prop, receiver);
 				if (typeof value !== "function") return value;
 				return async (...args: unknown[]) => {
-					if (before !== null) await before(name, String(prop));
+					if (before !== null) await before(name, String(prop), args);
 					return (value as (...a: unknown[]) => unknown).apply(target, args);
 				};
 			},
@@ -119,6 +123,7 @@ beforeEach(async () => {
 	({ storage: base } = await makeSqliteStorage(commerceStorageLayout()));
 	await seedAgenticStore(base, F);
 	await seedProduct(base, LAST, 1, { stock: 1 });
+	await seedProduct(base, PAIR, 1, { stock: 2 });
 	before = null;
 	vi.spyOn(console, "warn").mockImplementation(() => {});
 	vi.spyOn(console, "error").mockImplementation(() => {});
@@ -451,5 +456,102 @@ describe("allHeld", () => {
 		expect(allHeld({ lines: [line(null, null), line("r", "2026-10-01T11:00:00.000Z")] }, NOW)).toBe(
 			false,
 		);
+	});
+});
+
+describe("the redeem (#712 round 3)", () => {
+	async function session(key: string, productId: string) {
+		const created = await call(createAgenticSessionCreateHandler(), ctx(), {
+			idempotencyKey: key,
+			lines: [{ productId, quantity: 1 }],
+		});
+		expect(created).toMatchObject({ ok: true, messages: [] });
+		const view = created["session"] as { id: string; currency: string };
+		const stored = await new EmdashAgentSessionStore({ storage: base }).get(view.id as never);
+		if (stored?.cartId === undefined) throw new Error("no agent cart");
+		return {
+			id: view.id,
+			currency: view.currency,
+			token: created["handoffToken"] as string,
+			agentCart: stored.cartId,
+		};
+	}
+	const redeem = (c: PluginContext, token: string, redeemer: string) =>
+		call(createAgenticHandoffRedeemHandler(), c, { token, redeemer });
+
+	test("the commerce client failing after the claim releases the claim", async () => {
+		const s = await session("client-throws", MUG.id);
+		const c = ctx();
+		let claimed = false;
+		before = async (collection, method) => {
+			if (collection === AGENT_SESSIONS_COLLECTION && method === "compareAndSet") claimed = true;
+		};
+		// The client's stores are built from `ctx.storage` the moment it is made:
+		// fail that, once the claim is written.
+		const real = c.storage;
+		Object.defineProperty(c, "storage", {
+			get() {
+				if (claimed) throw new Error("injected client failure");
+				return real;
+			},
+		});
+		expect(await redeem(c, s.token, "browser-kv")).toEqual({ ok: false, error: "RENDER_FAILED" });
+		before = null;
+		expect(claimed).toBe(true);
+		const after = await new EmdashAgentSessionStore({ storage: base }).get(s.id as never);
+		expect(after?.handoffClaim).toBeUndefined();
+	});
+
+	test("a line another claim's add raced into the cart is capped at the session's quantity", async () => {
+		const s = await session("cap-race", MUG.id);
+		const peer = await makeCommerceClient(sweepContext(base));
+		const shopperCart = (
+			await peer.createCart(
+				s.currency,
+				await agenticCartKey(SERVER_KEY_BYTES, "shopper", [s.id, s.token]),
+			)
+		).cartId;
+		let raced = false;
+		before = async (collection) => {
+			// The redeem's first stock call: an overlapping claim adds the same line.
+			if (raced || collection !== "inventory") return;
+			raced = true;
+			const added = await peer.addCartLine(shopperCart, MUG.sku, MUG.id, 1, "other-claim:add");
+			expect(added.ok).toBe(true);
+		};
+		const redeemed = await redeem(ctx(), s.token, "browser-cap");
+		before = null;
+		expect(raced).toBe(true);
+		expect(redeemed).toMatchObject({ ok: true, cartId: shopperCart });
+		expect(await cartLines(base, shopperCart)).toEqual({ [MUG.sku]: { qty: 1 } });
+	});
+
+	test("the out-of-stock hand-over adds to the shopper's cart BEFORE taking the agent's line", async () => {
+		const s = await session("handover-order", PAIR.id);
+		// The other unit is held by a stranger's cart, so the shopper's first add is
+		// refused; it frees just as the hand-over starts.
+		const peer = await makeCommerceClient(sweepContext(base));
+		const stranger = (await peer.createCart(s.currency, "stranger-cart")).cartId;
+		const held = await peer.addCartLine(stranger, PAIR.sku, PAIR.id, 1, "stranger:add");
+		if (!held.ok) throw new Error("stranger add failed");
+		let freed = false;
+		const writes: string[] = [];
+		before = async (collection, method, args) => {
+			if (collection !== CARTS_COLLECTION) return;
+			if (!freed && method === "get" && args[0] === s.agentCart) {
+				freed = true;
+				await peer.removeCartLine(stranger, held.line.lineId, "stranger:remove");
+				return;
+			}
+			if (freed && method === "compareAndSet") writes.push(String(args[0]));
+		};
+		const redeemed = await redeem(ctx(), s.token, "browser-handover");
+		before = null;
+		expect(freed).toBe(true);
+		expect(redeemed).toMatchObject({ ok: true, messages: [] });
+		const shopperCart = redeemed["cartId"] as string;
+		expect(await cartLines(base, shopperCart)).toEqual({ [PAIR.sku]: { qty: 1 } });
+		expect(writes[0]).toBe(shopperCart);
+		expect(writes.indexOf(s.agentCart)).toBeGreaterThan(0);
 	});
 });

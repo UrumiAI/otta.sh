@@ -789,8 +789,8 @@ export function createAgenticHandoffRedeemHandler(): RouteHandler<unknown> {
 			const redeemer = typeof raw === "string" ? raw : "";
 			const claimed = await claimAgentHandoff(deps, { token, redeemer });
 			if (!claimed.ok) return { ok: false as const, reason: claimed.reason };
-			const client = await makeCommerceClient(ctx);
 			if (claimed.status === "reentered") {
+				const client = await makeCommerceClient(ctx);
 				// Never hand back a cart a checkout already turned into an order.
 				const cart = await client.getCart(claimed.shopperCartId);
 				if (!cart.ok || cart.cart.state !== "active" || cart.cart.orderId !== null) {
@@ -809,6 +809,8 @@ export function createAgenticHandoffRedeemHandler(): RouteHandler<unknown> {
 				}
 			};
 			try {
+				// Inside the try: a client that cannot be made still releases the claim.
+				const client = await makeCommerceClient(ctx);
 				const built = await buildShopperCart(ctx, client, deps, serverKey, token, claimed);
 				if (built.lines === 0) {
 					await release();
@@ -825,7 +827,9 @@ export function createAgenticHandoffRedeemHandler(): RouteHandler<unknown> {
 				});
 				if (!done.ok) {
 					// The session can never take this cart: free its holds. A lost claim
-					// keeps it — the claim that took over converges on the same cart.
+					// keeps it: every claim of this link builds the SAME cart (keyed by the
+					// session and token), so a release here would strip a takeover claim
+					// mid-build; one nobody takes over frees at its hold expiry.
 					if (SHOPPER_CART_DEAD.has(done.reason)) {
 						await releaseUnlessShoppers(ctx, deps, claimed.session.id, built.cartId);
 					} else {
@@ -898,8 +902,9 @@ function redeemAnswer(
  * attempt's, still held, same sku and quantity) is kept; any other line in it is
  * removed first. New lines go in under claim-scoped keys (a refusal one claim
  * consumed never replays into the next). A line refused OUT_OF_STOCK whose stock
- * the agent's cart still holds is moved: removed from the agent's cart, then
- * added here once.
+ * the agent's cart still holds is moved: added here first, and only if that is
+ * still refused for stock is the agent's line removed and the add tried once
+ * more. Last, each line is capped at the session's quantity (`capLines`).
  */
 async function buildShopperCart(
 	ctx: PluginContext,
@@ -927,6 +932,7 @@ async function buildShopperCart(
 		const want = requested.find((r) => r.productId === line.productId);
 		const keep =
 			want !== undefined &&
+			!kept.has(want.productId) &&
 			want.sku === line.sku &&
 			want.quantity === line.qty &&
 			allHeld({ lines: [line] }, nowIso);
@@ -968,19 +974,51 @@ async function buildShopperCart(
 				(l) => l.productId === want.productId && allHeld({ lines: [l] }, nowIso),
 			);
 			if (held === undefined) continue;
-			await client.removeCartLine(
-				agentCartId,
-				held.lineId,
-				`agentic:${agentCartId}:${claimId}:handover:${held.lineId}`,
-			);
-			const again = await retryAgentLine(client, cartId, want, claimId);
+			// Add first: stock freed since the refusal goes straight to the shopper,
+			// and the agent's hold is only given up for a line that still needs it.
+			let again = await retryAgentLine(client, cartId, want, `${claimId}:handover`);
+			if (again.ok || again.reason === "OUT_OF_STOCK") {
+				await client.removeCartLine(
+					agentCartId,
+					held.lineId,
+					`agentic:${agentCartId}:${claimId}:handover:${held.lineId}`,
+				);
+			}
+			if (!again.ok && again.reason === "OUT_OF_STOCK") {
+				again = await retryAgentLine(client, cartId, want, claimId);
+			}
 			messages = messages.filter((m) => m !== message);
 			if (again.ok) lines++;
 			else messages.push({ code: again.reason, path: message.path });
 		}
 		messages = messages.toSorted((a, b) => messageLineIndex(a) - messageLineIndex(b));
 	}
+	await capLines(client, cartId, requested, claimId);
 	return { cartId, lines, messages };
+}
+
+/**
+ * At most the session's quantity of each line: an add re-adding a sku merges
+ * into its line, so two claims of one link adding at once could double it.
+ */
+async function capLines(
+	client: CommerceClient,
+	cartId: string,
+	requested: ReadonlyArray<{ productId: string; quantity: number }>,
+	claimId: string,
+): Promise<void> {
+	const read = await client.getCart(cartId);
+	if (!read.ok) return;
+	for (const line of read.cart.lines) {
+		const want = requested.find((r) => r.productId === line.productId);
+		if (want === undefined || line.qty <= want.quantity) continue;
+		await client.adjustCartLine(
+			cartId,
+			line.lineId,
+			want.quantity,
+			`agentic:${cartId}:${claimId}:cap:${line.lineId}`,
+		);
+	}
 }
 
 // ── order (status by order secret) ─────────────────────────────────────────

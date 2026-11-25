@@ -44,6 +44,9 @@ import {
 } from "@urumi.ai/otta-domain";
 import { FakePaymentGateway, FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
+	AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
+	AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS,
+	AGENT_SESSION_SLOTS_COLLECTION,
 	AGENT_SESSIONS_COLLECTION,
 	CART_CREATE_KEYS_COLLECTION,
 	CARTS_COLLECTION,
@@ -92,6 +95,8 @@ import {
 	holdIntentCost,
 	PRUNE_CART_CALLS,
 	AGENT_SESSION_PURGE_CALLS,
+	AGENT_SESSION_SLOT_PURGE_BATCH,
+	agentSessionSlotBatch,
 	pruneAbandonedCart,
 	releaseStrandedOnSku,
 	strandedReleaseCost,
@@ -951,6 +956,149 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		expect(used, `measured ${String(used)}`).toBe(13);
 		expect(used + 2).toBe(AGENT_SESSION_PURGE_CALLS);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["prune-agent-sessions"].unit);
+	});
+
+	// #712 round 3: purgeSlotsDue's cost is bounded per CANDIDATE, whatever the
+	// candidate turns out to be, and the two worst paths are measured here.
+	describe("prune-agent-sessions slot sweep (purgeSlotsDue)", () => {
+		const NOW = "2026-06-01T12:00:00.000Z";
+		const OLD = "2026-06-01T11:50:00.000Z";
+		const LATER = "2026-06-02T12:00:00.000Z";
+		const slots = () =>
+			collectionOf<Record<string, unknown>>(storage, AGENT_SESSION_SLOTS_COLLECTION);
+		const sessions = () =>
+			collectionOf<Record<string, unknown>>(storage, AGENT_SESSIONS_COLLECTION);
+		async function clearSweepState(): Promise<void> {
+			for (const name of [AGENT_SESSION_SLOTS_COLLECTION, AGENT_SESSIONS_COLLECTION]) {
+				const c = collectionOf(storage, name);
+				for (const { id } of (await c.query({ limit: 100 })).items) await c.delete(id);
+			}
+		}
+		const sweep = async (limit: number) =>
+			cost(async () => {
+				await new EmdashAgentSessionStore({ storage: wrappedStorage() }).purgeSlotsDue(NOW, limit);
+			});
+
+		test("a pending order (its follow-up cut short) costs the entry plus the candidate ceiling", async () => {
+			await clearSweepState();
+			const made = await createAgentSession(
+				{
+					store: new EmdashAgentSessionStore({ storage }),
+					clock: new FixedClock(new Date(OLD)),
+					secrets: new WebCryptoAgentSessionSecrets(new Uint8Array(32).fill(8)),
+				},
+				{
+					networkKey: "net-sweep",
+					idempotencyKey: "sweep-pending",
+					fingerprint: "fp-sweep",
+					content: { currency: currency("USD"), lines: [] },
+				},
+			);
+			if (!made.ok) throw new Error("create failed");
+			const doc = await sessions().get(made.session.id);
+			if (doc === null) throw new Error("no session");
+			// What an order's write leaves when its follow-up is cut short: completed,
+			// retained 30 days (its create record not yet moved), marked pending.
+			await sessions().put(made.session.id, {
+				...doc,
+				status: "completed",
+				purgeAt: "2026-07-01T11:50:00.000Z",
+				settle: "pending",
+			});
+			const used = await sweep(1);
+			expect(await slots().count()).toBe(0);
+			expect(used, `measured ${String(used)}`).toBe(
+				AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS + AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
+			);
+		});
+
+		test("an unlanded slot whose hidden session lost its other slot costs the same ceiling", async () => {
+			await clearSweepState();
+			await sessions().put("cs_sweep_lost", {
+				id: "cs_sweep_lost",
+				admission: "hidden",
+				slots: ["net:x:0", "live:0"],
+				purgeAt: LATER,
+				expiresAt: LATER,
+			});
+			// Its network slot was retaken (and landed) by another session.
+			await slots().put("net:x:0", {
+				pool: "net:x",
+				sessionId: "cs_other",
+				expiresAt: LATER,
+				claimedAt: OLD,
+				state: "landed",
+			});
+			await slots().put("live:0", {
+				pool: "live",
+				sessionId: "cs_sweep_lost",
+				expiresAt: LATER,
+				claimedAt: OLD,
+				state: "taken",
+			});
+			const used = await sweep(1);
+			expect(await sessions().get("cs_sweep_lost")).toBeNull();
+			expect(await slots().get("live:0")).toBeNull();
+			expect(used, `measured ${String(used)}`).toBe(
+				AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS + AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
+			);
+		});
+
+		test("every candidate counts against the limit, held ones included", async () => {
+			await clearSweepState();
+			for (const i of [0, 1, 2]) {
+				await slots().put(`live:${String(i)}`, {
+					pool: "live",
+					sessionId: `cs_landing_${String(i)}`,
+					expiresAt: LATER,
+					claimedAt: NOW,
+					state: "taken",
+				});
+			}
+			// One candidate, still landing: its read and nothing else.
+			expect(await sweep(1)).toBe(AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS + 1);
+			expect(await slots().count()).toBe(3);
+		});
+
+		test("a candidate that frees nothing still uses up the limit", async () => {
+			await clearSweepState();
+			// A pending order with nothing left to free, then an expired slot.
+			await sessions().put("cs_sweep_noop", {
+				id: "cs_sweep_noop",
+				admission: "admitted",
+				status: "completed",
+				slots: [],
+				purgeAt: LATER,
+				settle: "pending",
+			});
+			await slots().put("live:9", {
+				pool: "live",
+				sessionId: "cs_gone",
+				expiresAt: OLD,
+				claimedAt: OLD,
+				state: "landed",
+			});
+			const store = new EmdashAgentSessionStore({ storage });
+			expect(await store.purgeSlotsDue(NOW, 1)).toBe(0);
+			expect(await slots().count()).toBe(1);
+			expect(await sessions().get("cs_sweep_noop")).not.toHaveProperty("settle");
+			expect(await store.purgeSlotsDue(NOW, 1)).toBe(1);
+			expect(await slots().count()).toBe(0);
+		});
+
+		test("the leg sizes the batch so its worst case fits the room it has", () => {
+			for (const room of [0, 5, 11, 12, 20, 21, 30, 48, 200]) {
+				const batch = agentSessionSlotBatch(room);
+				if (batch > 0) {
+					expect(
+						AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS + batch * AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
+					).toBeLessThanOrEqual(room);
+				}
+			}
+			expect(agentSessionSlotBatch(11)).toBe(0);
+			expect(agentSessionSlotBatch(12)).toBe(1);
+			expect(agentSessionSlotBatch(200)).toBe(AGENT_SESSION_SLOT_PURGE_BATCH);
+		});
 	});
 
 	test("stranded-holds: a sku held by a live order costs its order read alone", async () => {

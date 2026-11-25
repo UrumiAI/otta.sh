@@ -191,6 +191,8 @@ import {
 	COUPONS_COLLECTION,
 	EmdashReportingStore,
 	isScanPageLimitError,
+	AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
+	AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS,
 	isStorageContentionError,
 	ORDER_SKU_INDEX_COLLECTION,
 	normalizeProductDoc,
@@ -516,11 +518,21 @@ export const AGENT_SESSION_PURGE_BATCH = 20;
 /** The create-key and orphan-pointer sweep after the sessions: two pages and
  *  their deletes, at most this many each (fewer when the leg has less room). */
 export const AGENT_SESSION_KEY_PURGE_BATCH = 5;
-/** Live-cap slot documents one run deletes once expired or abandoned
- *  (`purgeSlotsDue`). Its two page reads take up to twice this many candidates,
- *  each up to three calls (a versioned read, its session's read, the delete), so
- *  it is sized to the room left as `(room - 2) / 6`. */
+/** Live-cap slot CANDIDATES one run processes (`purgeSlotsDue`): every one
+ *  counts, deleted, landed, finished or skipped. The batch is sized to the room
+ *  left from the adapter's measured worst case: its fixed page reads plus that
+ *  many calls per candidate (`agentSessionSlotBatch`). */
 export const AGENT_SESSION_SLOT_PURGE_BATCH = 5;
+
+/** The slot-sweep batch that fits `callRoom` calls at the measured worst case. */
+export function agentSessionSlotBatch(callRoom: number): number {
+	return Math.min(
+		AGENT_SESSION_SLOT_PURGE_BATCH,
+		Math.floor(
+			(callRoom - AGENT_SESSION_SLOT_SWEEP_ENTRY_CALLS) / AGENT_SESSION_SLOT_SWEEP_CANDIDATE_CALLS,
+		),
+	);
+}
 
 /** The legs with a per-tick batch, and which batch. */
 const BATCHED: Partial<Record<SweepLeg, "expiry" | "email" | "intentCancels" | "lateRefunds">> = {
@@ -2357,7 +2369,7 @@ export async function runCommerceSweeps(
 								Math.floor(legBudget.remainingMs() / perCallMs),
 							)
 						: legBudget.remainingQueries();
-				const slotBatch = Math.min(AGENT_SESSION_SLOT_PURGE_BATCH, Math.floor((callRoom - 2) / 6));
+				const slotBatch = agentSessionSlotBatch(callRoom);
 				if (!stopped && slotBatch > 0) {
 					count += await store.purgeSlotsDue(nowIso, slotBatch);
 				}
