@@ -241,10 +241,14 @@ no shopper data is returned.
   compare-and-set only (ADR-0019: no transactions, no counters). The store keeps **live slots**:
   a cap of N is N slot documents; an insert compare-and-sets a free slot in its network's pool
   (default **50 per network key**) and then in the store-wide pool (default **500**), writes the
-  session, then compare-and-sets a `landed` mark onto both slots. A slot is free when absent,
-  expired, or never landed and taken more than 60 s ago (abandoned); probes read slot documents
-  only. If a `landed` mark loses (the insert stalled past 60 s and its slot was retaken), the
-  insert deletes its own session by version and answers `capacity`, so a stall cannot overshoot.
+  session (not yet visible to any read), then compare-and-sets a `landed` mark onto both slots
+  and makes the session visible. A slot is free when absent, expired, or ABANDONED: never
+  landed, taken more than 60 s ago, and its session document absent. Probes read a session only
+  for such an old unlanded slot; landed slots skip the read. A slot whose session was written is
+  therefore never retaken, whether its insert stalled or crashed between the write and the
+  marks; a replay of the create, or the slot sweep, lands the marks later. Only a slot taken
+  before its session was written can be lost; that insert drops its never-visible session and
+  answers `capacity`, so no caller ever saw a session that is then deleted.
   A slot is held until the session's `expiresAt`, EXCEPT that a recorded order frees it at
   once; a hand-off and a cancel free nothing, so neither a create-cancel nor a create-redeem
   loop can outrun the cap. A refused create is `TOO_MANY_SESSIONS` and leaves no create record behind.
@@ -259,7 +263,7 @@ no shopper data is returned.
   store-wide (50 per network key), canceled and handed-off ones included. Per rolling 24 h: at
   most 500 sessions store-wide (50 per network key) that end abandoned, canceled or handed off
   with no order, since their slots recycle only at expiry. Only a recorded order frees a slot
-  early, so only real orders can push throughput past that.
+  early, so only placed orders can push throughput past that, and see the trade-off below.
 - **Per-create cost and why 500, not 5,000:** an early refusal is one count of occupied slot
   documents (an indexed count in an adapter). An admitted insert probes slot documents from a
   hashed offset, about 1/(1 − occupancy) reads per pool, worst case 50 + 500 slot reads, then
@@ -274,8 +278,12 @@ no shopper data is returned.
   1 h after it expires. Stored sessions are therefore at most the 500 live ones plus at most
   500 per 24 h that ended abandoned, canceled or handed off with no order (50 per network key),
   awaiting their 1 h purge: about 1,000 at once, ≈ 125 MiB at the 128 KiB document cap. Only
-  sessions with a recorded order are kept 30 days, and those are bounded by real orders placed
-  on the store. Slot documents are deleted by version when their session is purged or its order
+  sessions with a recorded order are kept 30 days. **Known trade-off:** a recorded order need
+  not be a paid one: cash-on-delivery orders are placed unpaid, so an abuser who completes
+  checkouts with cash on delivery frees a slot per order and leaves a 30-day session (and an
+  unpaid order) behind each time. That path is limited only by the per-network create rate (60
+  per network key per hour, a soft count) and the site's write rate limit, not by the slots;
+  each such session also leaves an order the merchant sees and can cancel. Slot documents are deleted by version when their session is purged or its order
   recorded, and by the sweep (`purgeSlotsDue`, run
   from the same cron as the session purge) once expired or abandoned, so they stay at about
   2 × 500 held plus those expired since the last sweep, however network keys rotate.

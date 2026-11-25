@@ -112,7 +112,8 @@ Options considered:
   contract suite's interleaving tests, which the EmDash adapter must pass. Sessions without an
   order are purged an hour after expiry, so stored sessions are at most 500 live plus at most
   500 per 24 hours ended without an order (50 per network key); sessions with an order keep 30
-  days and are bounded by real orders. The per-document cap is 128 KiB (older replay answers evicted first). See the design spec's "Limits and abuse",
+  days and are bounded by placed orders, which include unpaid cash-on-delivery orders, so that
+  path is limited only by the per-network create rate (a known trade-off; see the spec). The per-document cap is 128 KiB (older replay answers evicted first). See the design spec's "Limits and abuse",
   including the accepted residual denial of service and the IPv6 /64 network-key requirement.
 - Hand-off is terminal for the agent. Once a shopper redeems a link the shopper owns the cart:
   update, complete and issue-link are refused (`SESSION_HANDED_OFF`), so no second link can be
