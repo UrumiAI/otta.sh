@@ -48,7 +48,7 @@ Options considered:
 2. **The agent never completes payment.** `complete` answers `requires_escalation` with a
    `continue_url`. The shopper pays on the store's own `/checkout` with the store's configured
    payment methods (card or cash on delivery).
-3. **The hand-off link is an opaque, single-use bearer token** that points at a checkout session
+3. **The hand-off link is an opaque bearer token, single-use per browser,** that points at a checkout session
    held in plugin storage, stored only as a hash (as login links are, ADR-0004), and expiring
    after 24 hours. Because the session lives in the same store, the link carries no encrypted
    payload. The token rides in the URL fragment so it stays out of access logs.
@@ -70,6 +70,7 @@ Options considered:
 - New public write endpoints. They join the rate-limit and origin-guard route maps (their
   default-deny tests force it), and a store that has not opted in exposes nothing.
 - Agent checkout sessions hold shopper contact and address data. They are kept for at most 30 days
+  (only once handed off; others purge an hour after they expire)
   and no account data export or erasure path exists for them yet: the 30-day purge sweep is the
   only deletion today. An export and erasure path that covers agent sessions is a precondition
   for enabling the merchant switch (`agentic.enabled`) on any store.
@@ -93,13 +94,20 @@ Options considered:
   expires unused). Every later write is scoped to the session id alone, which is already the
   bearer credential, so its retries replay from any network and never mint a second link.
 - Redeeming a link is claim-then-finalize: a short lease (60 s) while the cart is built, then
-  one compare-and-set that marks the link used and records the shopper's cart. A transient
-  failure in between never kills the link (the lease lapses and the same token claims again), a
-  double click re-enters the finalized cart for 15 minutes before any order, and agent writes
-  wait while a claim is live.
-- Session storage is capped by the store itself, atomically at insert (live and stored session
-  counts), and per document (128 KiB, with older replay answers evicted first); see the design
-  spec's "Limits and abuse".
+  one compare-and-set that marks the link used and records the shopper's cart. The link is
+  single-use PER BROWSER: the claim binds it to a hash of a random nonce the site keeps in an
+  httpOnly cookie. The redeeming browser may claim again after a lapsed lease (a transient
+  failure never kills the link) and may reopen the finalized link for 15 minutes before any
+  order; nobody else may (they get `HANDOFF_USED`). While a claim is live every redeem, the same
+  browser's included, gets `HANDOFF_IN_PROGRESS` and the site waits and retries. Agent writes
+  other than cancel wait while a claim is live; cancel always wins, and the claim's finalize
+  then fails. No cart id is ever shown to the agent.
+- Session storage is bounded by live slots taken at insert (500 per store, 20 per network key),
+  using per-document compare-and-set only (ADR-0019). Race-safety is REQUIRED of every adapter
+  and proven by the contract suite's interleaving tests, which the EmDash adapter must pass;
+  the stored total follows from the slots and the retention, and the per-document cap is
+  128 KiB (older replay answers evicted first). See the design spec's "Limits and abuse",
+  including the accepted residual denial of service and the IPv6 /64 network-key requirement.
 - Hand-off is terminal for the agent. Once a shopper redeems a link the shopper owns the cart:
   update, complete and issue-link are refused (`SESSION_HANDED_OFF`), so no second link can be
   minted for the same session and the shopper cannot be sent to pay twice. Only cancel (and reads)
