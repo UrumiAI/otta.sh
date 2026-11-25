@@ -119,6 +119,31 @@ function classInUse(usedBy: string, count?: number): never {
 	);
 }
 
+/**
+ * {@link readOrRefuse}, keeping the refused field: the surface refuses a rate on a
+ * class that does not exist (#740) as input naming `taxClassId`, and the agent gets
+ * it as `details.field` — the shape tax_settings_update gives the same mistake.
+ */
+async function refuseUnknownClass<T>(write: () => Promise<T>): Promise<T> {
+	try {
+		return await write();
+	} catch (error) {
+		const field = (error as { field?: unknown } | null)?.field;
+		if (
+			error instanceof Error &&
+			(error as { code?: unknown }).code === "INVALID_INPUT" &&
+			field === "taxClassId"
+		) {
+			return toolFailure(
+				"INVALID_INPUT",
+				`${error.message}. Nothing was written; create it with tax_class_create, or pick one from tax_classes_list.`,
+				{ field, message: error.message },
+			);
+		}
+		return readOrRefuse(() => Promise.reject(error));
+	}
+}
+
 function settingsAnswer(result: TaxSettingsUpdateResult) {
 	if (result.ok) return { status: "updated" as const, settings: result.settings };
 	switch (result.reason) {
@@ -254,7 +279,7 @@ export const TAX_WRITE_TOOLS = [
 	defineTool({
 		name: "tax_rate_create",
 		description:
-			'Create a tax rate: the rate one tax class pays in one shipping zone. There is one rate per (class, zone): a second is refused with TAX_RATE_SLOT_TAKEN, details.existing naming the one there (update it with tax_rate_update instead). Returns `{status: "created", taxRate}`. Refusals: TAX_RATE_SLOT_TAKEN, TAX_RATE_ID_TAKEN, INVALID_INPUT.',
+			'Create a tax rate: the rate one tax class pays in one shipping zone. There is one rate per (class, zone): a second is refused with TAX_RATE_SLOT_TAKEN, details.existing naming the one there (update it with tax_rate_update instead). Returns `{status: "created", taxRate}`. Refusals: TAX_RATE_SLOT_TAKEN, TAX_RATE_ID_TAKEN, INVALID_INPUT (details.field, e.g. taxClassId naming a class that does not exist: create it with tax_class_create first).',
 		input: z
 			.object({
 				id: recordId(
@@ -272,7 +297,7 @@ export const TAX_WRITE_TOOLS = [
 			.strict(),
 		async run({ clients, input }) {
 			const { id, ...rest } = input;
-			const result = await readOrRefuse(() =>
+			const result = await refuseUnknownClass(() =>
 				clients.rules.createTaxRate({
 					id: id ?? crypto.randomUUID(),
 					taxClassId: rest.taxClassId,

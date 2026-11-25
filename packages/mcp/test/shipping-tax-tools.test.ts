@@ -9,7 +9,11 @@
  */
 import { cents, currency as toCurrency } from "@urumi.ai/otta-domain";
 import { createOttaPlugin } from "@urumi.ai/otta-plugin";
-import { EmdashShippingRulesStore, systemClock } from "@urumi.ai/otta-store-emdash";
+import {
+	EmdashShippingRulesStore,
+	systemClock,
+	TAX_CLASSES_COLLECTION,
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { OTTA_MCP_TOOLS, withMcp, type McpRouteEntry } from "../src/index.js";
 import { makeAdminHarness, type AdminHarness } from "./helpers/admin-harness.js";
@@ -514,6 +518,23 @@ describe("tax classes", () => {
 });
 
 describe("tax rates", () => {
+	test("a tax class that does not exist is INVALID_INPUT, as tax_settings_update refuses it, and nothing is written (#740)", async () => {
+		await seedZone("us", "US");
+		const err = await failure("tax_rate_create", {
+			taxClassId: "nope-class",
+			zoneId: "us",
+			rateBps: 100,
+		});
+		expect(err.code).toBe("INVALID_INPUT");
+		expect(err.details.field).toBe("taxClassId");
+		expect(err.message).toMatch(/nope-class/);
+		expect(await call("tax_rates_list", { zoneId: "us" })).toMatchObject({ items: [] });
+		expect(await call("tax_settings_get", {})).toMatchObject({ saved: false, hasRates: false });
+		const storage = harness.ctx.storage;
+		if (storage === undefined) throw new Error("harness has no storage");
+		expect(await storage[TAX_CLASSES_COLLECTION]?.get("nope-class")).toBeNull();
+	});
+
 	test("create, then a partial update keeps the rate and flips the flag", async () => {
 		await seedZone("us", "US");
 		await call("tax_class_create", { id: "std", name: "Standard" });
