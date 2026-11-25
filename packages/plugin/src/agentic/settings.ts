@@ -1,19 +1,21 @@
 /**
  * Agentic checkout's settings (ADR-0047), plain plugin kv beside cash on delivery's.
  *
- *  - `settings:agenticEnabled` — the toggle, saved from the Agentic checkout group
- *    of the Store settings page. ONLY a stored `true` turns it on: a store that
- *    never saved it, a kv miss, a failed read or any other value reads as OFF, and
- *    every agentic route then answers `NOT_FOUND`.
- *  - `settings:agenticServerKey` — the HMAC key the session secrets are derived
- *    under (`order_secret`, hand-off tokens): 32 random bytes, base64url. Created
- *    on first use, NEVER shown or accepted by the Settings form. It is NOT YET
- *    ENCRYPTED AT REST: it is declared `secret` in
- *    {@link AGENTIC_SECRET_SETTINGS_SCHEMA}, but no site spreads that schema into
- *    its descriptor yet, so today it is stored as plain kv. Before ANY store turns
- *    the switch on, that must be wired under ADR-0037 — the site descriptor spreads
- *    the schema, with a re-save migration like `encrypt-payment-secrets.ts` for a
- *    key already stored in the clear.
+ *  - `settings:agenticEnabled` — the switch. ONLY a stored `true` turns it on: a
+ *    store that never saved it, a kv miss, a failed read or any other value reads
+ *    as OFF, and every agentic route then answers `NOT_FOUND`. The Settings page
+ *    does NOT offer it yet and refuses a save of it: ADR-0047 makes buyer-data
+ *    export and erasure a precondition for turning it on, and neither exists.
+ *  - `settings:agenticServerKey` — the HMAC key the session secrets (`order_secret`,
+ *    hand-off tokens) and the agentic cart keys are derived under: 32 random
+ *    bytes, base64url. Created on first use, NEVER shown or accepted by the
+ *    Settings form. ENCRYPTED AT REST under ADR-0037: declared `secret` in
+ *    {@link AGENTIC_SECRET_SETTINGS_SCHEMA}, which the reference site spreads into
+ *    its descriptor (pinned by `sites/store/test/payment-secrets-at-rest.test.ts`).
+ *    No re-save migration: the key is created only by an agentic route, which
+ *    answers `NOT_FOUND` before reading it while the switch is off, and the switch
+ *    has never been offered on, so no store holds this key in the clear. A site
+ *    other than the reference one must spread the schema too before enabling.
  *
  * Nothing here logs a value or an error message (fixed lines only).
  */

@@ -637,7 +637,15 @@ export {
 	AGENTIC_ENABLED_KEY,
 	AGENTIC_SECRET_SETTINGS_SCHEMA,
 	AGENTIC_SERVER_KEY_KEY,
+	readAgenticServerKey,
 } from "./agentic/settings.js";
+// The redeemer nonce cookie the site sets on a hand-off link's landing GET and
+// passes back to `agentic/handoff/redeem` as its `redeemer` input.
+export {
+	AGENTIC_REDEEMER_COOKIE_MAX_AGE_SECONDS,
+	AGENTIC_REDEEMER_COOKIE_NAME,
+	agenticRedeemerCookieDescriptor,
+} from "./agentic/routes.js";
 export type { AgentMessage } from "./agentic/cart-quote.js";
 export {
 	createShopperStateHandler,

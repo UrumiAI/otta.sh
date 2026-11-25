@@ -79,7 +79,6 @@ import {
 	PAYMENT_SECRET_STORAGE,
 	pricedProductsText,
 	readSaveGen,
-	saveAgenticCheckout,
 	saveCashOnDelivery,
 	saveOperationalSettings,
 	saveStoreCurrency,
@@ -844,33 +843,21 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			} satisfies BlockResponse;
 		}
 
-		// -- kv save path: Agentic checkout (ADR-0047) -------------------------------
-		// Saved only as a real boolean: an absent or malformed value refuses the
-		// save, never reads as "off".
+		// -- Agentic checkout (ADR-0047): NOT YET SWITCHABLE ------------------------
+		// The switch is hidden and its save REFUSED, whatever it carries, and
+		// nothing is written: the ADR makes a buyer-data export and erasure path a
+		// precondition for turning it on, and neither exists yet. A crafted submit
+		// of the old action lands here.
 		if (action === SAVE_AGENTIC_CHECKOUT_ACTION) {
-			const enabled = input.values?.agenticEnabled;
-			if (typeof enabled !== "boolean") {
-				const page = await renderPage(ctx, client, {
-					variant: "error",
-					title: "Agentic checkout not saved",
-					description: "The on/off choice didn't come through. Nothing was changed.",
-				});
-				return {
-					...page,
-					toast: { message: "Agentic checkout not saved", type: "error" },
-				} satisfies BlockResponse;
-			}
-			await saveAgenticCheckout(ctx, { enabled });
 			const page = await renderPage(ctx, client, {
-				variant: "default",
-				title: "Agentic checkout saved",
-				description: enabled
-					? "Agentic checkout is on: AI agents can now hand buyers a checkout link."
-					: "Agentic checkout is off: agents get not-found. Orders already placed are unchanged.",
+				variant: "error",
+				title: "Agentic checkout can't be switched yet",
+				description:
+					"It becomes available once buyer data from agent checkouts can be exported and erased. Nothing was changed.",
 			});
 			return {
 				...page,
-				toast: { message: "Agentic checkout saved", type: "success" },
+				toast: { message: "Agentic checkout not saved", type: "error" },
 			} satisfies BlockResponse;
 		}
 
@@ -1635,8 +1622,10 @@ function cashOnDeliveryGroup(state: CashOnDeliveryState | null): Block[] {
 }
 
 /**
- * "Agentic checkout" (ADR-0047): one switch, OFF until the merchant saves it on.
- * While off, every agentic route answers not-found.
+ * "Agentic checkout" (ADR-0047): its state only. The switch is NOT rendered (and
+ * its save is refused) until buyer-data export and erasure exist — the ADR's
+ * precondition for turning it on. While off, every agentic route answers
+ * not-found.
  */
 function agenticCheckoutGroup(enabled: boolean | null): Block[] {
 	const status = enabled === null ? "couldn't be loaded" : enabled ? "on" : "off";
@@ -1646,35 +1635,8 @@ function agenticCheckoutGroup(enabled: boolean | null): Block[] {
 		blocks: [
 			{
 				type: "context",
-				text: "Lets AI shopping agents build a cart and hand the buyer a link to finish checkout here. Buyers always pay on your checkout.",
+				text: "Lets AI shopping agents build a cart and hand the buyer a link to finish checkout here. Not available yet: it can be switched on once buyer data from agent checkouts can be exported and erased.",
 			},
-			...(enabled === null
-				? [
-						{
-							type: "context",
-							text: "The agentic checkout setting couldn't be loaded, so its form is hidden to avoid overwriting it. Reload the page to try again.",
-						} satisfies Block,
-					]
-				: [
-						carriedForm({
-							namespace: "settings:agentic",
-							form: {
-								type: "form",
-								fields: [
-									{
-										type: "toggle",
-										action_id: "agenticEnabled",
-										label: "Accept checkouts from AI agents",
-										initial_value: enabled,
-									},
-								],
-								submit: {
-									label: "Save agentic checkout",
-									action_id: SAVE_AGENTIC_CHECKOUT_ACTION,
-								},
-							},
-						}),
-					]),
 		],
 	});
 }

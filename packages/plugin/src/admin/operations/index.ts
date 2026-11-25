@@ -71,7 +71,6 @@ export {
 	pricedProductsText,
 	readSaveGen,
 	readSettingsSummary,
-	saveAgenticCheckout,
 	saveCashOnDelivery,
 	saveOperationalSettings,
 	saveStoreCurrency,
