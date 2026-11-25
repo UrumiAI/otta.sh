@@ -12,15 +12,27 @@ import type { AgentCheckoutSession, AgentSessionId } from "../agentic/model.js";
  * all qualify). Adapters are REQUIRED to keep the caps race-safe, and the
  * contract suite proves it by running its racing tests against interleaving
  * callers; the EmDash adapter must pass it. The reference design (the in-memory
- * fake) uses lease SLOTS: a cap of N is N slot documents, and an insert
- * compare-and-sets a free or expired slot before it writes the session.
+ * fake) uses lease SLOTS: a cap of N is N slot documents (`<pool>:<index>`,
+ * index below the cap); an insert compare-and-sets a free slot in each pool,
+ * writes the session, then compare-and-sets a `landed` mark onto each slot. A
+ * slot is free when absent, expired, or never landed and taken more than 60 s
+ * ago (abandoned); probes read slot documents only, never sessions. An insert
+ * whose `landed` mark loses (its slot was retaken as abandoned after a stall)
+ * deletes its own session by version and answers `capacity`.
  *
  * Storage bounds the store itself enforces:
  *  - {@link insert} admits a session only while it can hold a live slot in the
  *    store-wide pool (`maxLive`) and in its network's pool
- *    (`maxLivePerNetwork`). A slot is held from the insert until the session's
- *    `expiresAt`, WHATEVER its status: canceling does not free it (so a
- *    create-cancel loop cannot outrun the cap).
+ *    (`maxLivePerNetwork`). A slot is held until the session's `expiresAt`,
+ *    unless the session is handed off ({@link finalizeHandoff}) or completed (a
+ *    {@link write} to `completed`), which free its slots at once. Canceling
+ *    frees nothing (so a create-cancel loop cannot outrun the cap).
+ *  - Slot documents are deleted by version when their session is purged
+ *    ({@link purge}), freed, or by {@link purgeSlotsDue} once expired or
+ *    abandoned, so they never accumulate as network keys rotate.
+ *  - Lowering a cap: only slots below the new size are probed, so the new cap
+ *    is exact for inserts once the older slots expire (within 24 h); until then
+ *    {@link occupiedSlots} still counts them, which the early refusal uses.
  *  - {@link insert}, {@link write}, {@link claimHandoff} and
  *    {@link finalizeHandoff} refuse a document heavier than
  *    `AGENT_SESSION_MAX_DOCUMENT_BYTES` (`agentSessionDocumentBytes`), `too_large`.
@@ -86,21 +98,28 @@ export interface AgentSessionStore {
 	 * Take over a create record to finish its orphaned create (its session was
 	 * never stored): compare-and-set it, if it still points at `sessionId`, to
 	 * carry `attemptId` and a `purgeAt` no earlier than both its own and the one
-	 * given. Answers whether it adopted; from then on only `attemptId` can
-	 * {@link releaseIdempotency} it.
+	 * given; from then on only `attemptId` can {@link releaseIdempotency} it.
+	 * `lost` if it is gone or points elsewhere; `busy` (retryable, nothing
+	 * written) while its session holds a live slot at `now`: landed, or taken and not yet
+	 * abandoned (another attempt's insert is in flight).
 	 */
 	adoptIdempotency(
 		networkKey: string,
 		key: string,
-		adopt: { sessionId: AgentSessionId; attemptId: string; purgeAt: string },
-	): Promise<boolean>;
+		adopt: { sessionId: AgentSessionId; attemptId: string; purgeAt: string; now: string },
+	): Promise<"adopted" | "lost" | "busy">;
 	/**
 	 * Delete the create record for (`networkKey`, `key`) by compare-and-set, only
 	 * if it still carries `attemptId` (the attempt that put or adopted it, whose
-	 * insert was refused). An attempt that lost the record to an adopter deletes
-	 * nothing. Answers whether it deleted.
+	 * insert was refused; `not_owner` otherwise) and its session holds no live
+	 * slot at `now` (`busy`, retryable: another attempt's insert is in flight or landed).
 	 */
-	releaseIdempotency(networkKey: string, key: string, attemptId: string): Promise<boolean>;
+	releaseIdempotency(
+		networkKey: string,
+		key: string,
+		attemptId: string,
+		now: string,
+	): Promise<"released" | "not_owner" | "busy">;
 	/**
 	 * Claim the session's current hand-off link for a redeem, as a lease. One
 	 * compare-and-set guarded on, in this order: the session exists
@@ -108,9 +127,9 @@ export interface AgentSessionStore {
 	 * canceled (`canceled`) or completed (`completed`), the link was not
 	 * finalized (`already_used`), `expiresAt` is after `now` (`expired`), it has a
 	 * line (`incomplete`), no unfinalized claim's lease is still running
-	 * (`claimed`, with that lease's end — whoever asks), a lapsed unfinalized
-	 * claim belongs to the same `redeemerHash` (`bound` otherwise: only the
-	 * browser that claimed may claim again), and the document fits (`too_large`).
+	 * (`claimed`, with that lease's end — whoever asks), and the document fits
+	 * (`too_large`). A lapsed unfinalized claim binds nobody: any redeemer may
+	 * claim again.
 	 * The winner sets `handoffClaim` = {tokenHash, claimId, redeemerHash,
 	 * claimedAt: now, leaseUntil}, bumps the revision and answers the session.
 	 * Exactly one of any number of racing claims wins.
@@ -137,7 +156,6 @@ export interface AgentSessionStore {
 					| "already_used"
 					| "expired"
 					| "incomplete"
-					| "bound"
 					| "too_large";
 		  }
 	>;
@@ -151,7 +169,10 @@ export interface AgentSessionStore {
 	 * `AGENT_HANDOFF_FINALIZE_GRACE_MS` (`lease_lapsed`), and the document fits
 	 * (`too_large`). The winner stamps `handoffUsedAt = now`, `shopperCartId =
 	 * cartId` and `purgeAt = retainUntil`, keeps the claim, bumps the revision.
-	 * Exactly one of any number of racing finalizes of one claim writes.
+	 * Exactly one of any number of racing finalizes of one claim writes. After
+	 * the write (and again on a replay, so a crash in between is repaired) it
+	 * frees the session's live slots and moves every create record of the
+	 * session to `purgeAt` no earlier than `retainUntil`.
 	 */
 	finalizeHandoff(
 		id: AgentSessionId,
@@ -180,13 +201,22 @@ export interface AgentSessionStore {
 	releaseHandoffClaim(id: AgentSessionId, claimId: string): Promise<boolean>;
 	/** Sessions that are open and whose `expiresAt` is strictly after `now`. */
 	countLive(now: string): Promise<number>;
+	/** Live slots held at `now`, store-wide and in `networkKey`'s pool, at any
+	 *  index (an over-cap slot left by a lowered cap counts). */
+	occupiedSlots(networkKey: string, now: string): Promise<{ store: number; network: number }>;
+	/** Every slot document stored, held or not (bounded by the sweep). */
+	countSlotDocs(): Promise<number>;
+	/** Delete up to `limit` slot documents that are expired or abandoned at
+	 *  `now`, by version. Answers how many it deleted. */
+	purgeSlotsDue(now: string, limit: number): Promise<number>;
 	/** Sessions created by `networkKey` at or after `since`, whatever their status. */
 	countCreatedSince(networkKey: string, since: string): Promise<number>;
 	/** Ids of sessions whose `purgeAt` is at or before `now`, at most `limit` of them. */
 	listPurgeDue(now: string, limit: number): Promise<AgentSessionId[]>;
 	/**
-	 * Delete the session, its create records and its hand-off lookups, if its
-	 * `purgeAt` is at or before `now`. Answers whether it deleted; idempotent.
+	 * Delete the session, its create records, its slot documents and its
+	 * hand-off lookups, if its `purgeAt` is at or before `now`. Answers whether
+	 * it deleted; idempotent.
 	 */
 	purge(id: AgentSessionId, now: string): Promise<boolean>;
 	/**

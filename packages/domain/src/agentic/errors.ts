@@ -68,6 +68,9 @@ export type AgentSessionFailure = { ok: false; reason: AgentSessionFailureReason
  */
 export type AgentHandoffFailureReason =
 	| "HANDOFF_INVALID"
+	/** The redeem carried no redeemer nonce (the site's cookie): retryable, the
+	 *  site reloads its landing page (which sets it) and redeems again. */
+	| "HANDOFF_REDEEMER_MISSING"
 	| "HANDOFF_EXPIRED"
 	| "HANDOFF_CANCELED"
 	| "HANDOFF_USED"

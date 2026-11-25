@@ -8,7 +8,7 @@ import {
 	type AgentSessionId,
 } from "../agentic/model.js";
 import { currency } from "../money/cents.js";
-import { productId, sku } from "../money/ids.js";
+import { orderId, productId, sku } from "../money/ids.js";
 import {
 	AGENT_SESSION_MIN_SERVER_KEY_BYTES,
 	type AgentSessionSecrets,
@@ -585,12 +585,20 @@ export function agentSessionStoreContract(
 			test("releaseIdempotency deletes only a record still carrying the attempt's id", async () => {
 				const { store } = await makeHarness();
 				await store.putIdempotency(createRecord("rel-1", "cs_rel1"));
-				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-other")).toBe(false);
+				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-other", at(1000))).toBe(
+					"not_owner",
+				);
 				expect(await store.getIdempotency("net-a", "rel-1")).not.toBeNull();
-				expect(await store.releaseIdempotency("net-b", "rel-1", "attempt-1")).toBe(false);
-				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-1")).toBe(true);
+				expect(await store.releaseIdempotency("net-b", "rel-1", "attempt-1", at(1000))).toBe(
+					"not_owner",
+				);
+				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-1", at(1000))).toBe(
+					"released",
+				);
 				expect(await store.getIdempotency("net-a", "rel-1")).toBeNull();
-				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-1")).toBe(false);
+				expect(await store.releaseIdempotency("net-a", "rel-1", "attempt-1", at(1000))).toBe(
+					"not_owner",
+				);
 			});
 
 			test("adoptIdempotency takes a record over (attempt id, later purge) only while it points at the session", async () => {
@@ -600,16 +608,17 @@ export function agentSessionStoreContract(
 					sessionId: agentSessionId("cs_ad1"),
 					attemptId: "attempt-2",
 					purgeAt: at(31 * DAY_MS),
+					now: at(1000),
 				};
 				expect(
 					await store.adoptIdempotency("net-a", "ad-1", {
 						...adopt,
 						sessionId: agentSessionId("cs_x"),
 					}),
-				).toBe(false);
-				expect(await store.adoptIdempotency("net-b", "ad-1", adopt)).toBe(false);
-				expect(await store.adoptIdempotency("net-a", "ad-none", adopt)).toBe(false);
-				expect(await store.adoptIdempotency("net-a", "ad-1", adopt)).toBe(true);
+				).toBe("lost");
+				expect(await store.adoptIdempotency("net-b", "ad-1", adopt)).toBe("lost");
+				expect(await store.adoptIdempotency("net-a", "ad-none", adopt)).toBe("lost");
+				expect(await store.adoptIdempotency("net-a", "ad-1", adopt)).toBe("adopted");
 				expect(await store.getIdempotency("net-a", "ad-1")).toEqual(
 					createRecord("ad-1", "cs_ad1", { attemptId: "attempt-2", purgeAt: at(31 * DAY_MS) }),
 				);
@@ -620,11 +629,15 @@ export function agentSessionStoreContract(
 						attemptId: "attempt-3",
 						purgeAt: at(DAY_MS),
 					}),
-				).toBe(true);
+				).toBe("adopted");
 				expect((await store.getIdempotency("net-a", "ad-1"))?.purgeAt).toBe(at(31 * DAY_MS));
 				// The putter can no longer release it; the adopter can.
-				expect(await store.releaseIdempotency("net-a", "ad-1", "attempt-1")).toBe(false);
-				expect(await store.releaseIdempotency("net-a", "ad-1", "attempt-3")).toBe(true);
+				expect(await store.releaseIdempotency("net-a", "ad-1", "attempt-1", at(1000))).toBe(
+					"not_owner",
+				);
+				expect(await store.releaseIdempotency("net-a", "ad-1", "attempt-3", at(1000))).toBe(
+					"released",
+				);
 			});
 
 			test("a release racing an adoption: never both (the adopter keeps the record, or it adopts nothing)", async () => {
@@ -632,18 +645,59 @@ export function agentSessionStoreContract(
 					const { store } = await makeHarness();
 					await store.putIdempotency(createRecord("race", "cs_race"));
 					const [released, adopted] = await Promise.all([
-						store.releaseIdempotency("net-a", "race", "attempt-1"),
+						store.releaseIdempotency("net-a", "race", "attempt-1", at(1000)),
 						store.adoptIdempotency("net-a", "race", {
 							sessionId: agentSessionId("cs_race"),
 							attemptId: "attempt-2",
 							purgeAt: at(31 * DAY_MS),
+							now: at(1000),
 						}),
 					]);
 					const left = await store.getIdempotency("net-a", "race");
-					expect(released && adopted).toBe(false);
-					if (adopted) expect(left?.attemptId).toBe("attempt-2");
+					expect(released === "released" && adopted === "adopted").toBe(false);
+					if (adopted === "adopted") expect(left?.attemptId).toBe("attempt-2");
 					else expect(left).toBeNull();
 				}
+			});
+
+			test("release and adopt answer busy while the record's session holds a live slot (landed or in flight)", async () => {
+				const { store } = await makeHarness();
+				await store.putIdempotency(createRecord("busy", "cs_busy"));
+				await seed(store, sample("cs_busy"));
+				expect(await store.releaseIdempotency("net-a", "busy", "attempt-1", at(1000))).toBe("busy");
+				expect(
+					await store.adoptIdempotency("net-a", "busy", {
+						sessionId: agentSessionId("cs_busy"),
+						attemptId: "attempt-2",
+						purgeAt: at(31 * DAY_MS),
+						now: at(1000),
+					}),
+				).toBe("busy");
+				expect(await store.getIdempotency("net-a", "busy")).toEqual(
+					createRecord("busy", "cs_busy"),
+				);
+			});
+
+			test("a release racing the record's session insert (interleaving callers): busy while the insert holds its slot", async () => {
+				const outcomes = new Set<string>();
+				for (let delay = 0; delay < 40; delay++) {
+					const { store } = await makeHarness();
+					await store.putIdempotency(createRecord("fly", "cs_fly"));
+					const [inserted, released] = await Promise.all([
+						store.insert(sample("cs_fly"), { now: at(1000), ...ROOMY }),
+						(async () => {
+							for (let i = 0; i < delay; i++) await Promise.resolve();
+							return store.releaseIdempotency("net-a", "fly", "attempt-1", at(1000));
+						})(),
+					]);
+					expect(inserted.ok).toBe(true);
+					outcomes.add(released);
+					if (released === "busy")
+						expect(await store.getIdempotency("net-a", "fly")).not.toBeNull();
+				}
+				// Early enough the release wins; once the insert holds a slot (landed or
+				// not) it is busy. Both happen across the delays.
+				expect([...outcomes].toSorted()).toEqual(["busy", "released"]);
 			});
 		});
 
@@ -683,31 +737,23 @@ export function agentSessionStoreContract(
 				expect(await store.get(s.id)).toEqual(before);
 			});
 
-			test("after the lease lapses (at leaseUntil) only the same redeemer claims again; another is bound", async () => {
+			test("after the lease lapses (at leaseUntil) an unfinalized claim is unbound: any redeemer claims again", async () => {
 				const { store } = await makeHarness();
 				const s = await seed(store, sample("cs_c3", { handoffTokenHash: "h" }));
 				await store.claimHandoff(s.id, CLAIM());
-				const before = await store.get(s.id);
-				expect(
-					await store.claimHandoff(
-						s.id,
-						CLAIM({
-							claimId: "claim-x",
-							redeemerHash: "rh-2",
-							now: at(61_000),
-							leaseUntil: at(121_000),
-						}),
-					),
-				).toEqual({ ok: false, reason: "bound" });
-				expect(await store.get(s.id)).toEqual(before);
 				const again = await store.claimHandoff(
 					s.id,
-					CLAIM({ claimId: "claim-2", now: at(61_000), leaseUntil: at(121_000) }),
+					CLAIM({
+						claimId: "claim-2",
+						redeemerHash: "rh-2",
+						now: at(61_000),
+						leaseUntil: at(121_000),
+					}),
 				);
 				expect(again.ok && again.session.handoffClaim).toEqual({
 					tokenHash: "h",
 					claimId: "claim-2",
-					redeemerHash: "rh-1",
+					redeemerHash: "rh-2",
 					claimedAt: at(61_000),
 					leaseUntil: at(121_000),
 				});
@@ -809,6 +855,9 @@ export function agentSessionStoreContract(
 					store,
 					sample("cs_f1", { handoffTokenHash: "h", cartId: "cart-agent" }),
 				);
+				await store.putIdempotency(
+					createRecord("idem-f1", "cs_f1", { purgeAt: at(DAY_MS + 3_600_000) }),
+				);
 				const claimed = await store.claimHandoff(s.id, CLAIM());
 				if (!claimed.ok) throw new Error("claim failed");
 				const done = await store.finalizeHandoff(s.id, FIN());
@@ -821,6 +870,8 @@ export function agentSessionStoreContract(
 				};
 				expect(done).toEqual({ ok: true, replayed: false, session: expected });
 				expect(await store.get(s.id)).toEqual(expected);
+				// The session's create record follows it to the 30-day retention.
+				expect((await store.getIdempotency("net-a", "idem-f1"))?.purgeAt).toBe(at(30 * DAY_MS));
 				expect(await store.findByCartId("cart-shopper")).toEqual(expected);
 				expect(await store.finalizeHandoff(s.id, FIN({ now: at(3000) }))).toEqual({
 					ok: true,
@@ -985,6 +1036,159 @@ export function agentSessionStoreContract(
 				expect(await store.releaseHandoffClaim(s.id, "claim-2")).toBe(false);
 				expect((await store.get(s.id))?.handoffUsedAt).toBe(at(2000));
 				expect(await store.releaseHandoffClaim(agentSessionId("cs_nope"), "claim-1")).toBe(false);
+			});
+		});
+
+		describe("live slots", () => {
+			test("a finalized hand-off frees the session's slots at once", async () => {
+				const { store } = await makeHarness();
+				const a = await store.insert(
+					sample("cs_sf1", { handoffTokenHash: "h" }),
+					oneSlot(at(1000)),
+				);
+				if (!a.ok) throw new Error("insert failed");
+				expect((await store.claimHandoff(a.session.id, CLAIM())).ok).toBe(true);
+				expect(await store.insert(sample("cs_sf2"), oneSlot(at(1500)))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				const fin = {
+					claimId: "claim-1",
+					cartId: "cart-s",
+					now: at(2000),
+					retainUntil: at(30 * DAY_MS),
+				};
+				expect((await store.finalizeHandoff(a.session.id, fin)).ok).toBe(true);
+				expect((await store.insert(sample("cs_sf3"), oneSlot(at(3000)))).ok).toBe(true);
+			});
+
+			test("a write that completes the session frees its slots; one that cancels it does not", async () => {
+				const { store } = await makeHarness();
+				const a = await store.insert(sample("cs_sc1"), oneSlot(at(1000)));
+				if (!a.ok) throw new Error("insert failed");
+				expect((await store.write({ ...a.session, status: "canceled" }, 1)).ok).toBe(true);
+				expect(await store.insert(sample("cs_sc2"), oneSlot(at(2000)))).toEqual({
+					ok: false,
+					reason: "capacity",
+				});
+				const later = a.session.expiresAt;
+				const b = await store.insert(sample("cs_sc3", { createdAt: later }), oneSlot(later));
+				if (!b.ok) throw new Error("insert after expiry failed");
+				const completed = { ...b.session, status: "completed" as const, orderId: orderId("o-1") };
+				expect((await store.write(completed, 1)).ok).toBe(true);
+				expect(
+					(await store.insert(sample("cs_sc4", { createdAt: later }), oneSlot(later))).ok,
+				).toBe(true);
+			});
+
+			test("occupiedSlots counts the store's and the network's held slots, canceled included, expired and finalized not", async () => {
+				const { store } = await makeHarness();
+				const cap = { now: at(1000), maxLive: 10, maxLivePerNetwork: 10 };
+				const a = await store.insert(sample("cs_o1"), cap);
+				await store.insert(sample("cs_o2", { networkKey: "net-b" }), cap);
+				const c = await store.insert(sample("cs_o3", { handoffTokenHash: "h" }), cap);
+				if (!a.ok || !c.ok) throw new Error("insert failed");
+				await store.write({ ...a.session, status: "canceled" }, 1);
+				expect(await store.occupiedSlots("net-a", at(2000))).toEqual({ store: 3, network: 2 });
+				await store.claimHandoff(c.session.id, CLAIM());
+				const fin = {
+					claimId: "claim-1",
+					cartId: "cart-o",
+					now: at(2000),
+					retainUntil: at(30 * DAY_MS),
+				};
+				expect((await store.finalizeHandoff(c.session.id, fin)).ok).toBe(true);
+				expect(await store.occupiedSlots("net-a", at(3000))).toEqual({ store: 2, network: 1 });
+				expect(await store.occupiedSlots("net-a", a.session.expiresAt)).toEqual({
+					store: 0,
+					network: 0,
+				});
+			});
+
+			test("slot documents do not grow without bound as network keys rotate: purge and the sweep delete them", async () => {
+				const { store } = await makeHarness();
+				for (let round = 0; round < 40; round++) {
+					const start = round * 2 * DAY_MS;
+					const now = at(start);
+					const s = sample(`cs_rot${round}`, {
+						networkKey: `rot-${round}`,
+						createdAt: now,
+						purgeAt: at(start + DAY_MS + 3_600_000),
+					});
+					expect((await store.insert(s, { now, maxLive: 1000, maxLivePerNetwork: 50 })).ok).toBe(
+						true,
+					);
+					for (const id of await store.listPurgeDue(now, 100)) await store.purge(id, now);
+					await store.purgeSlotsDue(now, 1000);
+					// Only this round's session holds slots: its network's and the store's.
+					expect(await store.countSlotDocs(), `round ${round}`).toBeLessThanOrEqual(2);
+				}
+			});
+
+			test("purge deletes the session's slot documents", async () => {
+				const { store } = await makeHarness();
+				const s = await store.insert(sample("cs_pd", { purgeAt: at(DAY_MS) }), {
+					now: at(1000),
+					...ROOMY,
+				});
+				if (!s.ok) throw new Error("insert failed");
+				expect(await store.countSlotDocs()).toBe(2);
+				expect(await store.purge(s.session.id, at(DAY_MS))).toBe(true);
+				expect(await store.countSlotDocs()).toBe(0);
+			});
+
+			test("purgeSlotsDue deletes expired slots, leaves held ones, and answers how many", async () => {
+				const { store } = await makeHarness();
+				const cap = { now: at(1000), ...ROOMY };
+				expect((await store.insert(sample("cs_p1"), cap)).ok).toBe(true);
+				expect((await store.insert(sample("cs_p2", { createdAt: at(DAY_MS) }), cap)).ok).toBe(true);
+				expect(await store.countSlotDocs()).toBe(4);
+				expect(await store.purgeSlotsDue(at(DAY_MS + 1000), 100)).toBe(2);
+				expect(await store.countSlotDocs()).toBe(2);
+				expect(await store.occupiedSlots("net-a", at(DAY_MS + 1000))).toEqual({
+					store: 1,
+					network: 1,
+				});
+			});
+
+			test("an insert stalled past the abandon time whose slot was retaken stores nothing (interleaving callers)", async () => {
+				const winners = new Set<string>();
+				for (let delay = 0; delay < 40; delay++) {
+					const { store } = await makeHarness();
+					const [slow, fast] = await Promise.all([
+						store.insert(sample("cs_slow"), oneSlot(at(1000))),
+						(async () => {
+							for (let i = 0; i < delay; i++) await Promise.resolve();
+							return store.insert(sample("cs_fast"), oneSlot(at(62_000)));
+						})(),
+					]);
+					const kept = [
+						await store.get(agentSessionId("cs_slow")),
+						await store.get(agentSessionId("cs_fast")),
+					].filter((x) => x !== null);
+					expect(kept, `delay ${delay}`).toHaveLength(1);
+					expect([slow.ok, fast.ok].filter(Boolean), `delay ${delay}`).toHaveLength(1);
+					for (const r of [slow, fast])
+						if (!r.ok) expect(r).toEqual({ ok: false, reason: "capacity" });
+					winners.add(slow.ok ? "slow" : "fast");
+				}
+				// At some interleavings the later insert takes the abandoned (never landed)
+				// slot, and then the stalled one stands down.
+				expect([...winners].toSorted()).toEqual(["fast", "slow"]);
+			});
+
+			test("a lowered cap: only slots below the new size are probed; it fully applies once older slots expire", async () => {
+				const { store } = await makeHarness();
+				for (const id of ["cs_l1", "cs_l2", "cs_l3"]) {
+					const cap = { now: at(1000), maxLive: 3, maxLivePerNetwork: 3 };
+					expect((await store.insert(sample(id, { networkKey: id }), cap)).ok).toBe(true);
+				}
+				expect((await store.occupiedSlots("x", at(2000))).store).toBe(3);
+				const later = at(DAY_MS);
+				const one = { now: later, maxLive: 1, maxLivePerNetwork: 1 };
+				const fresh = (id: string) => sample(id, { networkKey: id, createdAt: later });
+				expect((await store.insert(fresh("cs_l4"), one)).ok).toBe(true);
+				expect(await store.insert(fresh("cs_l5"), one)).toEqual({ ok: false, reason: "capacity" });
 			});
 		});
 
