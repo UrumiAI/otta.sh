@@ -13,6 +13,7 @@
  */
 import type { PluginDescriptor } from "emdash";
 import {
+	AGENTIC_SECRET_SETTINGS_SCHEMA,
 	COMMERCE_STORAGE_COLLECTIONS,
 	COUPONS_PAGE,
 	type InProcessEgressUrls,
@@ -134,6 +135,9 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// where they are entered; declaring a schema also makes EmDash list a
 		// Settings gear for the plugin, whose form writes the same encrypted keys.
 		// Copied, not shared: the descriptor type wants a mutable record.
-		settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA },
+		// ADR-0047 adds the agentic checkout server key (the HMAC key its session
+		// secrets and cart keys derive from) under the same encryption; the form
+		// never shows or accepts it.
+		settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA, ...AGENTIC_SECRET_SETTINGS_SCHEMA },
 	};
 }
