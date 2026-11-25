@@ -43,6 +43,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { workerLogFailures } from "./serve-built-worker-log.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SITE = path.resolve(process.env.OTTA_SERVE_SITE ?? path.join(ROOT, "sites", "staging"));
@@ -70,27 +71,6 @@ const ORIGIN = `http://localhost:${String(PORT)}`;
 const PAGES = ["/products", "/cart", "/products/serve-built-worker-missing"];
 /** wrangler's own ready line for THIS port. */
 const READY = new RegExp(`Ready on http://localhost:${String(PORT)}\\b`);
-/** What in the Worker's log means it failed, even behind a non-5xx answer. */
-const LOG_FAILURES = [/Invalid URL/, /\[ERROR\]/, /Uncaught/];
-/**
- * Playground errors that are not failures. A new visitor's database is empty,
- * and EmDash's playground init (`@emdash-cms/cloudflare`, `initializePlayground`)
- * reads `options` and the migrations table before it migrates, catching the
- * "no such table" itself. The read runs inside the visitor's Durable Object,
- * which logs the error as uncaught when it crosses the RPC boundary.
- */
-const PLAYGROUND_EXPECTED = [/no such table: (options|_emdash_migrations): SQLITE_ERROR/];
-/** The log lines that count against the Worker, with colour codes removed
- *  (wrangler colours `[ERROR]` even under NO_COLOR). */
-function failureLines(text) {
-	// eslint-disable-next-line no-control-regex
-	const lines = text.replace(/\u001b\[[0-9;]*m/g, "").split("\n");
-	return lines.filter(
-		(line) =>
-			LOG_FAILURES.some((re) => re.test(line)) &&
-			!(PLAYGROUND && PLAYGROUND_EXPECTED.some((re) => re.test(line))),
-	);
-}
 
 if (!existsSync(CONFIG)) {
 	console.error(`[serve-built-worker] ${CONFIG} is missing: build the site first.`);
@@ -217,6 +197,9 @@ async function request(method, pathname) {
 }
 const get = (pathname) => request("GET", pathname);
 
+/** The log's length once the playground session is set up (see `workerLogFailures`). */
+let setupEnd;
+
 /** Open a playground session: the cookie, then the visitor's database. */
 async function openPlaygroundSession() {
 	const page = await get("/playground");
@@ -224,6 +207,10 @@ async function openPlaygroundSession() {
 	if (cookies.size === 0) return "GET /playground set no session cookie";
 	const init = await request("POST", "/_playground/init");
 	if (init !== 200) return `POST /_playground/init answered ${String(init)}, not 200`;
+	// Let the init's expected errors reach the log, then end setup there: from
+	// here on the playground allowlist no longer applies.
+	await sleep(1000);
+	setupEnd = log.length;
 	return undefined;
 }
 
@@ -240,7 +227,7 @@ try {
 	}
 	// Give the Worker's error log a moment to reach us.
 	await sleep(1000);
-	const logged = failureLines(log);
+	const logged = workerLogFailures(log, { playground: PLAYGROUND, setupEnd });
 	if (failure === undefined && logged.length > 0) {
 		failure = `the Worker logged an error: ${logged[0].trim()}`;
 	}
