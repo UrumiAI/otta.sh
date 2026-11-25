@@ -3,7 +3,8 @@ name: Pack build
 # Builds the template from the PACKED packages (scripts/pack-build.mjs, ADR-0045):
 # pnpm pack of every publishable package, npm install in a copy of the template
 # repository, astro build, assertions on dist/, then `wrangler dev` on the built
-# Worker with the template's own wrangler (scripts/serve-built-worker.mjs, #734).
+# Worker with the template's own wrangler (scripts/serve-built-worker.mjs, #734;
+# its log check is scripts/serve-built-worker-log.mjs).
 # Nothing else tests the form merchants install (dist/integration.mjs from
 # node_modules) or loads the Worker they deploy.
 #
@@ -48,6 +49,7 @@ on:
       - "scripts/pack-build.mjs"
       - "scripts/pack-build-peers.mjs"
       - "scripts/serve-built-worker.mjs"
+      - "scripts/serve-built-worker-log.mjs"
       - ".github/workflows/pack-build.yml"
   # On a branch other than main only (the job condition below refuses main).
   workflow_dispatch:
