@@ -94,8 +94,8 @@ AgentCheckoutSession {
   quote?           // last computed totals, a preview only
   orderSecretHash; handoffTokenHash?; handoffUsedAt?; orderId?
   channel: "other"; createdAt; expiresAt (createdAt + 24 h)
-  purgeAt          // expiresAt + 1 h; createdAt + 30 d once handed off (kept on a later cancel);
-                   // max(now, expiresAt) + 1 h on cancel of a session never handed off
+  purgeAt          // expiresAt + 1 h, handed off or not; createdAt + 30 d once an order is
+                   // recorded; max(now, expiresAt) + 1 h on cancel of a session never handed off
 }
 ```
 
@@ -111,8 +111,8 @@ AgentCheckoutSession {
   records nothing, so its key may be retried with a corrected body. Keys live as long as the
   session's retention: a session or create record at or past `purgeAt` replays nothing
   (`IDEMPOTENCY_KEY_EXPIRED`, never a re-create), and once the sweep deleted it the key is fresh.
-  A create record follows its session's retention: it is moved out to 30 days when the hand-off
-  finalizes. A create racing another create of the same key whose insert is still in flight
+  A create record follows its session's retention: it is moved out to 30 days when an order is
+  recorded. A create racing another create of the same key whose insert is still in flight
   answers the retryable `WRITE_CONFLICT` (the store will not release or adopt a record whose
   session holds a live slot); its retry replays. A create's key is scoped to the caller's network key (no session exists
   yet), so a create retried from another egress IP may duplicate the session (accepted, ADR-0047);
@@ -138,13 +138,16 @@ AgentCheckoutSession {
   `recordAgentSessionOrder({sessionId, orderId, cartId?})`: compare-and-set to `completed` with
   `orderId`; idempotent for the same order, `ORDER_ALREADY_RECORDED` for another,
   `HANDOFF_NOT_REDEEMED` if no link was redeemed. A completed session refuses every agent write
-  (`SESSION_CLOSED`).
+  (`SESSION_CLOSED`). **Attribution covers only orders placed before the session expires (24 h
+  after create):** from `expiresAt` a new order is `SESSION_EXPIRED` and is not attributed (a
+  replay of the recorded one still answers). Recording the order frees the session's live
+  slots and moves it, and its create record, to the 30-day retention.
 - **complete** never takes payment: it returns the session with `requires_escalation` and
   `continue_url` (UCP `buyer_handoff_required` message).
 - **cancel** releases the cart's holds and marks the session canceled; a canceled session's link
   is dead. Cancel is always allowed, also while a hand-off claim is live; that claim's finalize
-  then fails `HANDOFF_CANCELED`. A canceled session never handed off purges an hour after it
-  expires; a handed-off one keeps its 30-day retention, so order attribution survives.
+  then fails `HANDOFF_CANCELED`. A canceled session purges an hour after it expires; a cancel
+  never moves a handed-off session's purge (a session with an order cannot be canceled).
 - **get_order**: `{id, checkout_id, status, updated_at}` for the session's order, requiring the
   `order_secret` (header `Urumi-Order-Secret` or MCP `order_secret`), compared in constant time.
 
@@ -176,8 +179,7 @@ AgentCheckoutSession {
      redeemable), leaves the shopper's existing cart cookie untouched and shows why (lesson from
      #4596);
   3. otherwise FINALIZES (`finalizeAgentHandoff`): one compare-and-set marks the link used,
-     records the shopper's cart as `shopperCartId` (never shown to the agent) and moves the
-     session to 30-day retention, then returns the cart cookie descriptor plus the pre-fill
+     records the shopper's cart as `shopperCartId` (never shown to the agent), then returns the cart cookie descriptor plus the pre-fill
      (email, phone, address, shipping method, coupon). Finalize is refused
      (`HANDOFF_CLAIM_LOST`) once the claim was replaced or its lease lapsed more than 30 s ago,
      and (`HANDOFF_EXPIRED`) at or after `expiresAt`; the plugin then does not hand that cart
@@ -185,7 +187,8 @@ AgentCheckoutSession {
   **The link is single-use per browser.** Until it is finalized nothing binds it: a claim that
   lapsed without finalizing (a lost response, a crash, a move from an in-app webview to Safari)
   may be claimed again by ANY browser. Once finalized, only the browser that finalized it (same
-  nonce) may reopen it, for 15 minutes and before any order: `claimAgentHandoff` answers
+  nonce) may reopen it, for 15 minutes, before any order and before `expiresAt` (from then it
+  is `HANDOFF_EXPIRED`, as no order could be attributed any more): `claimAgentHandoff` answers
   `reentered` with `shopperCartId` and `handoffUsedAt` and writes nothing. Any other holder of
   the token (the agent included) gets `HANDOFF_USED`. While a claim is live
   EVERY redeem, the claiming browser's included (double click, second tab), answers
@@ -242,9 +245,9 @@ no shopper data is returned.
   expired, or never landed and taken more than 60 s ago (abandoned); probes read slot documents
   only. If a `landed` mark loses (the insert stalled past 60 s and its slot was retaken), the
   insert deletes its own session by version and answers `capacity`, so a stall cannot overshoot.
-  A slot is held until the session's `expiresAt`, EXCEPT that a hand-off (finalize) or a
-  completed order frees it at once; canceling frees nothing, so a create-cancel loop cannot
-  outrun the cap. A refused create is `TOO_MANY_SESSIONS` and leaves no create record behind.
+  A slot is held until the session's `expiresAt`, EXCEPT that a recorded order frees it at
+  once; a hand-off and a cancel free nothing, so neither a create-cancel nor a create-redeem
+  loop can outrun the cap. A refused create is `TOO_MANY_SESSIONS` and leaves no create record behind.
   Before probing, `createAgentSession` refuses early from the count of OCCUPIED slots (canceled
   sessions' included), so a full pool costs no probe. Per-network creates (default 60 per hour)
   stay a soft count. All are tunable limits.
@@ -252,12 +255,11 @@ no shopper data is returned.
   inserts, claims, finalizes, releases and stalled inserts against a store whose every read and
   write yields to the other callers, and a check-then-insert store fails it (shown in the review
   evidence). The EmDash adapter in #712 must pass that suite before it merges.
-- **The real ceilings.** Concurrently: at most 500 sessions store-wide (50 per network key) that
-  are unexpired and neither handed off nor completed, canceled ones included. Per rolling 24 h:
-  at most 500 abandoned or canceled sessions store-wide (50 per network key), since their slots
-  recycle only at expiry. Sessions that are handed off or completed free their slot at once, so
-  their throughput is NOT bounded by the slots, only by the soft create count (60 per network
-  key per hour) and the site's write rate limit; a hand-off needs a browser POST to the store.
+- **The real ceilings.** Concurrently: at most 500 unexpired sessions without an order
+  store-wide (50 per network key), canceled and handed-off ones included. Per rolling 24 h: at
+  most 500 sessions store-wide (50 per network key) that end abandoned, canceled or handed off
+  with no order, since their slots recycle only at expiry. Only a recorded order frees a slot
+  early, so only real orders can push throughput past that.
 - **Per-create cost and why 500, not 5,000:** an early refusal is one count of occupied slot
   documents (an indexed count in an adapter). An admitted insert probes slot documents from a
   hashed offset, about 1/(1 − occupancy) reads per pool, worst case 50 + 500 slot reads, then
@@ -268,12 +270,13 @@ no shopper data is returned.
 - **Lowering a cap** takes effect at once for the early refusal (it counts occupied slots at any
   index) and within 24 h for the atomic check: slots at or beyond the new size are no longer
   probed and expire with their sessions.
-- **Storage bound (what is actually true):** sessions never handed off are purged 1 h after
-  expiry, so at most about 2 × 500 are stored at once (≈ 125 MiB at the 128 KiB cap). Handed-off
-  sessions keep 30 days and free their slot, so their number is bounded only by the hand-off
-  rate above (rate limits, not a hard cap): at the soft create limit one network key could
-  leave up to 60 × 24 × 30 ≈ 43,000 handed-off sessions in 30 days. Slot documents are deleted
-  by version when their session is purged or handed off, and by the sweep (`purgeSlotsDue`, run
+- **Storage bound (a real cap):** every session without an order, handed off or not, is purged
+  1 h after it expires. Stored sessions are therefore at most the 500 live ones plus at most
+  500 per 24 h that ended abandoned, canceled or handed off with no order (50 per network key),
+  awaiting their 1 h purge: about 1,000 at once, ≈ 125 MiB at the 128 KiB document cap. Only
+  sessions with a recorded order are kept 30 days, and those are bounded by real orders placed
+  on the store. Slot documents are deleted by version when their session is purged or its order
+  recorded, and by the sweep (`purgeSlotsDue`, run
   from the same cron as the session purge) once expired or abandoned, so they stay at about
   2 × 500 held plus those expired since the last sweep, however network keys rotate.
 - **Residual denial of service (accepted, documented):** 10 network keys (500 / 50) can hold
@@ -299,8 +302,8 @@ false, every agent route and `/.well-known/ucp` answer 404.
 
 ### Privacy
 
-- Sessions are swept at `purgeAt` (cron, bounded per tick like `prune-carts`): 1 h after expiry
-  unless handed off, 30 days after creation if handed off.
+- Sessions are swept at `purgeAt` (cron, bounded per tick like `prune-carts`): 1 h after expiry,
+  or 30 days after creation if an order was recorded.
 - No account data export or erasure path exists for sessions yet; the 30-day purge sweep is the
   only deletion today. An export and erasure path covering sessions (found by buyer email) is a
   precondition for enabling the merchant switch (`agentic.enabled`) on any store. When it lands,
@@ -335,4 +338,5 @@ filter is a tab or a select on the orders page.
 - Opaque hashed token instead of the WooCommerce AES-GCM payload token (state is local).
 - Open tier only, off by default; signatures, ACP, webhooks and in-agent payment deferred.
 - Simple products only until the storefront sells variants.
-- Session retention 30 days, link life 24 hours.
+- Session retention 30 days only with an order (else 1 h after the 24-hour expiry); link life 24
+  hours; attribution only for orders placed within those 24 hours.

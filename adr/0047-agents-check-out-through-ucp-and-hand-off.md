@@ -62,6 +62,8 @@ Options considered:
    signatures) are a later decision.
 7. **Agent orders are attributed.** An order placed from a hand-off records the agent channel and
    the checkout session id, so the merchant can filter agent orders and the agent can read status.
+   Attribution covers orders placed before the session expires (24 hours after create); a
+   later order is a normal, unattributed order.
 
 ## Consequences
 
@@ -70,7 +72,8 @@ Options considered:
 - New public write endpoints. They join the rate-limit and origin-guard route maps (their
   default-deny tests force it), and a store that has not opted in exposes nothing.
 - Agent checkout sessions hold shopper contact and address data. They are kept for at most 30 days
-  (only once handed off; others purge an hour after they expire)
+  (only once an order is recorded; every other session, handed off or not, purges an hour after
+  it expires)
   and no account data export or erasure path exists for them yet: the 30-day purge sweep is the
   only deletion today. An export and erasure path that covers agent sessions is a precondition
   for enabling the merchant switch (`agentic.enabled`) on any store.
@@ -99,16 +102,17 @@ Options considered:
   before any claim, and the domain keeps only its hash. Until finalized nothing binds the link: a
   claim that lapsed unfinalized may be claimed again by any browser (a transient failure, or a
   move from an in-app webview to another browser, never kills it). Once finalized only that
-  browser may reopen it, for 15 minutes before any order; anyone else gets `HANDOFF_USED`. While a claim is live every redeem, the same
+  browser may reopen it, for 15 minutes before any order and before the session expires; anyone else gets `HANDOFF_USED`. While a claim is live every redeem, the same
   browser's included, gets `HANDOFF_IN_PROGRESS` and the site waits and retries. Agent writes
   other than cancel wait while a claim is live; cancel always wins, and the claim's finalize
   then fails. No cart id is ever shown to the agent.
 - Live agent sessions are bounded by slots taken at insert (500 per store, 50 per network key),
-  using per-document compare-and-set only (ADR-0019); a hand-off or completed order frees its
-  slot, a cancel does not. Race-safety is REQUIRED of every adapter and proven by the contract
-  suite's interleaving tests, which the EmDash adapter must pass. Sessions never handed off are
-  purged an hour after expiry; handed-off ones keep 30 days and are bounded only by rate limits,
-  not a hard cap. The per-document cap is 128 KiB (older replay answers evicted first). See the design spec's "Limits and abuse",
+  using per-document compare-and-set only (ADR-0019); only a recorded order frees a slot, a
+  hand-off or a cancel does not. Race-safety is REQUIRED of every adapter and proven by the
+  contract suite's interleaving tests, which the EmDash adapter must pass. Sessions without an
+  order are purged an hour after expiry, so stored sessions are at most 500 live plus at most
+  500 per 24 hours ended without an order (50 per network key); sessions with an order keep 30
+  days and are bounded by real orders. The per-document cap is 128 KiB (older replay answers evicted first). See the design spec's "Limits and abuse",
   including the accepted residual denial of service and the IPv6 /64 network-key requirement.
 - Hand-off is terminal for the agent. Once a shopper redeems a link the shopper owns the cart:
   update, complete and issue-link are refused (`SESSION_HANDED_OFF`), so no second link can be
