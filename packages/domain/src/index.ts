@@ -203,6 +203,11 @@ export {
 	TaxRateDuplicateError,
 	type TaxRateSlotted,
 } from "./pricing/tax-rate-uniqueness.js";
+// #742: the opt-in refusal of a rate whose class is not declared.
+export {
+	isTaxRateClassNotDeclaredError,
+	TaxRateClassNotDeclaredError,
+} from "./pricing/tax-rate-class-guard.js";
 // #425: a rate finer than a basis point (8.875%) — `ratePpm` beside `rateBps`.
 export {
 	bpsOfPpm,

@@ -12,6 +12,7 @@ import type {
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
 } from "../ports/tax-rules-store.js";
+import { TaxRateClassNotDeclaredError } from "../pricing/tax-rate-class-guard.js";
 import { appliedTaxRate, TaxRateDuplicateError } from "../pricing/tax-rate-uniqueness.js";
 import {
 	canonicalTaxRateValue,
@@ -64,9 +65,10 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 	}
 
 	/**
-	 * A rate id is unique store-wide, and a (class, zone) holds one rate — checked
-	 * in that order, as the emdash adapter does (id claim, then slot). Single-
-	 * threaded, so both checks ARE atomic here.
+	 * A rate id is unique store-wide, the class is declared (only when the create
+	 * asks, #742), and a (class, zone) holds one rate — checked in that order, as
+	 * the emdash adapter does (id claim, class, then slot). Single-
+	 * threaded, so every check IS atomic here.
 	 */
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {
 		const taken = this.#rates.get(input.id);
@@ -76,6 +78,9 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 				new Error(`tax rate id ${input.id} is already held by class ${taken.taxClassId}`),
 				{ code: "TAX_RATE_ID_COLLISION", rateId: input.id, heldBy: taken.taxClassId },
 			);
+		}
+		if (input.requireDeclaredClass === true && !this.#classes.has(input.taxClassId)) {
+			throw new TaxRateClassNotDeclaredError(input.taxClassId);
 		}
 		const existing = appliedTaxRate([...this.#rates.values()], input.taxClassId, input.zoneId);
 		if (existing !== null) throw new TaxRateDuplicateError(existing);
