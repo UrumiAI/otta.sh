@@ -1009,6 +1009,51 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		});
 	});
 
+	test("#749: after a stale-zone refusal the zone select leads with a placeholder, never another zone, and Create again is refused", async () => {
+		// No rates, so "us" is free: a fallback to it would CREATE there, not hit the
+		// one-rate-per-zone refusal.
+		await seedRules({ rates: [] });
+		const screen = await openNewRateScreen("standard");
+		expect(await shippingRules.deleteZone("eu")).toEqual({ ok: true });
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "std-eu-gone",
+			zoneId: "eu",
+			ratePercent: "7.25",
+			appliesToShipping: false,
+		});
+		const zoneField = field(formFor(refused, "tax:create-rate"), "zoneId");
+		const options = (zoneField?.options ?? []) as Array<{ value: string; label: string }>;
+		const placeholder = options[0];
+		// The placeholder leads, is the selected value, and names no zone.
+		expect(placeholder?.label).toBe("Choose a zone…");
+		expect(zoneField?.initial_value).toBe(placeholder?.value);
+		expect(placeholder?.value).not.toBe("");
+		expect((await shippingRules.listZones()).map((z) => z.id)).not.toContain(placeholder?.value);
+		// Create again without reading the banner: refused, nothing written anywhere.
+		const again = await submitForm(refused, "tax:create-rate", {
+			...formInitialValues(refused, "tax:create-rate"),
+		});
+		for (const zone of await shippingRules.listZones()) {
+			expect(await findRate(zone.id, "std-eu-gone")).toBeUndefined();
+		}
+		expect(await storage[TAX_RATE_OWNERS_COLLECTION]?.get("std-eu-gone")).toBeNull();
+		expect(String(bannerOf(again)?.description)).toMatch(/choose a zone/i);
+		expect(field(formFor(again, "tax:create-rate"), "zoneId")?.initial_value).toBe(
+			placeholder?.value,
+		);
+		expect(formInitialValues(again, "tax:create-rate")).toMatchObject({
+			id: "std-eu-gone",
+			ratePercent: "7.25",
+		});
+		// Picking a real zone then creates the rate there.
+		const created = await submitForm(again, "tax:create-rate", {
+			...formInitialValues(again, "tax:create-rate"),
+			zoneId: "us",
+		});
+		expect(bannerOf(created)?.variant).toBe("default");
+		expect((await findRate("us", "std-eu-gone"))?.rateBps).toBe(725);
+	});
+
 	test("INC-14: with no zones at all the create screen degrades to one honest line, never an empty select (F-6a)", async () => {
 		await seedRules({ zones: [] });
 		const screen = await openNewRateScreen("standard");
