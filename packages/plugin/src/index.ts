@@ -252,6 +252,7 @@ export {
 	// order 02, INC-B10c-i). Exported from the entry point because a parameter
 	// type a consumer cannot name is not a usable signature.
 	type AdminRulesSurface,
+	type ClassTaxRateWire,
 	type CouponEdit,
 	type CouponInput,
 	// The coupon operations' result type (admin operations, MCP).

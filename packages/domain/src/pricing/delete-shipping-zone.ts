@@ -41,11 +41,11 @@ export type DeleteShippingZoneOutcome =
  * lives in its CLASS document, so no single compare-and-delete can see both. A
  * rate created in that gap is left naming a deleted zone, exactly as every zone
  * delete left its rates before #741. It is inert at checkout (a deleted zone never
- * matches an address), but it is not harmless: no list shows it (the Tax page and
- * `tax_rates_list` read only existing zones) and it blocks deleting its tax class
- * (`in_use_by_rates`). The way out is to create a zone with the same id, whose
- * rate list then shows it, delete the rate, then delete the zone. Accepted for a
- * rare admin maintenance action rather than a cross-document lock. The admin
+ * matches an address), but it blocks deleting its tax class (`in_use_by_rates`).
+ * The admin surface lists it under its class, flagged as on a deleted zone (the
+ * Tax page's class level, `tax_rates_list {taxClassId}`, and the class-delete
+ * refusal's `details.rates`), and it deletes by id with no zone recreated (#744).
+ * Accepted for a rare admin maintenance action rather than a cross-document lock. The admin
  * rate create checks its zone exists (#743), so this window is the one way left
  * to a rate on a deleted zone.
  */

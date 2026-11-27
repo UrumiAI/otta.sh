@@ -244,6 +244,23 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 		return doc === null ? 0 : Object.keys(normalizeTaxClassDoc(doc).rates).length;
 	}
 
+	/**
+	 * Every rate of one class, whatever zone it names, by rate id (#744). The admin
+	 * read that shows a rate whose zone no longer exists (a zone deleted before
+	 * #741, or in `deleteShippingZone`'s accepted race window), so it can be
+	 * deleted without recreating the zone. An adapter read, not a `TaxRulesStore`
+	 * port method: checkout resolves rates by zone, and only the plugin's admin
+	 * surface needs this. One class document, so one read rather than
+	 * {@link listRatesForZone}'s scan; `[]` for a class with no rates.
+	 */
+	async listRatesForClass(id: TaxClassId): Promise<TaxRate[]> {
+		const doc = await this.#classes.get(id);
+		if (doc === null) return [];
+		const normalized = normalizeTaxClassDoc(doc);
+		// `ratesOf` orders by rate id.
+		return ratesOf(normalized).map((rate) => toTaxRate(normalized.taxClassId, rate));
+	}
+
 	// -- rates -----------------------------------------------------------------
 
 	/**

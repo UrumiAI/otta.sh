@@ -52,6 +52,14 @@ export interface TaxRateWire {
 	appliesToShipping: boolean;
 }
 
+/** A rate as {@link AdminRulesSurface.listTaxRatesForClass} lists it: the wire
+ *  shape plus whether its shipping zone still exists (#744). A rate whose zone
+ *  is gone is never charged (no address matches a deleted zone), but it still
+ *  holds its tax class against delete, so the console shows it to be deleted. */
+export interface ClassTaxRateWire extends TaxRateWire {
+	zoneExists: boolean;
+}
+
 /** The serialized coupon shape the admin routes emit (start/expiry are
  *  intentionally not serialized there, so they are absent here — the list row
  *  {@link CouponSummaryWire} carries them instead). */
@@ -153,11 +161,15 @@ export type RulesCasUpdateResult<T> =
 
 /** Delete outcome. `in_use` is the referential-guard refusal (a zone with
  *  methods or tax rates, a method with rates, a redeemed coupon); leaf-rate deletes never
- *  return it. `not_found` is the idempotent no-op. */
+ *  return it. `not_found` is the idempotent no-op.
+ *
+ *  A zone delete's `in_use` also says which guard refused (#744): `usedBy` is
+ *  `"methods"` or `"tax_rates"`, with `count` of them. Both are optional, so
+ *  every other `in_use` answer is unchanged. */
 export type RulesDeleteResult =
 	| { ok: true }
 	| { ok: false; reason: "not_found" }
-	| { ok: false; reason: "in_use" }
+	| { ok: false; reason: "in_use"; usedBy?: "methods" | "tax_rates"; count?: number }
 	| { ok: false; reason: "error"; status: number };
 
 /**
@@ -359,6 +371,10 @@ export interface AdminRulesSurface {
 	// -- Tax: rates ------------------------------------------------------------
 
 	listTaxRates(zoneId: string): Promise<TaxRateWire[]>;
+	/** Every rate of one class, whatever zone it names, by rate id — including a
+	 *  rate whose zone no longer exists (`zoneExists: false`, #744), which no
+	 *  zone's {@link listTaxRates} can show. */
+	listTaxRatesForClass(classId: string): Promise<ClassTaxRateWire[]>;
 	createTaxRate(input: TaxRateInput): Promise<RulesCreateResult<TaxRateWire>>;
 	/** CAS on the rate the admin read (`edit.expectedRateBps`) — a losing edit
 	 *  comes back `stale` WITH the fresh row, never applied blind. */

@@ -7,6 +7,7 @@
  * variant is still mapped here, ending in `unhandled()`.
  */
 import type {
+	AdminClients,
 	RulesCasUpdateResult,
 	TaxRateWire,
 	TaxSettingsUpdateResult,
@@ -116,6 +117,34 @@ function classInUse(usedBy: string, count?: number): never {
 		"TAX_CLASS_IN_USE",
 		`The tax class is still used by ${usedBy}. Nothing was deleted.`,
 		count === undefined ? { usedBy } : { usedBy, count },
+	);
+}
+
+/**
+ * The rates refusal, naming each rate that holds the class (#744) as
+ * `details.rates` — including one whose zone was deleted (`zoneExists: false`),
+ * which no zone's tax_rates_list shows — so each can go with tax_rate_delete.
+ */
+async function classInUseByRates(
+	clients: AdminClients,
+	classId: string,
+	count: number,
+): Promise<never> {
+	// A read after the refusal: if it fails, the refusal keeps its code and count.
+	let rates: { id: string; zoneId: string; zoneExists: boolean }[];
+	try {
+		rates = (await clients.rules.listTaxRatesForClass(classId)).map((r) => ({
+			id: r.id,
+			zoneId: r.zoneId,
+			zoneExists: r.zoneExists,
+		}));
+	} catch {
+		return classInUse("rates", count);
+	}
+	return toolFailure(
+		"TAX_CLASS_IN_USE",
+		`The tax class is still used by ${count} tax rate${count === 1 ? "" : "s"}. Nothing was deleted. Delete each one in details.rates with tax_rate_delete (a rate whose zone was deleted, zoneExists false, deletes the same way), then retry.`,
+		{ usedBy: "rates", count, rates },
 	);
 }
 
@@ -258,7 +287,7 @@ export const TAX_WRITE_TOOLS = [
 	defineTool({
 		name: "tax_class_delete",
 		description:
-			'Delete a tax class. A class still in use is refused with TAX_CLASS_IN_USE, details.usedBy "products" or "rates" (with details.count) or "settings" (the tax options\' fixed shipping tax class): move those off it first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
+			'Delete a tax class. A class still in use is refused with TAX_CLASS_IN_USE, details.usedBy "products" or "rates" (with details.count; for rates, details.rates lists the id, zoneId and zoneExists of each, to delete with tax_rate_delete) or "settings" (the tax options\' fixed shipping tax class): move those off it first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
 		destructive: true,
 		input: z.object({ classId: classIdInput }).strict(),
 		async run({ clients, input }) {
@@ -273,7 +302,7 @@ export const TAX_WRITE_TOOLS = [
 				case "in_use_by_products":
 					return classInUse("products", result.count);
 				case "in_use_by_rates":
-					return classInUse("rates", result.count);
+					return classInUseByRates(clients, input.classId, result.count);
 				case "in_use_by_settings":
 					return classInUse("settings");
 				case "error":

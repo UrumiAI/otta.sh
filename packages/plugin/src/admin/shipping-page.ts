@@ -1688,6 +1688,19 @@ function deleteZoneAction() {
 	});
 }
 
+/** Which guard refused the zone delete, and how many (#744); the generic copy
+ *  when the refusal does not say. */
+function zoneInUseText(result: { usedBy?: "methods" | "tax_rates"; count?: number }): string {
+	const { usedBy, count } = result;
+	if (count !== undefined && usedBy === "methods") {
+		return `This zone still has ${count} shipping method${count === 1 ? "" : "s"} — delete ${count === 1 ? "it" : "them"} here first, then retry.`;
+	}
+	if (count !== undefined && usedBy === "tax_rates") {
+		return `${count} tax rate${count === 1 ? " still names" : "s still name"} this zone — delete ${count === 1 ? "it" : "them"} on the Tax page, and this zone's shipping methods here if it has any, then retry.`;
+	}
+	return "This zone still has shipping methods or tax rates — delete its methods here and its rates on the Tax page, then retry.";
+}
+
 function deleteZoneNotice(result: RulesDeleteResult): Notice {
 	if (result.ok) {
 		return { variant: "default", title: "Zone deleted", description: "The zone was removed." };
@@ -1700,12 +1713,7 @@ function deleteZoneNotice(result: RulesDeleteResult): Notice {
 		};
 	}
 	if (result.reason === "in_use") {
-		return {
-			variant: "error",
-			title: "Zone not deleted",
-			description:
-				"This zone still has shipping methods or tax rates — delete its methods here and its rates on the Tax page, then retry.",
-		};
+		return { variant: "error", title: "Zone not deleted", description: zoneInUseText(result) };
 	}
 	return {
 		variant: "error",

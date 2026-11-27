@@ -368,7 +368,10 @@ describe("admin Shipping console — zones level, section branch (workerd sandbo
 		expect(confirmOf(del).style).toBe("danger");
 		const banner = bannerOf(await clickButton("shipping:delete-zone", valueOf(del)));
 		expect(banner?.variant).toBe("error");
-		expect(String(banner?.description)).toMatch(/shipping methods/i);
+		// #744: it says which guard refused, and how many.
+		expect(String(banner?.description)).toBe(
+			"This zone still has 2 shipping methods — delete them here first, then retry.",
+		);
 		expect(await shippingRules.getZone("us")).not.toBeNull(); // never deleted
 	});
 
@@ -2300,7 +2303,7 @@ describe("admin Shipping console — pinned write outcomes (admin operations)", 
 			variant: "error",
 			title: "Zone not deleted",
 			description:
-				"This zone still has shipping methods or tax rates — delete its methods here and its rates on the Tax page, then retry.",
+				"1 tax rate still names this zone — delete it on the Tax page, and this zone's shipping methods here if it has any, then retry.",
 		});
 		expect(await shippingRules.getZone("empty")).not.toBeNull();
 		expect((await taxRules.listRatesForZone("empty")).map((r) => r.id)).toEqual(["empty-std"]);
