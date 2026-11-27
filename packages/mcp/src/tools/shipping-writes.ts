@@ -128,7 +128,8 @@ function updateAnswer<T, K extends string>(
 }
 
 const INUSE_HINT: Readonly<Record<string, string>> = {
-	ZONE_IN_USE: "Delete its shipping methods first (shipping_method_delete).",
+	ZONE_IN_USE:
+		"Delete its shipping methods (shipping_method_delete) and the tax rates in it (tax_rates_list, then tax_rate_delete) first.",
 	METHOD_IN_USE: "Delete its rates first (shipping_rate_delete).",
 };
 
@@ -296,7 +297,7 @@ export const SHIPPING_WRITE_TOOLS = [
 	defineTool({
 		name: "shipping_zone_delete",
 		description:
-			'Delete a shipping zone. A zone that still has shipping methods is refused (ZONE_IN_USE): delete its methods first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
+			'Delete a shipping zone. A zone that still has shipping methods or tax rates is refused (ZONE_IN_USE), writing nothing: delete its methods (shipping_method_delete) and its tax rates (tax_rates_list, then tax_rate_delete) first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
 		destructive: true,
 		input: z.object({ zoneId: zoneIdInput }).strict(),
 		async run({ clients, input }) {

@@ -135,6 +135,11 @@ export {
 	type DeleteTaxClassResult,
 } from "./pricing/delete-tax-class.js";
 export {
+	deleteShippingZone,
+	type DeleteShippingZoneDeps,
+	type DeleteShippingZoneOutcome,
+} from "./pricing/delete-shipping-zone.js";
+export {
 	DEFAULT_COUPON_GRACE_MS,
 	orderHoldingRedemption,
 	reconcileCouponRedemptions,

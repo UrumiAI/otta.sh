@@ -620,8 +620,8 @@ function deleteZoneActions(zone: ShippingZoneWire, onlyZone: boolean): ActionsBl
 		confirm: {
 			title: `Delete zone ${zone.id}?`,
 			text: onlyZone
-				? "This is your only zone: without it, checkout ships physical items anywhere again, with no shipping charge or tax. It only works once the zone has no methods."
-				: "This only works while the zone has no shipping methods — delete those first if this fails. This cannot be undone.",
+				? "This is your only zone: without it, checkout ships physical items anywhere again, with no shipping charge or tax. It only works once the zone has no methods and no tax rates."
+				: "This only works while the zone has no shipping methods and no tax rates — delete those first if this fails. This cannot be undone.",
 			confirm: "Yes, delete",
 			deny: "Keep it",
 			style: "danger",
@@ -1703,7 +1703,8 @@ function deleteZoneNotice(result: RulesDeleteResult): Notice {
 		return {
 			variant: "error",
 			title: "Zone not deleted",
-			description: "This zone still has shipping methods — delete its methods first, then retry.",
+			description:
+				"This zone still has shipping methods or tax rates — delete its methods here and its rates on the Tax page, then retry.",
 		};
 	}
 	return {

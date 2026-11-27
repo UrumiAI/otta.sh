@@ -103,6 +103,7 @@ import {
 	PPM_PER_BPS,
 	parseCouponInstant,
 	parseZoneRegions,
+	deleteShippingZone,
 	type CouponListCursor,
 	type CouponListFilter,
 	type CouponRecord,
@@ -270,11 +271,17 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		return res.ok ? { ok: true, value: toZoneWire(res.zone) } : { ok: false, reason: "not_found" };
 	}
 
-	/** Idempotent delete, guarded by the zone's methods: `not_found` is the no-op
-	 *  arm, `in_use` the referential refusal (`in_use_by_methods` on the port). */
+	/** Idempotent delete, guarded by the zone's methods AND the tax rates that name
+	 *  it (`deleteShippingZone`, #741): `not_found` is the no-op arm, `in_use` the
+	 *  referential refusal (`in_use_by_methods` / `in_use_by_tax_rates`). */
 	async deleteZone(zoneId: string): Promise<RulesDeleteResult> {
 		requireIdToken("zoneId", zoneId);
-		return toDeleteResult(await this.#stores.shippingRules.deleteZone(zoneId));
+		return toDeleteResult(
+			await deleteShippingZone(
+				{ shippingRules: this.#stores.shippingRules, taxRules: this.#stores.taxRules },
+				zoneId,
+			),
+		);
 	}
 
 	// -- Shipping: methods -----------------------------------------------------

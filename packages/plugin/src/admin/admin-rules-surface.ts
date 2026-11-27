@@ -152,7 +152,7 @@ export type RulesCasUpdateResult<T> =
 	| { ok: false; reason: "error"; status: number };
 
 /** Delete outcome. `in_use` is the referential-guard refusal (a zone with
- *  methods, a method with rates, a redeemed coupon); leaf-rate deletes never
+ *  methods or tax rates, a method with rates, a redeemed coupon); leaf-rate deletes never
  *  return it. `not_found` is the idempotent no-op. */
 export type RulesDeleteResult =
 	| { ok: true }

@@ -5983,6 +5983,33 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(await client.deleteZone("z1")).toEqual({ ok: true });
 		});
 
+		// #741: tax rates name a zone from the TAX aggregate, so the shipping store's
+		// own guard cannot see them; deleting the zone used to succeed and leave the
+		// rate behind with no zone.
+		test("a zone a tax rate still names cannot be deleted, and the refusal writes nothing", async () => {
+			expect((await client.createZone({ id: "zt", name: "Taxed" })).ok).toBe(true);
+			expect((await client.createTaxClass({ id: "tc-zone", name: "Standard" })).ok).toBe(true);
+			expect(
+				(
+					await client.createTaxRate({
+						id: "tr-zone",
+						taxClassId: "tc-zone",
+						zoneId: "zt",
+						rateBps: 725,
+					})
+				).ok,
+			).toBe(true);
+
+			expect(await client.deleteZone("zt")).toEqual({ ok: false, reason: "in_use" });
+			// Nothing was written: the zone and its rate both survive.
+			expect((await client.listZones()).map((z) => z.id)).toContain("zt");
+			expect((await client.listTaxRates("zt")).map((r) => r.id)).toEqual(["tr-zone"]);
+
+			// Clearing the rate first is the way through.
+			expect(await client.deleteTaxRate("tr-zone")).toEqual({ ok: true });
+			expect(await client.deleteZone("zt")).toEqual({ ok: true });
+		});
+
 		test("a create that collides with an existing id or code ANSWERS 409 — never a rejection — and writes nothing", async () => {
 			// THE OPERATOR'S MOST COMMON TYPO is a duplicate id, and it used to reach the
 			// console as a thrown store collision, which the scaffold's last-resort net
