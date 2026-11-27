@@ -1001,7 +1001,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		const banner = bannerOf(refused);
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.title)).toBe("Tax rate not created");
-		expect(String(banner?.description)).toMatch(/zone "eu" no longer exists/i);
+		expect(String(banner?.description)).toMatch(/the zone you picked no longer exists/i);
 		expect(refused.some((b) => b.type === "header" && b.text === "New tax rate — standard")).toBe(
 			true,
 		);

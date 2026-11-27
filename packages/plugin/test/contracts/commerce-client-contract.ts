@@ -6400,9 +6400,9 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
-			// it read as a cross-case dependency. A tax rate carries its zone id
-			// without a referential guarantee, so the borrowed id worked by
-			// accident; this one makes the independence real. Unasserted on purpose,
+			// it read as a cross-case dependency, and a rate create now refuses a
+			// zone that does not exist (#743), so a borrowed id would fail once the
+			// other case deleted it; this one makes the independence real. Unasserted on purpose,
 			// so the case's assertions stay the tax-rate ones it always had.
 			await client.createZone({ id: "z-tax", name: "Tax" });
 

@@ -1545,7 +1545,9 @@ function createRateAction() {
 			// one deleted since is refused before anything is written. Said here, on
 			// the create screen with the typing kept, rather than by the generic net.
 			if (isCommerceInputError(error) && error.field === "zoneId") {
-				return err(`Zone "${zoneId}" no longer exists — pick another zone, then try again.`);
+				return err(
+					"The zone you picked no longer exists (it was deleted after this screen loaded) — pick another zone, then try again.",
+				);
 			}
 			throw error;
 		}
