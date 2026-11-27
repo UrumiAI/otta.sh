@@ -1021,6 +1021,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			ratePercent: "7.25",
 			appliesToShipping: false,
 		});
+		assertBlockContract(refused, { screen: "tax", level: "list" });
 		const zoneField = field(formFor(refused, "tax:create-rate"), "zoneId");
 		const options = (zoneField?.options ?? []) as Array<{ value: string; label: string }>;
 		const placeholder = options[0];
