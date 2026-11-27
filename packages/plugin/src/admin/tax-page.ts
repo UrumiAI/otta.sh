@@ -18,6 +18,7 @@ import type {
 import { makeAdminClients } from "./make-admin-clients.js";
 import {
 	type AdminRulesSurface,
+	type ClassTaxRateWire,
 	type RulesCasUpdateResult,
 	type RulesCreateResult,
 	type RulesDeleteResult,
@@ -188,6 +189,9 @@ interface RateDraft {
  *  performs (D-6's one-extra-read allowance — see `fetchRatesForClass`). */
 interface TaxRateRow extends TaxRateWire {
 	zoneName?: string;
+	/** The rate's zone no longer exists (#744): it is never charged, but it
+	 *  holds its class against delete, so it is listed to be deleted. */
+	zoneMissing?: boolean;
 	/** Set when this row is an IGNORED duplicate: the id of the rate in the same
 	 *  (class, zone) that applies instead — the checkout's own rule
 	 *  (`shadowedTaxRates`), so the console and the charge cannot disagree. */
@@ -205,7 +209,7 @@ interface TaxRateRow extends TaxRateWire {
 }
 
 /** The rates level's own filter: an OPTIONAL zone-id narrow. Unset ⇒ every
- *  zone this store has (fanned out — see `fetchRatesForClass`); set ⇒ scoped
+ *  rate of the class (see `fetchRatesForClass`); set ⇒ scoped
  *  to exactly that zone (one read, plus the always-on zones read the Zone
  *  select's options need). */
 interface RatesFilterForm {
@@ -616,13 +620,11 @@ function taxRatesLevel() {
 
 /**
  * Load every rate for `classId`. `zoneId` unset (the default, unfiltered
- * view) ⇒ fan out across EVERY zone this store has (one `listTaxRates(zoneId)`
- * per zone, in parallel) and keep the rows whose `taxClassId` matches — the
- * service has no `GET /admin/tax/rates?taxClassId=` cross-zone read, only the
- * per-zone one, so "rates for this class" is necessarily N zone reads.
- * Accepted as fine for an admin console with a small zone count (this is not
- * a storefront hot path).
- * `zoneId` set ⇒ ONE rates read, scoped to that zone — no fan-out.
+ * view) ⇒ ONE read of the class's rates (`listTaxRatesForClass`), whatever zone
+ * each names — so a rate whose zone was deleted is listed, flagged, to be
+ * deleted (#744). It replaced a per-zone fan-out that could only ever see the
+ * zones that still exist.
+ * `zoneId` set ⇒ ONE rates read, scoped to that zone.
  * `zones` is ALWAYS supplied by the caller (one `listZones()` per render,
  * regardless of filter state) — the Zone select's options need the full list
  * even when scoped, which is the one extra read D-6 explicitly permits
@@ -660,7 +662,9 @@ async function fetchRatesForClass(
  * ignores says so, and names the one it charges.
  */
 function flagDuplicates(rows: TaxRateRow[], shippingFlagCounts: boolean | null): TaxRateRow[] {
-	const shadowed = shadowedTaxRates(rows);
+	// A rate on a deleted zone applies nowhere, so it neither shadows nor is
+	// shadowed: the deleted-zone banner says what it is (#744).
+	const shadowed = shadowedTaxRates(rows.filter((r) => r.zoneMissing !== true));
 	if (shadowed.size === 0) return rows;
 	const ignoredBy = new Map<string, string[]>();
 	for (const [ignoredId, applied] of shadowed) {
@@ -710,12 +714,25 @@ async function readRatesForClass(
 			.filter((r) => r.taxClassId === classId)
 			.map((r) => ({ ...r, zoneName: zoneName ?? r.zoneId }));
 	}
-	const perZone = await Promise.all(zones.map((z) => client.listTaxRates(z.id)));
+	// One read of the class's rates, whatever zone each names (#744), so a rate
+	// whose zone was deleted is listed too. Rows keep the zone list's order (the
+	// order the per-zone fan-out this replaced gave), then the orphans, by id.
+	const rates = await client.listTaxRatesForClass(classId);
+	const zoneOrder = new Map(zones.map((z, i) => [z.id, i]));
 	const zoneNameById = new Map(zones.map((z) => [z.id, z.name]));
-	return perZone
-		.flat()
-		.filter((r) => r.taxClassId === classId)
-		.map((r) => ({ ...r, zoneName: zoneNameById.get(r.zoneId) ?? r.zoneId }));
+	const rank = (r: ClassTaxRateWire) => zoneOrder.get(r.zoneId) ?? zones.length;
+	return (
+		rates
+			.toSorted((a, b) => rank(a) - rank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+			// Whether the zone exists is judged against the zones THIS render shows
+			// (the select and labels read the same list), not the wire's `zoneExists`.
+			.map(({ zoneExists: _read, ...r }): TaxRateRow => {
+				const name = zoneNameById.get(r.zoneId);
+				return name !== undefined
+					? { ...r, zoneName: name }
+					: { ...r, zoneName: `"${r.zoneId}" (deleted zone)`, zoneMissing: true };
+			})
+	);
 }
 
 function ratesBlocks(
@@ -738,6 +755,8 @@ function ratesBlocks(
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	const duplicates = duplicatesBanner(bundle.rows);
 	if (duplicates !== undefined) blocks.push(duplicates);
+	const orphans = deletedZoneBanner(bundle.rows);
+	if (orphans !== undefined) blocks.push(orphans);
 	blocks.push({ type: "context", text: "Each rate applies to purchases shipping to one zone." });
 	// INC-14: the create action, promoted from an accordion at the very bottom
 	// to a button under the intro line. It carries the drill path (L-6) — this
@@ -856,6 +875,32 @@ function duplicatesBanner(rows: TaxRateRow[]): Block | undefined {
 		title: `Duplicate tax rate${ignored.length === 1 ? "" : "s"}`,
 		description: `${lines.join(" ")} A class can have one rate per zone. Delete the rate you don't want; until then the ignored one is not charged.`,
 	};
+}
+
+/** One warning for the level when rates name a zone that was deleted (#744),
+ *  naming each — in both the section and the table branch. */
+function deletedZoneBanner(rows: TaxRateRow[]): Block | undefined {
+	const orphans = rows.filter((r) => r.zoneMissing === true);
+	if (orphans.length === 0) return undefined;
+	const one = orphans.length === 1;
+	const named = orphans.map((r) => `"${r.id}" (zone "${r.zoneId}")`).join(", ");
+	return {
+		type: "banner",
+		variant: "alert",
+		title: one ? "A tax rate names a deleted zone" : "Tax rates name a deleted zone",
+		description: `${named} ${one ? "names a shipping zone that no longer exists, so it is" : "name shipping zones that no longer exist, so they are"} never charged, but ${one ? "it keeps" : "they keep"} this class from being deleted. Delete ${one ? "it" : "them"} below.`,
+	};
+}
+
+/** The line a rate on a deleted zone opens its body with (#744); `[]` otherwise. */
+function deletedZoneBlocks(row: TaxRateRow): Block[] {
+	if (row.zoneMissing !== true) return [];
+	return [
+		{
+			type: "context",
+			text: `Zone "${row.zoneId}" no longer exists, so this rate is never charged. Delete it to let this class be deleted.`,
+		},
+	];
 }
 
 /** The short status a duplicate's table row carries; `undefined` for an ordinary rate. */
@@ -1033,7 +1078,12 @@ function rateRow(classId: string, row: TaxRateRow): Block[] {
 		title,
 		// A shortened heading also says the zone and ids in full here.
 		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
-		blocks: [...duplicateBlocks(row), rateEditForm(classId, row), rateDeleteActions(classId, row)],
+		blocks: [
+			...deletedZoneBlocks(row),
+			...duplicateBlocks(row),
+			rateEditForm(classId, row),
+			rateDeleteActions(classId, row),
+		],
 	});
 }
 
@@ -1260,7 +1310,7 @@ function rateDetailBlocks(
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	// The duplicate's own note, once (the class-level banner is for the list).
-	blocks.push(...duplicateBlocks(row));
+	blocks.push(...deletedZoneBlocks(row), ...duplicateBlocks(row));
 	blocks.push({
 		type: "context",
 		text: "Deleting only affects future carts — orders already placed keep the tax they were charged at purchase time.",

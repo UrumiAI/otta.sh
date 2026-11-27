@@ -761,11 +761,9 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(buttons(blocks).some((e) => e.action_id === "tax:back")).toBe(true);
 		expect(findBlock(blocks, "table")).toBeUndefined(); // L-9 section branch at 2 rows
 
-		// THE FAN-OUT IS PROVEN BY THE ROWS, not by a request log. The store's only
-		// rates read is per-zone (`listRatesForZone`), so a class whose rates live in
-		// two different zones can only be complete if every zone was read: one row
-		// from `us` and one from `eu` is that proof, and unlike a recorded
-		// `?zoneId=eu` it also proves the answer was USED.
+		// COMPLETENESS IS PROVEN BY THE ROWS, not by a request log: one row from
+		// `us` and one from `eu` shows every zone's rate of the class was read and
+		// USED (since #744 by one class read rather than a per-zone fan-out).
 		//
 		// THE RATE LEADS THE LABEL. It used to trail a slug of varying length, so
 		// no two rows started their number at the same x and 7.25 / 20.00 could
@@ -1101,6 +1099,101 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		const secondBanner = bannerOf(second);
 		expect(secondBanner?.variant).toBe("default"); // idempotent no-op, never an error
 		expect(String(secondBanner?.title)).toMatch(/already deleted/i);
+	});
+
+	// -- #744: a rate whose zone was deleted ----------------------------------
+
+	/** `std-us` and `std-eu` as usual, plus `std-gone` on a zone that no longer
+	 *  exists (deleted before #741 refused it). */
+	async function seedOrphan(): Promise<void> {
+		await seedRules({
+			rates: [
+				...DEFAULT_RATES,
+				{
+					id: "std-gone",
+					taxClassId: "standard",
+					zoneId: "gone",
+					rateBps: 500,
+					appliesToShipping: false,
+				},
+			],
+		});
+	}
+
+	test("#744: a rate whose zone was deleted is listed under its class, last, flagged, with a level banner", async () => {
+		await seedOrphan();
+		const blocks = await openClass("standard");
+		const rateIds = sectionIds(blocks).filter((id) => id.startsWith("tax:rate:"));
+		// The existing zones keep their order (by zone id: eu, us); the orphan follows.
+		expect(rateIds).toEqual(["tax:rate:std-eu", "tax:rate:std-us", "tax:rate:std-gone"]);
+		expect(sectionHeading(blocks, "tax:rate:std-gone")?.text).toBe(
+			'5.00% — "gone" (deleted zone) · std-gone · goods only',
+		);
+		const body = sectionBlocks(blocks, "tax:rate:std-gone");
+		expect(
+			body.some(
+				(b) => b.type === "context" && /zone "gone" no longer exists/i.test(String(b.text)),
+			),
+		).toBe(true);
+		expect(buttons(body).some((e) => e.action_id === "tax:delete-rate")).toBe(true);
+		const banner = findBlocks(blocks, "banner").find((b) => /deleted zone/i.test(String(b.title)));
+		expect(banner?.variant).toBe("alert");
+		expect(String(banner?.description)).toMatch(/"std-gone"/);
+	});
+
+	test("#744: deleting that rate needs no zone recreated, and then the class deletes", async () => {
+		await seedOrphan();
+		const refused = await clickButton("tax:delete-class", { classId: "standard" });
+		expect(bannerOf(refused)?.variant).toBe("error");
+		const deleted = await clickButton("tax:delete-rate", {
+			classId: "standard",
+			rateId: "std-gone",
+		});
+		expect(bannerOf(deleted)?.variant).toBe("default");
+		expect(sectionHeading(deleted, "tax:rate:std-gone")).toBeUndefined();
+		expect(await taxRules.listRatesForClass("standard")).toHaveLength(2);
+		await clickButton("tax:delete-rate", { classId: "standard", rateId: "std-us" });
+		await clickButton("tax:delete-rate", { classId: "standard", rateId: "std-eu" });
+		const gone = await clickButton("tax:delete-class", { classId: "standard" });
+		expect(bannerOf(gone)?.variant).toBe("default");
+		expect(await listClassIds()).not.toContain("standard");
+		expect(await shippingRules.getZone("gone")).toBeNull();
+	});
+
+	test("#744: two rates on one deleted zone are not called duplicates — neither applies anywhere", async () => {
+		await seedRules({
+			rates: [
+				...DEFAULT_RATES,
+				{
+					id: "gone-a",
+					taxClassId: "standard",
+					zoneId: "gone",
+					rateBps: 500,
+					appliesToShipping: false,
+				},
+			],
+		});
+		// A second rate for the same (class, zone), as a store from before the
+		// one-per-slot rule can hold.
+		await seedLegacyRate({
+			id: "gone-b",
+			taxClassId: "standard",
+			zoneId: "gone",
+			rateBps: 600,
+			appliesToShipping: false,
+		});
+		const blocks = await openClass("standard");
+		const titles = findBlocks(blocks, "banner").map((b) => String(b.title));
+		expect(titles.some((t) => /duplicate/i.test(t))).toBe(false);
+		expect(titles).toContain("Tax rates name a deleted zone");
+	});
+
+	test("#744: a class with no orphan shows no deleted-zone banner", async () => {
+		await seedRules();
+		const blocks = await openClass("standard");
+		expect(findBlocks(blocks, "banner").some((b) => /deleted zone/i.test(String(b.title)))).toBe(
+			false,
+		);
 	});
 
 	test("back from the rates level returns to the tax classes list", async () => {

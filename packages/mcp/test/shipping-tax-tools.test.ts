@@ -11,6 +11,7 @@ import { cents, currency as toCurrency } from "@urumi.ai/otta-domain";
 import { createOttaPlugin } from "@urumi.ai/otta-plugin";
 import {
 	EmdashShippingRulesStore,
+	EmdashTaxRulesStore,
 	systemClock,
 	TAX_CLASSES_COLLECTION,
 } from "@urumi.ai/otta-store-emdash";
@@ -20,6 +21,7 @@ import { makeAdminHarness, type AdminHarness } from "./helpers/admin-harness.js"
 
 let harness: AdminHarness;
 let shippingRules: EmdashShippingRulesStore;
+let taxRules: EmdashTaxRulesStore;
 const plugin = withMcp(createOttaPlugin());
 
 beforeAll(async () => {
@@ -27,7 +29,15 @@ beforeAll(async () => {
 	const storage = harness.ctx.storage;
 	if (storage === undefined) throw new Error("harness has no storage");
 	shippingRules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+	taxRules = new EmdashTaxRulesStore({ storage, clock: systemClock });
 });
+
+/** A rate on a zone that no longer exists (#744): no admin path makes one any
+ *  more (#741, #743), so it is written through the store, as a store holding
+ *  one from before those fixes has it. */
+async function seedOrphanedRate(id: string, taxClassId: string, zoneId: string): Promise<void> {
+	await taxRules.createRate({ id, taxClassId, zoneId, rateBps: 500, appliesToShipping: false });
+}
 beforeEach(async () => {
 	await harness.reset();
 });
@@ -255,6 +265,30 @@ describe("shipping_zone_delete", () => {
 
 		await call("tax_rate_delete", { rateId: "us-std" });
 		expect(await call("shipping_zone_delete", { zoneId: "us" })).toEqual({ status: "deleted" });
+	});
+
+	test("ZONE_IN_USE says which guard refused and how many (#744)", async () => {
+		await seedZone("us", "US");
+		await seedMethod("us", "std", "flat_rate");
+		await seedMethod("us", "exp", "flat_rate");
+		const byMethods = await failure("shipping_zone_delete", { zoneId: "us" });
+		expect(byMethods.code).toBe("ZONE_IN_USE");
+		expect(byMethods.details).toEqual({ usedBy: "methods", count: 2 });
+		expect(byMethods.message).toMatch(/2 shipping methods/);
+		expect(byMethods.message).toMatch(/shipping_method_delete/);
+		// Rates are checked first, so a methods refusal never sends anyone after rates.
+		expect(byMethods.message).not.toMatch(/tax_rate/);
+
+		await call("shipping_method_delete", { methodId: "std" });
+		await call("shipping_method_delete", { methodId: "exp" });
+		await call("tax_class_create", { id: "standard", name: "Standard" });
+		await call("tax_rate_create", { id: "r1", taxClassId: "standard", zoneId: "us", rateBps: 725 });
+		const byRates = await failure("shipping_zone_delete", { zoneId: "us" });
+		expect(byRates.details).toEqual({ usedBy: "tax_rates", count: 1 });
+		expect(byRates.message).toMatch(/1 tax rate\b/);
+		expect(byRates.message).toMatch(/tax_rate_delete/);
+		// …and a rates refusal warns the methods guard comes after it.
+		expect(byRates.message).toMatch(/shipping_method_delete/);
 	});
 });
 
@@ -536,7 +570,24 @@ describe("tax classes", () => {
 		await call("tax_rate_create", { id: "r1", taxClassId: "std", zoneId: "us", rateBps: 800 });
 		const err = await failure("tax_class_delete", { classId: "std" });
 		expect(err.code).toBe("TAX_CLASS_IN_USE");
-		expect(err.details).toEqual({ usedBy: "rates", count: 1 });
+		expect(err.details).toEqual({
+			usedBy: "rates",
+			count: 1,
+			rates: [{ id: "r1", zoneId: "us", zoneExists: true }],
+		});
+		expect(err.message).toMatch(/tax_rate_delete/);
+	});
+
+	test("a class held only by a rate on a deleted zone names it, and deleting that rate frees the class (#744)", async () => {
+		await call("tax_class_create", { id: "std", name: "Standard" });
+		await seedOrphanedRate("r-gone", "std", "gone-zone");
+		const err = await failure("tax_class_delete", { classId: "std" });
+		expect(err.code).toBe("TAX_CLASS_IN_USE");
+		expect(err.details.rates).toEqual([{ id: "r-gone", zoneId: "gone-zone", zoneExists: false }]);
+		// No zone has to be recreated: the rate deletes by id.
+		expect(await call("tax_rate_delete", { rateId: "r-gone" })).toEqual({ status: "deleted" });
+		expect(await call("tax_class_delete", { classId: "std" })).toEqual({ status: "deleted" });
+		expect((await zones()).map((z) => z.id)).not.toContain("gone-zone");
 	});
 });
 
@@ -573,6 +624,40 @@ describe("tax rates", () => {
 		// The zone created afterwards picks up no hidden rate.
 		await seedZone("nope-zone", "US");
 		expect(await call("tax_rates_list", { zoneId: "nope-zone" })).toMatchObject({ items: [] });
+	});
+
+	test("tax_rates_list by taxClassId lists the class's rates in every zone, flagging one whose zone is gone (#744)", async () => {
+		await seedZone("us", "US");
+		await call("tax_class_create", { id: "std", name: "Standard" });
+		await call("tax_rate_create", { id: "r-us", taxClassId: "std", zoneId: "us", rateBps: 725 });
+		await seedOrphanedRate("r-gone", "std", "gone-zone");
+		const listed = await call("tax_rates_list", { taxClassId: "std" });
+		expect(listed.items).toEqual([
+			expect.objectContaining({ id: "r-gone", zoneId: "gone-zone", zoneExists: false }),
+			expect.objectContaining({ id: "r-us", zoneId: "us", rateBps: 725, zoneExists: true }),
+		]);
+		// By zone it is as it was: the zone's rates, and NOT_FOUND for a zone that is gone.
+		expect((await call("tax_rates_list", { zoneId: "us" })).items).toEqual([
+			expect.objectContaining({ id: "r-us" }),
+		]);
+		expect((await failure("tax_rates_list", { zoneId: "gone-zone" })).code).toBe("NOT_FOUND");
+		// A class with no rates lists nothing; an unknown class is NOT_FOUND.
+		await call("tax_class_create", { id: "empty", name: "Empty" });
+		expect(await call("tax_rates_list", { taxClassId: "empty" })).toEqual({ items: [] });
+		expect((await failure("tax_rates_list", { taxClassId: "nope" })).code).toBe("NOT_FOUND");
+	});
+
+	test("tax_rates_list takes exactly one of zoneId and taxClassId", async () => {
+		await seedZone("us", "US");
+		await call("tax_class_create", { id: "std", name: "Standard" });
+		expect((await failure("tax_rates_list", {})).code).toBe("INVALID_INPUT");
+		// A class NAME where its id belongs is refused as input, never an internal error.
+		expect((await failure("tax_rates_list", { taxClassId: "Reduced Rate" })).code).toBe(
+			"INVALID_INPUT",
+		);
+		expect((await failure("tax_rates_list", { zoneId: "us", taxClassId: "std" })).code).toBe(
+			"INVALID_INPUT",
+		);
 	});
 
 	test("any field the surface refuses rides details.field", async () => {
