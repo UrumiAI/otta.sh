@@ -1101,13 +1101,26 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			id: "std-eu-gone",
 			ratePercent: "7.25",
 		});
+		// An empty rate ID on the zone-less form asks for the ID only: there is no
+		// Zone field to fill in.
+		const noId = await submitForm(again, "tax:create-rate", {
+			...formInitialValues(again, "tax:create-rate"),
+			id: "",
+		});
+		assertBlockContract(noId, { screen: "tax", level: "list" });
+		expect(String(bannerOf(noId)?.description)).toBe("Enter a rate ID.");
 		// A zone created meanwhile (another tab) shows up on the next submit, and
 		// picking it creates the rate there.
 		await shippingRules.createZone({ id: "us", name: "United States", regions: ["US"] });
 		const picked = await submitForm(again, "tax:create-rate", {
 			...formInitialValues(again, "tax:create-rate"),
 		});
+		assertBlockContract(picked, { screen: "tax", level: "list" });
 		expect(String(bannerOf(picked)?.description)).toMatch(/choose a zone/i);
+		// The new zone is offered, never preselected: the placeholder leads.
+		expect(field(formFor(picked, "tax:create-rate"), "zoneId")?.initial_value).toBe(
+			"choose a zone",
+		);
 		const pickedOptions = (field(formFor(picked, "tax:create-rate"), "zoneId")?.options ??
 			[]) as Array<{ value: string }>;
 		expect(pickedOptions.map((o) => o.value)).toContain("us");
@@ -1158,9 +1171,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			expect(description).toMatch(/zone you picked .*deleted/i);
 			expect(description).toMatch(/choose a zone again/i);
 			const zoneField = field(formFor(refused, "tax:create-rate"), "zoneId");
-			expect(zoneField?.initial_value).toBe(
-				((zoneField?.options ?? []) as Array<{ value: string; label: string }>)[0]?.value,
-			);
+			expect(zoneField?.initial_value).toBe("choose a zone");
 			expect(formInitialValues(refused, "tax:create-rate")).toMatchObject(values);
 			for (const zone of await shippingRules.listZones()) {
 				expect(await findRate(zone.id, values.id)).toBeUndefined();

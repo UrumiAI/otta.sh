@@ -1200,7 +1200,7 @@ function newRateScreen(
 /** The next step when no zone is left to pick (#751). Creating one leaves
  *  this screen, so the operator is told how to keep what they typed. */
 const NO_ZONES_LEFT_NEXT =
-	"Create a shipping zone on the Shipping page in another tab, so what you typed here is kept, then click Add tax rate again to pick it.";
+	"Create a shipping zone on the Shipping page in another tab to keep what you typed here, then click Add tax rate to show the Zone choice.";
 /** Ends every refusal that leaves no zone to pick; the screen's context line
  *  under the banner carries the how ({@link NO_ZONES_LEFT_NEXT}). */
 const NO_ZONES_LEFT = "no shipping zones are left — create a shipping zone first.";
@@ -1645,6 +1645,7 @@ function createRateAction() {
 		const id = (readString(values.id) ?? "").trim();
 		// No Zone field at all: the create screen leaves the select out when no
 		// zone is left to pick (#751), which is "no zone chosen", not "left blank".
+		const zoneFieldAbsent = readString(values.zoneId) === undefined;
 		const zoneId = (readString(values.zoneId) ?? ZONE_NOT_CHOSEN).trim();
 		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
 		// EVERY refusal below re-renders the create screen with what was typed
@@ -1661,6 +1662,9 @@ function createRateAction() {
 				{ variant: "error", title: "Tax rate not created", description },
 				{ kind: "new-rate", draft },
 			);
+		// With no Zone field on the form there is no zone to "enter"; the screen's
+		// context line already says how to get one (#751).
+		if (id.length === 0 && zoneFieldAbsent) return err("Enter a rate ID.");
 		if (id.length === 0 || zoneId.length === 0) {
 			return err("Enter both a rate ID and a zone.");
 		}
