@@ -21,7 +21,8 @@
  * was ever declared. `name: null` is the undeclared case — `listClasses` skips it,
  * `updateClass` and `deleteClass` answer `not_found` for it (which is exactly what
  * the SQL's missing row produced), and `createClass` fills it in rather than
- * colliding.
+ * colliding. A create that passes `requireDeclaredClass` (#742) refuses an absent
+ * or nameless document instead of minting one.
  *
  * ## The money CAS
  *
@@ -58,6 +59,7 @@ import {
 	appliedTaxRate,
 	normalizeTaxRateValue,
 	ratePpmOf,
+	TaxRateClassNotDeclaredError,
 	TaxRateDuplicateError,
 	type Clock,
 	type CreateTaxClassInput,
@@ -267,6 +269,9 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * Mint a rate: claim its id store-wide, then embed it in its class document —
 	 * creating that document when the class was never declared, which is what the
 	 * missing foreign key allowed — with the claim RE-ASSERTED adjacent to the embed.
+	 * With `requireDeclaredClass` (#742) an absent or nameless class document is a
+	 * {@link TaxRateClassNotDeclaredError} instead, decided on the read the embed is
+	 * guarded on, so a concurrent `deleteClass` can never be undone by the embed.
 	 *
 	 * The claim's revision is the owner token (the shipping store's header states the
 	 * device in full): re-asserting at it immediately before the embed both proves
@@ -322,6 +327,13 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			if (held?.doc.rates[input.id] !== undefined) {
 				throw new TaxRateIdCollisionError(input.id, input.taxClassId);
 			}
+			// #742: a create that requires a declared class refuses here — on the same
+			// read the embed is compare-and-set against — rather than minting a nameless
+			// document. A `deleteClass` that lands after this read moves (removes) the
+			// document, so the embed below refuses and the retry re-reads it as gone.
+			if (input.requireDeclaredClass === true && (held === null || held.doc.name === null)) {
+				throw new TaxRateClassNotDeclaredError(input.taxClassId);
+			}
 			const occupant =
 				held === null
 					? null
@@ -348,10 +360,15 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			);
 			return written.applied ? casDone(undefined) : CAS_RETRY;
 		}).catch(async (err: unknown) => {
-			// No embed of this create landed — a duplicate refusal, or every embed
-			// compare-and-set refused until the retries ran out — so its claim goes back.
-			// Never on a crash or an unknown error: the embed may have landed.
-			if (err instanceof TaxRateDuplicateError || err instanceof StorageContentionError) {
+			// No embed of this create landed — a duplicate or undeclared-class refusal,
+			// or every embed compare-and-set refused until the retries ran out — so its
+			// claim goes back. Never on a crash or an unknown error: the embed may have
+			// landed.
+			if (
+				err instanceof TaxRateDuplicateError ||
+				err instanceof TaxRateClassNotDeclaredError ||
+				err instanceof StorageContentionError
+			) {
 				try {
 					await this.#rateOwners.compareAndDelete(input.id, claimRevision);
 				} catch {

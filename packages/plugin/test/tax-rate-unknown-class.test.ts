@@ -86,4 +86,33 @@ describe("createTaxRate on a tax class that does not exist", () => {
 		const created = await client.createTaxRate(unknownClassRate);
 		expect(created).toMatchObject({ ok: true, value: { id: "t-nope", taxClassId: "nope-class" } });
 	});
+
+	test("a class deleted by a peer AFTER the class check is refused by the store, not re-minted (#742)", async () => {
+		// The interleave #742 names, made deterministic: the client's class check
+		// (a scan of the class collection) sees the class, then a peer deletes it
+		// before the store write. The store's own guard must refuse — before #742
+		// the write minted a nameless class document to hold an invisible rate.
+		await h.stores.taxRules.createClass({ id: "doomed", name: "Doomed" });
+		const classes = collection(TAX_CLASSES_COLLECTION);
+		const realQuery = classes.query.bind(classes);
+		let peerDeleted = false;
+		classes.query = async (...args: Parameters<typeof realQuery>) => {
+			const result = await realQuery(...args);
+			if (!peerDeleted) {
+				peerDeleted = true;
+				expect(await h.stores.taxRules.deleteClass("doomed")).toEqual({ ok: true });
+			}
+			return result;
+		};
+		const client = new InProcessAdminRulesClient(h.ctx);
+		await expect(
+			client.createTaxRate({ ...unknownClassRate, id: "t-doomed", taxClassId: "doomed" }),
+		).rejects.toMatchObject({ code: "INVALID_INPUT", field: "taxClassId" });
+		expect(peerDeleted).toBe(true);
+
+		expect(await classes.get("doomed")).toBeNull();
+		expect(await collection(TAX_RATE_OWNERS_COLLECTION).get("t-doomed")).toBeNull();
+		expect(await h.stores.taxRules.hasAnyRate()).toBe(false);
+		expect(await h.stores.taxRules.countRatesByClass("doomed")).toBe(0);
+	});
 });

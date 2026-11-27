@@ -987,6 +987,53 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect((await plain.store.getRate("standard", "z-us"))?.rateBps).toBe(900);
 	});
 
+	// #742: the create read the class as declared, a peer deleted it, and only then
+	// does the embed run. Guarded, the embed's compare-and-set refuses (the document
+	// moved) and the retry re-reads it as gone; unguarded it re-mints it nameless.
+	for (const guarded of [true, false]) {
+		test(`(e2) a class deleted inside a ${guarded ? "guarded" : "plain"} create's window ${
+			guarded ? "refuses the create" : "is re-minted nameless (the port's unguarded shape)"
+		}`, async () => {
+			const raw = bound.storage;
+			const plain = makeTaxRulesHarness(raw);
+			await plain.store.createClass({ id: "standard", name: "Standard" });
+
+			const parked = parkCall(raw["tax_classes"] ?? never(), onId("standard", isUpdateWrite));
+			const slow = makeTaxRulesHarness(raw, {
+				storageForStore: withCollection(raw, "tax_classes", parked.collection),
+			}).store;
+			const inFlight = settleOne(
+				slow.createRate({
+					id: "r1",
+					taxClassId: "standard",
+					zoneId: "z-us",
+					rateBps: 725,
+					appliesToShipping: false,
+					...(guarded ? { requireDeclaredClass: true } : {}),
+				}),
+			);
+			await parked.arrived;
+			expect(await plain.store.deleteClass("standard")).toEqual({ ok: true });
+			parked.release();
+			const outcome = await inFlight;
+
+			if (guarded) {
+				expect(outcome).toMatchObject({
+					code: "TAX_RATE_CLASS_NOT_DECLARED",
+					taxClassId: "standard",
+				});
+				expect(await plain.classes.get("standard")).toBeNull();
+				expect(await plain.rateOwners.get("r1")).toBeNull();
+				expect(await plain.store.hasAnyRate()).toBe(false);
+			} else {
+				expect(outcome).toMatchObject({ id: "r1", taxClassId: "standard" });
+				expect(await plain.classes.get("standard")).toMatchObject({ name: null });
+				expect(await plain.store.listClasses()).toEqual([]);
+				expect(await plain.store.countRatesByClass("standard")).toBe(1);
+			}
+		});
+	}
+
 	test("(f) a class delete racing a rate create refuses rather than orphaning", async () => {
 		const raw = bound.storage;
 		const plain = makeTaxRulesHarness(raw);

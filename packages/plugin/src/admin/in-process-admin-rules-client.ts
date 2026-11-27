@@ -98,6 +98,7 @@ import {
 	updateSettings,
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
+	isTaxRateClassNotDeclaredError,
 	isTaxRateDuplicateError,
 	bpsOfPpm,
 	PPM_PER_BPS,
@@ -544,11 +545,12 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		// for an undeclared class (the SQL had no foreign key) by minting a nameless
 		// class document `listClasses` hides, so without this a typo'd class id
 		// answered `created`, parked an invisible rate and flipped "has rates".
-		// Same rule, same answer as the tax options' fixed shipping class. A read,
-		// not a guard inside the store's write: a class deleted between this read
-		// and the create still leaves the rate on a nameless document — the
-		// accepted window `deleteTaxClass` documents for products, on a rare
-		// two-admin maintenance interleave.
+		// Same rule, same answer as the tax options' fixed shipping class. This read
+		// refuses the common case (a typo, a stale form) before the pin writes
+		// anything; it is not atomic with the create, so the create ALSO passes
+		// `requireDeclaredClass` (#742): a class a peer deletes between this read and
+		// the write is refused inside the store's compare-and-set, with the same
+		// answer, instead of leaving the rate on a nameless document.
 		await this.#requireDeclaredTaxClass("taxClassId", input.taxClassId);
 		// …and an existing shipping zone (#743), by the same rule and with the same
 		// answer: a rate on a zone that does not exist is one no checkout can ever
@@ -557,20 +559,28 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		// window (`deleteShippingZone`).
 		await this.#requireExistingZone("zoneId", input.zoneId);
 		await this.#pinTaxSettings();
-		return createOrRefuse(async () =>
-			toTaxRateWire(
-				await this.#stores.taxRules.createRate({
-					id: input.id,
-					taxClassId: input.taxClassId,
-					zoneId: input.zoneId,
-					rateBps: input.rateBps,
-					...ratePpm,
-					// The CREATE's optional-default-false is deliberate and unlike the edit's
-					// required key: there is no prior value to clobber at creation.
-					appliesToShipping: input.appliesToShipping ?? false,
-				}),
-			),
-		);
+		return createOrRefuse(async () => {
+			try {
+				return toTaxRateWire(
+					await this.#stores.taxRules.createRate({
+						id: input.id,
+						taxClassId: input.taxClassId,
+						zoneId: input.zoneId,
+						rateBps: input.rateBps,
+						...ratePpm,
+						// The CREATE's optional-default-false is deliberate and unlike the edit's
+						// required key: there is no prior value to clobber at creation.
+						appliesToShipping: input.appliesToShipping ?? false,
+						requireDeclaredClass: true,
+					}),
+				);
+			} catch (err) {
+				if (isTaxRateClassNotDeclaredError(err)) {
+					throw undeclaredTaxClass("taxClassId", input.taxClassId);
+				}
+				throw err;
+			}
+		});
 	}
 
 	/** CAS edit on the money-bearing `rateBps` (`expectedRateBps` is the rate the
@@ -710,9 +720,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 
 	/** {@link #isDeclaredTaxClass}, or the surface's input refusal naming `field`. */
 	async #requireDeclaredTaxClass(field: string, classId: string): Promise<void> {
-		if (!(await this.#isDeclaredTaxClass(classId))) {
-			throw new CommerceInputError(field, `"${classId}" names no tax class that exists`);
-		}
+		if (!(await this.#isDeclaredTaxClass(classId))) throw undeclaredTaxClass(field, classId);
 	}
 
 	/** The input refusal naming `field` unless `zoneId` names a shipping zone
@@ -1231,6 +1239,12 @@ export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesC
 		}
 		throw err;
 	}
+}
+
+/** The input refusal for a tax class that is not declared — one answer whether the
+ *  surface's read or the store's guarded write (#742) found it missing. */
+function undeclaredTaxClass(field: string, classId: string): CommerceInputError {
+	return new CommerceInputError(field, `"${classId}" names no tax class that exists`);
 }
 
 /** Retire re-reads after a refused write; a currency moves at most once. */

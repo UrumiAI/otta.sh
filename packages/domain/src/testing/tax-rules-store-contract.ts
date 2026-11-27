@@ -11,6 +11,15 @@ async function seedRate(store: TaxRulesStore): Promise<void> {
 	});
 }
 
+/** A create that opts into the declared-class guard (#742). */
+const guarded = {
+	id: "g1",
+	zoneId: "z-us",
+	rateBps: 725,
+	appliesToShipping: false,
+	requireDeclaredClass: true,
+} as const;
+
 export interface TaxRulesStoreHarness {
 	store: TaxRulesStore;
 	/**
@@ -764,6 +773,112 @@ export function taxRulesStoreContract(
 				existingRateBps: 888,
 				existingRatePpm: 88_750,
 			});
+		});
+
+		// -- requireDeclaredClass: the opt-in class guard (#742) ---------------------
+
+		test("without requireDeclaredClass, a rate for an undeclared class is still stored (no foreign key)", async () => {
+			const { store } = await makeStore();
+			await seedRate(store); // "standard" was never declared
+			expect(await store.getRate("standard", "z-us")).toMatchObject({ id: "r1" });
+			expect(await store.countRatesByClass("standard")).toBe(1);
+			expect(await store.listClasses()).toEqual([]);
+		});
+
+		test("requireDeclaredClass refuses a class that was never declared, writing nothing", async () => {
+			const { store } = await makeStore();
+			await expect(store.createRate({ ...guarded, taxClassId: "ghost" })).rejects.toMatchObject({
+				code: "TAX_RATE_CLASS_NOT_DECLARED",
+				taxClassId: "ghost",
+			});
+			expect(await store.hasAnyRate()).toBe(false);
+			expect(await store.countRatesByClass("ghost")).toBe(0);
+			expect(await store.getRate("ghost", "z-us")).toBeNull();
+			expect(await store.listClasses()).toEqual([]);
+			// The refused id is free at once — a leftover claim, if the adapter keeps
+			// one, is given back.
+			await store.createClass({ id: "standard", name: "Standard" });
+			expect(await store.createRate({ ...guarded, taxClassId: "standard" })).toMatchObject({
+				id: "g1",
+				taxClassId: "standard",
+			});
+		});
+
+		test("requireDeclaredClass refuses a class that only holds rates (never declared)", async () => {
+			const { store } = await makeStore();
+			await seedRate(store); // "standard" holds r1 but was never declared
+			await expect(
+				store.createRate({ ...guarded, taxClassId: "standard", zoneId: "z-eu" }),
+			).rejects.toMatchObject({ code: "TAX_RATE_CLASS_NOT_DECLARED", taxClassId: "standard" });
+			expect(await store.countRatesByClass("standard")).toBe(1);
+			expect(await store.listRatesForZone("z-eu")).toEqual([]);
+		});
+
+		test("requireDeclaredClass refuses a class deleted before the create", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "temp", name: "Temp" });
+			expect(await store.deleteClass("temp")).toEqual({ ok: true });
+			await expect(store.createRate({ ...guarded, taxClassId: "temp" })).rejects.toMatchObject({
+				code: "TAX_RATE_CLASS_NOT_DECLARED",
+				taxClassId: "temp",
+			});
+			expect(await store.hasAnyRate()).toBe(false);
+			// Nothing came back under the deleted id: it stays deleted.
+			expect(await store.deleteClass("temp")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		test("requireDeclaredClass on a declared class creates the rate as usual", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			const created = await store.createRate({ ...guarded, taxClassId: "standard" });
+			expect(created).toEqual({
+				id: "g1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 725,
+				appliesToShipping: false,
+			});
+			expect(await store.getRate("standard", "z-us")).toEqual(created);
+		});
+
+		test("requireDeclaredClass keeps the other refusals: a duplicate is still a duplicate, a live id still collides", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			await seedRate(store);
+			await expect(store.createRate({ ...guarded, taxClassId: "standard" })).rejects.toMatchObject({
+				code: "TAX_RATE_DUPLICATE",
+				existingRateId: "r1",
+			});
+			await expect(
+				store.createRate({ ...guarded, id: "r1", taxClassId: "standard", zoneId: "z-eu" }),
+			).rejects.toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+		});
+
+		// The invariant only: fired together, these do not reliably interleave on any
+		// adapter (the delete usually finishes first). The real interleave is pinned per
+		// adapter — the emdash store's seam test (e2) and its Postgres race file.
+		test("a class delete and a guarded create fired together never both succeed", async () => {
+			const { store } = await makeStore();
+			for (let round = 0; round < 6; round++) {
+				const classId = `race-c-${String(round)}`;
+				await store.createClass({ id: classId, name: "Racing" });
+				const [deleted, created] = await Promise.allSettled([
+					store.deleteClass(classId),
+					store.createRate({ ...guarded, id: `race-r-${String(round)}`, taxClassId: classId }),
+				]);
+				if (deleted.status !== "fulfilled") throw deleted.reason;
+				const listed = (await store.listClasses()).some((c) => c.id === classId);
+				if (created.status === "fulfilled") {
+					expect(deleted.value).toEqual({ ok: false, reason: "in_use_by_rates" });
+					expect(listed).toBe(true);
+					expect(await store.countRatesByClass(classId)).toBe(1);
+				} else {
+					expect(created.reason).toMatchObject({ code: "TAX_RATE_CLASS_NOT_DECLARED" });
+					expect(deleted.value).toEqual({ ok: true });
+					expect(listed).toBe(false);
+					expect(await store.countRatesByClass(classId)).toBe(0);
+				}
+			}
 		});
 	});
 }

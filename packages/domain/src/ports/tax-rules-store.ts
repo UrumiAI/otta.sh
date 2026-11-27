@@ -61,6 +61,12 @@ export interface TaxRulesStore {
 	 *  - the id is a LIVE rate's (in any class), or — in an adapter that claims ids
 	 *    first (the emdash store) — another class's create of that id is still in
 	 *    flight → throws an error with code `TAX_RATE_ID_COLLISION`;
+	 *  - with `requireDeclaredClass: true` only (#742): the class is not declared —
+	 *    absent, deleted, or holding rates without ever being declared → throws
+	 *    `TaxRateClassNotDeclaredError` (code `TAX_RATE_CLASS_NOT_DECLARED`). Checked
+	 *    atomically with the write, so a class deleted concurrently is refused, never
+	 *    re-minted to hold the rate. Without the flag a rate may name any class (the
+	 *    SQL had no foreign key), unchanged;
 	 *  - ONE RATE PER `(taxClassId, zoneId)` (see `tax-rate-uniqueness.ts`): the slot
 	 *    already holds a rate → throws `TaxRateDuplicateError` naming that rate.
 	 * Atomic against a concurrent create for the same slot — of any number of racing
@@ -215,4 +221,11 @@ export interface CreateTaxRateInput extends TaxRateValue {
 	taxClassId: TaxClassId;
 	zoneId: string;
 	appliesToShipping: boolean;
+	/**
+	 * Refuse the create unless `taxClassId` is a DECLARED class (#742), checked
+	 * atomically with the write (see `createRate`). Opt-in and off by default: the
+	 * port has always stored rates for undeclared classes, and callers (and the
+	 * contract suite) rely on that.
+	 */
+	requireDeclaredClass?: boolean;
 }
