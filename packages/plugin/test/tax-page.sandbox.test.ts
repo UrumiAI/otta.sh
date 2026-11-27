@@ -985,6 +985,32 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(options.some((o) => o.value === String(zoneField?.initial_value))).toBe(true);
 	});
 
+	test("#743: a zone deleted after the create screen loaded is refused in words, nothing is written, and the typing is kept", async () => {
+		await seedRules({ rates: DEFAULT_RATES.filter((r) => r.zoneId !== "eu") });
+		const screen = await openNewRateScreen("standard");
+		// Another admin deletes the zone while this screen's select still offers it.
+		expect(await shippingRules.deleteZone("eu")).toEqual({ ok: true });
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "std-eu-gone",
+			zoneId: "eu",
+			ratePercent: "7.25",
+			appliesToShipping: false,
+		});
+		expect(await findRate("eu", "std-eu-gone")).toBeUndefined();
+		expect(await storage[TAX_RATE_OWNERS_COLLECTION]?.get("std-eu-gone")).toBeNull();
+		const banner = bannerOf(refused);
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.title)).toBe("Tax rate not created");
+		expect(String(banner?.description)).toMatch(/zone "eu" no longer exists/i);
+		expect(refused.some((b) => b.type === "header" && b.text === "New tax rate — standard")).toBe(
+			true,
+		);
+		expect(formInitialValues(refused, "tax:create-rate")).toMatchObject({
+			id: "std-eu-gone",
+			ratePercent: "7.25",
+		});
+	});
+
 	test("INC-14: with no zones at all the create screen degrades to one honest line, never an empty select (F-6a)", async () => {
 		await seedRules({ zones: [] });
 		const screen = await openNewRateScreen("standard");

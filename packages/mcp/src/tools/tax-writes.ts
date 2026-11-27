@@ -122,7 +122,8 @@ function classInUse(usedBy: string, count?: number): never {
 /**
  * {@link readOrRefuse}, keeping the refused field as `details.field` (the shape
  * tax_settings_update gives a refused option). A rate on a class that does not
- * exist (#740) is refused on `taxClassId`, and says how to make the class.
+ * exist (#740) is refused on `taxClassId`, one on a zone that does not exist
+ * (#743) on `zoneId`; each says how to make what is missing.
  */
 async function refuseWithField<T>(write: () => Promise<T>): Promise<T> {
 	try {
@@ -137,7 +138,9 @@ async function refuseWithField<T>(write: () => Promise<T>): Promise<T> {
 			const hint =
 				field === "taxClassId"
 					? " Create the class with tax_class_create, or pick one from tax_classes_list."
-					: "";
+					: field === "zoneId"
+						? " Create the zone with shipping_zone_create, or pick one from shipping_zones_list."
+						: "";
 			return toolFailure("INVALID_INPUT", `${error.message}. Nothing was written.${hint}`, {
 				field,
 				message: error.message,
@@ -285,7 +288,7 @@ export const TAX_WRITE_TOOLS = [
 	defineTool({
 		name: "tax_rate_create",
 		description:
-			'Create a tax rate: the rate one tax class pays in one shipping zone. There is one rate per (class, zone): a second is refused with TAX_RATE_SLOT_TAKEN, details.existing naming the one there (update it with tax_rate_update instead). Returns `{status: "created", taxRate}`. Refusals: TAX_RATE_SLOT_TAKEN, TAX_RATE_ID_TAKEN, INVALID_INPUT (details.field, e.g. taxClassId naming a class that does not exist: create it with tax_class_create first). Products with no tax class are taxed at class id `standard`, which must be declared with tax_class_create before it can take a rate.',
+			'Create a tax rate: the rate one tax class pays in one shipping zone. There is one rate per (class, zone): a second is refused with TAX_RATE_SLOT_TAKEN, details.existing naming the one there (update it with tax_rate_update instead). Returns `{status: "created", taxRate}`. Refusals: TAX_RATE_SLOT_TAKEN, TAX_RATE_ID_TAKEN, INVALID_INPUT (details.field, e.g. taxClassId naming a class that does not exist: create it with tax_class_create first; or zoneId naming a shipping zone that does not exist: create it with shipping_zone_create first). Products with no tax class are taxed at class id `standard`, which must be declared with tax_class_create before it can take a rate.',
 		input: z
 			.object({
 				id: recordId(

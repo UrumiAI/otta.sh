@@ -6263,6 +6263,22 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect((await client.createTaxRate({ ...rate, taxClassId: "ghost-real" })).ok).toBe(true);
 		});
 
+		test("a tax rate naming a shipping zone that does not exist is refused, and writes nothing (#743)", async () => {
+			await client.createTaxClass({ id: "nozone-c", name: "No zone" });
+			const rate = { id: "nozone-t", taxClassId: "nozone-c", zoneId: "nozone-z", rateBps: 100 };
+			await expect(client.createTaxRate(rate)).rejects.toMatchObject({
+				code: "INVALID_INPUT",
+				field: "zoneId",
+			});
+			expect(await client.listTaxRates("nozone-z")).toEqual([]);
+			// A zone created afterwards with that id picks up no rate: none was stored
+			// for it (a rate parked on a missing zone would show up here once it exists)…
+			expect((await client.createZone({ id: "nozone-z", name: "Now real" })).ok).toBe(true);
+			expect(await client.listTaxRates("nozone-z")).toEqual([]);
+			// …and the refused rate's id was never claimed: it is free for the real zone.
+			expect((await client.createTaxRate(rate)).ok).toBe(true);
+		});
+
 		test("a currency-shaped code that is not ISO-4217 (XYZ) is refused on a rate and a coupon create", async () => {
 			// The console checks this first; the client is the second line, so no
 			// caller of the surface can store a price nobody is quoted in.
