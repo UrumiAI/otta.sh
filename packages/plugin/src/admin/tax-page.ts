@@ -1195,20 +1195,34 @@ function newRateScreen(
 	return blocks;
 }
 
+/** The create screen's "no zone chosen" option value (#749). It contains spaces,
+ *  so it is never a zone id (ids are whitespace-free, `isIdToken`) and never
+ *  `""` (F-6a/X-23). */
+const ZONE_NOT_CHOSEN = "choose a zone";
+
 /** Defaults the Zone select to the refused draft's zone, else the active
- *  filter, else the store's first zone — a `select`'s `initial_value` must
- *  name a real option (X-23), so a draft zone that no longer exists falls
- *  back rather than rendering a blank trigger. The percent comes back as RAW
- *  TEXT (DA-3a-iii property 5): the refusal is usually the parse itself. */
+ *  filter, else the store's first zone. A `select`'s `initial_value` must name
+ *  a real option (X-23), so when a refused draft's zone is not among the
+ *  options (deleted since the screen loaded, #743) the select instead leads
+ *  with a "Choose a zone…" placeholder and selects it (#749): falling back to
+ *  another zone would let a second click of Create put the rate on a zone the
+ *  operator never chose. The action refuses the placeholder. The percent comes
+ *  back as RAW TEXT (DA-3a-iii property 5): the refusal is usually the parse
+ *  itself. */
 function newRateForm(
 	classId: string,
 	filter: RatesFilterForm,
 	zones: ShippingZoneWire[],
 	draft?: RateDraft,
 ): FormBlock {
-	const draftZoneId = zones.some((z) => z.id === draft?.zoneId) ? draft?.zoneId : undefined;
-	const defaultZoneId = draftZoneId ?? filter.zoneId ?? zones[0]?.id ?? "";
-	const options: SelectOption[] = zones.map((z) => ({ value: z.id, label: z.name }));
+	const draftZoneMissing = draft !== undefined && !zones.some((z) => z.id === draft.zoneId);
+	const defaultZoneId = draftZoneMissing
+		? ZONE_NOT_CHOSEN
+		: (draft?.zoneId ?? filter.zoneId ?? zones[0]?.id ?? "");
+	const options: SelectOption[] = [
+		...(draftZoneMissing ? [{ value: ZONE_NOT_CHOSEN, label: "Choose a zone…" }] : []),
+		...zones.map((z) => ({ value: z.id, label: z.name })),
+	];
 	return carriedForm({
 		namespace: "tax:rate-create",
 		context: { classId },
@@ -1577,6 +1591,8 @@ function createRateAction() {
 		if (id.length === 0 || zoneId.length === 0) {
 			return err("Enter both a rate ID and a zone.");
 		}
+		// #749: the placeholder the select leads with after a stale-zone refusal.
+		if (zoneId === ZONE_NOT_CHOSEN) return err("Choose a zone for this rate, then try again.");
 		const idProblem = idInputProblem(id);
 		if (idProblem !== undefined) return err(idProblem);
 		const ppm = parseTaxPercent(readString(values.ratePercent) ?? "");
