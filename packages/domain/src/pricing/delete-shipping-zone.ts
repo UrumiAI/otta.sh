@@ -45,9 +45,9 @@ export type DeleteShippingZoneOutcome =
  * `tax_rates_list` read only existing zones) and it blocks deleting its tax class
  * (`in_use_by_rates`). The way out is to create a zone with the same id, whose
  * rate list then shows it, delete the rate, then delete the zone. Accepted for a
- * rare admin maintenance action rather than a cross-document lock; a rate create
- * naming a zone that does not exist reaches the same state, since a rate create
- * does not check its zone.
+ * rare admin maintenance action rather than a cross-document lock. The admin
+ * rate create checks its zone exists (#743), so this window is the one way left
+ * to a rate on a deleted zone.
  */
 export async function deleteShippingZone(
 	deps: DeleteShippingZoneDeps,

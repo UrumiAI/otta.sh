@@ -525,6 +525,12 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		// the write is refused inside the store's compare-and-set, with the same
 		// answer, instead of leaving the rate on a nameless document.
 		await this.#requireDeclaredTaxClass("taxClassId", input.taxClassId);
+		// …and an existing shipping zone (#743), by the same rule and with the same
+		// answer: a rate on a zone that does not exist is one no checkout can ever
+		// resolve, that no list shows, and that holds its class against delete. Also
+		// a read: a zone deleted between it and the create is #741's accepted race
+		// window (`deleteShippingZone`).
+		await this.#requireExistingZone("zoneId", input.zoneId);
 		await this.#pinTaxSettings();
 		return createOrRefuse(async () => {
 			try {
@@ -688,6 +694,14 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	/** {@link #isDeclaredTaxClass}, or the surface's input refusal naming `field`. */
 	async #requireDeclaredTaxClass(field: string, classId: string): Promise<void> {
 		if (!(await this.#isDeclaredTaxClass(classId))) throw undeclaredTaxClass(field, classId);
+	}
+
+	/** The input refusal naming `field` unless `zoneId` names a shipping zone
+	 *  that exists. */
+	async #requireExistingZone(field: string, zoneId: string): Promise<void> {
+		if ((await this.#stores.shippingRules.getZone(zoneId)) === null) {
+			throw new CommerceInputError(field, `"${zoneId}" names no shipping zone that exists`);
+		}
 	}
 
 	/** The upgrade rule's input with nothing saved: rates exist, or an outside
