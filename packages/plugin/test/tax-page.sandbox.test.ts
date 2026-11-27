@@ -761,11 +761,9 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(buttons(blocks).some((e) => e.action_id === "tax:back")).toBe(true);
 		expect(findBlock(blocks, "table")).toBeUndefined(); // L-9 section branch at 2 rows
 
-		// THE FAN-OUT IS PROVEN BY THE ROWS, not by a request log. The store's only
-		// rates read is per-zone (`listRatesForZone`), so a class whose rates live in
-		// two different zones can only be complete if every zone was read: one row
-		// from `us` and one from `eu` is that proof, and unlike a recorded
-		// `?zoneId=eu` it also proves the answer was USED.
+		// COMPLETENESS IS PROVEN BY THE ROWS, not by a request log: one row from
+		// `us` and one from `eu` shows every zone's rate of the class was read and
+		// USED (since #744 by one class read rather than a per-zone fan-out).
 		//
 		// THE RATE LEADS THE LABEL. It used to trail a slug of varying length, so
 		// no two rows started their number at the same x and 7.25 / 20.00 could
@@ -1011,6 +1009,198 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		});
 	});
 
+	test("#749: after a stale-zone refusal the zone select leads with a placeholder, never another zone, and Create again is refused", async () => {
+		// No rates, so "us" is free: a fallback to it would CREATE there, not hit the
+		// one-rate-per-zone refusal.
+		await seedRules({ rates: [] });
+		const screen = await openNewRateScreen("standard");
+		expect(await shippingRules.deleteZone("eu")).toEqual({ ok: true });
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "std-eu-gone",
+			zoneId: "eu",
+			ratePercent: "7.25",
+			appliesToShipping: false,
+		});
+		assertBlockContract(refused, { screen: "tax", level: "list" });
+		const zoneField = field(formFor(refused, "tax:create-rate"), "zoneId");
+		const options = (zoneField?.options ?? []) as Array<{ value: string; label: string }>;
+		const placeholder = options[0];
+		// The placeholder leads, is the selected value, and names no zone.
+		expect(placeholder?.label).toBe("Choose a zone…");
+		expect(zoneField?.initial_value).toBe(placeholder?.value);
+		expect(placeholder?.value).not.toBe("");
+		expect((await shippingRules.listZones()).map((z) => z.id)).not.toContain(placeholder?.value);
+		// Create again without reading the banner: refused, nothing written anywhere.
+		const again = await submitForm(refused, "tax:create-rate", {
+			...formInitialValues(refused, "tax:create-rate"),
+		});
+		for (const zone of await shippingRules.listZones()) {
+			expect(await findRate(zone.id, "std-eu-gone")).toBeUndefined();
+		}
+		expect(await storage[TAX_RATE_OWNERS_COLLECTION]?.get("std-eu-gone")).toBeNull();
+		expect(String(bannerOf(again)?.description)).toMatch(/choose a zone/i);
+		expect(field(formFor(again, "tax:create-rate"), "zoneId")?.initial_value).toBe(
+			placeholder?.value,
+		);
+		expect(formInitialValues(again, "tax:create-rate")).toMatchObject({
+			id: "std-eu-gone",
+			ratePercent: "7.25",
+		});
+		// Picking a real zone then creates the rate there.
+		const created = await submitForm(again, "tax:create-rate", {
+			...formInitialValues(again, "tax:create-rate"),
+			zoneId: "us",
+		});
+		expect(bannerOf(created)?.variant).toBe("default");
+		expect((await findRate("us", "std-eu-gone"))?.rateBps).toBe(725);
+	});
+
+	test("#751: when the deleted zone was the store's last, the banner says none are left and points to creating one, and the typing is kept", async () => {
+		await seedRules({ zones: [{ id: "eu", name: "Europe", regions: ["EU"] }], rates: [] });
+		const screen = await openNewRateScreen("standard");
+		expect(await shippingRules.deleteZone("eu")).toEqual({ ok: true });
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "std-eu-gone",
+			zoneId: "eu",
+			ratePercent: "7.25",
+			appliesToShipping: true,
+		});
+		assertBlockContract(refused, { screen: "tax", level: "list" });
+		expect(await findRate("eu", "std-eu-gone")).toBeUndefined();
+		expect(await storage[TAX_RATE_OWNERS_COLLECTION]?.get("std-eu-gone")).toBeNull();
+		const banner = bannerOf(refused);
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.title)).toBe("Tax rate not created");
+		expect(String(banner?.description)).toMatch(/the zone you picked no longer exists/i);
+		expect(String(banner?.description)).toMatch(/no shipping zones are left/i);
+		expect(String(banner?.description)).toMatch(/create a shipping zone/i);
+		expect(String(banner?.description)).not.toMatch(/pick another zone/i);
+		// The form stays, so the typing is not dropped. It has no Zone select: with
+		// nothing to pick it would be empty (F-6a) or placeholder-only (X-2). A
+		// context line says how to keep the typing while a zone is created.
+		const form = formFor(refused, "tax:create-rate");
+		expect(fieldIds(form!)).toEqual(["id", "ratePercent", "appliesToShipping"]);
+		expect(
+			contextTexts(refused).some((t) =>
+				/create a shipping zone on the shipping page in another tab/i.test(t),
+			),
+		).toBe(true);
+		expect(formInitialValues(refused, "tax:create-rate")).toEqual({
+			id: "std-eu-gone",
+			ratePercent: "7.25",
+			appliesToShipping: true,
+		});
+		// Create again with still no zone: refused in the same words, nothing written.
+		const again = await submitForm(refused, "tax:create-rate", {
+			...formInitialValues(refused, "tax:create-rate"),
+		});
+		assertBlockContract(again, { screen: "tax", level: "list" });
+		expect(String(bannerOf(again)?.description)).toMatch(/no shipping zones are left/i);
+		expect(String(bannerOf(again)?.description)).toMatch(/create a shipping zone/i);
+		expect(formInitialValues(again, "tax:create-rate")).toMatchObject({
+			id: "std-eu-gone",
+			ratePercent: "7.25",
+		});
+		// An empty rate ID on the zone-less form asks for the ID only: there is no
+		// Zone field to fill in.
+		const noId = await submitForm(again, "tax:create-rate", {
+			...formInitialValues(again, "tax:create-rate"),
+			id: "",
+		});
+		assertBlockContract(noId, { screen: "tax", level: "list" });
+		expect(String(bannerOf(noId)?.description)).toBe("Enter a rate ID.");
+		// A zone created meanwhile (another tab) shows up on the next submit, and
+		// picking it creates the rate there.
+		await shippingRules.createZone({ id: "us", name: "United States", regions: ["US"] });
+		const picked = await submitForm(again, "tax:create-rate", {
+			...formInitialValues(again, "tax:create-rate"),
+		});
+		assertBlockContract(picked, { screen: "tax", level: "list" });
+		expect(String(bannerOf(picked)?.description)).toMatch(/choose a zone/i);
+		// The new zone is offered, never preselected: the placeholder leads.
+		expect(field(formFor(picked, "tax:create-rate"), "zoneId")?.initial_value).toBe(
+			"choose a zone",
+		);
+		const pickedOptions = (field(formFor(picked, "tax:create-rate"), "zoneId")?.options ??
+			[]) as Array<{ value: string }>;
+		expect(pickedOptions.map((o) => o.value)).toContain("us");
+		const created = await submitForm(picked, "tax:create-rate", {
+			...formInitialValues(picked, "tax:create-rate"),
+			zoneId: "us",
+		});
+		expect(bannerOf(created)?.variant).toBe("default");
+		expect(await findRate("us", "std-eu-gone")).toMatchObject({
+			rateBps: 725,
+			appliesToShipping: true,
+		});
+	});
+
+	test.each([
+		{
+			refusal: "percent",
+			values: { id: "std-eu-gone", ratePercent: "nope" },
+			says: /rate must be a percent/i,
+		},
+		{
+			refusal: "rate ID",
+			values: { id: "std eu gone", ratePercent: "7.25" },
+			says: /can't contain spaces/i,
+		},
+	])(
+		"#751: a zone deleted before a $refusal refusal: the banner also says the zone needs choosing again",
+		async ({ values, says }) => {
+			await seedRules({ rates: [] });
+			const screen = await openNewRateScreen("standard");
+			// With the zone still there, the refusal names only the field at fault.
+			const intact = await submitForm(screen, "tax:create-rate", {
+				...values,
+				zoneId: "eu",
+				appliesToShipping: false,
+			});
+			expect(String(bannerOf(intact)?.description)).toMatch(says);
+			expect(String(bannerOf(intact)?.description)).not.toMatch(/zone/i);
+			expect(await shippingRules.deleteZone("eu")).toEqual({ ok: true });
+			const refused = await submitForm(intact, "tax:create-rate", {
+				...values,
+				zoneId: "eu",
+				appliesToShipping: false,
+			});
+			assertBlockContract(refused, { screen: "tax", level: "list" });
+			const description = String(bannerOf(refused)?.description);
+			expect(description).toMatch(says);
+			expect(description).toMatch(/zone you picked .*deleted/i);
+			expect(description).toMatch(/choose a zone again/i);
+			const zoneField = field(formFor(refused, "tax:create-rate"), "zoneId");
+			expect(zoneField?.initial_value).toBe("choose a zone");
+			expect(formInitialValues(refused, "tax:create-rate")).toMatchObject(values);
+			for (const zone of await shippingRules.listZones()) {
+				expect(await findRate(zone.id, values.id)).toBeUndefined();
+			}
+		},
+	);
+
+	test("#751: the last zone deleted before a percent refusal: the banner says no zones are left", async () => {
+		await seedRules({ zones: [{ id: "eu", name: "Europe", regions: ["EU"] }], rates: [] });
+		const screen = await openNewRateScreen("standard");
+		expect(await shippingRules.deleteZone("eu")).toEqual({ ok: true });
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "std-eu-gone",
+			zoneId: "eu",
+			ratePercent: "nope",
+			appliesToShipping: false,
+		});
+		assertBlockContract(refused, { screen: "tax", level: "list" });
+		const description = String(bannerOf(refused)?.description);
+		expect(description).toMatch(/rate must be a percent/i);
+		expect(description).toMatch(/no shipping zones are left/i);
+		expect(description).toMatch(/create a shipping zone/i);
+		expect(description).not.toMatch(/choose a zone again/i);
+		expect(formInitialValues(refused, "tax:create-rate")).toMatchObject({
+			id: "std-eu-gone",
+			ratePercent: "nope",
+		});
+	});
+
 	test("INC-14: with no zones at all the create screen degrades to one honest line, never an empty select (F-6a)", async () => {
 		await seedRules({ zones: [] });
 		const screen = await openNewRateScreen("standard");
@@ -1101,6 +1291,101 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		const secondBanner = bannerOf(second);
 		expect(secondBanner?.variant).toBe("default"); // idempotent no-op, never an error
 		expect(String(secondBanner?.title)).toMatch(/already deleted/i);
+	});
+
+	// -- #744: a rate whose zone was deleted ----------------------------------
+
+	/** `std-us` and `std-eu` as usual, plus `std-gone` on a zone that no longer
+	 *  exists (deleted before #741 refused it). */
+	async function seedOrphan(): Promise<void> {
+		await seedRules({
+			rates: [
+				...DEFAULT_RATES,
+				{
+					id: "std-gone",
+					taxClassId: "standard",
+					zoneId: "gone",
+					rateBps: 500,
+					appliesToShipping: false,
+				},
+			],
+		});
+	}
+
+	test("#744: a rate whose zone was deleted is listed under its class, last, flagged, with a level banner", async () => {
+		await seedOrphan();
+		const blocks = await openClass("standard");
+		const rateIds = sectionIds(blocks).filter((id) => id.startsWith("tax:rate:"));
+		// The existing zones keep their order (by zone id: eu, us); the orphan follows.
+		expect(rateIds).toEqual(["tax:rate:std-eu", "tax:rate:std-us", "tax:rate:std-gone"]);
+		expect(sectionHeading(blocks, "tax:rate:std-gone")?.text).toBe(
+			'5.00% — "gone" (deleted zone) · std-gone · goods only',
+		);
+		const body = sectionBlocks(blocks, "tax:rate:std-gone");
+		expect(
+			body.some(
+				(b) => b.type === "context" && /zone "gone" no longer exists/i.test(String(b.text)),
+			),
+		).toBe(true);
+		expect(buttons(body).some((e) => e.action_id === "tax:delete-rate")).toBe(true);
+		const banner = findBlocks(blocks, "banner").find((b) => /deleted zone/i.test(String(b.title)));
+		expect(banner?.variant).toBe("alert");
+		expect(String(banner?.description)).toMatch(/"std-gone"/);
+	});
+
+	test("#744: deleting that rate needs no zone recreated, and then the class deletes", async () => {
+		await seedOrphan();
+		const refused = await clickButton("tax:delete-class", { classId: "standard" });
+		expect(bannerOf(refused)?.variant).toBe("error");
+		const deleted = await clickButton("tax:delete-rate", {
+			classId: "standard",
+			rateId: "std-gone",
+		});
+		expect(bannerOf(deleted)?.variant).toBe("default");
+		expect(sectionHeading(deleted, "tax:rate:std-gone")).toBeUndefined();
+		expect(await taxRules.listRatesForClass("standard")).toHaveLength(2);
+		await clickButton("tax:delete-rate", { classId: "standard", rateId: "std-us" });
+		await clickButton("tax:delete-rate", { classId: "standard", rateId: "std-eu" });
+		const gone = await clickButton("tax:delete-class", { classId: "standard" });
+		expect(bannerOf(gone)?.variant).toBe("default");
+		expect(await listClassIds()).not.toContain("standard");
+		expect(await shippingRules.getZone("gone")).toBeNull();
+	});
+
+	test("#744: two rates on one deleted zone are not called duplicates — neither applies anywhere", async () => {
+		await seedRules({
+			rates: [
+				...DEFAULT_RATES,
+				{
+					id: "gone-a",
+					taxClassId: "standard",
+					zoneId: "gone",
+					rateBps: 500,
+					appliesToShipping: false,
+				},
+			],
+		});
+		// A second rate for the same (class, zone), as a store from before the
+		// one-per-slot rule can hold.
+		await seedLegacyRate({
+			id: "gone-b",
+			taxClassId: "standard",
+			zoneId: "gone",
+			rateBps: 600,
+			appliesToShipping: false,
+		});
+		const blocks = await openClass("standard");
+		const titles = findBlocks(blocks, "banner").map((b) => String(b.title));
+		expect(titles.some((t) => /duplicate/i.test(t))).toBe(false);
+		expect(titles).toContain("Tax rates name a deleted zone");
+	});
+
+	test("#744: a class with no orphan shows no deleted-zone banner", async () => {
+		await seedRules();
+		const blocks = await openClass("standard");
+		expect(findBlocks(blocks, "banner").some((b) => /deleted zone/i.test(String(b.title)))).toBe(
+			false,
+		);
 	});
 
 	test("back from the rates level returns to the tax classes list", async () => {

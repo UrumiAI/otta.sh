@@ -145,6 +145,7 @@ import {
 import type { PluginContext } from "../types.js";
 import type {
 	AdminRulesSurface,
+	ClassTaxRateWire,
 	CouponEdit,
 	CouponInput,
 	CouponRetireResult,
@@ -277,12 +278,28 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 *  referential refusal (`in_use_by_methods` / `in_use_by_tax_rates`). */
 	async deleteZone(zoneId: string): Promise<RulesDeleteResult> {
 		requireIdToken("zoneId", zoneId);
-		return toDeleteResult(
-			await deleteShippingZone(
-				{ shippingRules: this.#stores.shippingRules, taxRules: this.#stores.taxRules },
-				zoneId,
-			),
+		const res = await deleteShippingZone(
+			{ shippingRules: this.#stores.shippingRules, taxRules: this.#stores.taxRules },
+			zoneId,
 		);
+		// Which guard refused, and how many (#744), so a caller can say what has to
+		// go first. The tax rates are checked first, so a zone with both is refused
+		// for its rates. The methods count is a read after the refusal (the store's
+		// atomic guard answers only "has methods"): when it fails, or a concurrent
+		// delete has emptied the zone since, the refusal goes without a count.
+		if (!res.ok && res.reason === "in_use_by_tax_rates") {
+			return { ok: false, reason: "in_use", usedBy: "tax_rates", count: res.count };
+		}
+		if (!res.ok && res.reason === "in_use_by_methods") {
+			const count = await this.#stores.shippingRules.listMethods(zoneId).then(
+				(methods) => methods.length,
+				() => 0,
+			);
+			return count > 0
+				? { ok: false, reason: "in_use", usedBy: "methods", count }
+				: { ok: false, reason: "in_use", usedBy: "methods" };
+		}
+		return toDeleteResult(res);
 	}
 
 	// -- Shipping: methods -----------------------------------------------------
@@ -505,6 +522,16 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("zoneId", zoneId);
 		const rates = await this.#stores.taxRules.listRatesForZone(zoneId);
 		return rates.map(toTaxRateWire);
+	}
+
+	async listTaxRatesForClass(classId: string): Promise<ClassTaxRateWire[]> {
+		requireIdToken("taxClassId", classId);
+		const [rates, zones] = await Promise.all([
+			this.#stores.taxRules.listRatesForClass(classId),
+			this.#stores.shippingRules.listZones(),
+		]);
+		const zoneIds = new Set(zones.map((z) => z.id));
+		return rates.map((rate) => ({ ...toTaxRateWire(rate), zoneExists: zoneIds.has(rate.zoneId) }));
 	}
 
 	async createTaxRate(input: TaxRateInput): Promise<RulesCreateResult<TaxRateWire>> {

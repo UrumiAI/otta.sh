@@ -18,6 +18,7 @@ import type {
 import { makeAdminClients } from "./make-admin-clients.js";
 import {
 	type AdminRulesSurface,
+	type ClassTaxRateWire,
 	type RulesCasUpdateResult,
 	type RulesCreateResult,
 	type RulesDeleteResult,
@@ -181,6 +182,11 @@ interface RateDraft {
 	 *  slot. The create screen words the refusal itself, because it holds the
 	 *  zones list — so the notice names the zone without another read. */
 	duplicateOf?: { id: string; rateBps: number; ratePpm?: number };
+	/** Set when the create was refused over the zone itself (#743/#749): it was
+	 *  deleted since the screen loaded, or the "Choose a zone…" placeholder was
+	 *  submitted. Worded by the create screen for the same reason as
+	 *  `duplicateOf`: only it knows whether any zone is left to pick (#751). */
+	zoneRefused?: "deleted" | "not-chosen";
 }
 
 /** A tax rate ROW as this screen renders it: the wire shape plus the zone's
@@ -188,6 +194,9 @@ interface RateDraft {
  *  performs (D-6's one-extra-read allowance — see `fetchRatesForClass`). */
 interface TaxRateRow extends TaxRateWire {
 	zoneName?: string;
+	/** The rate's zone no longer exists (#744): it is never charged, but it
+	 *  holds its class against delete, so it is listed to be deleted. */
+	zoneMissing?: boolean;
 	/** Set when this row is an IGNORED duplicate: the id of the rate in the same
 	 *  (class, zone) that applies instead — the checkout's own rule
 	 *  (`shadowedTaxRates`), so the console and the charge cannot disagree. */
@@ -205,7 +214,7 @@ interface TaxRateRow extends TaxRateWire {
 }
 
 /** The rates level's own filter: an OPTIONAL zone-id narrow. Unset ⇒ every
- *  zone this store has (fanned out — see `fetchRatesForClass`); set ⇒ scoped
+ *  rate of the class (see `fetchRatesForClass`); set ⇒ scoped
  *  to exactly that zone (one read, plus the always-on zones read the Zone
  *  select's options need). */
 interface RatesFilterForm {
@@ -616,13 +625,11 @@ function taxRatesLevel() {
 
 /**
  * Load every rate for `classId`. `zoneId` unset (the default, unfiltered
- * view) ⇒ fan out across EVERY zone this store has (one `listTaxRates(zoneId)`
- * per zone, in parallel) and keep the rows whose `taxClassId` matches — the
- * service has no `GET /admin/tax/rates?taxClassId=` cross-zone read, only the
- * per-zone one, so "rates for this class" is necessarily N zone reads.
- * Accepted as fine for an admin console with a small zone count (this is not
- * a storefront hot path).
- * `zoneId` set ⇒ ONE rates read, scoped to that zone — no fan-out.
+ * view) ⇒ ONE read of the class's rates (`listTaxRatesForClass`), whatever zone
+ * each names — so a rate whose zone was deleted is listed, flagged, to be
+ * deleted (#744). It replaced a per-zone fan-out that could only ever see the
+ * zones that still exist.
+ * `zoneId` set ⇒ ONE rates read, scoped to that zone.
  * `zones` is ALWAYS supplied by the caller (one `listZones()` per render,
  * regardless of filter state) — the Zone select's options need the full list
  * even when scoped, which is the one extra read D-6 explicitly permits
@@ -660,7 +667,9 @@ async function fetchRatesForClass(
  * ignores says so, and names the one it charges.
  */
 function flagDuplicates(rows: TaxRateRow[], shippingFlagCounts: boolean | null): TaxRateRow[] {
-	const shadowed = shadowedTaxRates(rows);
+	// A rate on a deleted zone applies nowhere, so it neither shadows nor is
+	// shadowed: the deleted-zone banner says what it is (#744).
+	const shadowed = shadowedTaxRates(rows.filter((r) => r.zoneMissing !== true));
 	if (shadowed.size === 0) return rows;
 	const ignoredBy = new Map<string, string[]>();
 	for (const [ignoredId, applied] of shadowed) {
@@ -710,12 +719,25 @@ async function readRatesForClass(
 			.filter((r) => r.taxClassId === classId)
 			.map((r) => ({ ...r, zoneName: zoneName ?? r.zoneId }));
 	}
-	const perZone = await Promise.all(zones.map((z) => client.listTaxRates(z.id)));
+	// One read of the class's rates, whatever zone each names (#744), so a rate
+	// whose zone was deleted is listed too. Rows keep the zone list's order (the
+	// order the per-zone fan-out this replaced gave), then the orphans, by id.
+	const rates = await client.listTaxRatesForClass(classId);
+	const zoneOrder = new Map(zones.map((z, i) => [z.id, i]));
 	const zoneNameById = new Map(zones.map((z) => [z.id, z.name]));
-	return perZone
-		.flat()
-		.filter((r) => r.taxClassId === classId)
-		.map((r) => ({ ...r, zoneName: zoneNameById.get(r.zoneId) ?? r.zoneId }));
+	const rank = (r: ClassTaxRateWire) => zoneOrder.get(r.zoneId) ?? zones.length;
+	return (
+		rates
+			.toSorted((a, b) => rank(a) - rank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+			// Whether the zone exists is judged against the zones THIS render shows
+			// (the select and labels read the same list), not the wire's `zoneExists`.
+			.map(({ zoneExists: _read, ...r }): TaxRateRow => {
+				const name = zoneNameById.get(r.zoneId);
+				return name !== undefined
+					? { ...r, zoneName: name }
+					: { ...r, zoneName: `"${r.zoneId}" (deleted zone)`, zoneMissing: true };
+			})
+	);
 }
 
 function ratesBlocks(
@@ -738,6 +760,8 @@ function ratesBlocks(
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	const duplicates = duplicatesBanner(bundle.rows);
 	if (duplicates !== undefined) blocks.push(duplicates);
+	const orphans = deletedZoneBanner(bundle.rows);
+	if (orphans !== undefined) blocks.push(orphans);
 	blocks.push({ type: "context", text: "Each rate applies to purchases shipping to one zone." });
 	// INC-14: the create action, promoted from an accordion at the very bottom
 	// to a button under the intro line. It carries the drill path (L-6) — this
@@ -856,6 +880,32 @@ function duplicatesBanner(rows: TaxRateRow[]): Block | undefined {
 		title: `Duplicate tax rate${ignored.length === 1 ? "" : "s"}`,
 		description: `${lines.join(" ")} A class can have one rate per zone. Delete the rate you don't want; until then the ignored one is not charged.`,
 	};
+}
+
+/** One warning for the level when rates name a zone that was deleted (#744),
+ *  naming each — in both the section and the table branch. */
+function deletedZoneBanner(rows: TaxRateRow[]): Block | undefined {
+	const orphans = rows.filter((r) => r.zoneMissing === true);
+	if (orphans.length === 0) return undefined;
+	const one = orphans.length === 1;
+	const named = orphans.map((r) => `"${r.id}" (zone "${r.zoneId}")`).join(", ");
+	return {
+		type: "banner",
+		variant: "alert",
+		title: one ? "A tax rate names a deleted zone" : "Tax rates name a deleted zone",
+		description: `${named} ${one ? "names a shipping zone that no longer exists, so it is" : "name shipping zones that no longer exist, so they are"} never charged, but ${one ? "it keeps" : "they keep"} this class from being deleted. Delete ${one ? "it" : "them"} below.`,
+	};
+}
+
+/** The line a rate on a deleted zone opens its body with (#744); `[]` otherwise. */
+function deletedZoneBlocks(row: TaxRateRow): Block[] {
+	if (row.zoneMissing !== true) return [];
+	return [
+		{
+			type: "context",
+			text: `Zone "${row.zoneId}" no longer exists, so this rate is never charged. Delete it to let this class be deleted.`,
+		},
+	];
 }
 
 /** The short status a duplicate's table row carries; `undefined` for an ordinary rate. */
@@ -1033,7 +1083,12 @@ function rateRow(classId: string, row: TaxRateRow): Block[] {
 		title,
 		// A shortened heading also says the zone and ids in full here.
 		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
-		blocks: [...duplicateBlocks(row), rateEditForm(classId, row), rateDeleteActions(classId, row)],
+		blocks: [
+			...deletedZoneBlocks(row),
+			...duplicateBlocks(row),
+			rateEditForm(classId, row),
+			rateDeleteActions(classId, row),
+		],
 	});
 }
 
@@ -1110,8 +1165,9 @@ function openRateForm(classId: string, rows: TaxRateRow[]): FormBlock {
 /** The "New tax rate" create screen (INC-14) — what the promoted button and
  *  the empty state's own action both drill into. When the store has no zones
  *  at all the form cannot be built without an F-6a-violating empty `select`,
- *  so the screen degrades to one honest line naming the actual next step
- *  (DA-7-shaped) instead of rendering a broken control. */
+ *  so a first visit degrades to one honest line naming the actual next step
+ *  (DA-7-shaped) instead of rendering a broken control. A refused draft whose
+ *  zones have all gone keeps its form without the select (#751). */
 function newRateScreen(
 	classId: string,
 	filter: RatesFilterForm,
@@ -1123,42 +1179,117 @@ function newRateScreen(
 		{ type: "header", text: `New tax rate — ${classId}` },
 		backButton(ACTION_CANCEL_NEW, "← Back to tax rates", [classId]),
 	];
-	const duplicateOf = draft?.duplicateOf;
-	const shown =
-		notice ??
-		(duplicateOf === undefined || draft === undefined
-			? undefined
-			: duplicateRateNotice(
-					classId,
-					zones.find((z) => z.id === draft.zoneId)?.name ?? draft.zoneId,
-					duplicateOf,
-				));
+	const shown = withZoneGoneNote(notice ?? draftNotice(classId, zones, draft), zones, draft);
 	if (shown !== undefined) blocks.push(noticeBanner(shown));
-	blocks.push(
-		zones.length === 0
-			? {
-					type: "context",
-					text: "Create a shipping zone first — a tax rate applies to one zone.",
-				}
-			: newRateForm(classId, filter, zones, draft),
-	);
+	if (zones.length === 0 && draft === undefined) {
+		blocks.push({
+			type: "context",
+			text: "Create a shipping zone first — a tax rate applies to one zone.",
+		});
+		return blocks;
+	}
+	// A refused draft keeps its form even with no zones left (#751), minus the
+	// Zone select (a placeholder-only select is a one-option dropdown, X-2). The
+	// action reads the missing field as "no zone chosen", so the typing survives
+	// while a zone is created elsewhere.
+	if (zones.length === 0) blocks.push({ type: "context", text: NO_ZONES_LEFT_NEXT });
+	blocks.push(newRateForm(classId, filter, zones, draft));
 	return blocks;
 }
 
+/** The next step when no zone is left to pick (#751). Creating one leaves
+ *  this screen, so the operator is told how to keep what they typed. */
+const NO_ZONES_LEFT_NEXT =
+	"Create a shipping zone on the Shipping page in another tab to keep what you typed here, then click Add tax rate to show the Zone choice.";
+/** Ends every refusal that leaves no zone to pick; the screen's context line
+ *  under the banner carries the how ({@link NO_ZONES_LEFT_NEXT}). */
+const NO_ZONES_LEFT = "no shipping zones are left — create a shipping zone first.";
+
+function rateNotCreated(description: string): Notice {
+	return { variant: "error", title: "Tax rate not created", description };
+}
+
+/** The refusal a draft carries for the create screen to word, if any. */
+function draftNotice(
+	classId: string,
+	zones: ShippingZoneWire[],
+	draft: RateDraft | undefined,
+): Notice | undefined {
+	if (draft === undefined) return undefined;
+	const noZonesLeft = zones.length === 0;
+	if (draft.zoneRefused === "deleted") {
+		return rateNotCreated(
+			noZonesLeft
+				? `The zone you picked no longer exists (it was deleted after this screen loaded), and ${NO_ZONES_LEFT}`
+				: "The zone you picked no longer exists (it was deleted after this screen loaded) — pick another zone, then try again.",
+		);
+	}
+	if (draft.zoneRefused === "not-chosen") {
+		return rateNotCreated(
+			noZonesLeft
+				? "No shipping zones are left — create a shipping zone first."
+				: "Choose a zone for this rate, then try again.",
+		);
+	}
+	if (draft.duplicateOf !== undefined) {
+		return duplicateRateNotice(
+			classId,
+			zones.find((z) => z.id === draft.zoneId)?.name ?? draft.zoneId,
+			draft.duplicateOf,
+		);
+	}
+	return undefined;
+}
+
+/** A refusal about another field (rate ID, percent) whose draft zone was
+ *  deleted meanwhile (#751): the select now leads with "Choose a zone…"
+ *  (#749), so the banner says why, or the next submit is refused over the
+ *  zone with no warning. Refusals already about the zone are left alone. */
+function withZoneGoneNote(
+	notice: Notice | undefined,
+	zones: ShippingZoneWire[],
+	draft: RateDraft | undefined,
+): Notice | undefined {
+	if (notice === undefined || notice.variant !== "error" || draft === undefined) return notice;
+	if (draft.zoneRefused !== undefined) return notice;
+	if (draft.zoneId === "" || draft.zoneId === ZONE_NOT_CHOSEN) return notice;
+	if (zones.some((z) => z.id === draft.zoneId)) return notice;
+	const note =
+		zones.length === 0
+			? `The zone you picked was also deleted, and ${NO_ZONES_LEFT}`
+			: "The zone you picked was also deleted after this screen loaded — choose a zone again.";
+	return { ...notice, description: `${notice.description ?? ""} ${note}`.trim() };
+}
+
+/** The create screen's "no zone chosen" option value (#749). It contains spaces,
+ *  so it is never a zone id (ids are whitespace-free, `isIdToken`) and never
+ *  `""` (F-6a/X-23). */
+const ZONE_NOT_CHOSEN = "choose a zone";
+
 /** Defaults the Zone select to the refused draft's zone, else the active
- *  filter, else the store's first zone — a `select`'s `initial_value` must
- *  name a real option (X-23), so a draft zone that no longer exists falls
- *  back rather than rendering a blank trigger. The percent comes back as RAW
- *  TEXT (DA-3a-iii property 5): the refusal is usually the parse itself. */
+ *  filter, else the store's first zone. A `select`'s `initial_value` must name
+ *  a real option (X-23), so when a refused draft's zone is not among the
+ *  options (deleted since the screen loaded, #743) the select instead leads
+ *  with a "Choose a zone…" placeholder and selects it (#749): falling back to
+ *  another zone would let a second click of Create put the rate on a zone the
+ *  operator never chose. The action refuses the placeholder. With no zones
+ *  left at all the select is left out (#751). The percent comes
+ *  back as RAW TEXT (DA-3a-iii property 5): the refusal is usually the parse
+ *  itself. */
 function newRateForm(
 	classId: string,
 	filter: RatesFilterForm,
 	zones: ShippingZoneWire[],
 	draft?: RateDraft,
 ): FormBlock {
-	const draftZoneId = zones.some((z) => z.id === draft?.zoneId) ? draft?.zoneId : undefined;
-	const defaultZoneId = draftZoneId ?? filter.zoneId ?? zones[0]?.id ?? "";
-	const options: SelectOption[] = zones.map((z) => ({ value: z.id, label: z.name }));
+	const draftZoneMissing = draft !== undefined && !zones.some((z) => z.id === draft.zoneId);
+	const defaultZoneId = draftZoneMissing
+		? ZONE_NOT_CHOSEN
+		: (draft?.zoneId ?? filter.zoneId ?? zones[0]?.id ?? "");
+	const options: SelectOption[] = [
+		...(draftZoneMissing ? [{ value: ZONE_NOT_CHOSEN, label: "Choose a zone…" }] : []),
+		...zones.map((z) => ({ value: z.id, label: z.name })),
+	];
 	return carriedForm({
 		namespace: "tax:rate-create",
 		context: { classId },
@@ -1172,13 +1303,17 @@ function newRateForm(
 					placeholder: "e.g. std-us",
 					...prefill(draft?.id),
 				},
-				{
-					type: "select",
-					action_id: "zoneId",
-					label: "Zone",
-					options,
-					initial_value: defaultZoneId,
-				},
+				...(zones.length === 0
+					? []
+					: [
+							{
+								type: "select" as const,
+								action_id: "zoneId",
+								label: "Zone",
+								options,
+								initial_value: defaultZoneId,
+							},
+						]),
 				{
 					type: "text_input",
 					action_id: "ratePercent",
@@ -1260,7 +1395,7 @@ function rateDetailBlocks(
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	// The duplicate's own note, once (the class-level banner is for the list).
-	blocks.push(...duplicateBlocks(row));
+	blocks.push(...deletedZoneBlocks(row), ...duplicateBlocks(row));
 	blocks.push({
 		type: "context",
 		text: "Deleting only affects future carts — orders already placed keep the tax they were charged at purchase time.",
@@ -1508,7 +1643,10 @@ function createRateAction() {
 		if (classId === undefined) return showList();
 		const values = input.values ?? {};
 		const id = (readString(values.id) ?? "").trim();
-		const zoneId = (readString(values.zoneId) ?? "").trim();
+		// No Zone field at all: the create screen leaves the select out when no
+		// zone is left to pick (#751), which is "no zone chosen", not "left blank".
+		const zoneFieldAbsent = readString(values.zoneId) === undefined;
+		const zoneId = (readString(values.zoneId) ?? ZONE_NOT_CHOSEN).trim();
 		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
 		// EVERY refusal below re-renders the create screen with what was typed
 		// (DA-3a-i) — see TaxRenderState.
@@ -1524,9 +1662,18 @@ function createRateAction() {
 				{ variant: "error", title: "Tax rate not created", description },
 				{ kind: "new-rate", draft },
 			);
+		// With no Zone field on the form there is no zone to "enter"; the screen's
+		// context line already says how to get one (#751).
+		if (id.length === 0 && zoneFieldAbsent) return err("Enter a rate ID.");
 		if (id.length === 0 || zoneId.length === 0) {
 			return err("Enter both a rate ID and a zone.");
 		}
+		// Refusals over the zone itself are worded by the create screen, which knows
+		// whether any zone is left to pick (#751).
+		const zoneRefusal = (zoneRefused: RateDraft["zoneRefused"]) =>
+			showList([classId], undefined, { kind: "new-rate", draft: { ...draft, zoneRefused } });
+		// #749: the placeholder the select leads with after a stale-zone refusal.
+		if (zoneId === ZONE_NOT_CHOSEN) return zoneRefusal("not-chosen");
 		const idProblem = idInputProblem(id);
 		if (idProblem !== undefined) return err(idProblem);
 		const ppm = parseTaxPercent(readString(values.ratePercent) ?? "");
@@ -1545,9 +1692,7 @@ function createRateAction() {
 			// one deleted since is refused before anything is written. Said here, on
 			// the create screen with the typing kept, rather than by the generic net.
 			if (isCommerceInputError(error) && error.field === "zoneId") {
-				return err(
-					"The zone you picked no longer exists (it was deleted after this screen loaded) — pick another zone, then try again.",
-				);
+				return zoneRefusal("deleted");
 			}
 			throw error;
 		}

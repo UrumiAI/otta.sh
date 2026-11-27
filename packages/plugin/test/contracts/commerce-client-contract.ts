@@ -110,6 +110,7 @@ export type RulesClientSurface = Pick<
 	| "updateTaxClass"
 	| "deleteTaxClass"
 	| "listTaxRates"
+	| "listTaxRatesForClass"
 	| "createTaxRate"
 	| "updateTaxRate"
 	| "deleteTaxRate"
@@ -5954,8 +5955,13 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			const zoneEdit = await client.updateZone("z1", { name: "United States", regions: ["US"] });
 			expect(zoneEdit.ok && zoneEdit.value.name).toBe("United States");
 
-			// A zone with a method cannot be deleted.
-			expect(await client.deleteZone("z1")).toEqual({ ok: false, reason: "in_use" });
+			// A zone with a method cannot be deleted, and the refusal says why (#744).
+			expect(await client.deleteZone("z1")).toEqual({
+				ok: false,
+				reason: "in_use",
+				usedBy: "methods",
+				count: 1,
+			});
 
 			// CAS rate edit: correct expected wins; a stale expected returns the fresh row.
 			const ok = await client.updateRate("m1", "USD", {
@@ -6000,7 +6006,12 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				).ok,
 			).toBe(true);
 
-			expect(await client.deleteZone("zt")).toEqual({ ok: false, reason: "in_use" });
+			expect(await client.deleteZone("zt")).toEqual({
+				ok: false,
+				reason: "in_use",
+				usedBy: "tax_rates",
+				count: 1,
+			});
 			// Nothing was written: the zone and its rate both survive.
 			expect((await client.listZones()).map((z) => z.id)).toContain("zt");
 			expect((await client.listTaxRates("zt")).map((r) => r.id)).toEqual(["tr-zone"]);
@@ -6243,6 +6254,41 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 					expectedAppliesToShipping: false,
 				}),
 			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "rateBps" });
+		});
+
+		test("listTaxRatesForClass lists a class's rates across every zone, by id, each with zoneExists (#744)", async () => {
+			await client.createZone({ id: "forc-z1", name: "One" });
+			await client.createZone({ id: "forc-z2", name: "Two" });
+			await client.createTaxClass({ id: "forc-c", name: "For class" });
+			await client.createTaxClass({ id: "forc-other", name: "Other" });
+			for (const [id, zoneId, taxClassId] of [
+				["forc-t2", "forc-z1", "forc-c"],
+				["forc-t1", "forc-z2", "forc-c"],
+				["forc-t3", "forc-z1", "forc-other"],
+			] as const) {
+				expect((await client.createTaxRate({ id, taxClassId, zoneId, rateBps: 500 })).ok).toBe(
+					true,
+				);
+			}
+			expect(await client.listTaxRatesForClass("forc-c")).toEqual([
+				{
+					id: "forc-t1",
+					taxClassId: "forc-c",
+					zoneId: "forc-z2",
+					rateBps: 500,
+					appliesToShipping: false,
+					zoneExists: true,
+				},
+				{
+					id: "forc-t2",
+					taxClassId: "forc-c",
+					zoneId: "forc-z1",
+					rateBps: 500,
+					appliesToShipping: false,
+					zoneExists: true,
+				},
+			]);
+			expect(await client.listTaxRatesForClass("forc-none")).toEqual([]);
 		});
 
 		test("a tax rate naming a tax class that does not exist is refused, and writes nothing (#740)", async () => {

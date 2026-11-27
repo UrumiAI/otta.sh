@@ -133,6 +133,21 @@ const INUSE_HINT: Readonly<Record<string, string>> = {
 	METHOD_IN_USE: "Delete its rates first (shipping_rate_delete).",
 };
 
+/** A zone delete's refusal, naming the guard that refused and how many (#744). */
+function zoneInUse(
+	code: string,
+	what: string,
+	usedBy: "methods" | "tax_rates",
+	count: number,
+): never {
+	const plural = count === 1 ? "" : "s";
+	const message =
+		usedBy === "methods"
+			? `The ${what} still has ${count} shipping method${plural}. Nothing was deleted. Delete them with shipping_method_delete (shipping_methods_list names them), then retry.`
+			: `The ${what} is still named by ${count} tax rate${plural}. Nothing was deleted. Delete them with tax_rate_delete (tax_rates_list names them), and its shipping methods too if it has any (shipping_method_delete), then retry.`;
+	return toolFailure(code, message, { usedBy, count });
+}
+
 /** A delete's result → success data, or its code. */
 function deleteAnswer(result: RulesDeleteResult, what: string, inUse: string, fallback: string) {
 	if (result.ok) return { status: "deleted" as const };
@@ -140,6 +155,9 @@ function deleteAnswer(result: RulesDeleteResult, what: string, inUse: string, fa
 		case "not_found":
 			return toolFailure("NOT_FOUND", `No such ${what} (it may already be deleted).`);
 		case "in_use":
+			if (result.usedBy !== undefined && result.count !== undefined) {
+				return zoneInUse(inUse, what, result.usedBy, result.count);
+			}
 			return toolFailure(inUse, `The ${what} is still in use. ${INUSE_HINT[inUse] ?? ""}`.trim());
 		case "error":
 			return toolFailure(fallback, `The ${what} was not deleted.`, { status: result.status });
@@ -297,7 +315,7 @@ export const SHIPPING_WRITE_TOOLS = [
 	defineTool({
 		name: "shipping_zone_delete",
 		description:
-			'Delete a shipping zone. A zone that still has shipping methods or tax rates is refused (ZONE_IN_USE), writing nothing: delete its methods (shipping_method_delete) and its tax rates (tax_rates_list, then tax_rate_delete) first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
+			'Delete a shipping zone. A zone that still has shipping methods or tax rates is refused (ZONE_IN_USE, details.usedBy "methods" or "tax_rates" with details.count), writing nothing: delete its methods (shipping_method_delete) and its tax rates (tax_rates_list, then tax_rate_delete) first. Returns `{status: "deleted"}`; NOT_FOUND for an unknown id, including one already deleted.',
 		destructive: true,
 		input: z.object({ zoneId: zoneIdInput }).strict(),
 		async run({ clients, input }) {
