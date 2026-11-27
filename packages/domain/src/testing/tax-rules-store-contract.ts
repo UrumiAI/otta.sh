@@ -854,7 +854,10 @@ export function taxRulesStoreContract(
 			).rejects.toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
 		});
 
-		test("a class delete racing a guarded create: never both — the class is gone XOR it holds the rate", async () => {
+		// The invariant only: fired together, these do not reliably interleave on any
+		// adapter (the delete usually finishes first). The real interleave is pinned per
+		// adapter — the emdash store's seam test (e2) and its Postgres race file.
+		test("a class delete and a guarded create fired together never both succeed", async () => {
 			const { store } = await makeStore();
 			for (let round = 0; round < 6; round++) {
 				const classId = `race-c-${String(round)}`;
