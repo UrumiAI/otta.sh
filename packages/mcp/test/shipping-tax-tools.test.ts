@@ -558,6 +558,23 @@ describe("tax rates", () => {
 		expect(await storage[TAX_CLASSES_COLLECTION]?.get("nope-class")).toBeNull();
 	});
 
+	test("a shipping zone that does not exist is INVALID_INPUT naming zoneId, and nothing is written (#743)", async () => {
+		await call("tax_class_create", { id: "std", name: "Standard" });
+		const err = await failure("tax_rate_create", {
+			taxClassId: "std",
+			zoneId: "nope-zone",
+			rateBps: 100,
+		});
+		expect(err.code).toBe("INVALID_INPUT");
+		expect(err.details.field).toBe("zoneId");
+		expect(err.message).toMatch(/nope-zone/);
+		expect(err.message).toMatch(/shipping_zone_create/);
+		expect(await call("tax_settings_get", {})).toMatchObject({ saved: false, hasRates: false });
+		// The zone created afterwards picks up no hidden rate.
+		await seedZone("nope-zone", "US");
+		expect(await call("tax_rates_list", { zoneId: "nope-zone" })).toMatchObject({ items: [] });
+	});
+
 	test("any field the surface refuses rides details.field", async () => {
 		await seedZone("us", "US");
 		await call("tax_class_create", { id: "std", name: "Standard" });

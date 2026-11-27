@@ -27,6 +27,7 @@ import {
 	type TaxClassWire,
 	type TaxRateWire,
 } from "./admin-rules-surface.js";
+import { isCommerceInputError } from "../commerce/commerce-input.js";
 import { idInputProblem } from "./id-input.js";
 import {
 	optionsButtonBlock,
@@ -1530,13 +1531,26 @@ function createRateAction() {
 		if (idProblem !== undefined) return err(idProblem);
 		const ppm = parseTaxPercent(readString(values.ratePercent) ?? "");
 		if (ppm === null) return err(TAX_PERCENT_HINT);
-		const result = await client.createTaxRate({
-			id,
-			taxClassId: classId,
-			zoneId,
-			...taxRateValueOfPpm(ppm),
-			appliesToShipping,
-		});
+		let result: RulesCreateResult<TaxRateWire>;
+		try {
+			result = await client.createTaxRate({
+				id,
+				taxClassId: classId,
+				zoneId,
+				...taxRateValueOfPpm(ppm),
+				appliesToShipping,
+			});
+		} catch (error) {
+			// #743: the select only offers zones that existed when the screen loaded;
+			// one deleted since is refused before anything is written. Said here, on
+			// the create screen with the typing kept, rather than by the generic net.
+			if (isCommerceInputError(error) && error.field === "zoneId") {
+				return err(
+					"The zone you picked no longer exists (it was deleted after this screen loaded) — pick another zone, then try again.",
+				);
+			}
+			throw error;
+		}
 		if (!result.ok && result.duplicateTaxRate !== undefined) {
 			// Worded by the create screen, which has the zone's name in hand.
 			return showList([classId], undefined, {
