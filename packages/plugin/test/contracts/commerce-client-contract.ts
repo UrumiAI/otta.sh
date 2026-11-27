@@ -6245,6 +6245,24 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "rateBps" });
 		});
 
+		test("a tax rate naming a tax class that does not exist is refused, and writes nothing (#740)", async () => {
+			await client.createZone({ id: "ghost-z", name: "Ghost" });
+			await client.createTaxClass({ id: "ghost-real", name: "Real" });
+			const rate = { id: "ghost-t", taxClassId: "nope-class", zoneId: "ghost-z", rateBps: 100 };
+			await expect(client.createTaxRate(rate)).rejects.toMatchObject({
+				code: "INVALID_INPUT",
+				field: "taxClassId",
+			});
+			expect(await client.listTaxRates("ghost-z")).toEqual([]);
+			expect((await client.listTaxClasses()).map((c) => c.id)).toEqual(["ghost-real"]);
+			// Declaring the class afterwards surfaces no rate: none was stored under it
+			// (a rate parked on an undeclared class would show up here once it is named)…
+			expect((await client.createTaxClass({ id: "nope-class", name: "Now real" })).ok).toBe(true);
+			expect(await client.listTaxRates("ghost-z")).toEqual([]);
+			// …and the refused rate's id was never claimed: it is free for a real class.
+			expect((await client.createTaxRate({ ...rate, taxClassId: "ghost-real" })).ok).toBe(true);
+		});
+
 		test("a currency-shaped code that is not ISO-4217 (XYZ) is refused on a rate and a coupon create", async () => {
 			// The console checks this first; the client is the second line, so no
 			// caller of the surface can store a price nobody is quoted in.

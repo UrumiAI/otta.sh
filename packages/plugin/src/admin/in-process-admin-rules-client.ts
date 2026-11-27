@@ -512,6 +512,17 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("zoneId", input.zoneId);
 		requireBps("rateBps", input.rateBps, MAX_TAX_RATE_BPS);
 		const ratePpm = optionalRatePpm("ratePpm", input.ratePpm, input.rateBps, MAX_TAX_RATE_BPS);
+		// The rate must name a declared class (#740), checked BEFORE anything is
+		// written — the settings pin below included. The port still stores a rate
+		// for an undeclared class (the SQL had no foreign key) by minting a nameless
+		// class document `listClasses` hides, so without this a typo'd class id
+		// answered `created`, parked an invisible rate and flipped "has rates".
+		// Same rule, same answer as the tax options' fixed shipping class. A read,
+		// not a guard inside the store's write: a class deleted between this read
+		// and the create still leaves the rate on a nameless document — the
+		// accepted window `deleteTaxClass` documents for products, on a rare
+		// two-admin maintenance interleave.
+		await this.#requireDeclaredTaxClass("taxClassId", input.taxClassId);
 		await this.#pinTaxSettings();
 		return createOrRefuse(async () =>
 			toTaxRateWire(
@@ -629,8 +640,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		// would silently price shipping "based on cart items" instead.
 		if (!("field" in parsed) && parsed.shippingTaxClass.kind === "fixed") {
 			const { taxClassId } = parsed.shippingTaxClass;
-			const classes = await this.#stores.taxRules.listClasses();
-			if (!classes.some((c) => c.id === taxClassId)) {
+			if (!(await this.#isDeclaredTaxClass(taxClassId))) {
 				return {
 					ok: false,
 					reason: "invalid",
@@ -658,6 +668,26 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		}
 	}
 
+	/** Whether `classId` is a class the merchant declared — one `listClasses`
+	 *  reports. A class document that only holds rates (`name: null`) is not. */
+	async #isDeclaredTaxClass(classId: string): Promise<boolean> {
+		const classes = await this.#stores.taxRules.listClasses();
+		return classes.some((c) => c.id === classId);
+	}
+
+	/** {@link #isDeclaredTaxClass}, or the surface's input refusal naming `field`. */
+	async #requireDeclaredTaxClass(field: string, classId: string): Promise<void> {
+		if (!(await this.#isDeclaredTaxClass(classId))) {
+			throw new CommerceInputError(field, `"${classId}" names no tax class that exists`);
+		}
+	}
+
+	/** The upgrade rule's input with nothing saved: rates exist, or an outside
+	 *  calculator is registered (it replaces the rates). Same rule as the quote's. */
+	async #chargesTaxAlready(): Promise<boolean> {
+		return this.#hasOutsideTaxCalculator || (await this.#stores.taxRules.hasAnyRate());
+	}
+
 	/**
 	 * The upgrade rule is decided by whether rates exist, so the first rate created
 	 * (or the last deleted) would flip a store with nothing saved between "new" and
@@ -671,12 +701,6 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 * key of its own (a fixed key could be pinned forever to a revision that has
 	 * since moved, and refuse every later rate edit).
 	 */
-	/** The upgrade rule's input with nothing saved: rates exist, or an outside
-	 *  calculator is registered (it replaces the rates). Same rule as the quote's. */
-	async #chargesTaxAlready(): Promise<boolean> {
-		return this.#hasOutsideTaxCalculator || (await this.#stores.taxRules.hasAnyRate());
-	}
-
 	async #pinTaxSettings(): Promise<void> {
 		if ((await this.#stores.settingsStore.get()).tax !== undefined) return;
 		const chargesTax = await this.#chargesTaxAlready();

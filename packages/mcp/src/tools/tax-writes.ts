@@ -119,6 +119,37 @@ function classInUse(usedBy: string, count?: number): never {
 	);
 }
 
+/**
+ * {@link readOrRefuse}, keeping the refused field as `details.field` (the shape
+ * tax_settings_update gives a refused option). A rate on a class that does not
+ * exist (#740) is refused on `taxClassId`, and says how to make the class.
+ */
+async function refuseWithField<T>(write: () => Promise<T>): Promise<T> {
+	try {
+		return await write();
+	} catch (error) {
+		const field = (error as { field?: unknown } | null)?.field;
+		if (
+			error instanceof Error &&
+			(error as { code?: unknown }).code === "INVALID_INPUT" &&
+			typeof field === "string"
+		) {
+			const hint =
+				field === "taxClassId"
+					? " Create the class with tax_class_create, or pick one from tax_classes_list."
+					: "";
+			return toolFailure("INVALID_INPUT", `${error.message}. Nothing was written.${hint}`, {
+				field,
+				message: error.message,
+			});
+		}
+		// Every other refusal keeps readOrRefuse's mapping.
+		return readOrRefuse(async () => {
+			throw error;
+		});
+	}
+}
+
 function settingsAnswer(result: TaxSettingsUpdateResult) {
 	if (result.ok) return { status: "updated" as const, settings: result.settings };
 	switch (result.reason) {
@@ -254,7 +285,7 @@ export const TAX_WRITE_TOOLS = [
 	defineTool({
 		name: "tax_rate_create",
 		description:
-			'Create a tax rate: the rate one tax class pays in one shipping zone. There is one rate per (class, zone): a second is refused with TAX_RATE_SLOT_TAKEN, details.existing naming the one there (update it with tax_rate_update instead). Returns `{status: "created", taxRate}`. Refusals: TAX_RATE_SLOT_TAKEN, TAX_RATE_ID_TAKEN, INVALID_INPUT.',
+			'Create a tax rate: the rate one tax class pays in one shipping zone. There is one rate per (class, zone): a second is refused with TAX_RATE_SLOT_TAKEN, details.existing naming the one there (update it with tax_rate_update instead). Returns `{status: "created", taxRate}`. Refusals: TAX_RATE_SLOT_TAKEN, TAX_RATE_ID_TAKEN, INVALID_INPUT (details.field, e.g. taxClassId naming a class that does not exist: create it with tax_class_create first). Products with no tax class are taxed at class id `standard`, which must be declared with tax_class_create before it can take a rate.',
 		input: z
 			.object({
 				id: recordId(
@@ -272,7 +303,7 @@ export const TAX_WRITE_TOOLS = [
 			.strict(),
 		async run({ clients, input }) {
 			const { id, ...rest } = input;
-			const result = await readOrRefuse(() =>
+			const result = await refuseWithField(() =>
 				clients.rules.createTaxRate({
 					id: id ?? crypto.randomUUID(),
 					taxClassId: rest.taxClassId,
