@@ -182,6 +182,11 @@ interface RateDraft {
 	 *  slot. The create screen words the refusal itself, because it holds the
 	 *  zones list — so the notice names the zone without another read. */
 	duplicateOf?: { id: string; rateBps: number; ratePpm?: number };
+	/** Set when the create was refused over the zone itself (#743/#749): it was
+	 *  deleted since the screen loaded, or the "Choose a zone…" placeholder was
+	 *  submitted. Worded by the create screen for the same reason as
+	 *  `duplicateOf`: only it knows whether any zone is left to pick (#751). */
+	zoneRefused?: "deleted" | "not-chosen";
 }
 
 /** A tax rate ROW as this screen renders it: the wire shape plus the zone's
@@ -1160,8 +1165,9 @@ function openRateForm(classId: string, rows: TaxRateRow[]): FormBlock {
 /** The "New tax rate" create screen (INC-14) — what the promoted button and
  *  the empty state's own action both drill into. When the store has no zones
  *  at all the form cannot be built without an F-6a-violating empty `select`,
- *  so the screen degrades to one honest line naming the actual next step
- *  (DA-7-shaped) instead of rendering a broken control. */
+ *  so a first visit degrades to one honest line naming the actual next step
+ *  (DA-7-shaped) instead of rendering a broken control. A refused draft whose
+ *  zones have all gone keeps its form without the select (#751). */
 function newRateScreen(
 	classId: string,
 	filter: RatesFilterForm,
@@ -1173,26 +1179,86 @@ function newRateScreen(
 		{ type: "header", text: `New tax rate — ${classId}` },
 		backButton(ACTION_CANCEL_NEW, "← Back to tax rates", [classId]),
 	];
-	const duplicateOf = draft?.duplicateOf;
-	const shown =
-		notice ??
-		(duplicateOf === undefined || draft === undefined
-			? undefined
-			: duplicateRateNotice(
-					classId,
-					zones.find((z) => z.id === draft.zoneId)?.name ?? draft.zoneId,
-					duplicateOf,
-				));
+	const shown = withZoneGoneNote(notice ?? draftNotice(classId, zones, draft), zones, draft);
 	if (shown !== undefined) blocks.push(noticeBanner(shown));
-	blocks.push(
-		zones.length === 0
-			? {
-					type: "context",
-					text: "Create a shipping zone first — a tax rate applies to one zone.",
-				}
-			: newRateForm(classId, filter, zones, draft),
-	);
+	if (zones.length === 0 && draft === undefined) {
+		blocks.push({
+			type: "context",
+			text: "Create a shipping zone first — a tax rate applies to one zone.",
+		});
+		return blocks;
+	}
+	// A refused draft keeps its form even with no zones left (#751), minus the
+	// Zone select (a placeholder-only select is a one-option dropdown, X-2). The
+	// action reads the missing field as "no zone chosen", so the typing survives
+	// while a zone is created elsewhere.
+	if (zones.length === 0) blocks.push({ type: "context", text: NO_ZONES_LEFT_NEXT });
+	blocks.push(newRateForm(classId, filter, zones, draft));
 	return blocks;
+}
+
+/** The next step when no zone is left to pick (#751). Creating one leaves
+ *  this screen, so the operator is told how to keep what they typed. */
+const NO_ZONES_LEFT_NEXT =
+	"Create a shipping zone on the Shipping page in another tab, so what you typed here is kept, then click Add tax rate again to pick it.";
+/** Ends every refusal that leaves no zone to pick; the screen's context line
+ *  under the banner carries the how ({@link NO_ZONES_LEFT_NEXT}). */
+const NO_ZONES_LEFT = "no shipping zones are left — create a shipping zone first.";
+
+function rateNotCreated(description: string): Notice {
+	return { variant: "error", title: "Tax rate not created", description };
+}
+
+/** The refusal a draft carries for the create screen to word, if any. */
+function draftNotice(
+	classId: string,
+	zones: ShippingZoneWire[],
+	draft: RateDraft | undefined,
+): Notice | undefined {
+	if (draft === undefined) return undefined;
+	const noZonesLeft = zones.length === 0;
+	if (draft.zoneRefused === "deleted") {
+		return rateNotCreated(
+			noZonesLeft
+				? `The zone you picked no longer exists (it was deleted after this screen loaded), and ${NO_ZONES_LEFT}`
+				: "The zone you picked no longer exists (it was deleted after this screen loaded) — pick another zone, then try again.",
+		);
+	}
+	if (draft.zoneRefused === "not-chosen") {
+		return rateNotCreated(
+			noZonesLeft
+				? "No shipping zones are left — create a shipping zone first."
+				: "Choose a zone for this rate, then try again.",
+		);
+	}
+	if (draft.duplicateOf !== undefined) {
+		return duplicateRateNotice(
+			classId,
+			zones.find((z) => z.id === draft.zoneId)?.name ?? draft.zoneId,
+			draft.duplicateOf,
+		);
+	}
+	return undefined;
+}
+
+/** A refusal about another field (rate ID, percent) whose draft zone was
+ *  deleted meanwhile (#751): the select now leads with "Choose a zone…"
+ *  (#749), so the banner says why, or the next submit is refused over the
+ *  zone with no warning. Refusals already about the zone are left alone. */
+function withZoneGoneNote(
+	notice: Notice | undefined,
+	zones: ShippingZoneWire[],
+	draft: RateDraft | undefined,
+): Notice | undefined {
+	if (notice === undefined || notice.variant !== "error" || draft === undefined) return notice;
+	if (draft.zoneRefused !== undefined) return notice;
+	if (draft.zoneId === "" || draft.zoneId === ZONE_NOT_CHOSEN) return notice;
+	if (zones.some((z) => z.id === draft.zoneId)) return notice;
+	const note =
+		zones.length === 0
+			? `The zone you picked was also deleted, and ${NO_ZONES_LEFT}`
+			: "The zone you picked was also deleted after this screen loaded — choose a zone again.";
+	return { ...notice, description: `${notice.description ?? ""} ${note}`.trim() };
 }
 
 /** The create screen's "no zone chosen" option value (#749). It contains spaces,
@@ -1206,7 +1272,8 @@ const ZONE_NOT_CHOSEN = "choose a zone";
  *  options (deleted since the screen loaded, #743) the select instead leads
  *  with a "Choose a zone…" placeholder and selects it (#749): falling back to
  *  another zone would let a second click of Create put the rate on a zone the
- *  operator never chose. The action refuses the placeholder. The percent comes
+ *  operator never chose. The action refuses the placeholder. With no zones
+ *  left at all the select is left out (#751). The percent comes
  *  back as RAW TEXT (DA-3a-iii property 5): the refusal is usually the parse
  *  itself. */
 function newRateForm(
@@ -1236,13 +1303,17 @@ function newRateForm(
 					placeholder: "e.g. std-us",
 					...prefill(draft?.id),
 				},
-				{
-					type: "select",
-					action_id: "zoneId",
-					label: "Zone",
-					options,
-					initial_value: defaultZoneId,
-				},
+				...(zones.length === 0
+					? []
+					: [
+							{
+								type: "select" as const,
+								action_id: "zoneId",
+								label: "Zone",
+								options,
+								initial_value: defaultZoneId,
+							},
+						]),
 				{
 					type: "text_input",
 					action_id: "ratePercent",
@@ -1572,7 +1643,9 @@ function createRateAction() {
 		if (classId === undefined) return showList();
 		const values = input.values ?? {};
 		const id = (readString(values.id) ?? "").trim();
-		const zoneId = (readString(values.zoneId) ?? "").trim();
+		// No Zone field at all: the create screen leaves the select out when no
+		// zone is left to pick (#751), which is "no zone chosen", not "left blank".
+		const zoneId = (readString(values.zoneId) ?? ZONE_NOT_CHOSEN).trim();
 		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
 		// EVERY refusal below re-renders the create screen with what was typed
 		// (DA-3a-i) — see TaxRenderState.
@@ -1591,8 +1664,12 @@ function createRateAction() {
 		if (id.length === 0 || zoneId.length === 0) {
 			return err("Enter both a rate ID and a zone.");
 		}
+		// Refusals over the zone itself are worded by the create screen, which knows
+		// whether any zone is left to pick (#751).
+		const zoneRefusal = (zoneRefused: RateDraft["zoneRefused"]) =>
+			showList([classId], undefined, { kind: "new-rate", draft: { ...draft, zoneRefused } });
 		// #749: the placeholder the select leads with after a stale-zone refusal.
-		if (zoneId === ZONE_NOT_CHOSEN) return err("Choose a zone for this rate, then try again.");
+		if (zoneId === ZONE_NOT_CHOSEN) return zoneRefusal("not-chosen");
 		const idProblem = idInputProblem(id);
 		if (idProblem !== undefined) return err(idProblem);
 		const ppm = parseTaxPercent(readString(values.ratePercent) ?? "");
@@ -1611,9 +1688,7 @@ function createRateAction() {
 			// one deleted since is refused before anything is written. Said here, on
 			// the create screen with the typing kept, rather than by the generic net.
 			if (isCommerceInputError(error) && error.field === "zoneId") {
-				return err(
-					"The zone you picked no longer exists (it was deleted after this screen loaded) — pick another zone, then try again.",
-				);
+				return zoneRefusal("deleted");
 			}
 			throw error;
 		}
